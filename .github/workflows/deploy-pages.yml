@@ -1,0 +1,11 @@
+name: Deploy Pages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Placeholder
+        run: echo Deploy Pages
