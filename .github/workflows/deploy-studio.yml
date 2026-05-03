@@ -49,8 +49,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Studio
-        run: pnpm --filter @blackboard/studio build
+      - name: Build Studio and workspace dependencies
+        run: pnpm exec turbo run build --filter=@blackboard/studio...
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
