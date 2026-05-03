@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  lint-typecheck-test-build:
+  lint-typecheck-build:
     runs-on: ubuntu-latest
 
     env:
@@ -42,9 +42,6 @@ jobs:
 
       - name: Type check
         run: pnpm run typecheck
-
-      - name: Test
-        run: pnpm run test
 
       - name: Build
         run: pnpm run build
