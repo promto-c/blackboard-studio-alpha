@@ -1,0 +1,40 @@
+{
+  "name": "@blackboard/studio",
+  "private": true,
+  "version": "0.0.18",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@bb-studio/exr": "^0.1.1",
+    "@blackboard/icons": "workspace:*",
+    "@blackboard/plugin-sdk": "workspace:*",
+    "@blackboard/renderer": "workspace:*",
+    "@blackboard/state": "workspace:*",
+    "@blackboard/types": "workspace:*",
+    "@blackboard/ui": "workspace:*",
+    "@google/genai": "^1.16.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "three": "^0.168.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^22.14.0",
+    "@types/three": "^0.183.1",
+    "@vitejs/plugin-react": "^5.0.0",
+    "jsdom": "^27.0.1",
+    "vite": "^6.2.0",
+    "vitest": "^4.0.18"
+  }
+}

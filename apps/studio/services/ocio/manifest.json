@@ -1,0 +1,10 @@
+{
+  "packageVersion": "0.1.0",
+  "ocioVersion": "unknown",
+  "buildHash": "0000000",
+  "features": { "simd": false, "pthreads": false, "gpuShaderFlavor": "GLSL_1.0" },
+  "files": {
+    "module": "./ocio-wasm.js",
+    "wasm": "./ocio-wasm.wasm"
+  }
+}

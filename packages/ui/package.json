@@ -1,0 +1,32 @@
+{
+  "name": "@blackboard/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --external react --external react-dom --external @blackboard/types",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --external react --external react-dom --external @blackboard/types --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@blackboard/types": "workspace:*",
+    "@blackboard/icons": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blackboard Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: {
+                50: 'rgb(var(--color-primary-50) / <alpha-value>)',
+                100: 'rgb(var(--color-primary-100) / <alpha-value>)',
+                200: 'rgb(var(--color-primary-200) / <alpha-value>)',
+                300: 'rgb(var(--color-primary-300) / <alpha-value>)',
+                400: 'rgb(var(--color-primary-400) / <alpha-value>)',
+                500: 'rgb(var(--color-primary-500) / <alpha-value>)',
+                600: 'rgb(var(--color-primary-600) / <alpha-value>)',
+                700: 'rgb(var(--color-primary-700) / <alpha-value>)',
+                800: 'rgb(var(--color-primary-800) / <alpha-value>)',
+                900: 'rgb(var(--color-primary-900) / <alpha-value>)',
+                950: 'rgb(var(--color-primary-950) / <alpha-value>)',
+              },
+              gray: {
+                50: '#fafafa',
+                100: '#f5f5f5',
+                200: '#e5e5e5',
+                300: '#d4d4d4',
+                400: '#a3a3a3',
+                500: '#737373',
+                600: '#525252',
+                700: '#404040',
+                750: '#303030',
+                800: '#262626',
+                900: '#171717',
+                950: '#0a0a0a',
+              },
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      /* Default theme: Teal */
+      :root {
+        --color-primary-50: 240 253 250;
+        --color-primary-100: 204 251 241;
+        --color-primary-200: 167 243 235;
+        --color-primary-300: 107 231 214;
+        --color-primary-400: 45 212 191;
+        --color-primary-500: 20 184 166;
+        --color-primary-600: 13 148 136;
+        --color-primary-700: 15 118 110;
+        --color-primary-800: 17 94 89;
+        --color-primary-900: 19 78 74;
+        --color-primary-950: 4 47 46;
+      }
+
+      /* Remove browser default focus outline; components can define custom focus styles. */
+      button:focus,
+      input:focus,
+      select:focus,
+      textarea:focus,
+      a:focus {
+        outline: none;
+      }
+
+      #root {
+        user-select: none;
+      }
+
+      #root ::selection {
+        background: rgb(var(--color-primary-400) / 0.35);
+        color: inherit;
+      }
+
+      #root :where(input:not([type='range']), textarea, [contenteditable='true']) {
+        user-select: text;
+        cursor: text;
+      }
+
+      #root
+        [data-text-selection-scope]
+        :where(
+          [data-selectable-text],
+          code,
+          kbd,
+          label,
+          output,
+          p,
+          pre,
+          span,
+          time,
+          h1,
+          h2,
+          h3,
+          h4,
+          h5,
+          h6
+        ) {
+        user-select: text;
+        cursor: text;
+      }
+
+      #root
+        [data-text-selection-scope]
+        :where(
+          [data-text-selection-exclude],
+          [data-text-selection-exclude] *,
+          button,
+          button *,
+          [role='button'],
+          [role='button'] *,
+          input[type='range'],
+          select,
+          select *,
+          summary,
+          summary *,
+          [draggable='true'],
+          [draggable='true'] *,
+          .select-none,
+          .select-none *
+        ) {
+        user-select: none;
+        cursor: inherit;
+      }
+
+      #root
+        :where(
+          button:not(:disabled),
+          [role='button']:not([aria-disabled='true']),
+          select:not(:disabled),
+          summary
+        ) {
+        cursor: pointer;
+      }
+
+      #root
+        :where(
+          button:disabled,
+          [aria-disabled='true'],
+          input:disabled,
+          textarea:disabled,
+          select:disabled
+        ) {
+        cursor: not-allowed;
+      }
+
+      #root
+        :where(
+          input:not([type='range']):not(:disabled),
+          textarea:not(:disabled),
+          [contenteditable='true']
+        ) {
+        cursor: text;
+      }
+
+      #root :where(input[type='range']:not(:disabled), input[type='color']:not(:disabled)) {
+        cursor: pointer;
+      }
+
+      #root
+        [data-text-selection-scope]
+        :where(
+          button:not(:disabled),
+          button:not(:disabled) *,
+          [role='button']:not([aria-disabled='true']),
+          [role='button']:not([aria-disabled='true']) *,
+          input[type='range']:not(:disabled),
+          input[type='range']:not(:disabled) *,
+          select:not(:disabled),
+          select:not(:disabled) *,
+          summary,
+          summary *
+        ) {
+        cursor: pointer;
+      }
+
+      #root
+        [data-text-selection-scope]
+        :where(
+          button:disabled,
+          button:disabled *,
+          [aria-disabled='true'],
+          [aria-disabled='true'] *,
+          input:disabled,
+          textarea:disabled,
+          select:disabled
+        ) {
+        cursor: not-allowed;
+      }
+
+      #root
+        [data-text-selection-scope]
+        :where(
+          input:not([type='range']):not(:disabled),
+          input:not([type='range']):not(:disabled) *,
+          textarea:not(:disabled),
+          textarea:not(:disabled) *,
+          [contenteditable='true'],
+          [contenteditable='true'] *
+        ) {
+        cursor: text;
+      }
+
+      /* Animation for tab panel content */
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(5px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .tab-content-animate {
+        animation: fadeIn 250ms ease-in-out;
+      }
+      @keyframes treeItemExit {
+        to {
+          opacity: 0;
+          transform: translateY(-4px);
+        }
+      }
+      @keyframes diceRoll {
+        0% {
+          transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+        }
+        24% {
+          transform: translate3d(-0.5px, -1px, 0) rotate(-14deg) scale(0.96);
+        }
+        52% {
+          transform: translate3d(1px, -1.5px, 0) rotate(18deg) scale(1.02);
+        }
+        74% {
+          transform: translate3d(-0.5px, 0.5px, 0) rotate(-10deg) scale(0.98);
+        }
+        100% {
+          transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+        }
+      }
+      @keyframes incrementArrow {
+        0% {
+          transform: translate3d(0, 0, 0) scale(1);
+          opacity: 1;
+        }
+        26% {
+          transform: translate3d(0, -1.5px, 0) scale(1.08);
+          opacity: 1;
+        }
+        58% {
+          transform: translate3d(0, -3px, 0) scale(1.12);
+          opacity: 0.7;
+        }
+        100% {
+          transform: translate3d(0, 0, 0) scale(1);
+          opacity: 1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .tab-content-animate,
+        [data-tree-row] {
+          animation: none !important;
+        }
+      }
+
+      /* Interactive Glow Effect for glass components */
+      .interactive-glow {
+        position: relative;
+        isolation: isolate;
+        overflow: hidden; /* To clip the glow to the border-radius */
+      }
+      .interactive-glow::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        z-index: -1;
+        opacity: var(--glow-opacity, 0);
+        transform: scale(var(--glow-scale, 0));
+        transition:
+          opacity 300ms ease-out,
+          transform 300ms ease-out;
+
+        background: radial-gradient(
+          circle 200px at var(--glow-x) var(--glow-y),
+          hsl(var(--color-primary-hue, 172) 90% 60% / 0.35),
+          transparent
+        );
+
+        filter: blur(40px) brightness(1.2);
+      }
+
+      .interactive-glow::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        z-index: -1;
+
+        /* Chromatic aberration edge effect */
+        box-shadow:
+          inset 3px -1px 3px hsl(340 100% 70% / 0.8),
+          inset -3px 1px 3px hsl(220 80% 70% / 0.8),
+          inset 1px 3px 3px hsl(160 100% 50% / 0.5);
+
+        /* Mask to reveal effect near cursor */
+        mask-image: radial-gradient(
+          circle 150px at var(--glow-x) var(--glow-y),
+          black,
+          transparent
+        );
+        -webkit-mask-image: radial-gradient(
+          circle 150px at var(--glow-x) var(--glow-y),
+          black,
+          transparent
+        );
+
+        opacity: var(--glow-opacity, 0);
+        transition: opacity 300ms ease-out;
+      }
+
+      /* Custom Slider Styles (thin rail + marker thumb) */
+      .glass-slider {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 100%;
+        height: 18px;
+        background: transparent;
+        cursor: pointer;
+        outline: none;
+        position: relative;
+        z-index: 1;
+      }
+
+      .glass-slider:focus-visible {
+        outline: 1px solid rgb(var(--color-primary-400) / 0.55);
+        outline-offset: 3px;
+      }
+
+      .glass-slider-container {
+        position: relative;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        min-height: 18px;
+      }
+
+      .glass-slider-container::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        height: 2px;
+        background: linear-gradient(
+          to right,
+          rgba(148, 163, 184, 0.38) 0%,
+          rgba(148, 163, 184, 0.38) var(--slider-fill-percent, 0%),
+          rgba(148, 163, 184, 0.22) var(--slider-fill-percent, 0%),
+          rgba(148, 163, 184, 0.22) 100%
+        );
+        border-radius: 999px;
+        pointer-events: none;
+      }
+
+      .glass-slider::-webkit-slider-runnable-track {
+        height: 2px;
+        background: transparent;
+        border: none;
+      }
+
+      /* Webkit (Chrome, Safari) */
+      .glass-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 4px;
+        height: 16px;
+        margin-top: -7px;
+        background: rgb(var(--color-primary-400));
+        border-radius: 999px;
+        border: none;
+        box-shadow:
+          0 0 0 1px rgba(5, 10, 16, 0.7),
+          0 0 8px rgb(var(--color-primary-400) / 0.75);
+        transition:
+          transform 120ms ease,
+          background-color 120ms ease,
+          box-shadow 120ms ease;
+      }
+
+      .glass-slider:hover::-webkit-slider-thumb {
+        background: rgb(var(--color-primary-300));
+        box-shadow:
+          0 0 0 1px rgba(5, 10, 16, 0.75),
+          0 0 10px rgb(var(--color-primary-300) / 0.85);
+      }
+
+      .glass-slider:active::-webkit-slider-thumb {
+        transform: scaleX(1.15);
+      }
+
+      /* Firefox */
+      .glass-slider::-moz-range-thumb {
+        width: 4px;
+        height: 16px;
+        background: rgb(var(--color-primary-400));
+        border-radius: 999px;
+        border: none;
+        box-shadow:
+          0 0 0 1px rgba(5, 10, 16, 0.7),
+          0 0 8px rgb(var(--color-primary-400) / 0.75);
+        transition:
+          transform 120ms ease,
+          background-color 120ms ease,
+          box-shadow 120ms ease;
+        cursor: pointer;
+      }
+      .glass-slider:hover::-moz-range-thumb {
+        background: rgb(var(--color-primary-300));
+        box-shadow:
+          0 0 0 1px rgba(5, 10, 16, 0.75),
+          0 0 10px rgb(var(--color-primary-300) / 0.85);
+      }
+      .glass-slider:active::-moz-range-thumb {
+        transform: scaleX(1.15);
+      }
+
+      /* Hide Firefox's default track styles */
+      .glass-slider::-moz-range-track,
+      .glass-slider::-moz-range-progress {
+        height: 2px;
+        background: transparent;
+        border: none;
+      }
+
+      /* --- Syntax Highlighting --- */
+      .token {
+        color: #f8f8f2;
+      }
+      .token-comment {
+        color: #75715e;
+        font-style: italic;
+      }
+      .token-preprocessor {
+        color: #75715e;
+      }
+      .token-keyword {
+        color: #f92672;
+      }
+      .token-type {
+        color: #66d9ef;
+        font-style: italic;
+      }
+      .token-builtin {
+        color: #66d9ef;
+      }
+      .token-function {
+        color: #a6e22e;
+      }
+      .token-boolean,
+      .token-number {
+        color: #ae81ff;
+      }
+      .token-operator {
+        color: #f92672;
+      }
+
+      /* --- UI Style Overrides --- */
+      .ui-solid .glass-component {
+        --tw-bg-opacity: 1 !important; /* Override tailwind opacity */
+        background-color: #171717; /* gray-900 */
+        backdrop-filter: none !important;
+        border-color: #404040; /* gray-700 */
+      }
+
+      .ui-solid .interactive-glow::before,
+      .ui-solid .interactive-glow::after {
+        content: none;
+      }
+
+      .ui-solid .glass-slider-container::before {
+        background: linear-gradient(
+          to right,
+          #6b7280 0%,
+          #6b7280 var(--slider-fill-percent, 0%),
+          #404040 var(--slider-fill-percent, 0%),
+          #404040 100%
+        );
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+          "react-dom": "https://aistudiocdn.com/react-dom@^19.1.1",
+          "react/": "https://aistudiocdn.com/react@^19.1.1/",
+          "react": "https://aistudiocdn.com/react@^19.1.1",
+          "@google/genai": "https://aistudiocdn.com/@google/genai@^1.16.0",
+          "three": "https://aistudiocdn.com/three@^0.168.0"
+        }
+      }
+    </script>
+    <link rel="stylesheet" href="/index.css" />
+  </head>
+  <body class="bg-gray-900 text-gray-100">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
