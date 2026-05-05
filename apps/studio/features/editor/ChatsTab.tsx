@@ -982,6 +982,12 @@ const ChatsTab: React.FC = () => {
   }, [activeAiChatId]);
 
   useEffect(() => {
+    window.requestAnimationFrame(() => {
+      composerInputRef.current?.focus();
+    });
+  }, []);
+
+  useEffect(() => {
     if (!activeChat || activeChat.status === 'generating') {
       return;
     }

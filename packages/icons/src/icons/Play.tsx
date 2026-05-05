@@ -4,13 +4,13 @@ export const Play: React.FC<{ className?: string }> = ({ className }) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     viewBox="0 0 24 24"
-    fill="currentColor"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.8}
+    strokeLinecap="round"
+    strokeLinejoin="round"
     className={className}
   >
-    <path
-      fillRule="evenodd"
-      d="M4.5 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"
-      clipRule="evenodd"
-    />
+    <path d="M6.5 5.75c0-.86.93-1.4 1.68-.97l10.26 5.9a1.5 1.5 0 010 2.64L8.18 19.22c-.75.43-1.68-.11-1.68-.97V5.75z" />
   </svg>
 );

@@ -59,12 +59,12 @@ export const getAiChatModeDescription = (mode: AiChatScopeMode) => {
 
 export const getAiChatComposerPlaceholder = (mode: AiChatScopeMode) => {
   if (mode === 'action') {
-    return 'Ask for a concrete node change, request a staged preview, or refine the current result...';
+    return 'Ask for a node change, staged preview, or refinement...';
   }
   if (mode === 'context') {
-    return 'Ask about this node, request suggested settings, or troubleshoot the current setup...';
+    return 'Ask about this node or request suggested settings...';
   }
-  return 'Ask about workflows, effects, troubleshooting, or how to use Blackboard Studio...';
+  return 'Ask about workflows, effects, or troubleshooting...';
 };
 
 const summarizeGradeNode = (node: GradeNode) =>

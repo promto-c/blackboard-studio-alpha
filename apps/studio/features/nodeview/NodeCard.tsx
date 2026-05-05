@@ -1,5 +1,5 @@
 import React from 'react';
-import { AnyNode, SceneNode, ViewerSlotAssignments } from '@blackboard/types';
+import { AnyNode, SceneNode, ViewerSlotAssignments, NodeType } from '@blackboard/types';
 import { effectRegistry } from '@/effects/effectRegistry';
 import NodeIcon from '@/features/nodes/NodeIcon';
 import { getStaticThumbnailAssetId, hasMediaThumbnail } from '@/features/nodes/nodeVisualHelpers';
@@ -301,6 +301,7 @@ interface StackNodeCardProps {
   onOutputPortMouseDown: (e: React.MouseEvent) => void;
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
   activeNodeJobMap: Map<string, BackgroundJob>;
+  onExecuteNode?: (nodeId: string) => void;
 }
 
 export const StackNodeCard: React.FC<StackNodeCardProps> = ({
@@ -323,9 +324,11 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
   onOutputPortMouseDown,
   registerPortRef,
   activeNodeJobMap,
+  onExecuteNode,
 }) => {
   const baseNode = stack[0];
   const stackInputPorts = buildStackInputPorts(stack);
+  const isComfyNode = baseNode.type === NodeType.COMFY;
 
   return (
     <NodeCardShell
@@ -379,6 +382,21 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
               <NodeActionMenu
                 actions={[
                   ...(stackingAction ? [stackingAction] : []),
+                  ...(node.type === NodeType.COMFY && onExecuteNode
+                    ? [
+                        {
+                          id: 'execute',
+                          label: 'Execute',
+                          icon: <Icons.Play className="h-4 w-4" />,
+                          iconClassName:
+                            'w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-primary-400 hover:bg-primary-500/20 transition-colors',
+                          onClick: (e) => {
+                            e.stopPropagation();
+                            onExecuteNode(node.id);
+                          },
+                        },
+                      ]
+                    : []),
                   {
                     id: 'delete',
                     label: 'Delete',

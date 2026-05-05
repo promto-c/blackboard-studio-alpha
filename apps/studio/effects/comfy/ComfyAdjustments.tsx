@@ -4219,7 +4219,7 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
         </CollapsibleSection>
       )}
 
-      <CollapsibleSection title="Render" defaultOpen>
+      <CollapsibleSection title="Execute" defaultOpen>
         <div className="space-y-3">
           <div className="flex items-stretch gap-2">
             <div className="grid min-w-0 flex-1 grid-cols-2 gap-2 text-[11px] text-gray-500">

@@ -1,6 +1,6 @@
 import React, { useRef, useMemo, useCallback, useState, useEffect, useLayoutEffect } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { AnyNode, SceneNode, ViewerSlotAssignments } from '@blackboard/types';
+import { AnyNode, EditorTab, SceneNode, ViewerSlotAssignments } from '@blackboard/types';
 import { getInputConnections } from '@/utils/connectionGraph';
 import {
   buildPipelineOrder,
@@ -85,6 +85,7 @@ const NodeView: React.FC<NodeViewProps> = ({
     commitNodePosition,
     autoArrangeNodes,
     toggleNodeStacking,
+    setActiveTab,
   } = useEditorActions();
   const { thumbnailMode } = usePreferences();
   const activeNodeJobMap = useMemo(() => getActiveNodeJobMap(backgroundJobs), [backgroundJobs]);
@@ -385,6 +386,24 @@ const NodeView: React.FC<NodeViewProps> = ({
     [nodePositions, startDragRaw],
   );
 
+  const openAddNodesPanel = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const interactiveElement = target.closest(
+        'a, button, input, textarea, select, [role="button"], [data-graph-node], [data-port-input]',
+      );
+      if (interactiveElement) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedConnection(null);
+      setActiveTab(EditorTab.Tools);
+    },
+    [setActiveTab],
+  );
+
   // --- Auto-layout initialization ---
   const initialLayoutDone = useRef(false);
   const stackMap = useMemo(() => buildStackMap(nodeStacks), [nodeStacks]);
@@ -485,6 +504,7 @@ const NodeView: React.FC<NodeViewProps> = ({
           setSelectedConnection(null);
         }
       }}
+      onDoubleClick={openAddNodesPanel}
       onClick={() => setSelectedConnection(null)}
     >
       {/* Grid background */}
@@ -504,6 +524,7 @@ const NodeView: React.FC<NodeViewProps> = ({
 
         {/* Scene node */}
         <div
+          data-graph-node="true"
           style={{
             position: 'absolute',
             left: getPos(sceneNode.id).x,
@@ -527,6 +548,7 @@ const NodeView: React.FC<NodeViewProps> = ({
 
         {/* Output node */}
         <div
+          data-graph-node="true"
           style={{
             position: 'absolute',
             left: getPos(OUTPUT_NODE_ID).x,
@@ -558,6 +580,7 @@ const NodeView: React.FC<NodeViewProps> = ({
           return (
             <div
               key={baseNode.id}
+              data-graph-node="true"
               style={{
                 position: 'absolute',
                 left: pos.x,
@@ -588,6 +611,7 @@ const NodeView: React.FC<NodeViewProps> = ({
                 onOutputPortMouseDown={(e) => handleOutputPortMouseDown(e, baseNode.id)}
                 registerPortRef={registerPortRef}
                 activeNodeJobMap={activeNodeJobMap}
+                onExecuteNode={(nodeId) => selectNode(nodeId)}
               />
             </div>
           );
@@ -600,6 +624,7 @@ const NodeView: React.FC<NodeViewProps> = ({
           return (
             <div
               key={mergeId}
+              data-graph-node="true"
               style={{
                 position: 'absolute',
                 left: pos.x,
