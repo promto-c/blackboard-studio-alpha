@@ -11,6 +11,7 @@ export interface InspectorLogFooterProps {
   progressPercent?: number;
   actions?: React.ReactNode;
   className?: string;
+  sticky?: boolean;
 }
 
 const variantClasses: Record<
@@ -58,6 +59,7 @@ const InspectorLogFooter: React.FC<InspectorLogFooterProps> = ({
   progressPercent,
   actions,
   className = '',
+  sticky = true,
 }) => {
   const classes = variantClasses[variant];
   const hasProgress = progressIndeterminate || progressPercent !== undefined;
@@ -71,11 +73,7 @@ const InspectorLogFooter: React.FC<InspectorLogFooterProps> = ({
     <div
       role={variant === 'error' ? 'alert' : 'status'}
       aria-label={progressLabel}
-      className={[
-        'sticky bottom-0 z-20 mt-auto overflow-hidden border-t px-3 py-1.5 shadow-[0_-18px_34px_rgba(0,0,0,0.26)] backdrop-blur-xl',
-        classes.panel,
-        className,
-      ]
+      className={['relative z-20 overflow-hidden border-t px-3 py-1.5', classes.panel, className]
         .filter(Boolean)
         .join(' ')}
     >

@@ -1,4 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('@google/genai', () => ({
+  GoogleGenAI: vi.fn(),
+  Modality: {},
+  Type: {},
+}));
+
+vi.mock('@/effects/effectRegistry', () => ({
+  effectRegistry: new Map([
+    ['scene', { category: 'Scene', renderMode: 'source' }],
+    ['image', { category: 'Image', renderMode: 'source' }],
+    ['grade', { category: 'Adjustment', renderMode: 'shader' }],
+    ['blur', { category: 'Effect', renderMode: 'multipass' }],
+  ]),
+}));
+
 import { NodeType } from '@blackboard/types';
 import type { AnyNode } from '@blackboard/types';
 import { createNodeActions } from '@/state/editor/slices/nodeActions';
@@ -7,13 +23,16 @@ type TestState = {
   nodes: AnyNode[];
   currentFrame: number;
   selectedNodeId: string | null;
+  nodePositions?: Record<string, { x: number; y: number }>;
+  nodePositionsByFlow?: Record<string, Record<string, { x: number; y: number }>>;
 };
 
-const createHarness = (node: AnyNode, currentFrame = 24) => {
+const createHarness = (nodeOrNodes: AnyNode | AnyNode[], currentFrame = 24) => {
+  const nodes = Array.isArray(nodeOrNodes) ? nodeOrNodes : [nodeOrNodes];
   let state: TestState = {
-    nodes: [node],
+    nodes,
     currentFrame,
-    selectedNodeId: node.id,
+    selectedNodeId: nodes[0]?.id ?? null,
   };
 
   const set = (fn: (prevState: TestState) => Partial<TestState> | TestState) => {
@@ -29,8 +48,35 @@ const createHarness = (node: AnyNode, currentFrame = 24) => {
   return {
     actions,
     pushHistory,
+    getState: () => state,
   };
 };
+
+const scene = (id = 'scene'): AnyNode =>
+  ({
+    id,
+    type: NodeType.SCENE,
+    name: 'Scene',
+    visible: true,
+    width: 1920,
+    height: 1080,
+    bitDepth: 8,
+    colorSpace: 'sRGB',
+    maxFrames: 1,
+    fps: 24,
+  }) as AnyNode;
+
+const image = (id: string): AnyNode =>
+  ({ id, type: NodeType.IMAGE, name: id, visible: true }) as AnyNode;
+
+const grade = (id: string, stacked = false): AnyNode =>
+  ({ id, type: NodeType.GRADE, name: id, visible: true, stacked }) as AnyNode;
+
+const legacyGrade = (id: string): AnyNode =>
+  ({ id, type: NodeType.GRADE, name: id, visible: true }) as AnyNode;
+
+const blur = (id: string, stacked = false): AnyNode =>
+  ({ id, type: NodeType.BLUR, name: id, visible: true, stacked }) as AnyNode;
 
 describe('createNodeActions history frame targeting', () => {
   it('pushes the affected target frame when setting a keyframe off the playhead', () => {
@@ -77,5 +123,99 @@ describe('createNodeActions history frame targeting', () => {
         }),
       }),
     );
+  });
+});
+
+describe('createNodeActions stackNodeOntoStack', () => {
+  it('stacks an adjustment that was created before stacked:false was stored', () => {
+    const nodes = [scene(), image('image-1'), legacyGrade('grade-1')];
+    const { actions, getState, pushHistory } = createHarness(nodes);
+
+    actions.toggleNodeStacking('grade-1');
+
+    expect(getState().nodes.find((node) => node.id === 'grade-1')).toEqual(
+      expect.objectContaining({ stacked: true }),
+    );
+    expect(pushHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: 'Stack grade-1',
+      }),
+    );
+  });
+
+  it('does not stack the first non-scene adjustment onto Scene', () => {
+    const nodes = [scene(), legacyGrade('grade-1')];
+    const { actions, getState, pushHistory } = createHarness(nodes);
+
+    actions.toggleNodeStacking('grade-1');
+
+    expect(getState().nodes.find((node) => node.id === 'grade-1')).not.toHaveProperty('stacked');
+    expect(pushHistory).not.toHaveBeenCalled();
+  });
+
+  it('marks the moved adjustment as stacked and inserts it after the target stack', () => {
+    const nodes = [scene(), image('image-1'), grade('grade-1'), blur('blur-1')];
+    const { actions, getState, pushHistory } = createHarness(nodes);
+
+    const didStack = actions.stackNodeOntoStack('grade-1', 'image-1');
+
+    expect(didStack).toBe(true);
+    expect(getState().nodes.map((node) => node.id)).toEqual([
+      'scene',
+      'image-1',
+      'grade-1',
+      'blur-1',
+    ]);
+    expect(getState().nodes.find((node) => node.id === 'grade-1')).toEqual(
+      expect.objectContaining({ stacked: true }),
+    );
+    expect(pushHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: 'Stack grade-1',
+        state: expect.objectContaining({
+          nodes: getState().nodes,
+        }),
+      }),
+    );
+  });
+
+  it('moves an adjustment stack as a group and removes the old graph position', () => {
+    const nodes = [
+      scene(),
+      image('image-1'),
+      grade('grade-1'),
+      blur('blur-1', true),
+      image('image-2'),
+    ];
+    const { actions, getState } = createHarness(nodes);
+    getState().nodePositions = {
+      'image-1': { x: 0, y: 0 },
+      'grade-1': { x: 0, y: 100 },
+      'image-2': { x: 0, y: 200 },
+    };
+
+    const didStack = actions.stackNodeOntoStack('grade-1', 'image-2');
+
+    expect(didStack).toBe(true);
+    expect(getState().nodes.map((node) => node.id)).toEqual([
+      'scene',
+      'image-1',
+      'image-2',
+      'grade-1',
+      'blur-1',
+    ]);
+    expect(getState().nodes.find((node) => node.id === 'grade-1')).toEqual(
+      expect.objectContaining({ stacked: true }),
+    );
+    expect(getState().nodePositions).not.toHaveProperty('grade-1');
+  });
+
+  it('does not stack source nodes', () => {
+    const nodes = [scene(), image('image-1'), image('image-2')];
+    const { actions, getState, pushHistory } = createHarness(nodes);
+
+    expect(actions.stackNodeOntoStack('image-2', 'image-1')).toBe(false);
+    expect(getState().nodes.map((node) => node.id)).toEqual(['scene', 'image-1', 'image-2']);
+    expect(pushHistory).not.toHaveBeenCalled();
   });
 });

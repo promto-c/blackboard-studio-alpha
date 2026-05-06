@@ -1,10 +1,10 @@
 import React from 'react';
-import { AnyNode, SceneNode, ViewerSlotAssignments, NodeType } from '@blackboard/types';
+import { AnyNode, SceneNode, ViewerSlotAssignments } from '@blackboard/types';
 import { effectRegistry } from '@/effects/effectRegistry';
 import NodeIcon from '@/features/nodes/NodeIcon';
 import { getStaticThumbnailAssetId, hasMediaThumbnail } from '@/features/nodes/nodeVisualHelpers';
 import { NodeActionMenu } from '@/features/nodes/NodeActionMenu';
-import { createStackingAction } from '@/features/nodes/nodeActionFactories';
+import { createExecutionAction, createStackingAction } from '@/features/nodes/nodeActionFactories';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
 import * as Icons from '@blackboard/icons';
 import { ImageThumbnail, LiveThumbnail, ViewerSlotBadges } from '@/components';
@@ -291,6 +291,8 @@ interface StackNodeCardProps {
   viewerNodeId: string | null;
   viewerSlots: ViewerSlotAssignments;
   isDragTarget: boolean;
+  isStackMagnetTarget?: boolean;
+  isStackMagnetSource?: boolean;
   onSelect: () => void;
   onSelectNode: (nodeId: string) => void;
   onDragStart: (e: React.MouseEvent) => void;
@@ -314,6 +316,8 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
   viewerNodeId,
   viewerSlots,
   isDragTarget,
+  isStackMagnetTarget = false,
+  isStackMagnetSource = false,
   onSelect,
   onSelectNode,
   onDragStart,
@@ -328,14 +332,19 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
 }) => {
   const baseNode = stack[0];
   const stackInputPorts = buildStackInputPorts(stack);
-  const isComfyNode = baseNode.type === NodeType.COMFY;
 
   return (
     <NodeCardShell
       isSelected={isSelected}
       onSelect={onSelect}
       onDragStart={onDragStart}
-      className="flex flex-col justify-start gap-0.5 p-2"
+      className={[
+        'flex flex-col justify-start gap-0.5 p-2 transition-all duration-150',
+        isStackMagnetTarget
+          ? 'border-primary-400 bg-primary-950/25 ring-2 ring-primary-400/70 shadow-[0_0_34px_rgba(56,189,248,0.25)]'
+          : '',
+        isStackMagnetSource ? 'border-primary-300/80 shadow-[0_0_22px_rgba(56,189,248,0.18)]' : '',
+      ].join(' ')}
     >
       <InputPorts
         ports={stackInputPorts}
@@ -353,6 +362,7 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
       {/* Node content */}
       {stack.map((node) => {
         const stackingAction = createStackingAction(node, canStackNode(node.id), onToggleStacking);
+        const executionAction = onExecuteNode ? createExecutionAction(node, onExecuteNode) : null;
 
         return (
           <div
@@ -382,21 +392,7 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
               <NodeActionMenu
                 actions={[
                   ...(stackingAction ? [stackingAction] : []),
-                  ...(node.type === NodeType.COMFY && onExecuteNode
-                    ? [
-                        {
-                          id: 'execute',
-                          label: 'Execute',
-                          icon: <Icons.Play className="h-4 w-4" />,
-                          iconClassName:
-                            'w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-primary-400 hover:bg-primary-500/20 transition-colors',
-                          onClick: (e) => {
-                            e.stopPropagation();
-                            onExecuteNode(node.id);
-                          },
-                        },
-                      ]
-                    : []),
+                  ...(executionAction ? [executionAction] : []),
                   {
                     id: 'delete',
                     label: 'Delete',

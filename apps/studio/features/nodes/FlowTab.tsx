@@ -10,7 +10,6 @@ import { usePreferences } from '@/state/preferencesContext';
 import { useAutoSyncRotoInspectorLevel } from '@/hooks/useAutoSyncRotoInspectorLevel';
 import { useNodeInspectorState } from '@/hooks/useNodeInspectorState';
 import * as Icons from '@blackboard/icons';
-import FlowViewModeControls from '@/components/FlowViewModeControls';
 import InspectorStack from '@/components/InspectorStack';
 import NodeItemsPanel, { getNodeItemsComponent } from '@/components/NodeItemsPanel';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
@@ -29,7 +28,6 @@ import { useHotkeyScope } from '@/hotkeys';
 
 interface FlowTabProps {
   showPropertiesSection?: boolean;
-  showTopBar?: boolean;
   graphFitInsetRight?: number;
   activeComfyGraph?: ActiveComfyGraph | null;
   onActiveComfyGraphChange?: (activeGraph: ActiveComfyGraph | null) => void;
@@ -43,12 +41,8 @@ export interface ActiveComfyGraph {
   subgraphDepth?: number;
 }
 
-const FLOW_TOP_BAR_CLASS =
-  'sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-gray-900/35 px-3 py-2 backdrop-blur-md';
-
 const FlowTab = ({
   showPropertiesSection = true,
-  showTopBar = true,
   graphFitInsetRight = 0,
   activeComfyGraph: controlledActiveComfyGraph,
   onActiveComfyGraphChange,
@@ -59,7 +53,7 @@ const FlowTab = ({
   const selectedRotoPathIds = useEditorSelector((s) => s.selectedRotoPathIds);
   const viewerNodeId = useEditorSelector((s) => s.viewerNodeId);
   const viewerSlots = useEditorSelector((s) => s.viewerSlots);
-  const { selectNode, autoArrangeNodes } = useEditorActions();
+  const { selectNode } = useEditorActions();
   const selectedNode = useSelectedEditorNode();
   const layoutMode = useDeviceLayout();
   const isMobilePortrait = layoutMode === LayoutMode.MobilePortrait;
@@ -76,11 +70,6 @@ const FlowTab = ({
   const flowListRef = useRef<HTMLDivElement>(null);
   const rootBreadcrumbContextRef = useRef<string | null>(null);
   const viewMode = flowViewMode;
-  const setViewMode = useCallback(
-    (mode: 'list' | 'graph') => setPreferences({ flowViewMode: mode }),
-    [setPreferences],
-  );
-
   const sceneNode = useSceneNode();
   const otherNodes = useMemo(() => nodes.filter((node) => node.type !== NodeType.SCENE), [nodes]);
   const isSceneSelected = selectedNodeId === sceneNode?.id;
@@ -197,15 +186,6 @@ const FlowTab = ({
     }
   }, [activeComfyGraph, setActiveComfyGraph, viewMode]);
 
-  const openSelectedComfyGraph = useCallback(() => {
-    if (!selectedComfyWorkflow) return;
-    setActiveComfyGraph({
-      nodeId: selectedComfyWorkflow.node.id,
-      workflowId: selectedComfyWorkflow.workflow.id,
-      subgraphPath: [],
-      subgraphDepth: 0,
-    });
-  }, [selectedComfyWorkflow, setActiveComfyGraph]);
   const setActiveComfySubgraphPath = useCallback(
     (subgraphPath: ComfyGraphPathItem[]) => {
       if (!activeComfyGraph) return;
@@ -217,16 +197,7 @@ const FlowTab = ({
     },
     [activeComfyGraph, setActiveComfyGraph],
   );
-  const setActiveComfySubgraphDepth = useCallback(
-    (subgraphDepth: number) => {
-      if (!activeComfyGraph) return;
-      setActiveComfyGraph({
-        ...activeComfyGraph,
-        subgraphDepth: Math.max(-1, Math.min(subgraphDepth, activeComfySubgraphPath.length)),
-      });
-    },
-    [activeComfyGraph, activeComfySubgraphPath.length, setActiveComfyGraph],
-  );
+
   const renderProperties = () => {
     return (
       <InspectorStack
@@ -411,103 +382,8 @@ const FlowTab = ({
 
   // Desktop View with split scroll
   if (!isMobilePortrait) {
-    const handleToggleFlowDirection = () => {
-      setPreferences({
-        flowListDirection: flowListDirection === 'bottom-up' ? 'top-down' : 'bottom-up',
-      });
-    };
-
     const desktopFlowContent = (
       <>
-        {showTopBar && (
-          <div className={`${FLOW_TOP_BAR_CLASS} flex-shrink-0`}>
-            <div className="min-w-0 flex items-center gap-2">
-              {activeComfyWorkflow ? (
-                <button
-                  type="button"
-                  onClick={() => setActiveComfySubgraphDepth(-1)}
-                  className={`rounded px-1 py-0.5 text-sm font-semibold transition-colors ${
-                    currentComfyGraphDepth === -1
-                      ? 'bg-white/10 text-white'
-                      : 'text-white hover:bg-white/10'
-                  }`}
-                  title="Back to root flow"
-                >
-                  Flow
-                </button>
-              ) : (
-                <h3 className="text-sm font-semibold text-white">Flow</h3>
-              )}
-              {activeComfyWorkflow ? (
-                <>
-                  <span className="text-xs text-gray-600">/</span>
-                  <button
-                    type="button"
-                    onClick={() => setActiveComfySubgraphDepth(0)}
-                    className={`truncate rounded px-1 py-0.5 text-xs font-medium transition-colors ${
-                      currentComfyGraphDepth === 0
-                        ? 'bg-white/10 text-primary-100'
-                        : 'text-gray-400 hover:bg-white/10 hover:text-white'
-                    }`}
-                    title={activeComfyWorkflow.workflow.name}
-                  >
-                    {activeComfyWorkflow.workflow.name}
-                  </button>
-                  {activeComfySubgraphPath.map((item, index) => (
-                    <React.Fragment key={`${item.id}-${index}`}>
-                      <span className="text-xs text-gray-600">/</span>
-                      <button
-                        type="button"
-                        onClick={() => setActiveComfySubgraphDepth(index + 1)}
-                        className={`truncate rounded px-1 py-0.5 text-xs font-medium transition-colors ${
-                          index + 1 === currentComfyGraphDepth
-                            ? 'bg-white/10 text-primary-100'
-                            : index + 1 > currentComfyGraphDepth
-                              ? 'text-gray-500 hover:bg-white/10 hover:text-white'
-                              : 'text-gray-400 hover:bg-white/10 hover:text-white'
-                        }`}
-                        title={item.name}
-                      >
-                        {item.name}
-                      </button>
-                    </React.Fragment>
-                  ))}
-                </>
-              ) : null}
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {!activeComfyWorkflow && selectedComfyWorkflow && viewMode === 'graph' ? (
-                <button
-                  type="button"
-                  onClick={openSelectedComfyGraph}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-xs font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15"
-                  title="Open Comfy workflow graph"
-                >
-                  <Icons.Branch className="h-3.5 w-3.5" />
-                  Open workflow graph
-                </button>
-              ) : null}
-              {isComfyWorkflowGraphActive ? (
-                <button
-                  type="button"
-                  onClick={() => setActiveComfySubgraphDepth(-1)}
-                  className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs font-medium text-gray-300 transition hover:bg-white/10 hover:text-white"
-                >
-                  <Icons.ChevronLeft className="h-3.5 w-3.5" />
-                  Root flow
-                </button>
-              ) : otherNodes.length > 0 ? (
-                <FlowViewModeControls
-                  viewMode={viewMode}
-                  flowListDirection={flowListDirection}
-                  onSelectViewMode={setViewMode}
-                  onToggleFlowDirection={handleToggleFlowDirection}
-                  onAutoArrange={autoArrangeNodes}
-                />
-              ) : null}
-            </div>
-          </div>
-        )}
         <div className="relative flex-1 min-h-0" onClick={() => selectNode(null)}>
           {isComfyWorkflowGraphActive ? (
             <ComfyWorkflowGraphView

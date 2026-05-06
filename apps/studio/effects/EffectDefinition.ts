@@ -273,6 +273,13 @@ export type NodeUpdateHook = (
   context: NodeUpdateContext,
 ) => NodeUpdateResult;
 
+export interface NodeExecutionDefinition {
+  /** Label shown by flow/list node action menus. */
+  label?: string;
+  /** Optional availability check for disabling execution in node action menus. */
+  canExecute?: (node: AnyNode) => boolean;
+}
+
 // ---------------------------------------------------------------------------
 // EffectDefinition — the core type for registering a node type's behavior.
 // ---------------------------------------------------------------------------
@@ -369,6 +376,9 @@ export interface EffectDefinition {
    * the incoming changes before they're applied to state.
    */
   onNodeUpdate?: NodeUpdateHook;
+
+  /** Optional node-level command surfaced by flow/list views and handled by the node UI. */
+  nodeExecution?: NodeExecutionDefinition;
 
   /**
    * Extract asset IDs that this node references.

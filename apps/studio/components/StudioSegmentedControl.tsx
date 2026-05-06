@@ -3,6 +3,7 @@ import React from 'react';
 export interface StudioSegmentedControlProps {
   children: React.ReactNode;
   className?: string;
+  style?: React.CSSProperties;
 }
 
 export interface StudioSegmentedControlButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -17,13 +18,18 @@ const BUTTON_CLASS = 'px-2 py-1 tracking-wider font-semibold rounded transition-
 const ACTIVE_BUTTON_CLASS = 'bg-gray-700 text-white shadow-sm';
 const INACTIVE_BUTTON_CLASS = 'text-gray-500 hover:text-gray-300 hover:bg-white/5';
 
-export const StudioSegmentedControl: React.FC<StudioSegmentedControlProps> = ({
-  children,
-  className = '',
-}) => {
-  const classes = className ? `${CONTROL_CLASS} ${className}` : CONTROL_CLASS;
-  return <div className={classes}>{children}</div>;
-};
+export const StudioSegmentedControl = React.forwardRef<HTMLDivElement, StudioSegmentedControlProps>(
+  ({ children, className = '', style }, ref) => {
+    const classes = className ? `${CONTROL_CLASS} ${className}` : CONTROL_CLASS;
+    return (
+      <div ref={ref} className={classes} style={style}>
+        {children}
+      </div>
+    );
+  },
+);
+
+StudioSegmentedControl.displayName = 'StudioSegmentedControl';
 
 export const StudioSegmentedControlButton: React.FC<StudioSegmentedControlButtonProps> = ({
   active = false,

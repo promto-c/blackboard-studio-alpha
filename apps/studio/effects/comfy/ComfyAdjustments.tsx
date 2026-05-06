@@ -4,7 +4,6 @@ import { usePreferences } from '@/state/preferencesContext';
 import { getAsset, saveAsset } from '@/state/assetStorage';
 import { readImageDimensions } from '@/state/editor/utils';
 import { calculateTransformForFitMode } from '@/state/editor/selectors';
-import { ScrollArea } from '@blackboard/ui';
 import {
   AnyNode,
   ComfyNode,
@@ -12,8 +11,6 @@ import {
   GeneratedOutput,
   ComfyWorkflow,
   ComfyWorkflowControl,
-  ComfyWorkflowControlRunMode,
-  ComfyWorkflowControlValue,
   ComfyWorkflowInputImage,
   ComfyWorkflowInputCandidate,
   ComfyWorkflowOutputCandidate,
@@ -35,26 +32,12 @@ import {
   waitForComfyOutputImages,
 } from '@/services/comfy/client';
 import {
-  AttentionPulse,
-  CollapsibleSection,
-  InspectorLogFooter,
-  Popover,
-  PromptTextField,
-  PropertyField,
-  ResetIconButton,
-  Slider,
-  StyledDropdown,
-  ToggleSwitch,
-} from '@/components';
-import {
   applyComfyWorkflowControls,
   createComfyWorkflowControl,
-  getComfyControlDescription,
   getComfyControlKey,
   getComfyWorkflowControlRunMode,
   getComfyWorkflowControlCandidates,
   isPromptLikeComfyTextInput,
-  isSeedLikeComfyInput,
   prepareComfyWorkflowControlsForRun,
   supportsComfyWorkflowControlRunMode,
 } from './comfyControls';
@@ -67,27 +50,38 @@ import {
   isComfyWorkflowImageFile,
   readComfyWorkflowFile,
 } from './comfyWorkflowImport';
-import { getPromptSuggestions } from '@/utils/ai';
-import {
-  getAiTaskRouteError,
-  resolveAiTaskRoute,
-  type ResolvedAiTextRoute,
-} from '@/utils/aiRouting';
+import { getAiTaskRouteError, resolveAiTaskRoute } from '@/utils/aiRouting';
 import {
   isBackgroundJobActive,
   registerBackgroundJobCancelHandler,
 } from '@/state/editor/services/backgroundJobs';
-import { IMAGE_IMPORT_ACCEPT, isImageFileLike } from '@/utils/mediaFiles';
-import * as Icons from '@blackboard/icons';
+import { useNodeExecutionHandler } from '@/hooks/useNodeExecutionHandler';
+import { isImageFileLike } from '@/utils/mediaFiles';
+import { defaultComfyRunCoordinator } from './comfyRunCoordinator';
+import {
+  fetchMissingModelDownloadSize,
+  getMissingModelDownloadUrl,
+  getMissingModelSizeKey,
+  getMissingWorkflowControlOptions,
+  getMissingWorkflowControlStatus,
+  type MissingModelSizeStatus,
+  type MissingWorkflowControlOption,
+} from './comfyMissingModels';
+import {
+  getWorkflowFileDetail,
+  getWorkflowModifiedAt,
+  getWorkflowNameFromPath,
+} from './comfyWorkflowDisplay';
+import { ComfyWorkflowPicker } from './components/ComfyWorkflowPicker';
+import { ComfyWorkflowControlsSection } from './components/ComfyWorkflowControlsSection';
+import { ComfyWorkflowInputList } from './components/ComfyWorkflowInputList';
+import { ComfyWorkflowOutputPicker } from './components/ComfyWorkflowOutputPicker';
+import { ComfyExecuteSection } from './components/ComfyExecuteSection';
 
 type RunState = 'idle' | 'queueing' | 'running' | 'downloading' | 'complete' | 'error';
 type WorkflowBrowserState = 'idle' | 'loading' | 'importing' | 'error';
 type WorkflowEmptyMode = 'choice' | 'paste';
-const BATCH_RUN_COUNTS = [2, 4, 8, 16] as const;
 const DICE_ROLL_ANIMATION_LEAD_MS = 180;
-const RUN_MODE_BADGE_ANIMATION_MS = 520;
-const comfyRunQueues = new Map<string, Promise<void>>();
-const latestComfyPromptId = new Map<string, { promptId: string; endpoint: string }>();
 
 interface RunProgress {
   label: string;
@@ -97,263 +91,6 @@ interface RunProgress {
   percent?: number;
   indeterminate?: boolean;
 }
-
-const createClientId = (): string =>
-  `blackboard_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-
-const enqueueComfyRun = async <T,>(queueKey: string, task: () => Promise<T>): Promise<T> => {
-  const previousRun = comfyRunQueues.get(queueKey) ?? Promise.resolve();
-  let releaseRun!: () => void;
-  const currentRun = new Promise<void>((resolve) => {
-    releaseRun = resolve;
-  });
-  const queueTail = previousRun.catch(() => undefined).then(() => currentRun);
-  comfyRunQueues.set(queueKey, queueTail);
-
-  await previousRun.catch(() => undefined);
-
-  try {
-    return await task();
-  } finally {
-    releaseRun();
-    if (comfyRunQueues.get(queueKey) === queueTail) {
-      comfyRunQueues.delete(queueKey);
-    }
-  }
-};
-
-const formatDateTime = (timestamp: number | undefined): string => {
-  if (!timestamp) return 'Never';
-  return new Date(timestamp).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-};
-
-const getWorkflowNodeCount = (workflow: ComfyWorkflow | null): number =>
-  workflow ? Object.keys(workflow.prompt).length : 0;
-
-const getWorkflowNameFromPath = (path: string): string => {
-  const fileName = path.split('/').filter(Boolean).pop() ?? path;
-  return fileName.replace(/\.json$/i, '') || 'Comfy Workflow';
-};
-
-const getWorkflowFileDisplayPath = (path: string): string => path.replace(/^workflows\//, '');
-
-const getWorkflowFileFolder = (path: string): string => {
-  const parts = getWorkflowFileDisplayPath(path).split('/').filter(Boolean);
-  return parts.length > 1 ? parts.slice(0, -1).join('/') : 'workflows/';
-};
-
-const formatWorkflowFileSize = (bytes: number | undefined): string | null => {
-  if (bytes === undefined) return null;
-  if (bytes < 1024) return `${bytes} B`;
-  const kilobytes = bytes / 1024;
-  if (kilobytes < 1024) return `${kilobytes.toFixed(kilobytes >= 10 ? 0 : 1)} KB`;
-  const megabytes = kilobytes / 1024;
-  return `${megabytes.toFixed(megabytes >= 10 ? 0 : 1)} MB`;
-};
-
-const getWorkflowFileDetail = (workflowFile: ComfyWorkflowFile): string => {
-  const details = [
-    getWorkflowFileFolder(workflowFile.path),
-    formatWorkflowFileSize(workflowFile.size),
-    workflowFile.modified ? formatDateTime(getWorkflowModifiedAt(workflowFile.modified)) : null,
-  ].filter((detail): detail is string => Boolean(detail));
-
-  return details.join(' · ');
-};
-
-const getWorkflowModifiedAt = (modified: number | undefined): number => {
-  if (modified === undefined) return Date.now();
-  return modified > 10_000_000_000 ? modified : modified * 1000;
-};
-
-const coerceControlValue = (
-  value: string,
-  originalValue: ComfyWorkflowControlValue,
-): ComfyWorkflowControlValue => {
-  if (typeof originalValue === 'number') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : originalValue;
-  }
-  if (typeof originalValue === 'boolean') return value === 'true';
-  return value;
-};
-
-const formatControlValue = (value: number): string => {
-  if (Number.isInteger(value)) return String(value);
-  return Math.abs(value) >= 100 ? value.toFixed(1) : value.toFixed(2);
-};
-
-const formatDefaultValueLabel = (value: ComfyWorkflowControlValue): string => {
-  if (typeof value === 'number') return formatControlValue(value);
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  const normalizedValue = value.trim();
-  return normalizedValue.length > 0 ? normalizedValue : '(empty)';
-};
-
-const getControlResetTooltip = (control: ComfyWorkflowControl): string =>
-  `Reset ${control.label} to default (${formatDefaultValueLabel(control.defaultValue)})`;
-
-interface MissingWorkflowControlOption {
-  control: ComfyWorkflowControl;
-  value: string;
-  installTargets: string[];
-  guidance: string;
-  downloadUrl?: string;
-}
-
-type MissingModelSizeStatus = number | 'loading' | null;
-
-const getModelFileName = (value: string): string =>
-  value.split(/[\\/]/).filter(Boolean).pop() ?? value;
-
-const getModelSearchName = (value: string): string => {
-  const fileName = getModelFileName(value.trim());
-  const searchName = fileName.replace(/\.[^.]+$/, '').trim();
-  return searchName || fileName || value.trim();
-};
-
-const buildMissingModelSearchUrl = (modelName: string): string =>
-  `https://huggingface.co/models?search=${encodeURIComponent(getModelSearchName(modelName))}`;
-
-const getMissingModelDownloadUrl = (missingOption: MissingWorkflowControlOption): string =>
-  missingOption.downloadUrl ?? buildMissingModelSearchUrl(missingOption.value);
-
-const getMissingModelSizeKey = (missingOption: MissingWorkflowControlOption): string =>
-  missingOption.downloadUrl ?? missingOption.value;
-
-const formatModelSize = (bytes: number): string => {
-  if (bytes < 1024) return `${bytes} B`;
-  const kilobytes = bytes / 1024;
-  if (kilobytes < 1024) return `${kilobytes.toFixed(kilobytes >= 10 ? 0 : 1)} KB`;
-  const megabytes = kilobytes / 1024;
-  if (megabytes < 1024) return `${megabytes.toFixed(megabytes >= 10 ? 0 : 1)} MB`;
-  const gigabytes = megabytes / 1024;
-  return `${gigabytes.toFixed(gigabytes >= 10 ? 1 : 2)} GB`;
-};
-
-const getMissingModelSizeLabel = (
-  sizeStatus: MissingModelSizeStatus | undefined,
-): string | null => {
-  if (sizeStatus === undefined || sizeStatus === 'loading') return 'Size...';
-  if (sizeStatus === null) return 'Size unknown';
-  return formatModelSize(sizeStatus);
-};
-
-const fetchMissingModelDownloadSize = async (
-  url: string,
-  signal: AbortSignal,
-): Promise<number | null> => {
-  try {
-    const response = await fetch(url, { method: 'HEAD', signal });
-    if (!response.ok) return null;
-    const contentLength = response.headers.get('content-length');
-    if (!contentLength) return null;
-    const size = Number(contentLength);
-    return Number.isFinite(size) && size >= 0 ? size : null;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
-    return null;
-  }
-};
-
-const extractHttpUrl = (value: string): string | null =>
-  value.match(/https?:\/\/[^\s"'<>]+/i)?.[0].replace(/[),.;]+$/, '') ?? null;
-
-const normalizeSearchValue = (value: string): string => {
-  try {
-    return decodeURIComponent(value).toLowerCase();
-  } catch {
-    return value.toLowerCase();
-  }
-};
-
-const stringReferencesModel = (value: string, modelName: string): boolean => {
-  const normalizedValue = normalizeSearchValue(value);
-  const normalizedModelName = normalizeSearchValue(modelName);
-  const normalizedFileName = normalizeSearchValue(getModelFileName(modelName));
-
-  return (
-    normalizedValue.includes(normalizedModelName) ||
-    (normalizedFileName.length > 0 && normalizedValue.includes(normalizedFileName))
-  );
-};
-
-const isWorkflowDownloadKey = (key: string): boolean => {
-  const normalizedKey = key.toLowerCase();
-  return (
-    normalizedKey.includes('download') ||
-    normalizedKey === 'url' ||
-    normalizedKey.endsWith('_url') ||
-    normalizedKey.endsWith('url') ||
-    normalizedKey.includes('href')
-  );
-};
-
-const collectWorkflowDownloadUrls = (value: unknown, modelName: string): string[] => {
-  if (typeof value === 'string') {
-    const url = extractHttpUrl(value);
-    return url && stringReferencesModel(url, modelName) ? [url] : [];
-  }
-
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => collectWorkflowDownloadUrls(entry, modelName));
-  }
-
-  if (typeof value !== 'object' || value === null) return [];
-
-  const entries = Object.entries(value as Record<string, unknown>);
-  const objectReferencesModel = entries.some(
-    ([, entryValue]) =>
-      typeof entryValue === 'string' && stringReferencesModel(entryValue, modelName),
-  );
-  const localUrls = entries.flatMap(([key, entryValue]) => {
-    if (typeof entryValue !== 'string') return [];
-
-    const url = extractHttpUrl(entryValue);
-    if (!url) return [];
-    if (stringReferencesModel(url, modelName)) return [url];
-    return objectReferencesModel && isWorkflowDownloadKey(key) ? [url] : [];
-  });
-
-  return [
-    ...localUrls,
-    ...entries.flatMap(([, entryValue]) => collectWorkflowDownloadUrls(entryValue, modelName)),
-  ];
-};
-
-const getWorkflowModelDownloadUrl = (
-  workflow: ComfyWorkflow,
-  control: ComfyWorkflowControl,
-): string | undefined => {
-  const modelName = String(control.value);
-  const urls = [workflow.sourceGraph, workflow.prompt].flatMap((value) =>
-    collectWorkflowDownloadUrls(value, modelName),
-  );
-
-  return [...new Set(urls)][0];
-};
-
-const getMissingModelInstallPaths = ({
-  value,
-  installTargets,
-}: Pick<MissingWorkflowControlOption, 'value' | 'installTargets'>): string[] => {
-  const fileName = value.trim().replace(/^\/+/, '');
-  if (!fileName) return installTargets;
-  if (installTargets.length === 0) return [fileName];
-
-  return installTargets.map((target) => `${target.replace(/\/+$/, '')}/${fileName}`);
-};
-
-const getMissingModelInstallDirBadge = (missingOption: MissingWorkflowControlOption): string => {
-  const installPath = getMissingModelInstallPaths(missingOption)[0];
-  if (!installPath) return '';
-  return installPath.split('/').filter(Boolean).slice(0, -1).pop() ?? '';
-};
 
 const copyTextToClipboard = async (value: string): Promise<boolean> => {
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
@@ -376,267 +113,6 @@ const copyTextToClipboard = async (value: string): Promise<boolean> => {
   } finally {
     document.body.removeChild(textarea);
   }
-};
-
-const MissingModelActions: React.FC<{
-  missingOption: MissingWorkflowControlOption;
-  onDownload: (missingOption: MissingWorkflowControlOption) => void;
-  onCopyPath: (missingOption: MissingWorkflowControlOption) => void;
-}> = ({ missingOption, onDownload, onCopyPath }) => {
-  const downloadUrl = missingOption.downloadUrl;
-  const searchName = getModelSearchName(missingOption.value);
-  const actionLabel = downloadUrl ? 'Download' : 'Find';
-  const ActionIcon = downloadUrl ? Icons.ArrowDownTray : Icons.MagnifyingGlass;
-  const actionTitle = downloadUrl
-    ? `Open download URL for ${missingOption.value}`
-    : `Find ${searchName} on Hugging Face`;
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {downloadUrl ? (
-        <div className="inline-flex overflow-hidden rounded-md border border-red-200/25 bg-black/20 text-red-50 transition hover:border-red-100/45">
-          <button
-            type="button"
-            onClick={() => onDownload(missingOption)}
-            className="inline-flex h-7 items-center gap-1.5 px-2 text-[11px] font-medium transition hover:bg-red-200/10"
-            title={actionTitle}
-          >
-            <ActionIcon className="h-4 w-4" />
-            {actionLabel}
-          </button>
-          <button
-            type="button"
-            onClick={() => onCopyPath(missingOption)}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center border-l border-red-200/20 transition hover:bg-red-200/10"
-            title={`Copy download URL for ${missingOption.value}`}
-          >
-            <Icons.Copy className="h-4 w-4" />
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => onDownload(missingOption)}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-red-200/25 bg-black/20 px-2 text-[11px] font-medium text-red-50 transition hover:border-red-100/45 hover:bg-red-200/10"
-          title={actionTitle}
-        >
-          <ActionIcon className="h-4 w-4" />
-          {actionLabel}
-        </button>
-      )}
-    </div>
-  );
-};
-
-const normalizeComparableControlValue = (value: ComfyWorkflowControlValue): string =>
-  String(value).trim().toLowerCase();
-
-const isWorkflowControlOptionAvailable = (
-  control: ComfyWorkflowControl,
-  value: ComfyWorkflowControlValue,
-): boolean => {
-  if (!control.options || control.options.length === 0) return true;
-
-  const normalizedValue = normalizeComparableControlValue(value);
-  return control.options.some(
-    (option) => normalizeComparableControlValue(option) === normalizedValue,
-  );
-};
-
-const isWorkflowControlSelectedOptionMissing = (control: ComfyWorkflowControl): boolean => {
-  if (!control.options || control.options.length === 0) return false;
-  if (typeof control.value !== 'string' && typeof control.value !== 'number') return false;
-
-  return !isWorkflowControlOptionAvailable(control, control.value);
-};
-
-const getComfyModelInstallTargets = (control: ComfyWorkflowControl): string[] => {
-  const searchText = [
-    control.label,
-    control.inputName,
-    control.classType,
-    control.description ?? '',
-    String(control.value),
-  ]
-    .join(' ')
-    .toLowerCase();
-
-  if (searchText.includes('lora')) return ['ComfyUI/models/loras'];
-  if (searchText.includes('vae')) return ['ComfyUI/models/vae'];
-  if (searchText.includes('controlnet') || searchText.includes('control_net')) {
-    return ['ComfyUI/models/controlnet'];
-  }
-  if (searchText.includes('clip vision') || searchText.includes('clip_vision')) {
-    return ['ComfyUI/models/clip_vision'];
-  }
-  if (searchText.includes('clip')) return ['ComfyUI/models/clip'];
-  if (searchText.includes('upscale')) return ['ComfyUI/models/upscale_models'];
-  if (searchText.includes('embedding') || searchText.includes('textual inversion')) {
-    return ['ComfyUI/models/embeddings'];
-  }
-  if (searchText.includes('unet') || searchText.includes('diffusion model')) {
-    return ['ComfyUI/models/unet', 'ComfyUI/models/checkpoints'];
-  }
-  if (
-    searchText.includes('checkpoint') ||
-    searchText.includes('ckpt') ||
-    searchText.includes('model_name') ||
-    searchText.includes('model name') ||
-    searchText.includes('model')
-  ) {
-    return ['ComfyUI/models/checkpoints'];
-  }
-
-  return [];
-};
-
-const getMissingWorkflowControlGuidance = (control: ComfyWorkflowControl): string => {
-  const installTargets = getComfyModelInstallTargets(control);
-  if (installTargets.length > 0) {
-    return `Download or restore the missing file, place it in ${installTargets.join(
-      ' or ',
-    )}, then refresh/restart ComfyUI and reload the workflow.`;
-  }
-
-  return 'Choose an available value, or install the missing custom node/model that provides this option, then refresh/restart ComfyUI and reload the workflow.';
-};
-
-const getMissingWorkflowControlOption = (
-  control: ComfyWorkflowControl,
-  workflow: ComfyWorkflow,
-): MissingWorkflowControlOption | null => {
-  if (!isWorkflowControlSelectedOptionMissing(control)) return null;
-
-  const installTargets = getComfyModelInstallTargets(control);
-  if (installTargets.length === 0) return null;
-
-  return {
-    control,
-    value: String(control.value),
-    installTargets,
-    guidance: getMissingWorkflowControlGuidance(control),
-    downloadUrl: getWorkflowModelDownloadUrl(workflow, control),
-  };
-};
-
-const getMissingWorkflowControlOptions = (
-  controls: ComfyWorkflowControl[],
-  workflow: ComfyWorkflow,
-): MissingWorkflowControlOption[] =>
-  controls
-    .filter((control) => control.workflowId === workflow.id)
-    .map((control) => getMissingWorkflowControlOption(control, workflow))
-    .filter(
-      (missingOption): missingOption is MissingWorkflowControlOption => missingOption !== null,
-    );
-
-const getMissingWorkflowControlStatus = (
-  workflowName: string,
-  missingOptions: MissingWorkflowControlOption[],
-): string => {
-  if (missingOptions.length === 0) return `Imported ${workflowName}.`;
-
-  const firstMissing = missingOptions[0];
-  const extraCount = missingOptions.length - 1;
-  const suffix =
-    extraCount > 0 ? ` and ${extraCount} more missing field${extraCount === 1 ? '' : 's'}` : '';
-  return `Imported ${workflowName}, but ${firstMissing.control.label} uses unavailable value "${firstMissing.value}"${suffix}. Install the missing model/file or choose an available value before running.`;
-};
-
-const getMissingModelCountLabel = (count: number): string =>
-  `${count} model${count === 1 ? '' : 's'}`;
-
-const MissingModelWarning: React.FC<{
-  missingOptions: MissingWorkflowControlOption[];
-  modelSizeStatuses: Record<string, MissingModelSizeStatus>;
-  detailsVisible: boolean;
-  onToggleDetails: () => void;
-  onDownload: (missingOption: MissingWorkflowControlOption) => void;
-  onCopyPath: (missingOption: MissingWorkflowControlOption) => void;
-}> = ({
-  missingOptions,
-  modelSizeStatuses,
-  detailsVisible,
-  onToggleDetails,
-  onDownload,
-  onCopyPath,
-}) => {
-  const countLabel = getMissingModelCountLabel(missingOptions.length);
-  const installTarget = missingOptions.length === 1 ? 'it' : 'them';
-  const detailsAction = detailsVisible ? 'Hide details' : 'Show details';
-
-  return (
-    <div className="rounded-lg border border-red-300/25 bg-red-300/[0.07] p-2.5 text-xs text-red-100">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-medium text-red-50">{countLabel} missing from ComfyUI</p>
-          <p className="mt-0.5 text-[11px] leading-4 text-red-100/75">
-            Install {installTarget}, or choose available values before running.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onToggleDetails}
-          className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-red-200/20 bg-black/15 px-2 text-[11px] font-medium text-red-50 transition hover:border-red-100/45 hover:bg-red-200/10"
-          aria-expanded={detailsVisible}
-          aria-label={detailsAction}
-          title={detailsAction}
-        >
-          {detailsVisible ? (
-            <Icons.ChevronDown className="h-3 w-3" />
-          ) : (
-            <Icons.ChevronRight className="h-3 w-3" />
-          )}
-          {detailsVisible ? 'Hide' : 'Show'}
-        </button>
-      </div>
-      {detailsVisible ? (
-        <div className="mt-2 divide-y divide-red-100/10 overflow-hidden rounded-md border border-red-100/10 bg-black/15">
-          {missingOptions.map((missingOption) => {
-            const dirBadge = getMissingModelInstallDirBadge(missingOption);
-            const sizeLabel = missingOption.downloadUrl
-              ? getMissingModelSizeLabel(modelSizeStatuses[getMissingModelSizeKey(missingOption)])
-              : null;
-
-            return (
-              <div
-                key={missingOption.control.id}
-                className="flex flex-wrap items-center justify-between gap-2 px-2 py-1.5"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <p className="truncate text-[11px] font-medium text-red-50">
-                      {missingOption.control.label}
-                    </p>
-                    {dirBadge ? (
-                      <span className="shrink-0 rounded-md border border-red-200/20 bg-black/20 px-1.5 py-0.5 font-mono text-[10px] text-red-100/70">
-                        {dirBadge}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-0.5 flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 truncate font-mono text-[11px] text-red-100/70">
-                      {missingOption.value}
-                    </span>
-                    {sizeLabel ? (
-                      <span className="shrink-0 text-[10px] font-medium text-red-100/45">
-                        {sizeLabel}
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-                <MissingModelActions
-                  missingOption={missingOption}
-                  onDownload={onDownload}
-                  onCopyPath={onCopyPath}
-                />
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
 };
 
 const getRunBatchLabel = (runIndex: number, runCount: number): string =>
@@ -718,89 +194,6 @@ const getSelectedWorkflowOutputCandidates = (
 
 const getOutputCountLabel = (count: number): string => `${count} output${count === 1 ? '' : 's'}`;
 
-const useComfyOutputUrl = (assetId: string) => {
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let cancelled = false;
-
-    const loadAsset = async () => {
-      try {
-        const blob = await getAsset(assetId);
-        if (!blob || cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      } catch (error) {
-        console.error(`Failed to load Comfy output ${assetId}`, error);
-      }
-    };
-
-    setUrl(null);
-    void loadAsset();
-
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [assetId]);
-
-  return url;
-};
-
-const ComfyOutputThumbnail: React.FC<{
-  output: GeneratedOutput;
-  active: boolean;
-  onClick: () => void;
-}> = ({ output, active, onClick }) => {
-  const imageUrl = useComfyOutputUrl(output.src);
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`relative h-14 w-14 shrink-0 overflow-hidden rounded-md border bg-gray-800 transition ${
-        active
-          ? 'border-primary-300 ring-1 ring-primary-300/50'
-          : 'border-white/10 hover:border-white/30'
-      }`}
-      title={output.prompt || output.label || 'Comfy output'}
-      aria-pressed={active}
-    >
-      {imageUrl ? (
-        <img src={imageUrl} alt="" className="h-full w-full object-cover" />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center text-gray-500">
-          <Icons.Photo className="h-5 w-5" />
-        </div>
-      )}
-      {active ? (
-        <span className="absolute right-1 top-1 rounded-full bg-primary-300 p-0.5 text-gray-950">
-          <Icons.Check className="h-2.5 w-2.5" />
-        </span>
-      ) : null}
-    </button>
-  );
-};
-
-const ComfyOutputPlaceholder: React.FC<{
-  label: string;
-  detail?: string;
-  active?: boolean;
-}> = ({ label, detail, active = false }) => (
-  <div
-    className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-md border border-dashed px-1.5 text-center ${
-      active
-        ? 'border-primary-300/45 bg-primary-300/[0.08] text-primary-100'
-        : 'border-white/10 bg-gray-900/60 text-gray-500'
-    }`}
-    title={detail ?? label}
-  >
-    <Icons.CubeTransparent className={`h-4 w-4 ${active ? 'animate-pulse' : ''}`} />
-    <span className="mt-0.5 max-w-full truncate text-[10px] font-medium">{label}</span>
-  </div>
-);
-
 const getImageExtensionFromMime = (mimeType: string): string => {
   if (mimeType === 'image/jpeg') return 'jpg';
   if (mimeType === 'image/webp') return 'webp';
@@ -858,587 +251,10 @@ const getConnectedSourceAssetId = (sourceNode: AnyNode, currentFrame: number): s
   return null;
 };
 
-const getIntegerRangeDefaults = (control: ComfyWorkflowControl): { min: number; max: number } => {
-  const value = typeof control.value === 'number' ? control.value : 0;
-  const min =
-    typeof control.min === 'number' && Number.isFinite(control.min)
-      ? control.min
-      : Math.min(0, value);
-  const max =
-    typeof control.max === 'number' && Number.isFinite(control.max)
-      ? control.max
-      : Math.max(10, value);
-  return min <= max ? { min, max } : { min: max, max: min };
-};
-
-const getIntegerStepDefault = (control: ComfyWorkflowControl): number => {
-  const step = control.incrementStep ?? control.step ?? 1;
-  const integerStep = Math.trunc(step);
-  return integerStep === 0 ? 1 : integerStep;
-};
-
-const parseFiniteIntegerInput = (value: string): number | null => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-};
-
-const getNumericModeSelectorValue = (
-  mode: ComfyWorkflowControlRunMode,
-): 'fixed' | 'randomize' | 'increment' => {
-  if (mode === 'randomRange') return 'randomize';
-  return mode;
-};
-
-const getNumericModeLabel = (mode: ComfyWorkflowControlRunMode): string => {
-  switch (mode) {
-    case 'randomize':
-      return 'Random on run';
-    case 'randomRange':
-      return 'Random on run';
-    case 'increment':
-      return 'Increment on run';
-    case 'fixed':
-    default:
-      return 'Fixed value';
-  }
-};
-
-const formatIncrementBadgeStep = (step: number): string => {
-  const integerStep = Math.trunc(step);
-  if (integerStep <= -10) return '-9';
-  if (integerStep >= 100) return '99';
-  return String(integerStep);
-};
-
 const isRunShortcut = (event: React.KeyboardEvent<HTMLElement>): boolean =>
   event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.altKey;
 
-interface WorkflowRunModeControlProps {
-  control: ComfyWorkflowControl;
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => void;
-  onUpdate: (updates: Partial<ComfyWorkflowControl>) => void;
-  onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
-}
-
-const WorkflowRunModeControl: React.FC<WorkflowRunModeControlProps> = ({
-  control,
-  isOpen,
-  onOpenChange,
-  onUpdate,
-  onKeyDown,
-}) => {
-  const mode = getComfyWorkflowControlRunMode(control);
-  const selectedMode = getNumericModeSelectorValue(mode);
-  const rangeDefaults = getIntegerRangeDefaults(control);
-  const incrementStep = getIntegerStepDefault(control);
-  const [randomMinDraft, setRandomMinDraft] = useState(
-    control.randomMin === undefined ? '' : String(control.randomMin),
-  );
-  const [randomMaxDraft, setRandomMaxDraft] = useState(
-    control.randomMax === undefined ? '' : String(control.randomMax),
-  );
-  const [incrementDraft, setIncrementDraft] = useState(String(incrementStep));
-
-  useEffect(() => {
-    setRandomMinDraft(control.randomMin === undefined ? '' : String(control.randomMin));
-  }, [control.randomMin]);
-
-  useEffect(() => {
-    setRandomMaxDraft(control.randomMax === undefined ? '' : String(control.randomMax));
-  }, [control.randomMax]);
-
-  useEffect(() => {
-    setIncrementDraft(String(incrementStep));
-  }, [incrementStep]);
-
-  const setMode = (nextMode: 'fixed' | 'randomize' | 'increment') => {
-    onUpdate({
-      runMode: nextMode,
-      incrementStep: nextMode === 'increment' ? incrementStep : control.incrementStep,
-    });
-  };
-
-  const commitRandomBound = (field: 'randomMin' | 'randomMax', draft: string): boolean => {
-    const trimmed = draft.trim();
-    if (!trimmed) {
-      onUpdate({
-        runMode: 'randomize',
-        [field]: undefined,
-      });
-      return true;
-    }
-
-    const parsed = parseFiniteIntegerInput(trimmed);
-    if (parsed === null) return false;
-
-    onUpdate({
-      runMode: 'randomize',
-      [field]: parsed,
-    });
-    return true;
-  };
-
-  const commitIncrementStep = (draft: string): boolean => {
-    const parsed = parseFiniteIntegerInput(draft.trim());
-    if (parsed === null) return false;
-
-    onUpdate({
-      runMode: 'increment',
-      incrementStep: parsed,
-    });
-    return true;
-  };
-
-  const handleDraftKeyDown = (
-    event: React.KeyboardEvent<HTMLInputElement>,
-    resetDraft: () => void,
-  ) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      event.currentTarget.blur();
-      return;
-    }
-
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      resetDraft();
-      event.currentTarget.blur();
-    }
-  };
-
-  const modeItemClass = (candidate: 'fixed' | 'randomize' | 'increment') =>
-    `rounded-md border px-2 py-1.5 transition ${
-      selectedMode === candidate
-        ? 'border-primary-300/25 bg-primary-300/10 text-primary-50'
-        : 'border-transparent text-gray-300 hover:border-white/10 hover:bg-white/[0.04] hover:text-white'
-    }`;
-
-  const inlineInputClass =
-    'h-6 w-full rounded-md border border-white/10 bg-black/30 px-2 text-right text-[11px] text-gray-100 outline-none transition placeholder:text-gray-500 focus:border-primary-300/60 focus:bg-gray-950';
-
-  return (
-    <Popover
-      isOpen={isOpen}
-      onOpenChange={onOpenChange}
-      align="end"
-      widthClass="w-56"
-      trigger={
-        <button
-          type="button"
-          className="inline-flex h-5 w-5 items-center justify-center rounded text-gray-500 transition hover:bg-white/[0.06] hover:text-gray-100"
-          title="Run behavior"
-          aria-label="Run behavior"
-        >
-          <Icons.EllipsisVertical className="h-4 w-4" />
-        </button>
-      }
-    >
-      <div className="space-y-1" onKeyDown={onKeyDown}>
-        <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">
-          Run Behavior
-        </p>
-        <div className="space-y-1">
-          {(['fixed', 'randomize', 'increment'] as const).map((candidate) => (
-            <div key={candidate} className={modeItemClass(candidate)}>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMode(candidate)}
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left text-[11px]"
-                >
-                  <span className="truncate">{getNumericModeLabel(candidate)}</span>
-                </button>
-                <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-                  {selectedMode === candidate && <Icons.Check className="h-3.5 w-3.5" />}
-                </span>
-              </div>
-
-              {candidate === 'randomize' && selectedMode === candidate && (
-                <div className="mt-1 grid grid-cols-2 gap-1.5 pl-0">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={randomMinDraft}
-                    placeholder="Min"
-                    aria-label="Random minimum"
-                    title={`Leave blank to use the detected minimum (${rangeDefaults.min}).`}
-                    onClick={(event) => event.stopPropagation()}
-                    onFocus={(event) => {
-                      setMode('randomize');
-                      event.currentTarget.select();
-                    }}
-                    onChange={(event) => {
-                      const nextDraft = event.currentTarget.value;
-                      setRandomMinDraft(nextDraft);
-                      if (nextDraft.trim() === '' || parseFiniteIntegerInput(nextDraft) !== null) {
-                        commitRandomBound('randomMin', nextDraft);
-                      }
-                    }}
-                    onBlur={() => {
-                      if (commitRandomBound('randomMin', randomMinDraft)) return;
-                      setRandomMinDraft(
-                        control.randomMin === undefined ? '' : String(control.randomMin),
-                      );
-                    }}
-                    onKeyDown={(event) =>
-                      handleDraftKeyDown(event, () =>
-                        setRandomMinDraft(
-                          control.randomMin === undefined ? '' : String(control.randomMin),
-                        ),
-                      )
-                    }
-                    className={inlineInputClass}
-                  />
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={randomMaxDraft}
-                    placeholder="Max"
-                    aria-label="Random maximum"
-                    title={`Leave blank to use the detected maximum (${rangeDefaults.max}).`}
-                    onClick={(event) => event.stopPropagation()}
-                    onFocus={(event) => {
-                      setMode('randomize');
-                      event.currentTarget.select();
-                    }}
-                    onChange={(event) => {
-                      const nextDraft = event.currentTarget.value;
-                      setRandomMaxDraft(nextDraft);
-                      if (nextDraft.trim() === '' || parseFiniteIntegerInput(nextDraft) !== null) {
-                        commitRandomBound('randomMax', nextDraft);
-                      }
-                    }}
-                    onBlur={() => {
-                      if (commitRandomBound('randomMax', randomMaxDraft)) return;
-                      setRandomMaxDraft(
-                        control.randomMax === undefined ? '' : String(control.randomMax),
-                      );
-                    }}
-                    onKeyDown={(event) =>
-                      handleDraftKeyDown(event, () =>
-                        setRandomMaxDraft(
-                          control.randomMax === undefined ? '' : String(control.randomMax),
-                        ),
-                      )
-                    }
-                    className={inlineInputClass}
-                  />
-                </div>
-              )}
-
-              {candidate === 'increment' && selectedMode === candidate && (
-                <div className="mt-1">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={incrementDraft}
-                    placeholder="Step"
-                    aria-label="Increment amount"
-                    onClick={(event) => event.stopPropagation()}
-                    onFocus={(event) => {
-                      setMode('increment');
-                      event.currentTarget.select();
-                    }}
-                    onChange={(event) => {
-                      const nextDraft = event.currentTarget.value;
-                      setIncrementDraft(nextDraft);
-                      if (nextDraft.trim() !== '' && parseFiniteIntegerInput(nextDraft) !== null) {
-                        commitIncrementStep(nextDraft);
-                      }
-                    }}
-                    onBlur={() => {
-                      if (commitIncrementStep(incrementDraft)) return;
-                      setIncrementDraft(String(incrementStep));
-                    }}
-                    onKeyDown={(event) =>
-                      handleDraftKeyDown(event, () => setIncrementDraft(String(incrementStep)))
-                    }
-                    className={inlineInputClass}
-                  />
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-    </Popover>
-  );
-};
-
-interface WorkflowRunModeBadgeProps {
-  control: ComfyWorkflowControl;
-  rollToken?: number;
-  onUpdate: (updates: Partial<ComfyWorkflowControl>) => void;
-}
-
-const IncrementRunModeIcon: React.FC<{
-  className?: string;
-  step: number;
-  isAnimating?: boolean;
-}> = ({ className, step, isAnimating = false }) => {
-  const stepLabel = formatIncrementBadgeStep(step);
-  const isNegative = step < 0;
-  const textSize = stepLabel.length > 1 ? 7.2 : 10;
-
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      {/* Frame */}
-      <path
-        d="M7.25 3.75h8.55c1.24 0 2.25 1.01 2.25 2.25v1.05"
-        stroke="currentColor"
-        strokeWidth={1.7}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M5.25 7.15v9.6c0 1.38 1.12 2.5 2.5 2.5h8.05c1.38 0 2.5-1.12 2.5-2.5v-1.5"
-        stroke="currentColor"
-        strokeWidth={1.7}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-
-      {/* Value */}
-      <text
-        x="11.0"
-        y="15.5"
-        textAnchor="middle"
-        fill="currentColor"
-        fontSize={textSize}
-        fontWeight="500"
-        fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
-      >
-        {stepLabel}
-      </text>
-
-      {/* Arrow */}
-      <g
-        className={
-          isAnimating
-            ? 'origin-center motion-safe:animate-[incrementArrow_520ms_cubic-bezier(0.22,1,0.36,1)_1]'
-            : undefined
-        }
-        style={{ transformOrigin: '18.5px 11.5px' }}
-      >
-        <path
-          d={isNegative ? 'M18.5 7.1v9.2' : 'M18.5 16.3V7.1'}
-          stroke="var(--increment-icon-accent, currentColor)"
-          strokeWidth={1.9}
-          strokeLinecap="round"
-        />
-        <path
-          d={isNegative ? 'M15.9 13.7L18.5 16.3L21.1 13.7' : 'M15.9 9.7L18.5 7.1L21.1 9.7'}
-          stroke="var(--increment-icon-accent, currentColor)"
-          strokeWidth={1.9}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </g>
-    </svg>
-  );
-};
-
-const WorkflowRunModeBadge: React.FC<WorkflowRunModeBadgeProps> = ({
-  control,
-  rollToken = 0,
-  onUpdate,
-}) => {
-  const mode = getComfyWorkflowControlRunMode(control);
-  const isFixed = mode === 'fixed';
-  const shouldShow = isSeedLikeComfyInput(control.inputName) || !isFixed;
-  const [isRolling, setIsRolling] = useState(false);
-  const incrementStep = getIntegerStepDefault(control);
-  const isIncrementMode = mode === 'increment';
-
-  useEffect(() => {
-    if (rollToken <= 0) return;
-    setIsRolling(true);
-  }, [rollToken]);
-
-  useEffect(() => {
-    if (!isRolling) return;
-    const timeoutId = window.setTimeout(() => {
-      setIsRolling(false);
-    }, RUN_MODE_BADGE_ANIMATION_MS);
-    return () => window.clearTimeout(timeoutId);
-  }, [isRolling]);
-
-  if (!shouldShow) return null;
-
-  return (
-    <button
-      type="button"
-      onClick={() => onUpdate({ runMode: isFixed ? 'randomize' : 'fixed' })}
-      aria-pressed={!isFixed}
-      title={`${getNumericModeLabel(mode)}. Click to ${isFixed ? 'randomize on run' : 'fix value'}.`}
-      aria-label={`${getNumericModeLabel(mode)}. Click to ${isFixed ? 'randomize on run' : 'fix value'}.`}
-      style={
-        {
-          '--increment-icon-accent': 'rgb(var(--color-primary-200))',
-        } as React.CSSProperties
-      }
-      className={`inline-flex h-5 w-5 items-center justify-center overflow-visible rounded border border-transparent focus-visible:outline-none focus-visible:ring-1 ${
-        isFixed
-          ? 'text-gray-500 hover:border-gray-500/70 hover:bg-white/[0.03] hover:text-gray-200 focus-visible:border-gray-500/70 focus-visible:ring-white/20'
-          : 'bg-primary-300/10 text-primary-100 hover:border-primary-300/50 hover:bg-primary-300/14 focus-visible:border-primary-300/50 focus-visible:ring-primary-300/30'
-      } ${
-        isRolling && !isIncrementMode
-          ? 'motion-safe:animate-[diceRoll_520ms_cubic-bezier(0.22,1,0.36,1)_1]'
-          : ''
-      }`}
-    >
-      {isIncrementMode ? (
-        <IncrementRunModeIcon
-          step={incrementStep}
-          isAnimating={isRolling}
-          className="h-5 w-5 scale-[1.18]"
-        />
-      ) : (
-        <Icons.Dice className="h-5 w-5 scale-[1.35]" />
-      )}
-    </button>
-  );
-};
-
-interface ExpandableWorkflowTextControlProps {
-  control: ComfyWorkflowControl;
-  description: string;
-  promptRoute: ResolvedAiTextRoute | null;
-  promptRouteError: string | null;
-  onChange: (value: string) => void;
-  onEnhance: () => Promise<void>;
-  onUpdate: (updates: Partial<ComfyWorkflowControl>) => void;
-  onReset: () => void;
-}
-
-const ExpandableWorkflowTextControl: React.FC<ExpandableWorkflowTextControlProps> = ({
-  control,
-  description,
-  promptRoute,
-  promptRouteError,
-  onChange,
-  onEnhance,
-  onUpdate,
-  onReset,
-}) => {
-  const [isSuggesting, setIsSuggesting] = useState(false);
-  const [isEnhancing, setIsEnhancing] = useState(false);
-  const promptValue = String(control.value);
-  const isPromptLikeField = isPromptLikeComfyTextInput(control);
-  const canUsePromptTools = Boolean(promptRoute);
-  const isBusy = isSuggesting || isEnhancing;
-  const suggestionPages = control.promptSuggestionPages ?? [];
-  const suggestionPageIndex = Math.min(
-    Math.max(0, control.promptSuggestionPageIndex ?? 0),
-    Math.max(0, suggestionPages.length - 1),
-  );
-  const currentSuggestions = suggestionPages[suggestionPageIndex] ?? [];
-  const areSuggestionsVisible = Boolean(control.promptSuggestionsVisible);
-  const promptToolsUnavailableReason = canUsePromptTools
-    ? ''
-    : (promptRouteError ?? 'Configure prompt tools in Preferences > Integrations.');
-
-  const handleSuggest = async () => {
-    if (!promptRoute || isBusy) return;
-
-    setIsSuggesting(true);
-    try {
-      const suggestionResult = await getPromptSuggestions(promptRoute);
-      if (suggestionResult.length > 0) {
-        const nextPages = [...suggestionPages, suggestionResult];
-        onUpdate({
-          promptSuggestionPages: nextPages,
-          promptSuggestionPageIndex: nextPages.length - 1,
-          promptSuggestionsVisible: true,
-        });
-      }
-    } finally {
-      setIsSuggesting(false);
-    }
-  };
-
-  const handleToggleSuggestions = () => {
-    if (areSuggestionsVisible) {
-      onUpdate({ promptSuggestionsVisible: false });
-      return;
-    }
-
-    if (suggestionPages.length === 0) {
-      void handleSuggest();
-      return;
-    }
-
-    onUpdate({ promptSuggestionsVisible: true });
-  };
-
-  const handleEnhance = async () => {
-    if (!promptRoute || isBusy || promptValue.trim().length === 0) return;
-
-    setIsEnhancing(true);
-    try {
-      await onEnhance();
-    } finally {
-      setIsEnhancing(false);
-    }
-  };
-
-  const clearCurrentSuggestionPage = () => {
-    const nextPages = suggestionPages.filter((_, index) => index !== suggestionPageIndex);
-    onUpdate({
-      promptSuggestionPages: nextPages,
-      promptSuggestionPageIndex: Math.min(suggestionPageIndex, Math.max(0, nextPages.length - 1)),
-      promptSuggestionsVisible: nextPages.length > 0,
-    });
-  };
-
-  return (
-    <PromptTextField
-      label={control.label}
-      description={description}
-      value={promptValue}
-      onValueChange={onChange}
-      canUsePromptTools={canUsePromptTools}
-      promptToolsUnavailableReason={promptToolsUnavailableReason}
-      isSuggesting={isSuggesting}
-      isEnhancing={isEnhancing}
-      suggestions={currentSuggestions}
-      suggestionsVisible={areSuggestionsVisible}
-      suggestionPageLabel={`${suggestionPageIndex + 1}/${suggestionPages.length}`}
-      canPreviousSuggestions={suggestionPageIndex > 0}
-      canNextSuggestions={suggestionPageIndex < suggestionPages.length - 1}
-      onSuggest={isPromptLikeField ? () => void handleSuggest() : undefined}
-      onEnhance={isPromptLikeField ? () => void handleEnhance() : undefined}
-      onToggleSuggestions={isPromptLikeField ? handleToggleSuggestions : undefined}
-      onPreviousSuggestions={() =>
-        onUpdate({
-          promptSuggestionPageIndex: Math.max(0, suggestionPageIndex - 1),
-          promptSuggestionsVisible: true,
-        })
-      }
-      onNextSuggestions={() =>
-        onUpdate({
-          promptSuggestionPageIndex: Math.min(suggestionPages.length - 1, suggestionPageIndex + 1),
-          promptSuggestionsVisible: true,
-        })
-      }
-      onClearSuggestions={clearCurrentSuggestionPage}
-      onSuggestionSelect={onChange}
-      onReset={onReset}
-      resetTooltip={getControlResetTooltip(control)}
-      enhanceLabel="Enhance in Chat"
-    />
-  );
-};
-
-const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
-  const node = anyNode as ComfyNode;
+const ComfyAdjustmentsPanel: React.FC<{ node: ComfyNode }> = ({ node }) => {
   const {
     startComfyPromptEnhancementChat,
     updateNode,
@@ -1536,11 +352,7 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
 
   const workflowControls = useMemo(() => node.workflowControls ?? [], [node.workflowControls]);
   const recentGeneratedOutputs = useMemo(
-    () =>
-      [...(node.generatedOutputs ?? [])]
-        .filter((output) => !output.deletedAt)
-        .reverse()
-        .slice(0, 5),
+    () => [...(node.generatedOutputs ?? [])].filter((output) => !output.deletedAt).reverse(),
     [node.generatedOutputs],
   );
   const pendingGeneratedOutputSlots = useMemo(() => {
@@ -2431,7 +1243,7 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
 
     const cancelWithInterrupt = () => {
       jobCancelled = true;
-      const latest = latestComfyPromptId.get(endpoint);
+      const latest = defaultComfyRunCoordinator.getLatestPrompt(endpoint);
       if (latest) {
         void interruptComfyPrompt(latest.promptId, latest.endpoint).catch(() => {});
       }
@@ -2494,7 +1306,7 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
               },
             });
 
-            const clientId = createClientId();
+            const clientId = defaultComfyRunCoordinator.createClientId();
             await triggerRunRollAnimation(currentWorkflowControls, selectedWorkflow.id);
             const preparedControls = prepareComfyWorkflowControlsForRun(
               currentWorkflowControls,
@@ -2539,7 +1351,7 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
               ),
             });
 
-            latestComfyPromptId.set(endpoint, {
+            defaultComfyRunCoordinator.setLatestPrompt(endpoint, {
               promptId: queued.promptId,
               endpoint,
             });
@@ -3022,7 +1834,7 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
     }
 
     try {
-      await enqueueComfyRun(endpointQueueKey, async () => {
+      await defaultComfyRunCoordinator.enqueue(endpointQueueKey, async () => {
         if (jobCancelled) return;
 
         for (let runIndex = 1; runIndex <= runCount; runIndex += 1) {
@@ -3050,7 +1862,7 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
             source: getRunSource(runIndex),
           });
 
-          const clientId = createClientId();
+          const clientId = defaultComfyRunCoordinator.createClientId();
           let queuedPromptId: string | null = null;
           await triggerRunRollAnimation(currentWorkflowControls, selectedWorkflow.id);
           const preparedControls = prepareComfyWorkflowControlsForRun(
@@ -3225,7 +2037,7 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
             queuedPromptId = queued.promptId;
             updateNode(node.id, { lastPromptId: queued.promptId }, false);
 
-            latestComfyPromptId.set(endpoint, {
+            defaultComfyRunCoordinator.setLatestPrompt(endpoint, {
               promptId: queued.promptId,
               endpoint,
             });
@@ -3498,9 +2310,14 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
   const hasNoSelectedWorkflowOutputs =
     workflowOutputCandidates.length > 0 && selectedWorkflowOutputIds.length === 0;
   const isRunActionDisabled = !selectedWorkflow || hasNoSelectedWorkflowOutputs;
-  const hasWorkflowControlBuilderChanges =
-    pendingControlKeys.size !== activeControlKeys.size ||
-    [...pendingControlKeys].some((key) => !activeControlKeys.has(key));
+  useNodeExecutionHandler(node.id, () => {
+    if (isRunActionDisabled) return;
+    void handleRunWorkflow(1);
+  });
+  const handleRunSingleWorkflow = () => {
+    setIsRunMenuOpen(false);
+    void handleRunWorkflow(1);
+  };
   const handleWorkflowPropsKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!isRunShortcut(event)) return;
     if (!selectedWorkflow || hasNoSelectedWorkflowOutputs || isWorkflowControlBuilderOpen) return;
@@ -3519,876 +2336,122 @@ const ComfyAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
     }, 0);
   };
 
+  const handleCancelRun = () => {
+    if (activeNodeComfyJob) {
+      requestBackgroundJobCancel(activeNodeComfyJob.id);
+    } else if (abortRef.current) {
+      void interruptComfyPrompt('', endpoint).catch(() => {});
+      abortRef.current.abort();
+    }
+  };
+
   return (
-    <>
-      <CollapsibleSection title="Workflow" defaultOpen>
-        <div className="space-y-3">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json,.json,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
-            className="hidden"
-            onChange={handleImportWorkflow}
-          />
+    <div className="flex min-h-full flex-1 flex-col">
+      <div className="min-w-0 flex-1">
+        <ComfyWorkflowPicker
+          fileInputRef={fileInputRef}
+          pasteTextareaRef={pasteTextareaRef}
+          selectedWorkflow={selectedWorkflow}
+          workflows={node.workflows}
+          workflowEmptyMode={workflowEmptyMode}
+          workflowJsonDraft={workflowJsonDraft}
+          workflowBrowserState={workflowBrowserState}
+          backendWorkflowFiles={backendWorkflowFiles}
+          filteredBackendWorkflowFiles={filteredBackendWorkflowFiles}
+          backendWorkflowSearch={backendWorkflowSearch}
+          isBackendWorkflowPickerOpen={isBackendWorkflowPickerOpen}
+          isBrowsingWorkflows={isBrowsingWorkflows}
+          onImportWorkflow={handleImportWorkflow}
+          onRemoveWorkflow={handleRemoveWorkflow}
+          onChooseImportWorkflow={handleChooseImportWorkflow}
+          onChoosePasteWorkflow={handleChoosePasteWorkflow}
+          onWorkflowEmptyModeChange={setWorkflowEmptyMode}
+          onWorkflowJsonDraftChange={setWorkflowJsonDraft}
+          onImportPastedWorkflow={handleImportPastedWorkflow}
+          onBackendWorkflowPickerOpenChange={handleBackendWorkflowPickerOpenChange}
+          onBackendWorkflowSearchChange={setBackendWorkflowSearch}
+          onLoadBackendWorkflow={handleLoadBackendWorkflow}
+          onSelectWorkflow={handleSelectWorkflow}
+        />
 
-          {selectedWorkflow ? (
-            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-white">{selectedWorkflow.name}</p>
-                  <p className="mt-1 text-[11px] text-gray-500">
-                    {getWorkflowNodeCount(selectedWorkflow)} nodes ·{' '}
-                    {formatDateTime(selectedWorkflow.createdAt)}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleRemoveWorkflow}
-                  className="rounded-md p-1.5 text-gray-500 transition hover:bg-red-500/10 hover:text-red-300"
-                  title="Remove workflow"
-                >
-                  <Icons.Trash className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-3 rounded-lg border border-dashed border-gray-700 bg-gray-900/70 p-3">
-              {workflowEmptyMode === 'choice' && (
-                <>
-                  <div className="flex flex-col items-center gap-1.5 py-1 text-center">
-                    {/* <Icons.FolderOpen className="h-6 w-6 text-gray-500" /> */}
-                    <p className="text-xs font-medium text-gray-300">No workflow loaded</p>
-                    <p className="text-[11px] leading-4 text-gray-500">
-                      Import JSON/image, load from Comfy, or paste JSON.
-                    </p>
-                  </div>
-
-                  <div className="mx-auto flex w-fit max-w-full overflow-hidden rounded-lg border border-gray-700 bg-gray-950/80">
-                    <button
-                      type="button"
-                      onClick={handleChooseImportWorkflow}
-                      disabled={isBrowsingWorkflows}
-                      className="inline-flex min-w-0 items-center justify-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-gray-100 transition hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <Icons.ArrowUpTray className="h-3.5 w-3.5 shrink-0" />
-                      <span className="min-w-0 truncate">Import</span>
-                    </button>
-                    <Popover
-                      isOpen={isBackendWorkflowPickerOpen}
-                      onOpenChange={handleBackendWorkflowPickerOpenChange}
-                      widthClass="w-80"
-                      align="start"
-                      trigger={
-                        <button
-                          type="button"
-                          disabled={workflowBrowserState === 'importing'}
-                          className="inline-flex min-w-0 items-center justify-center gap-1.5 border-l border-gray-700 px-2.5 py-1.5 text-[11px] font-medium text-gray-100 transition hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <Icons.FolderOpen className="h-3.5 w-3.5 shrink-0" />
-                          <span className="min-w-0 truncate">From Comfy</span>
-                        </button>
-                      }
-                    >
-                      {(closeBackendWorkflowPicker) => (
-                        <div className="space-y-2">
-                          <input
-                            value={backendWorkflowSearch}
-                            onChange={(event) =>
-                              setBackendWorkflowSearch(event.currentTarget.value)
-                            }
-                            placeholder="Search workflows..."
-                            className="w-full rounded-lg border border-white/10 bg-gray-950/70 px-2.5 py-2 text-xs text-gray-100 outline-none transition placeholder:text-gray-600 focus:border-primary-300/60 focus:ring-2 focus:ring-primary-300/20"
-                            autoFocus
-                          />
-
-                          {workflowBrowserState === 'loading' ? (
-                            <p className="px-1 py-2 text-[11px] text-primary-100/60">
-                              Reading workflows...
-                            </p>
-                          ) : backendWorkflowFiles.length === 0 ? (
-                            <p className="rounded-lg border border-dashed border-white/10 px-3 py-6 text-center text-xs text-gray-500">
-                              No workflows found in workflows/.
-                            </p>
-                          ) : filteredBackendWorkflowFiles.length === 0 ? (
-                            <p className="rounded-lg border border-dashed border-white/10 px-3 py-6 text-center text-xs text-gray-500">
-                              No matches
-                            </p>
-                          ) : (
-                            <ScrollArea
-                              axis="y"
-                              viewportClassName="max-h-[min(18rem,calc(100vh-9rem))] pr-1"
-                            >
-                              <div className="space-y-1">
-                                {filteredBackendWorkflowFiles.map((workflowFile) => (
-                                  <button
-                                    key={workflowFile.path}
-                                    type="button"
-                                    onClick={() => {
-                                      closeBackendWorkflowPicker();
-                                      void handleLoadBackendWorkflow(workflowFile);
-                                    }}
-                                    disabled={isBrowsingWorkflows}
-                                    className="w-full min-w-0 rounded-lg px-3 py-2 text-left text-sm text-gray-300 transition-all duration-150 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    <span className="block truncate text-xs font-medium text-gray-100">
-                                      {getWorkflowNameFromPath(workflowFile.path)}
-                                    </span>
-                                    <span className="mt-1 block truncate text-[11px] text-gray-500">
-                                      {getWorkflowFileDetail(workflowFile)}
-                                    </span>
-                                  </button>
-                                ))}
-                              </div>
-                            </ScrollArea>
-                          )}
-                        </div>
-                      )}
-                    </Popover>
-                    <button
-                      type="button"
-                      onClick={() => void handleChoosePasteWorkflow()}
-                      disabled={isBrowsingWorkflows}
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center border-l border-gray-700 text-gray-300 transition hover:bg-gray-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                      title="Paste JSON"
-                      aria-label="Paste JSON"
-                    >
-                      <Icons.Paste className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </>
-              )}
-
-              {workflowEmptyMode === 'paste' && (
-                <>
-                  <div className="flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setWorkflowEmptyMode('choice')}
-                      className="rounded-md p-1.5 text-gray-500 transition hover:bg-white/5 hover:text-gray-200"
-                      title="Choose another workflow source"
-                      aria-label="Choose another workflow source"
-                    >
-                      <Icons.ChevronLeft className="h-3.5 w-3.5" />
-                    </button>
-                    <p className="min-w-0 flex-1 truncate text-[11px] font-medium text-gray-200">
-                      Paste workflow JSON
-                    </p>
-                  </div>
-
-                  <ScrollArea
-                    axis="y"
-                    viewportClassName="max-h-44 rounded-md border border-gray-700 bg-black/30 transition focus-within:border-primary-400/70 focus-within:ring-2 focus-within:ring-primary-400/20"
-                    contentClassName="min-h-24"
-                  >
-                    <textarea
-                      ref={pasteTextareaRef}
-                      value={workflowJsonDraft}
-                      onChange={(event) => setWorkflowJsonDraft(event.currentTarget.value)}
-                      placeholder="Paste ComfyUI API workflow JSON..."
-                      spellCheck={false}
-                      rows={4}
-                      className="block min-h-24 w-full resize-none overflow-hidden border-0 bg-transparent px-2 py-2 font-mono text-[11px] leading-5 text-gray-100 outline-none placeholder:text-gray-600"
-                    />
-                  </ScrollArea>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate text-[11px] text-gray-500">
-                      API format, or graph JSON with Comfy connected
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void handleImportPastedWorkflow()}
-                      disabled={isBrowsingWorkflows || workflowJsonDraft.trim().length === 0}
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2.5 py-1.5 text-[11px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <Icons.Check className="h-3.5 w-3.5" />
-                      Import JSON
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {node.workflows.length > 1 && (
-            <ScrollArea
-              axis="y"
-              viewportClassName="max-h-32 rounded-lg border border-white/10 bg-gray-950/60"
-              contentClassName="space-y-1 p-1 pr-3"
-            >
-              {node.workflows.map((workflow) => {
-                const isSelected = workflow.id === selectedWorkflow?.id;
-                return (
-                  <button
-                    key={workflow.id}
-                    type="button"
-                    onClick={() => handleSelectWorkflow(workflow.id)}
-                    aria-pressed={isSelected}
-                    className={`flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition ${
-                      isSelected
-                        ? 'bg-primary-300/10 text-primary-50'
-                        : 'text-gray-400 hover:bg-white/[0.04] hover:text-gray-100'
-                    }`}
-                  >
-                    <span
-                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
-                        isSelected ? 'border-primary-300/50 text-primary-200' : 'border-gray-700'
-                      }`}
-                    >
-                      {isSelected && <Icons.Check className="h-3 w-3" />}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate">{workflow.name}</span>
-                    <span className="shrink-0 text-gray-600">{getWorkflowNodeCount(workflow)}</span>
-                  </button>
-                );
-              })}
-            </ScrollArea>
-          )}
-        </div>
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        title="Props"
-        defaultOpen
-        action={
-          selectedWorkflow ? (
-            isWorkflowControlBuilderOpen ? (
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={handleCancelWorkflowControlBuilder}
-                  className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2 py-1 text-[10px] font-medium text-gray-400 transition hover:border-gray-500 hover:text-gray-100"
-                >
-                  <Icons.XMark className="h-3.5 w-3.5" />
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleApplyWorkflowControlBuilder}
-                  disabled={!hasWorkflowControlBuilderChanges}
-                  className="inline-flex items-center gap-1 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Icons.Check className="h-3.5 w-3.5" />
-                  Apply
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={handleOpenWorkflowControlBuilder}
-                className="inline-flex items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15"
-              >
-                <Icons.Plus className="h-3.5 w-3.5" />
-                Fields
-              </button>
-            )
-          ) : undefined
-        }
-      >
-        <div className="space-y-3">
-          {selectedWorkflow ? (
-            isWorkflowControlBuilderOpen ? (
-              <div className="space-y-3 rounded-lg border border-primary-400/20 bg-primary-400/[0.06] p-2">
-                <div className="flex items-center justify-between gap-2 px-1">
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium text-primary-50">Workflow fields</p>
-                    <p className="mt-0.5 truncate text-[11px] text-primary-100/60">
-                      {pendingControlKeys.size} shown · {controlCandidates.length} editable
-                    </p>
-                  </div>
-                </div>
-
-                {controlCandidates.length > 0 ? (
-                  <ScrollArea
-                    axis="y"
-                    viewportClassName="max-h-64 rounded-lg border border-primary-300/10 bg-gray-950/60"
-                    contentClassName="space-y-1 p-1 pr-3"
-                  >
-                    {controlCandidates.map((candidate) => {
-                      const isPending = pendingControlKeys.has(candidate.key);
-                      return (
-                        <button
-                          key={candidate.key}
-                          type="button"
-                          onClick={() => handleToggleWorkflowControlCandidate(candidate.key)}
-                          aria-pressed={isPending}
-                          className={`flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-2 text-left transition ${
-                            isPending
-                              ? 'bg-primary-300/10 text-primary-50'
-                              : 'text-gray-400 hover:bg-white/[0.04] hover:text-gray-100'
-                          }`}
-                        >
-                          <span
-                            className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                              isPending
-                                ? 'border-primary-300/50 bg-primary-300/10 text-primary-100'
-                                : 'border-gray-700'
-                            }`}
-                          >
-                            {isPending && <Icons.Check className="h-3 w-3" />}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs font-medium">
-                              {candidate.label}
-                            </span>
-                            <span className="mt-0.5 block truncate text-[11px] text-gray-500">
-                              {candidate.classType} · #{candidate.nodeId} · {candidate.inputName}
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </ScrollArea>
-                ) : (
-                  <div className="rounded-lg border border-dashed border-primary-300/15 bg-gray-950/60 p-3 text-xs leading-5 text-primary-100/60">
-                    This workflow does not expose editable primitive fields.
-                  </div>
-                )}
-              </div>
-            ) : activeWorkflowControls.length > 0 ? (
-              <div className="space-y-3" onKeyDown={handleWorkflowPropsKeyDown}>
-                {activeMissingControlOptions.length > 0 ? (
-                  <MissingModelWarning
-                    missingOptions={activeMissingControlOptions}
-                    modelSizeStatuses={missingModelSizeStatuses}
-                    detailsVisible={comfyMissingModelDetailsVisible}
-                    onToggleDetails={handleToggleMissingModelDetails}
-                    onDownload={handleDownloadMissingModel}
-                    onCopyPath={(option) => void handleCopyMissingModelPath(option)}
-                  />
-                ) : null}
-                {activeWorkflowControls.map((control) => {
-                  const isNumeric = typeof control.defaultValue === 'number';
-                  const numericValue =
-                    typeof control.value === 'number'
-                      ? control.value
-                      : (control.defaultValue as number);
-                  const booleanValue =
-                    typeof control.value === 'boolean'
-                      ? control.value
-                      : Boolean(control.defaultValue);
-                  const description = control.description ?? getComfyControlDescription(control);
-                  const supportsRunMode = supportsComfyWorkflowControlRunMode(control);
-                  const enumValue =
-                    typeof control.value === 'string' || typeof control.value === 'number'
-                      ? control.value
-                      : String(control.value);
-                  const isSelectedEnumOptionMissing =
-                    isWorkflowControlSelectedOptionMissing(control);
-                  const enumOptions =
-                    control.options && control.options.length > 0
-                      ? isSelectedEnumOptionMissing
-                        ? [enumValue, ...control.options]
-                        : control.options
-                      : [];
-                  const hasEnumOptions = enumOptions.length > 0;
-                  const applyNoticeKey =
-                    promptApplyNotice?.fieldId === control.id ? promptApplyNotice.id : null;
-
-                  return (
-                    <AttentionPulse
-                      key={control.id}
-                      activeKey={applyNoticeKey}
-                      data-ai-apply-control-id={control.id}
-                      className="rounded-lg"
-                    >
-                      <PropertyField
-                        label={hasEnumOptions ? control.label : undefined}
-                        description={hasEnumOptions ? description : undefined}
-                        actions={
-                          hasEnumOptions ? (
-                            <>
-                              {isSelectedEnumOptionMissing ? (
-                                <span
-                                  className="shrink-0 rounded-md border border-red-200/20 bg-black/20 px-1.5 py-0.5 font-mono text-[10px] text-red-100/70"
-                                  title="Selected option is missing"
-                                >
-                                  Missing
-                                </span>
-                              ) : null}
-                              <ResetIconButton
-                                onClick={() => handleResetWorkflowControl(control.id)}
-                                tooltip={getControlResetTooltip(control)}
-                              />
-                            </>
-                          ) : undefined
-                        }
-                      >
-                        {hasEnumOptions ? (
-                          <StyledDropdown
-                            value={enumValue}
-                            options={enumOptions.map((option) => {
-                              const isMissingOption =
-                                isSelectedEnumOptionMissing &&
-                                normalizeComparableControlValue(option) ===
-                                  normalizeComparableControlValue(enumValue);
-
-                              return {
-                                value: option,
-                                label: String(option),
-                                badges: isMissingOption ? ['Missing'] : undefined,
-                                searchText: isMissingOption
-                                  ? `${String(option)} missing`
-                                  : undefined,
-                              };
-                            })}
-                            onChange={(value) =>
-                              handleUpdateWorkflowControl(control.id, {
-                                value:
-                                  typeof value === 'string' || typeof value === 'number'
-                                    ? value
-                                    : String(value),
-                              })
-                            }
-                            popoverWidthClass="w-72"
-                            showSelectedBadges={false}
-                          />
-                        ) : isNumeric ? (
-                          <Slider
-                            label={control.label}
-                            description={description}
-                            value={numericValue}
-                            min={control.min}
-                            max={control.max}
-                            step={control.step}
-                            onChange={(value) =>
-                              handleUpdateWorkflowControl(control.id, { value }, true)
-                            }
-                            onReset={() => handleResetWorkflowControl(control.id)}
-                            resetTooltip={getControlResetTooltip(control)}
-                            displayFormatter={formatControlValue}
-                            valuePrefix={
-                              supportsRunMode ? (
-                                <WorkflowRunModeBadge
-                                  control={control}
-                                  rollToken={runRollTokens[control.id] ?? 0}
-                                  onUpdate={(updates) =>
-                                    handleUpdateWorkflowControl(control.id, updates, true)
-                                  }
-                                />
-                              ) : undefined
-                            }
-                            headerActions={
-                              supportsRunMode ? (
-                                <WorkflowRunModeControl
-                                  control={control}
-                                  isOpen={advancedControlId === control.id}
-                                  onOpenChange={(open) =>
-                                    setAdvancedControlId(open ? control.id : null)
-                                  }
-                                  onKeyDown={handleWorkflowPropsKeyDown}
-                                  onUpdate={(updates) =>
-                                    handleUpdateWorkflowControl(control.id, updates, true)
-                                  }
-                                />
-                              ) : undefined
-                            }
-                          />
-                        ) : typeof control.defaultValue === 'boolean' ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0 flex-1">
-                              <ToggleSwitch
-                                label={control.label}
-                                description={description}
-                                checked={booleanValue}
-                                onCheckedChange={(checked) =>
-                                  handleUpdateWorkflowControl(control.id, {
-                                    value: checked,
-                                  })
-                                }
-                                ariaLabel={control.label}
-                                title={booleanValue ? 'Enabled' : 'Disabled'}
-                                size="sm"
-                              />
-                            </div>
-                            <ResetIconButton
-                              onClick={() => handleResetWorkflowControl(control.id)}
-                              tooltip={getControlResetTooltip(control)}
-                            />
-                          </div>
-                        ) : (
-                          <ExpandableWorkflowTextControl
-                            control={control}
-                            description={description}
-                            promptRoute={imagePromptRoute}
-                            promptRouteError={imagePromptRouteError}
-                            onChange={(value) =>
-                              handleUpdateWorkflowControl(control.id, {
-                                value: coerceControlValue(value, control.defaultValue),
-                              })
-                            }
-                            onEnhance={() =>
-                              startComfyPromptEnhancementChat(node.id, control.id, imagePromptRoute)
-                            }
-                            onUpdate={(updates) => handleUpdateWorkflowControl(control.id, updates)}
-                            onReset={() => handleResetWorkflowControl(control.id)}
-                          />
-                        )}
-                      </PropertyField>
-                    </AttentionPulse>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/70 p-3 text-xs leading-5 text-gray-400">
-                No workflow props are shown yet. Use Fields to choose which workflow inputs appear
-                here.
-              </div>
-            )
-          ) : (
-            <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/70 p-3 text-xs leading-5 text-gray-400">
-              Load a workflow before choosing Comfy props.
-            </div>
-          )}
-        </div>
-      </CollapsibleSection>
-
-      {selectedWorkflow && workflowInputCandidates.length > 0 && (
-        <CollapsibleSection
-          title="Workflow Inputs"
-          defaultOpen={workflowInputCandidates.length > 1}
-        >
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-gray-900/70 px-2.5 py-2 text-[11px]">
-              <span className="min-w-0 truncate text-gray-400">
-                {workflowInputCandidates.length} image input
-                {workflowInputCandidates.length === 1 ? '' : 's'} detected
-              </span>
-              <span className="shrink-0 font-mono text-primary-100/70">
-                {connectedWorkflowInputs.filter((entry) => entry.sourceNode).length} connected ·{' '}
-                {connectedWorkflowInputs.filter((entry) => entry.inputImage).length} loaded
-              </span>
-            </div>
-
-            <div className="space-y-1">
-              {connectedWorkflowInputs.map(({ candidate, sourceNode, inputImage }) => {
-                const hasInput = Boolean(sourceNode || inputImage);
-                const activeSourceLabel = sourceNode
-                  ? sourceNode.name
-                  : inputImage
-                    ? inputImage.name
-                    : 'Unconnected';
-                const activeSourceKind = sourceNode ? 'Port' : inputImage ? 'Loaded' : 'None';
-
-                return (
-                  <div
-                    key={candidate.id}
-                    className={`flex w-full min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-left ${
-                      hasInput
-                        ? 'border-primary-300/25 bg-primary-300/10 text-primary-50'
-                        : 'border-white/10 bg-gray-950/40 text-gray-400'
-                    }`}
-                  >
-                    <span
-                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                        hasInput
-                          ? 'border-primary-300/50 bg-primary-300/10 text-primary-100'
-                          : 'border-gray-700'
-                      }`}
-                    >
-                      {hasInput ? (
-                        <Icons.Check className="h-3 w-3" />
-                      ) : (
-                        <Icons.Photo className="h-3 w-3" />
-                      )}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs font-medium">{candidate.label}</span>
-                      <span className="mt-0.5 block truncate font-mono text-[10px] text-gray-500">
-                        #{candidate.nodeId} · {candidate.inputName}
-                      </span>
-                    </span>
-                    <span className="min-w-0 shrink basis-28 text-right">
-                      <span className="block truncate text-[11px] text-gray-300">
-                        {activeSourceLabel}
-                      </span>
-                      <span className="block text-[10px] uppercase tracking-wide text-gray-500">
-                        {activeSourceKind}
-                      </span>
-                    </span>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <label
-                        className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 text-[11px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15"
-                        title={`Load image for ${candidate.label}`}
-                      >
-                        <Icons.ArrowUpTray className="h-3.5 w-3.5" />
-                        Load
-                        <input
-                          type="file"
-                          accept={IMAGE_IMPORT_ACCEPT}
-                          className="hidden"
-                          onChange={(event) =>
-                            handleImportWorkflowInputImage(selectedWorkflow, candidate, event)
-                          }
-                        />
-                      </label>
-                      {inputImage ? (
-                        <button
-                          type="button"
-                          onClick={() => handleClearWorkflowInputImage(selectedWorkflow, candidate)}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 text-gray-400 transition hover:border-red-300/40 hover:bg-red-300/10 hover:text-red-100"
-                          title={`Clear loaded image for ${candidate.label}`}
-                          aria-label={`Clear loaded image for ${candidate.label}`}
-                        >
-                          <Icons.Trash className="h-3.5 w-3.5" />
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </CollapsibleSection>
-      )}
-
-      {selectedWorkflow && workflowOutputCandidates.length > 0 && (
-        <CollapsibleSection
-          title="Workflow Output"
-          defaultOpen={workflowOutputCandidates.length > 1}
-          action={
-            workflowOutputCandidates.length > 1 ? (
-              <button
-                type="button"
-                onClick={handleSelectAllWorkflowOutputs}
-                disabled={selectedWorkflowOutputIds.length === workflowOutputCandidates.length}
-                className="inline-flex items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Icons.Check className="h-3.5 w-3.5" />
-                All
-              </button>
-            ) : undefined
+        <ComfyWorkflowControlsSection
+          selectedWorkflow={selectedWorkflow}
+          isWorkflowControlBuilderOpen={isWorkflowControlBuilderOpen}
+          pendingControlKeys={pendingControlKeys}
+          activeControlKeys={activeControlKeys}
+          controlCandidates={controlCandidates}
+          activeWorkflowControls={activeWorkflowControls}
+          activeMissingControlOptions={activeMissingControlOptions}
+          missingModelSizeStatuses={missingModelSizeStatuses}
+          missingModelDetailsVisible={comfyMissingModelDetailsVisible}
+          runRollTokens={runRollTokens}
+          promptApplyNoticeId={promptApplyNotice?.id ?? null}
+          promptApplyNoticeFieldId={promptApplyNotice?.fieldId ?? null}
+          imagePromptRoute={imagePromptRoute}
+          imagePromptRouteError={imagePromptRouteError}
+          onOpenWorkflowControlBuilder={handleOpenWorkflowControlBuilder}
+          onCancelWorkflowControlBuilder={handleCancelWorkflowControlBuilder}
+          onApplyWorkflowControlBuilder={handleApplyWorkflowControlBuilder}
+          onToggleWorkflowControlCandidate={handleToggleWorkflowControlCandidate}
+          onToggleMissingModelDetails={handleToggleMissingModelDetails}
+          onDownloadMissingModel={handleDownloadMissingModel}
+          onCopyMissingModelPath={handleCopyMissingModelPath}
+          onResetWorkflowControl={handleResetWorkflowControl}
+          onUpdateWorkflowControl={handleUpdateWorkflowControl}
+          onStartPromptEnhancementChat={(controlId, promptRoute) =>
+            startComfyPromptEnhancementChat(node.id, controlId, promptRoute)
           }
-        >
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-gray-900/70 px-2.5 py-2 text-[11px]">
-              <span className="min-w-0 truncate text-gray-400">
-                {workflowOutputCandidates.length} image port
-                {workflowOutputCandidates.length === 1 ? '' : 's'} detected
-              </span>
-              <span
-                className={`shrink-0 font-mono ${
-                  selectedWorkflowOutputIds.length > 0 ? 'text-primary-100/70' : 'text-red-200/80'
-                }`}
-              >
-                {selectedWorkflowOutputIds.length} selected
-              </span>
-            </div>
+          advancedControlId={advancedControlId}
+          onAdvancedControlIdChange={setAdvancedControlId}
+          onWorkflowPropsKeyDown={handleWorkflowPropsKeyDown}
+        />
 
-            <div className="space-y-1">
-              {workflowOutputCandidates.map((candidate) => {
-                const isSelected = selectedWorkflowOutputIdSet.has(candidate.id);
-                return (
-                  <button
-                    key={candidate.id}
-                    type="button"
-                    onClick={() => handleToggleWorkflowOutputCandidate(candidate.id)}
-                    aria-pressed={isSelected}
-                    className={`flex w-full min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-left transition ${
-                      isSelected
-                        ? 'border-primary-300/30 bg-primary-300/10 text-primary-50'
-                        : 'border-white/10 bg-gray-950/40 text-gray-400 hover:border-white/20 hover:bg-white/[0.04] hover:text-gray-100'
-                    }`}
-                  >
-                    <span
-                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                        isSelected
-                          ? 'border-primary-300/50 bg-primary-300/10 text-primary-100'
-                          : 'border-gray-700'
-                      }`}
-                    >
-                      {isSelected && <Icons.Check className="h-3 w-3" />}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs font-medium">{candidate.label}</span>
-                      <span className="mt-0.5 block truncate font-mono text-[10px] text-gray-500">
-                        #{candidate.nodeId} · output {candidate.outputIndex + 1} ·{' '}
-                        {candidate.outputName}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+        {selectedWorkflow && (
+          <ComfyWorkflowInputList
+            selectedWorkflow={selectedWorkflow}
+            workflowInputCandidates={workflowInputCandidates}
+            connectedWorkflowInputs={connectedWorkflowInputs}
+            onImportWorkflowInputImage={handleImportWorkflowInputImage}
+            onClearWorkflowInputImage={handleClearWorkflowInputImage}
+          />
+        )}
 
-            {hasNoSelectedWorkflowOutputs ? (
-              <div className="rounded-lg border border-red-300/20 bg-red-500/10 p-2 text-[11px] leading-5 text-red-100/80">
-                Select at least one output port before running this workflow.
-              </div>
-            ) : null}
-          </div>
-        </CollapsibleSection>
-      )}
+        {selectedWorkflow && (
+          <ComfyWorkflowOutputPicker
+            workflowOutputCandidates={workflowOutputCandidates}
+            selectedWorkflowOutputIds={selectedWorkflowOutputIds}
+            selectedWorkflowOutputIdSet={selectedWorkflowOutputIdSet}
+            hasNoSelectedWorkflowOutputs={hasNoSelectedWorkflowOutputs}
+            onSelectAllWorkflowOutputs={handleSelectAllWorkflowOutputs}
+            onToggleWorkflowOutputCandidate={handleToggleWorkflowOutputCandidate}
+          />
+        )}
+      </div>
 
-      <CollapsibleSection title="Execute" defaultOpen>
-        <div className="space-y-3">
-          <div className="flex items-stretch gap-2">
-            <div className="grid min-w-0 flex-1 grid-cols-2 gap-2 text-[11px] text-gray-500">
-              <div className="min-w-0 rounded-lg bg-gray-900/70 p-2">
-                <span className="block text-gray-400">Last prompt</span>
-                <span className="block truncate font-mono">{node.lastPromptId ?? 'None'}</span>
-              </div>
-              <div className="min-w-0 rounded-lg bg-gray-900/70 p-2">
-                <span className="block text-gray-400">Last output</span>
-                <span className="block truncate">{formatDateTime(node.lastRunAt)}</span>
-              </div>
-            </div>
-
-            <div className="inline-flex min-w-24 shrink-0 overflow-hidden rounded-lg border border-primary-300/20 bg-primary-300/10 text-primary-100 transition hover:border-primary-300/40">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsRunMenuOpen(false);
-                  void handleRunWorkflow(1);
-                }}
-                disabled={isRunActionDisabled}
-                title={`Run workflow (${runShortcutHint})`}
-                className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 px-3 py-2 text-xs font-medium transition hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:bg-gray-900/70 disabled:text-gray-500"
-              >
-                <Icons.Play className="h-4 w-4" />
-                Run
-              </button>
-              <Popover
-                isOpen={isRunActionDisabled ? false : isRunMenuOpen}
-                onOpenChange={(open) => {
-                  if (isRunActionDisabled) return;
-                  setIsRunMenuOpen(open);
-                }}
-                align="end"
-                widthClass="w-36"
-                trigger={
-                  <button
-                    type="button"
-                    disabled={isRunActionDisabled}
-                    className="inline-flex h-full items-center justify-center border-l border-primary-300/20 px-2.5 transition hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:border-gray-700 disabled:bg-gray-900/70 disabled:text-gray-500"
-                    title="Run batch"
-                    aria-label="Run batch"
-                  >
-                    <Icons.ChevronDown className="h-4 w-4" />
-                  </button>
-                }
-              >
-                {(closePopover) => (
-                  <div className="space-y-1">
-                    <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">
-                      Batch Run
-                    </p>
-                    {BATCH_RUN_COUNTS.map((count) => (
-                      <button
-                        key={count}
-                        type="button"
-                        onClick={() => {
-                          closePopover();
-                          void handleRunWorkflow(count);
-                        }}
-                        className="flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs text-gray-300 transition hover:bg-white/[0.06] hover:text-white"
-                      >
-                        <span>{count} runs</span>
-                        <span className="font-mono text-[11px] text-gray-500">x{count}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </Popover>
-            </div>
-          </div>
-
-          <AttentionPulse
-            activeKey={outputApplyNotice?.id}
-            className="rounded-lg border border-white/10 bg-gray-950/40 p-2"
-          >
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">
-                Outputs
-              </span>
-              <span className="font-mono text-[10px] text-gray-600">
-                {(node.generatedOutputs ?? []).filter((output) => !output.deletedAt).length}
-              </span>
-            </div>
-            <div className="flex gap-1.5 overflow-hidden">
-              {pendingGeneratedOutputSlots.map((slot) => (
-                <ComfyOutputPlaceholder
-                  key={slot.id}
-                  label={slot.label}
-                  detail={slot.detail}
-                  active={slot.active}
-                />
-              ))}
-              {recentGeneratedOutputs.length > 0 ? (
-                recentGeneratedOutputs.map((output) => (
-                  <ComfyOutputThumbnail
-                    key={output.id}
-                    output={output}
-                    active={
-                      node.activeGeneratedOutputId
-                        ? node.activeGeneratedOutputId === output.id
-                        : node.src === output.src
-                    }
-                    onClick={() => handleActivateGeneratedOutput(output)}
-                  />
-                ))
-              ) : pendingGeneratedOutputSlots.length === 0 ? (
-                <div className="flex h-14 min-w-0 flex-1 items-center justify-center rounded-md border border-dashed border-white/10 bg-gray-900/60 px-3 text-center text-[11px] text-gray-500">
-                  Run output thumbnails appear here
-                </div>
-              ) : null}
-              <button
-                type="button"
-                onClick={openGalleryView}
-                className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-md border border-dashed border-primary-300/25 bg-primary-300/[0.05] text-primary-100/70 transition hover:border-primary-300/50 hover:bg-primary-300/10 hover:text-primary-100"
-                title="Open Gallery"
-              >
-                <Icons.Photo className="h-4 w-4" />
-                <span className="mt-0.5 text-[10px] font-medium">More</span>
-              </button>
-            </div>
-          </AttentionPulse>
-        </div>
-      </CollapsibleSection>
-
-      <InspectorLogFooter
-        className="-mx-1.5 -mb-1.5"
-        label={localError ? 'Error' : hasRunProgress ? inspectorProgressLabel : 'Log'}
-        message={inspectorLogMessage}
-        progressIndeterminate={hasRunProgress ? inspectorProgressIndeterminate : undefined}
-        progressLabel={hasRunProgress ? inspectorProgressLabel : undefined}
-        progressPercent={hasRunProgress ? inspectorProgressPercent : undefined}
-        variant={localError ? 'error' : 'info'}
-        actions={
-          hasRunProgress ? (
-            <>
-              <span className="font-mono text-[11px] text-primary-100/70">
-                {Math.round(inspectorProgressPercent)}%
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  if (activeNodeComfyJob) {
-                    requestBackgroundJobCancel(activeNodeComfyJob.id);
-                  } else if (abortRef.current) {
-                    void interruptComfyPrompt('', endpoint).catch(() => {});
-                    abortRef.current.abort();
-                  }
-                }}
-                className="rounded-md border border-primary-100/20 px-2 py-1 text-[11px] font-medium text-primary-100/75 transition hover:border-red-300/50 hover:bg-red-500/10 hover:text-red-100"
-              >
-                Cancel
-              </button>
-            </>
-          ) : inspectorLogMessage ? (
-            <button
-              type="button"
-              onClick={clearInspectorLog}
-              className="rounded-md p-1 text-gray-400 transition hover:bg-white/10 hover:text-gray-100"
-              title="Clear log"
-              aria-label="Clear log"
-            >
-              <Icons.XMark className="h-3.5 w-3.5" />
-            </button>
-          ) : undefined
-        }
+      <ComfyExecuteSection
+        node={node}
+        outputApplyNoticeId={outputApplyNotice?.id}
+        pendingGeneratedOutputSlots={pendingGeneratedOutputSlots}
+        recentGeneratedOutputs={recentGeneratedOutputs}
+        isRunActionDisabled={isRunActionDisabled}
+        isRunMenuOpen={isRunMenuOpen}
+        runShortcutHint={runShortcutHint}
+        localError={localError}
+        hasRunProgress={hasRunProgress}
+        inspectorProgressLabel={inspectorProgressLabel}
+        inspectorProgressPercent={inspectorProgressPercent}
+        inspectorProgressIndeterminate={inspectorProgressIndeterminate}
+        inspectorLogMessage={inspectorLogMessage}
+        onRunSingleWorkflow={handleRunSingleWorkflow}
+        onRunBatchWorkflow={(count) => void handleRunWorkflow(count)}
+        onRunMenuOpenChange={setIsRunMenuOpen}
+        onActivateGeneratedOutput={handleActivateGeneratedOutput}
+        onOpenGalleryView={openGalleryView}
+        onCancelRun={handleCancelRun}
+        onClearInspectorLog={clearInspectorLog}
       />
-    </>
+    </div>
   );
 };
 
-export default ComfyAdjustments;
+export default ComfyAdjustmentsPanel;

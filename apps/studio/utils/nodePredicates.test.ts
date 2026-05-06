@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { NodeType } from '@blackboard/types';
+import { NodeType, type AnyNode } from '@blackboard/types';
 
 // Mock the Google GenAI module to prevent API key errors during import of
 // effectRegistry (which transitively pulls in ai.ts via editorContext).
@@ -14,6 +14,7 @@ import {
   isExportAdjustmentType,
   isAutoStackedNewNodeType,
   hasStackedFlag,
+  isNodeStacked,
   isLoopingTimelineNode,
 } from '@/utils/nodePredicates';
 
@@ -74,6 +75,33 @@ describe('hasStackedFlag', () => {
   it('returns false when node has no stacked property', () => {
     const node = { id: '1', type: NodeType.IMAGE, name: 'i', visible: true };
     expect(hasStackedFlag(node as any)).toBe(false);
+  });
+});
+
+describe('isNodeStacked', () => {
+  it('treats a missing stacked property as unstacked', () => {
+    const node = { id: '1', type: NodeType.GRADE, name: 'g', visible: true } as AnyNode;
+    expect(isNodeStacked(node)).toBe(false);
+  });
+
+  it('returns the stacked state when present', () => {
+    const stackedNode = {
+      id: '1',
+      type: NodeType.GRADE,
+      name: 'g',
+      visible: true,
+      stacked: true,
+    } as AnyNode;
+    const unstackedNode = {
+      id: '2',
+      type: NodeType.GRADE,
+      name: 'g2',
+      visible: true,
+      stacked: false,
+    } as AnyNode;
+
+    expect(isNodeStacked(stackedNode)).toBe(true);
+    expect(isNodeStacked(unstackedNode)).toBe(false);
   });
 });
 

@@ -2,8 +2,10 @@ import React, { useMemo, useState, useCallback } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import { effectRegistry } from '@/effects/effectRegistry';
-import { AnyNode, StabilizationScope } from '@blackboard/types';
+import { AnyNode, NodeType, StabilizationScope } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
+import { useRegisterHotkeyCommands, useRegisterHotkeys } from '@/hotkeys';
+import type { HotkeyBinding, HotkeyCommand } from '@/hotkeys';
 import {
   ViewportToolButton,
   ViewportToolPanel,
@@ -179,6 +181,40 @@ const ViewportToolbar: React.FC = () => {
       return next;
     });
   }, []);
+
+  const trackingPanelCommands = useMemo<HotkeyCommand[]>(
+    () => [
+      {
+        id: 'viewport.toggleRotoTrackingPanel.runtime',
+        run: (context) => {
+          if (context.selectedNodeType !== NodeType.ROTO) {
+            return false;
+          }
+          handlePanelToggle('tracking');
+          return true;
+        },
+      },
+    ],
+    [handlePanelToggle],
+  );
+
+  const trackingPanelBindings = useMemo<HotkeyBinding[]>(
+    () =>
+      selectedNode?.type === NodeType.ROTO
+        ? [
+            {
+              keys: 'T',
+              command: 'viewport.toggleRotoTrackingPanel.runtime',
+              scope: 'viewport',
+              weight: 400,
+            },
+          ]
+        : [],
+    [selectedNode?.type],
+  );
+
+  useRegisterHotkeyCommands('viewport.toolbar', trackingPanelCommands);
+  useRegisterHotkeys('viewport.toolbar', trackingPanelBindings);
 
   if (!selectedNode || (!ToolsComponent && !ToolPanelComponent && !hasStabilize)) {
     return null;

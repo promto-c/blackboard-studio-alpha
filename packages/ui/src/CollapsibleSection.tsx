@@ -5,6 +5,7 @@ interface CollapsibleSectionProps {
   title: React.ReactNode;
   children: React.ReactNode;
   action?: React.ReactNode;
+  collapsedAction?: React.ReactNode;
   defaultOpen?: boolean;
   isSelected?: boolean;
   onTitleClick?: () => void;
@@ -14,6 +15,7 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   title,
   children,
   action,
+  collapsedAction,
   defaultOpen = true,
   isSelected = false,
   onTitleClick,
@@ -56,7 +58,9 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
             {title}
           </span>
         </button>
-        {action && <div className="shrink-0">{action}</div>}
+        {(action || (!isOpen && collapsedAction)) && (
+          <div className="shrink-0">{isOpen ? action : (collapsedAction ?? action)}</div>
+        )}
       </div>
       {isOpen && <div className="px-3 pb-3 pt-0.5">{children}</div>}
     </div>

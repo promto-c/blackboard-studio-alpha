@@ -2,10 +2,9 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import * as Icons from '@blackboard/icons';
-import {
-  StudioSegmentedControl,
-  StudioSegmentedControlButton,
-} from '@/components/StudioSegmentedControl';
+import SlidingSegmentedControl, {
+  type SlidingSegmentedControlOption,
+} from '@/components/SlidingSegmentedControl';
 import { ScrollArea } from '@blackboard/ui';
 import { AnimatableNumber, Keyframe, SelectedKeyframeRef } from '@blackboard/types';
 import GraphEditor from './GraphEditor';
@@ -32,9 +31,13 @@ const TIMELINE_PANEL_CLASS =
   'glass-component flex flex-col overflow-hidden border-t border-gray-750 bg-gray-900/35 backdrop-blur-md';
 const TIMELINE_TOP_BAR_CLASS =
   'flex items-center justify-between border-b border-white/10 bg-gray-900/35 px-2 backdrop-blur-md';
+const TIMELINE_VIEW_ACTIVE_WIDTH = 68;
+const TIMELINE_VIEW_INACTIVE_WIDTH = 28;
+const TIMELINE_VIEW_HEIGHT = 28;
 
 const getKeyframeId = (ref: SelectedKeyframeRef) => `${ref.nodeId}:${ref.path}:${ref.frame}`;
 type TimelineCacheState = 'uncached' | 'caching' | 'cached';
+type TimelineViewMode = 'dopesheet' | 'graph';
 
 const getTimelineCacheState = (
   frame: number,
@@ -627,7 +630,7 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
     setSelectedKeyframes,
   } = useEditorActions();
 
-  const [viewMode, setViewMode] = useState<'dopesheet' | 'graph'>('dopesheet');
+  const [viewMode, setViewMode] = useState<TimelineViewMode>('dopesheet');
   const [panX, setPanX] = useState(40);
   const [zoom, setZoom] = useState(10);
   const [panY, setPanY] = useState(150);
@@ -1025,7 +1028,25 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
     seekFrame(clampFrame(frame));
   };
 
-  const openTimelineView = (mode: 'dopesheet' | 'graph') => {
+  const timelineViewOptions = useMemo<SlidingSegmentedControlOption<TimelineViewMode>[]>(
+    () => [
+      {
+        value: 'dopesheet',
+        label: 'Sheet',
+        Icon: Icons.Bars4,
+        title: isCollapsed ? 'Open Dope Sheet View' : 'Dope Sheet View',
+      },
+      {
+        value: 'graph',
+        label: 'Curve',
+        Icon: Icons.Curve,
+        title: isCollapsed ? 'Open Curve Editor View' : 'Curve Editor View',
+      },
+    ],
+    [isCollapsed],
+  );
+
+  const openTimelineView = (mode: TimelineViewMode) => {
     if (!isCollapsed && viewMode === mode) {
       setHeight(minHeight);
       return;
@@ -1122,22 +1143,14 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
             <span className="text-gray-600">/</span>
             <span className="w-8">{maxFrames}</span>
           </div>
-          <StudioSegmentedControl>
-            <StudioSegmentedControlButton
-              onClick={() => openTimelineView('dopesheet')}
-              active={!isCollapsed && viewMode === 'dopesheet'}
-              title={isCollapsed ? 'Open Dope Sheet View' : 'Dope Sheet View'}
-            >
-              Sheet
-            </StudioSegmentedControlButton>
-            <StudioSegmentedControlButton
-              onClick={() => openTimelineView('graph')}
-              active={!isCollapsed && viewMode === 'graph'}
-              title={isCollapsed ? 'Open Curve Editor View' : 'Curve Editor View'}
-            >
-              Curve
-            </StudioSegmentedControlButton>
-          </StudioSegmentedControl>
+          <SlidingSegmentedControl
+            options={timelineViewOptions}
+            value={isCollapsed ? null : viewMode}
+            onChange={openTimelineView}
+            activeWidth={TIMELINE_VIEW_ACTIVE_WIDTH}
+            inactiveWidth={TIMELINE_VIEW_INACTIVE_WIDTH}
+            height={TIMELINE_VIEW_HEIGHT}
+          />
         </div>
       </div>
 

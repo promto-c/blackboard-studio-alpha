@@ -32,3 +32,12 @@ export function buildNodeStacks(nodes: AnyNode[]): AnyNode[][] {
 
   return stacks;
 }
+
+export function hasPreviousStackTarget(nodes: AnyNode[], nodeId: string): boolean {
+  const nodeIndex = nodes.findIndex((node) => node.id === nodeId);
+  if (nodeIndex <= 0) {
+    return false;
+  }
+
+  return nodes.slice(0, nodeIndex).some((node) => node.type !== NodeType.SCENE);
+}

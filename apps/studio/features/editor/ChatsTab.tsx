@@ -1933,12 +1933,6 @@ const ChatsTab: React.FC = () => {
                     </div>
                     <h3 className="mt-3 text-sm font-medium text-white">Start a chat</h3>
                     <p className="mt-1.5 text-xs leading-5 text-gray-400">{modeDescription}</p>
-                    {currentScopeNode && (
-                      <div className="mt-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5">
-                        <p className="text-[10px] text-gray-500">Context</p>
-                        <p className="text-xs font-medium text-gray-300">{currentScopeNode.name}</p>
-                      </div>
-                    )}
                   </div>
                 </div>
               )}

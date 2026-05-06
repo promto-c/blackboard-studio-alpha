@@ -29,6 +29,6 @@ void main() {
   color = max(color * u_gain, vec3(0.0));
   color = pow(color, vec3(1.0 / max(u_gamma, 0.0001)));
 
-  fragColor = vec4(clamp(color, 0.0, 1.0), tex.a);
+  fragColor = vec4(color, tex.a);
 }
 `;

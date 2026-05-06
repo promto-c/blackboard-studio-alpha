@@ -36,7 +36,7 @@ const App: React.FC = () => {
   return (
     <>
       {projectId ? <Editor /> : <WelcomeScreen />}
-      <BackgroundJobsMonitor />
+      {!projectId && <BackgroundJobsMonitor />}
       <GlobalTooltipLayer />
     </>
   );

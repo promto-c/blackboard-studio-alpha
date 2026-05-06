@@ -1,10 +1,4 @@
-import {
-  AnyUniform,
-  ColorUniform,
-  SegmentedUniformOption,
-  SliderUniform,
-  UniformUIType,
-} from '@blackboard/types';
+import { AnyUniform, SegmentedUniformOption, UniformUIType } from '@blackboard/types';
 import type { RendererInputPort } from './types';
 
 export const VERTEX_SHADER = `

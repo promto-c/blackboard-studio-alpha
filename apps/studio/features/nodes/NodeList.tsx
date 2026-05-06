@@ -6,10 +6,11 @@ import { usePreferences } from '@/state/preferencesContext';
 import type { ThumbnailMode } from '@/state/preferencesContext';
 import * as Icons from '@blackboard/icons';
 import { buildMergeModel } from '@/utils/mergeNodes';
+import { hasPreviousStackTarget } from '@/utils/nodeStacks';
 import { getInputConnections } from '@/utils/connectionGraph';
 import { effectRegistry } from '@/effects/effectRegistry';
 import { NodeActionMenu, NodeAction } from './NodeActionMenu';
-import { createStackingAction } from './nodeActionFactories';
+import { createExecutionAction, createStackingAction } from './nodeActionFactories';
 import NodeIcon from './NodeIcon';
 import {
   getNodeBlendModeLabel,
@@ -17,6 +18,7 @@ import {
   hasMediaThumbnail as nodeHasMediaThumbnail,
 } from './nodeVisualHelpers';
 import { getActiveNodeJobMap, NodeProgressBackground } from './NodeProgressBackground';
+import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
 
 const VisibilityToggle: React.FC<{
   visible: boolean;
@@ -502,6 +504,13 @@ const NodeList: React.FC<NodeListProps> = ({
     [hoveredConnectionNodeIds],
   );
   const activeNodeJobMap = useMemo(() => getActiveNodeJobMap(backgroundJobs), [backgroundJobs]);
+  const handleExecuteNode = useCallback(
+    (nodeId: string) => {
+      selectNode(nodeId);
+      requestRegisteredNodeExecution(nodeId);
+    },
+    [selectNode],
+  );
 
   return (
     <div ref={listRef} className="relative w-full">
@@ -567,12 +576,12 @@ const NodeList: React.FC<NodeListProps> = ({
                   {stackContent.map((node) => {
                     const isBase = node.id === baseNode.id;
                     const isSelectedNode = node.id === selectedNodeId;
-                    const nodeIndexInAll = nodes.findIndex((n) => n.id === node.id);
                     const stackingAction = createStackingAction(
                       node,
-                      nodeIndexInAll > 0,
+                      hasPreviousStackTarget(nodes, node.id),
                       toggleNodeStacking,
                     );
+                    const executionAction = createExecutionAction(node, handleExecuteNode);
                     return (
                       <div
                         key={node.id}
@@ -643,6 +652,7 @@ const NodeList: React.FC<NodeListProps> = ({
                           <NodeActionMenu
                             actions={[
                               ...(stackingAction ? [stackingAction] : []),
+                              ...(executionAction ? [executionAction] : []),
                               {
                                 id: 'visibility',
                                 label: node.visible ? 'Hide' : 'Show',
@@ -732,6 +742,7 @@ const NodeList: React.FC<NodeListProps> = ({
                     nodeIndexInAll > 0,
                     toggleNodeStacking,
                   );
+                  const executionAction = createExecutionAction(node, handleExecuteNode);
                   const isSelectedNode = node.id === selectedNodeId;
 
                   return (
@@ -809,6 +820,7 @@ const NodeList: React.FC<NodeListProps> = ({
                           <NodeActionMenu
                             actions={[
                               ...(stackingAction ? [stackingAction] : []),
+                              ...(executionAction ? [executionAction] : []),
                               ...(isBase && isDraggable
                                 ? [
                                     {

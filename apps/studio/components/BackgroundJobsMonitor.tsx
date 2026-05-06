@@ -17,6 +17,11 @@ import * as Icons from '@blackboard/icons';
 
 type IconComponent = React.ComponentType<{ className?: string }>;
 
+interface BackgroundJobsMonitorProps {
+  className?: string;
+  compact?: boolean;
+}
+
 interface MonitorJob {
   id: string;
   type: BackgroundJobType;
@@ -219,7 +224,10 @@ const JobIcon: React.FC<{ type: BackgroundJobType; className?: string }> = ({
   return <Icon className={className} />;
 };
 
-const BackgroundJobsMonitor: React.FC = () => {
+const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
+  className = 'pointer-events-auto fixed right-16 top-4 z-[60]',
+  compact = false,
+}) => {
   const explicitJobs = useEditorSelector((state) => state.backgroundJobs);
   const aiChats = useEditorSelector((state) => state.aiChats);
   const aiGenerationQueue = useEditorSelector((state) => state.aiGenerationQueue);
@@ -344,7 +352,7 @@ const BackgroundJobsMonitor: React.FC = () => {
   };
 
   return (
-    <div className="pointer-events-auto fixed right-16 top-4 z-[60]">
+    <div className={className}>
       <Popover
         isOpen={isOpen}
         onOpenChange={setIsOpen}
@@ -353,11 +361,11 @@ const BackgroundJobsMonitor: React.FC = () => {
         trigger={
           <button
             type="button"
-            className={`group relative flex h-10 items-center gap-2 overflow-hidden rounded-full border px-3 text-left shadow-2xl backdrop-blur-xl transition hover:border-white/20 ${
+            className={`group relative flex h-10 items-center overflow-hidden rounded-full border text-left shadow-2xl backdrop-blur-xl transition hover:border-white/20 ${
               showActiveIndicator
                 ? 'border-primary-300/25 bg-gray-950/70 text-primary-50'
                 : 'border-white/10 bg-gray-950/55 text-gray-200'
-            }`}
+            } ${compact ? 'w-10 justify-center px-0' : 'gap-2 px-3'}`}
             title="Background jobs"
             aria-label="Background jobs"
           >
@@ -379,10 +387,12 @@ const BackgroundJobsMonitor: React.FC = () => {
                 <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-primary-300 shadow-[0_0_10px_rgb(var(--color-primary-300)_/_0.8)]" />
               )}
             </span>
-            <span className="relative min-w-0 flex-1 truncate whitespace-nowrap text-xs font-medium">
-              {title}
-            </span>
-            {showActiveIndicator && (
+            {!compact && (
+              <span className="relative min-w-0 flex-1 truncate whitespace-nowrap text-xs font-medium">
+                {title}
+              </span>
+            )}
+            {showActiveIndicator && !compact && (
               <span className="relative w-10 shrink-0 text-right font-mono text-[11px] text-primary-100/80">
                 {leadingJob.indeterminate ? '...' : `${Math.round(leadingProgress)}%`}
               </span>

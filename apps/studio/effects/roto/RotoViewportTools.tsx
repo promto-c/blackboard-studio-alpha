@@ -68,7 +68,7 @@ const RotoViewportTools: React.FC<{
         onClick={() => onPanelToggle('trace')}
       />
       <ViewportToolButton
-        label="Tracking"
+        label="Tracking (T)"
         icon={<Icons.Play className="h-5 w-5" />}
         isActive={openPanels.has('tracking')}
         onClick={() => onPanelToggle('tracking')}

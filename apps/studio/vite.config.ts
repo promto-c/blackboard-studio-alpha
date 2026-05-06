@@ -23,14 +23,8 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
-        '@blackboard/renderer': path.resolve(
-          __dirname,
-          '../../packages/renderer/src/index.ts',
-        ),
-        '@blackboard/types': path.resolve(
-          __dirname,
-          '../../packages/types/src/index.ts',
-        ),
+        '@blackboard/renderer': path.resolve(__dirname, '../../packages/renderer/src/index.ts'),
+        '@blackboard/types': path.resolve(__dirname, '../../packages/types/src/index.ts'),
       },
     },
 

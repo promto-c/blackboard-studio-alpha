@@ -189,6 +189,7 @@ const Viewport: React.FC = () => {
     y: number;
     color: [number, number, number, number];
   } | null>(null);
+  const [renderVersion, setRenderVersion] = useState(0);
   const pixelReadBuffer8Ref = useRef(new Uint8Array(4));
   const pixelReadBuffer16Ref = useRef(new Uint16Array(4));
   const pixelReadBuffer32Ref = useRef(new Float32Array(4));
@@ -196,6 +197,11 @@ const Viewport: React.FC = () => {
   const handleSmoothnessChange = (newEpsilon: number) => {
     updateRotoRefinement({ epsilon: newEpsilon });
   };
+
+  const handleFrameRendered = useCallback(() => {
+    signalFrameRendered();
+    setRenderVersion((version) => version + 1);
+  }, [signalFrameRendered]);
 
   const threeStuff = useRef({
     scene: new THREE.Scene(),
@@ -610,7 +616,7 @@ const Viewport: React.FC = () => {
     rotoMaskTexturesRef,
     freezeImageWhileEditing: freezeRotoMaskWhileEditing,
     deferProjectThumbnailCapture: isFrameScrubbing || isInteractiveRotoPreviewActive,
-    signalFrameRendered,
+    signalFrameRendered: handleFrameRendered,
     setProjectThumbnail,
   });
 
@@ -888,6 +894,47 @@ const Viewport: React.FC = () => {
     [gl],
   );
 
+  const updatePixelInfoAtScenePos = useCallback(
+    (scenePos: { x: number; y: number } | null) => {
+      if (
+        !scenePos ||
+        !gl ||
+        !viewportRef.current ||
+        !sceneNode ||
+        !finalCompBufferRef.current ||
+        !hasRenderableOutput ||
+        isLoading
+      ) {
+        setPixelInfo(null);
+        return;
+      }
+
+      const sceneX = Math.floor(scenePos.x + sceneNode.width / 2);
+      const sceneY = Math.floor(scenePos.y + sceneNode.height / 2);
+
+      if (sceneX < 0 || sceneX >= sceneNode.width || sceneY < 0 || sceneY >= sceneNode.height) {
+        setPixelInfo(null);
+        return;
+      }
+
+      const color = readPixelColor(
+        finalCompBufferRef.current,
+        sceneX,
+        sceneNode.height - 1 - sceneY,
+      );
+      setPixelInfo({
+        x: sceneX,
+        y: sceneY,
+        color,
+      });
+    },
+    [finalCompBufferRef, gl, hasRenderableOutput, isLoading, readPixelColor, sceneNode],
+  );
+
+  useEffect(() => {
+    updatePixelInfoAtScenePos(mouseScenePos);
+  }, [mouseScenePos, renderVersion, updatePixelInfoAtScenePos, viewerNodeId]);
+
   const handleMouseMove = useCallback(
     (e: ViewportMouseEvent) => {
       const nativeEvent = getNativeMouseEvent(e);
@@ -914,46 +961,17 @@ const Viewport: React.FC = () => {
       if (rotoInteraction.handleMouseMove(e, mousePos, scenePos)) return;
       if (warpInteraction.handleMouseMove(e, mousePos, scenePos)) return;
 
-      // Pixel info reading (always runs when no exclusive handler consumed the event)
-      if (
-        !gl ||
-        !viewportRef.current ||
-        !sceneNode ||
-        !finalCompBufferRef.current ||
-        !hasRenderableOutput
-      ) {
-        if (pixelInfo) setPixelInfo(null);
-        return;
-      }
-      const sceneX = Math.floor(scenePos.x + sceneNode.width / 2),
-        sceneY = Math.floor(scenePos.y + sceneNode.height / 2);
-      if (sceneX >= 0 && sceneX < sceneNode.width && sceneY >= 0 && sceneY < sceneNode.height) {
-        const color = readPixelColor(
-          finalCompBufferRef.current,
-          sceneX,
-          sceneNode.height - 1 - sceneY,
-        );
-        setPixelInfo({
-          x: sceneX,
-          y: sceneY,
-          color,
-        });
-      } else setPixelInfo(null);
+      updatePixelInfoAtScenePos(scenePos);
     },
     [
-      finalCompBufferRef,
       getNativeMouseEvent,
       getViewportMousePos,
-      gl,
-      hasRenderableOutput,
       isLoading,
       isMousePanning,
       isScrubbing,
       paintInteraction,
-      pixelInfo,
-      readPixelColor,
       rotoInteraction,
-      sceneNode,
+      updatePixelInfoAtScenePos,
       viewportToSceneCentered,
       warpInteraction,
     ],

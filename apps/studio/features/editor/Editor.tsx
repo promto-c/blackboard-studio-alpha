@@ -80,6 +80,7 @@ const Editor: React.FC = () => {
       el.style.setProperty('--panel-width', `${isMobilePortrait ? 0 : panelWidth}px`);
       el.style.setProperty('--bottom-tray-height', '0px');
       el.style.setProperty('--timeline-height', `${isTimelineVisible ? timelineHeight : 0}px`);
+      window.dispatchEvent(new CustomEvent('studio-editor-layout-resize'));
     }
   }, [panelWidth, isMobilePortrait, timelineHeight, isTimelineVisible]);
 

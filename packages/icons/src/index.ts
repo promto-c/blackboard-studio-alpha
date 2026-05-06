@@ -16,6 +16,7 @@ export { Brush } from './icons/Brush';
 export { Bsline } from './icons/Bsline';
 export { BuildingStorefront } from './icons/BuildingStorefront';
 export { Channels } from './icons/Channels';
+export { ChatBubble } from './icons/ChatBubble';
 export { Check } from './icons/Check';
 export { ChevronDown } from './icons/ChevronDown';
 export { ChevronLeft } from './icons/ChevronLeft';

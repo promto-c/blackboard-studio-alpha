@@ -14,6 +14,8 @@ import { useNodeDrag } from '@/hooks/useNodeDrag';
 import { usePreferences } from '@/state/preferencesContext';
 import { buildMergeModel, getMergeSourceNodeId, isMergeNodeId } from '@/utils/mergeNodes';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import { isStackAdjustmentType } from '@/utils/nodePredicates';
+import { hasPreviousStackTarget } from '@/utils/nodeStacks';
 import {
   useHotkeyScope,
   useRegisterHotkeyCommands,
@@ -29,6 +31,7 @@ import ImageImportToolButton from '@/effects/image/ImageImportToolButton';
 import ImageSequenceToolButton from '@/effects/image_sequence/ImageSequenceToolButton';
 import AiInpaintingToolButton from '@/effects/ai/AiInpaintingToolButton';
 import { getActiveNodeJobMap } from '@/features/nodes/NodeProgressBackground';
+import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
 
 // --- Types ---
 
@@ -45,6 +48,12 @@ interface DragConnectState {
   cursorY: number;
 }
 
+interface StackMagnetTarget {
+  targetStackId: string;
+  pullX: number;
+  pullY: number;
+}
+
 interface NodeViewProps {
   sceneNode: SceneNode | undefined;
   nodeStacks: AnyNode[][];
@@ -56,6 +65,9 @@ interface NodeViewProps {
   viewerSlots: ViewerSlotAssignments;
   fitInsetRight?: number;
 }
+
+const STACK_MAGNET_RADIUS = 84;
+const STACK_MAGNET_MAX_PULL = 34;
 
 // --- Main Component ---
 
@@ -85,6 +97,7 @@ const NodeView: React.FC<NodeViewProps> = ({
     commitNodePosition,
     autoArrangeNodes,
     toggleNodeStacking,
+    stackNodeOntoStack,
     setActiveTab,
   } = useEditorActions();
   const { thumbnailMode } = usePreferences();
@@ -147,7 +160,7 @@ const NodeView: React.FC<NodeViewProps> = ({
 
   const mergeModel = useMemo(() => buildMergeModel(nodeStacks), [nodeStacks]);
   const canStackNode = useCallback(
-    (nodeId: string) => nodes.findIndex((node) => node.id === nodeId) > 0,
+    (nodeId: string) => hasPreviousStackTarget(nodes, nodeId),
     [nodes],
   );
 
@@ -364,13 +377,111 @@ const NodeView: React.FC<NodeViewProps> = ({
 
   // --- Node dragging ---
   const preDragPositionsRef = useRef<Record<string, { x: number; y: number }> | null>(null);
+  const [stackMagnetTarget, setStackMagnetTarget] = useState<StackMagnetTarget | null>(null);
+  const stackMagnetTargetRef = useRef<StackMagnetTarget | null>(null);
+  const stackMap = useMemo(() => buildStackMap(nodeStacks), [nodeStacks]);
+
+  const getStackMagnetTarget = useCallback(
+    (nodeId: string, x: number, y: number): StackMagnetTarget | null => {
+      const draggedStack = nodeStacks.find((stack) => stack[0].id === nodeId);
+      const draggedNode = draggedStack?.[0];
+      if (!draggedStack || !draggedNode || !isStackAdjustmentType(draggedNode.type)) {
+        return null;
+      }
+
+      const draggedHeight = estimateNodeHeight(nodeId, stackMap);
+      const draggedRect = {
+        x,
+        y,
+        width: NODE_WIDTH,
+        height: draggedHeight,
+      };
+
+      let best: {
+        targetStackId: string;
+        distance: number;
+        centerDistance: number;
+        pullX: number;
+        pullY: number;
+      } | null = null;
+
+      for (const targetStack of nodeStacks) {
+        const targetBase = targetStack[0];
+        if (targetBase.id === nodeId || targetStack.some((node) => node.id === nodeId)) {
+          continue;
+        }
+
+        const targetPos = nodePositions[targetBase.id];
+        if (!targetPos) {
+          continue;
+        }
+
+        const targetHeight = estimateNodeHeight(targetBase.id, stackMap);
+        const targetRect = {
+          x: targetPos.x,
+          y: targetPos.y,
+          width: NODE_WIDTH,
+          height: targetHeight,
+        };
+        const distance = getRectGapDistance(draggedRect, targetRect);
+        if (distance > STACK_MAGNET_RADIUS) {
+          continue;
+        }
+
+        const draggedCenter = getRectCenter(draggedRect);
+        const targetCenter = getRectCenter(targetRect);
+        const deltaX = targetCenter.x - draggedCenter.x;
+        const deltaY = targetCenter.y - draggedCenter.y;
+        const centerDistance = Math.hypot(deltaX, deltaY);
+        const strength = 1 - distance / STACK_MAGNET_RADIUS;
+        const pullDistance = STACK_MAGNET_MAX_PULL * strength;
+        const pullScale = centerDistance > 0 ? pullDistance / centerDistance : 0;
+        const candidate = {
+          targetStackId: targetBase.id,
+          distance,
+          centerDistance,
+          pullX: deltaX * pullScale,
+          pullY: deltaY * pullScale,
+        };
+
+        if (
+          !best ||
+          candidate.distance < best.distance ||
+          (candidate.distance === best.distance && candidate.centerDistance < best.centerDistance)
+        ) {
+          best = candidate;
+        }
+      }
+
+      return best
+        ? {
+            targetStackId: best.targetStackId,
+            pullX: best.pullX,
+            pullY: best.pullY,
+          }
+        : null;
+    },
+    [nodePositions, nodeStacks, stackMap],
+  );
 
   const { startDrag: startDragRaw, dragNodeId } = useNodeDrag({
     zoom: viewport.zoom,
     onDrag: (nodeId, x, y) => {
       setNodePosition(nodeId, x, y);
+      const nextTarget = getStackMagnetTarget(nodeId, x, y);
+      stackMagnetTargetRef.current = nextTarget;
+      setStackMagnetTarget(nextTarget);
     },
-    onDragEnd: (_nodeId) => {
+    onDragEnd: (nodeId) => {
+      const target = stackMagnetTargetRef.current;
+      stackMagnetTargetRef.current = null;
+      setStackMagnetTarget(null);
+
+      if (target && stackNodeOntoStack(nodeId, target.targetStackId)) {
+        preDragPositionsRef.current = null;
+        return;
+      }
+
       if (preDragPositionsRef.current) {
         commitNodePosition(preDragPositionsRef.current);
         preDragPositionsRef.current = null;
@@ -381,6 +492,8 @@ const NodeView: React.FC<NodeViewProps> = ({
   const startDrag = useCallback(
     (e: React.MouseEvent, nodeId: string, x: number, y: number) => {
       preDragPositionsRef.current = { ...nodePositions };
+      stackMagnetTargetRef.current = null;
+      setStackMagnetTarget(null);
       startDragRaw(e, nodeId, x, y);
     },
     [nodePositions, startDragRaw],
@@ -404,9 +517,16 @@ const NodeView: React.FC<NodeViewProps> = ({
     [setActiveTab],
   );
 
+  const handleExecuteNode = useCallback(
+    (nodeId: string) => {
+      selectNode(nodeId);
+      requestRegisteredNodeExecution(nodeId);
+    },
+    [selectNode],
+  );
+
   // --- Auto-layout initialization ---
   const initialLayoutDone = useRef(false);
-  const stackMap = useMemo(() => buildStackMap(nodeStacks), [nodeStacks]);
 
   useEffect(() => {
     if (nodes.length === 0 || initialLayoutDone.current) return;
@@ -576,6 +696,14 @@ const NodeView: React.FC<NodeViewProps> = ({
           const baseNode = stack[0];
           const isStackSelected = selectedStackIds.has(baseNode.id);
           const pos = getPos(baseNode.id);
+          const isMagnetTarget =
+            !!stackMagnetTarget &&
+            stackMagnetTarget.targetStackId === baseNode.id &&
+            dragNodeId !== baseNode.id;
+          const dragPull =
+            dragNodeId === baseNode.id && stackMagnetTarget
+              ? { x: stackMagnetTarget.pullX, y: stackMagnetTarget.pullY }
+              : null;
 
           return (
             <div
@@ -585,13 +713,19 @@ const NodeView: React.FC<NodeViewProps> = ({
                 position: 'absolute',
                 left: pos.x,
                 top: pos.y,
-                zIndex: dragNodeId === baseNode.id ? 10 : 1,
+                zIndex: dragNodeId === baseNode.id ? 10 : isMagnetTarget ? 5 : 1,
+                transform: dragPull
+                  ? `translate(${dragPull.x}px, ${dragPull.y}px) scale(0.98)`
+                  : undefined,
+                transition: dragPull ? 'transform 120ms ease-out' : undefined,
               }}
             >
               <StackNodeCard
                 stack={stack}
                 sceneNode={sceneNode}
                 isSelected={isStackSelected}
+                isStackMagnetTarget={isMagnetTarget}
+                isStackMagnetSource={dragNodeId === baseNode.id && !!stackMagnetTarget}
                 selectedNodeId={selectedNodeId}
                 thumbnailMode={thumbnailMode}
                 connectionMap={connectionMap}
@@ -611,7 +745,7 @@ const NodeView: React.FC<NodeViewProps> = ({
                 onOutputPortMouseDown={(e) => handleOutputPortMouseDown(e, baseNode.id)}
                 registerPortRef={registerPortRef}
                 activeNodeJobMap={activeNodeJobMap}
-                onExecuteNode={(nodeId) => selectNode(nodeId)}
+                onExecuteNode={handleExecuteNode}
               />
             </div>
           );
@@ -655,8 +789,6 @@ const NodeView: React.FC<NodeViewProps> = ({
   );
 };
 
-// --- Helpers ---
-
 function computeBounds(
   positions: Record<string, { x: number; y: number }>,
   stackMap?: Map<string, AnyNode[]>,
@@ -678,6 +810,21 @@ function computeBounds(
   }
 
   return { minX, minY, maxX, maxY };
+}
+
+type GraphRect = { x: number; y: number; width: number; height: number };
+
+function getRectCenter(rect: GraphRect): { x: number; y: number } {
+  return {
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height / 2,
+  };
+}
+
+function getRectGapDistance(a: GraphRect, b: GraphRect): number {
+  const horizontalGap = Math.max(b.x - (a.x + a.width), a.x - (b.x + b.width), 0);
+  const verticalGap = Math.max(b.y - (a.y + a.height), a.y - (b.y + b.height), 0);
+  return Math.hypot(horizontalGap, verticalGap);
 }
 
 export default NodeView;

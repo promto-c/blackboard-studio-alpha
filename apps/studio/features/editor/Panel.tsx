@@ -4,6 +4,7 @@ import { ComfyNode, ComfyWorkflow, EditorTab, NodeType } from '@blackboard/types
 import { SplitterHandle } from '@blackboard/ui';
 import FlowViewModeControls from '@/components/FlowViewModeControls';
 import NodeItemsPanel, { getNodeItemsComponent } from '@/components/NodeItemsPanel';
+import SlidingSegmentedControl from '@/components/SlidingSegmentedControl';
 import {
   StudioSegmentedControl,
   StudioSegmentedControlButton,
@@ -38,6 +39,11 @@ interface PanelProps {
 }
 
 type DesktopSubPanelTab = EditorTab.Flow | EditorTab.Gallery | EditorTab.Chats | EditorTab.History;
+type DesktopPanelTabItem = {
+  tab: DesktopSubPanelTab;
+  label: string;
+  Icon: React.FC<{ className?: string }>;
+};
 
 const MAIN_FLOW_MIN_WIDTH = 260;
 const LIST_SUB_PANEL_VERTICAL_BREAKPOINT = MAIN_FLOW_MIN_WIDTH + EDITOR_SUB_PANEL_WIDTH_MIN;
@@ -47,6 +53,17 @@ const FLOW_BREADCRUMB_CLASS =
   '-ml-[3px] flex min-w-0 items-center gap-0.5 rounded-md border border-white/10 bg-black/20 p-0.5';
 const FLOW_BREADCRUMB_BUTTON_CLASS =
   'inline-flex min-w-0 items-center gap-1 rounded px-1 py-1 transition-colors';
+const DESKTOP_PANEL_TABS: DesktopPanelTabItem[] = [
+  { tab: EditorTab.Flow, label: 'Props', Icon: Icons.Cog },
+  { tab: EditorTab.Chats, label: 'Chats', Icon: Icons.ChatBubble },
+  { tab: EditorTab.Gallery, label: 'Gallery', Icon: Icons.Photo },
+  { tab: EditorTab.History, label: 'History', Icon: Icons.RotateLoop },
+];
+const DESKTOP_PANEL_ACTIVE_TAB_WIDTH = 68;
+const DESKTOP_PANEL_INACTIVE_TAB_WIDTH = 28;
+const DESKTOP_PANEL_TAB_GAP = 2;
+const DESKTOP_PANEL_TAB_PADDING = 4;
+const DESKTOP_HEADER_CONTROL_HEIGHT = 28;
 
 const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -332,17 +349,6 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
       subgraphDepth: 0,
     });
   }, [selectedComfyWorkflow, setPreferences]);
-  const setActiveComfySubgraphPath = useCallback(
-    (subgraphPath: NonNullable<ActiveComfyGraph['subgraphPath']>) => {
-      if (!activeComfyGraph) return;
-      setActiveComfyGraph({
-        ...activeComfyGraph,
-        subgraphPath,
-        subgraphDepth: subgraphPath.length,
-      });
-    },
-    [activeComfyGraph, setActiveComfyGraph],
-  );
   const setActiveComfySubgraphDepth = useCallback(
     (subgraphDepth: number) => {
       if (!activeComfyGraph) return;
@@ -537,8 +543,6 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
     setActiveTab(EditorTab.Tools);
   };
 
-  const isSubPanelTabActive = (tab: DesktopSubPanelTab) =>
-    isDesktopSubPanelOpen && desktopSubPanelTab === tab;
   const isListView = flowViewMode === 'list';
   const shouldReserveSubPanelArea = isDesktopSubPanelOpen && isListView;
   const panelContentWidth = panelContentSize.width;
@@ -960,41 +964,28 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
                 onSelectViewMode={setFlowViewMode}
                 onToggleFlowDirection={handleToggleFlowDirection}
                 onAutoArrange={autoArrangeNodes}
-                variant="panel"
               />
             )}
 
-            <StudioSegmentedControl>
-              <StudioSegmentedControlButton
-                onClick={() => openSubPanel(EditorTab.Flow)}
-                active={isSubPanelTabActive(EditorTab.Flow)}
-              >
-                Props
-              </StudioSegmentedControlButton>
-              <StudioSegmentedControlButton
-                onClick={() => openSubPanel(EditorTab.Chats)}
-                active={isSubPanelTabActive(EditorTab.Chats)}
-              >
-                Chats
-              </StudioSegmentedControlButton>
-              <StudioSegmentedControlButton
-                onClick={() => openSubPanel(EditorTab.Gallery)}
-                active={isSubPanelTabActive(EditorTab.Gallery)}
-              >
-                Gallery
-              </StudioSegmentedControlButton>
-              <StudioSegmentedControlButton
-                onClick={() => openSubPanel(EditorTab.History)}
-                active={isSubPanelTabActive(EditorTab.History)}
-              >
-                History
-              </StudioSegmentedControlButton>
-            </StudioSegmentedControl>
-            <div className="flex items-center gap-1 bg-black/20 border border-white/10 rounded-md p-0.5">
+            <SlidingSegmentedControl
+              options={DESKTOP_PANEL_TABS.map(({ tab, label, Icon }) => ({
+                value: tab,
+                label,
+                Icon,
+              }))}
+              value={isDesktopSubPanelOpen ? desktopSubPanelTab : null}
+              onChange={openSubPanel}
+              activeWidth={DESKTOP_PANEL_ACTIVE_TAB_WIDTH}
+              inactiveWidth={DESKTOP_PANEL_INACTIVE_TAB_WIDTH}
+              gap={DESKTOP_PANEL_TAB_GAP}
+              padding={DESKTOP_PANEL_TAB_PADDING}
+              height={DESKTOP_HEADER_CONTROL_HEIGHT}
+            />
+            <div className="flex h-7 items-center gap-1 bg-black/20 border border-white/10 rounded-md p-0.5">
               <button
                 ref={addToolsButtonRef}
                 onClick={toggleToolsPopup}
-                className={`p-1 rounded transition-all flex items-center justify-center ${
+                className={`flex h-full aspect-square items-center justify-center rounded transition-all ${
                   isDesktopToolsPopupOpen
                     ? 'bg-gray-700 text-white shadow-sm'
                     : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
@@ -1012,7 +1003,6 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
           <div className={`min-w-0 flex-1 ${flowContentSizeClass} ${flowContentTopClass}`}>
             <FlowTab
               showPropertiesSection={false}
-              showTopBar={false}
               graphFitInsetRight={graphFitInsetRight}
               activeComfyGraph={activeComfyGraph}
               onActiveComfyGraphChange={setActiveComfyGraph}

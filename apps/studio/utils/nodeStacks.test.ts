@@ -8,7 +8,7 @@ vi.mock('@google/genai', () => ({
 }));
 
 import { NodeType, type AnyNode } from '@blackboard/types';
-import { buildNodeStacks } from '@/utils/nodeStacks';
+import { buildNodeStacks, hasPreviousStackTarget } from '@/utils/nodeStacks';
 
 // ---------------------------------------------------------------------------
 // Minimal node factories – only the fields that matter for stack logic.
@@ -83,5 +83,19 @@ describe('buildNodeStacks', () => {
     expect(stacks).toHaveLength(2);
     expect(stacks[0].map((n) => n.id)).toEqual(['i1']);
     expect(stacks[1].map((n) => n.id)).toEqual(['g_unstacked']);
+  });
+});
+
+describe('hasPreviousStackTarget', () => {
+  it('returns false for the first non-scene node', () => {
+    expect(hasPreviousStackTarget([scene('s1'), grade('g1', false)], 'g1')).toBe(false);
+  });
+
+  it('returns true when a real flow node precedes the node', () => {
+    expect(hasPreviousStackTarget([scene('s1'), img('i1'), grade('g1', false)], 'g1')).toBe(true);
+  });
+
+  it('returns false for a missing node id', () => {
+    expect(hasPreviousStackTarget([scene('s1'), img('i1')], 'missing')).toBe(false);
   });
 });

@@ -42,7 +42,6 @@ describe('FlowViewModeControls', () => {
         onSelectViewMode={onSelectViewMode}
         onToggleFlowDirection={onToggleFlowDirection}
         onAutoArrange={onAutoArrange}
-        variant="panel"
       />,
     );
 

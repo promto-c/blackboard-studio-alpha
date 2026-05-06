@@ -14,9 +14,9 @@ import { getNodeCount } from '@/state/editor/selectors';
 import { setImmutable, getImmutable, clampKeyframeTangents } from '@blackboard/renderer';
 import { NODE_WIDTH, HORIZONTAL_GAP, VERTICAL_GAP } from '@/utils/autoLayoutGraph';
 import { buildMergeModel, isMergeNodeId, type MergeModel } from '@/utils/mergeNodes';
-import { buildNodeStacks } from '@/utils/nodeStacks';
+import { buildNodeStacks, hasPreviousStackTarget } from '@/utils/nodeStacks';
 import {
-  hasStackedFlag,
+  isNodeStacked,
   isAutoStackedNewNodeType,
   isStackedAdjustmentNode,
   isStackAdjustmentType,
@@ -238,12 +238,14 @@ export function createNodeActions(
     toggleNodeStacking: (nodeId: string) => {
       const { nodes } = get();
       const layerIndex = nodes.findIndex((l) => l.id === nodeId);
-      if (layerIndex < 1) return;
+      if (layerIndex === -1) return;
       const node = nodes[layerIndex];
       const isAdjustment = isStackAdjustmentType(node.type);
       if (!isAdjustment) return;
+      const nextStacked = !isNodeStacked(node);
+      if (nextStacked && !hasPreviousStackTarget(nodes, nodeId)) return;
       const newNodes = nodes.map((l) =>
-        l.id === nodeId && hasStackedFlag(l) ? { ...l, stacked: !l.stacked } : l,
+        l.id === nodeId ? ({ ...l, stacked: nextStacked } as AnyNode) : l,
       );
       set(() => ({ nodes: newNodes }));
       const newNode = newNodes.find((l) => l.id === nodeId) as
@@ -253,6 +255,74 @@ export function createNodeActions(
         label: `${newNode?.stacked ? 'Stack' : 'Unstack'} ${newNode?.name}`,
         state: { nodes: newNodes },
       });
+    },
+
+    stackNodeOntoStack: (nodeId: string, targetStackId: string): boolean => {
+      const { nodes, selectedNodeId, nodePositions = {} } = get();
+      const sourceIndex = nodes.findIndex((node) => node.id === nodeId);
+      if (sourceIndex === -1 || nodeId === targetStackId) return false;
+
+      const sourceNode = nodes[sourceIndex];
+      if (!isStackAdjustmentType(sourceNode.type)) {
+        return false;
+      }
+
+      const currentStacks = buildNodeStacks(nodes);
+      const sourceStack = currentStacks.find((stack) => stack[0].id === nodeId);
+      const targetStack = currentStacks.find((stack) => stack[0].id === targetStackId);
+      if (!sourceStack || !targetStack || targetStack.some((node) => node.id === nodeId)) {
+        return false;
+      }
+
+      const newNodes = [...nodes];
+      const groupToMove = newNodes.slice(sourceIndex, sourceIndex + sourceStack.length);
+      newNodes.splice(sourceIndex, groupToMove.length);
+
+      const targetIndex = newNodes.findIndex((node) => node.id === targetStackId);
+      if (targetIndex === -1) return false;
+
+      let insertionIndex = targetIndex;
+      for (let i = targetIndex + 1; i < newNodes.length; i++) {
+        if (!isStackedAdjustmentNode(newNodes[i])) {
+          break;
+        }
+        insertionIndex = i;
+      }
+
+      const stackedGroup = groupToMove.map((node, index) =>
+        index === 0 ? ({ ...node, stacked: true } as AnyNode) : node,
+      );
+      newNodes.splice(insertionIndex + 1, 0, ...stackedGroup);
+
+      const newStacks = buildNodeStacks(newNodes);
+      const newMergeModel = buildMergeModel(newStacks);
+      const expectedMergeIds = new Set(
+        newMergeModel.mergeNodes.map((mergeNode) => mergeNode.mergeId),
+      );
+      const updatedNodePositions = { ...nodePositions };
+
+      delete updatedNodePositions[nodeId];
+      for (const positionId of Object.keys(updatedNodePositions)) {
+        if (isMergeNodeId(positionId) && !expectedMergeIds.has(positionId)) {
+          delete updatedNodePositions[positionId];
+        }
+      }
+
+      set(() => ({
+        nodes: newNodes,
+        selectedNodeId,
+        nodePositions: updatedNodePositions,
+      }));
+      deps.pushHistory({
+        label: `Stack ${sourceNode.name}`,
+        state: {
+          nodes: newNodes,
+          selectedNodeId,
+          nodePositionsByFlow: get().nodePositionsByFlow,
+        },
+      });
+
+      return true;
     },
 
     reorderNodes: (dragIndex: number, dropIndex: number) => {

@@ -1,6 +1,7 @@
 import {
   BlendMode,
   ComfyNode,
+  ComfyWorkflow,
   ImageFitMode,
   ImageTransform,
   NodeType,
@@ -23,6 +24,24 @@ const getComfyNodeAssetIds = (node: ComfyNode): string[] =>
     ]),
   ).filter((src): src is string => Boolean(src));
 
+const getSelectedWorkflowOutputIds = (workflow: ComfyWorkflow): string[] => {
+  const candidateIds = new Set((workflow.outputCandidates ?? []).map((candidate) => candidate.id));
+  if (workflow.selectedOutputIds) {
+    return workflow.selectedOutputIds.filter((id) => candidateIds.has(id));
+  }
+  const firstCandidate = workflow.outputCandidates?.[0];
+  return firstCandidate ? [firstCandidate.id] : [];
+};
+
+const canRunComfyNode = (node: ComfyNode): boolean => {
+  const selectedWorkflow =
+    node.workflows.find((workflow) => workflow.id === node.selectedWorkflowId) ?? null;
+  if (!selectedWorkflow) return false;
+
+  const outputCandidates = selectedWorkflow.outputCandidates ?? [];
+  return outputCandidates.length === 0 || getSelectedWorkflowOutputIds(selectedWorkflow).length > 0;
+};
+
 export const comfyEffect: EffectDefinition = {
   type: NodeType.COMFY,
   name: 'Comfy',
@@ -39,6 +58,10 @@ export const comfyEffect: EffectDefinition = {
     isMediaNode: true,
     showDataWindow: true,
     hasThumbnail: true,
+  },
+  nodeExecution: {
+    label: 'Run',
+    canExecute: (node) => canRunComfyNode(node as ComfyNode),
   },
   getInitialNodeProps: (): Omit<ComfyNode, 'id' | 'name' | 'visible' | 'type'> => ({
     workflows: [],

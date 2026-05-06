@@ -76,6 +76,11 @@ export {
 } from './NodeItemsPanel';
 export { default as SettingsPanelFrame } from './SettingsPanelFrame';
 export {
+  default as SlidingSegmentedControl,
+  type SlidingSegmentedControlOption,
+  type SlidingSegmentedControlProps,
+} from './SlidingSegmentedControl';
+export {
   StudioSegmentedControl,
   StudioSegmentedControlButton,
   type StudioSegmentedControlButtonProps,

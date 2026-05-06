@@ -1,4 +1,5 @@
 import { createNodePredicates, hasStackedFlag } from '@blackboard/renderer';
+import type { AnyNode } from '@blackboard/types';
 import { effectRegistry } from '@/effects/effectRegistry';
 
 export const predicates = createNodePredicates(effectRegistry);
@@ -24,5 +25,8 @@ export const isSourceNodeType = (type: string): boolean => {
   const def = effectRegistry.get(type);
   return !!def && (def.flags?.isSource ?? def.category === 'Image');
 };
+
+export const isNodeStacked = (node: AnyNode): boolean =>
+  hasStackedFlag(node) ? node.stacked : false;
 
 export { hasStackedFlag };
