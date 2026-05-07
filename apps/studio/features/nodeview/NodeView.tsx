@@ -52,6 +52,7 @@ interface StackMagnetTarget {
   targetStackId: string;
   pullX: number;
   pullY: number;
+  placeholderHeight: number;
 }
 
 interface NodeViewProps {
@@ -66,8 +67,9 @@ interface NodeViewProps {
   fitInsetRight?: number;
 }
 
-const STACK_MAGNET_RADIUS = 84;
-const STACK_MAGNET_MAX_PULL = 34;
+const STACK_MAGNET_RADIUS = 36;
+const STACK_MAGNET_MIN_HORIZONTAL_OVERLAP = 0.55;
+const STACK_MAGNET_PLACEHOLDER_GAP = 2;
 
 // --- Main Component ---
 
@@ -378,8 +380,37 @@ const NodeView: React.FC<NodeViewProps> = ({
   // --- Node dragging ---
   const preDragPositionsRef = useRef<Record<string, { x: number; y: number }> | null>(null);
   const [stackMagnetTarget, setStackMagnetTarget] = useState<StackMagnetTarget | null>(null);
+  const [stackMagnetDropCommitId, setStackMagnetDropCommitId] = useState<string | null>(null);
   const stackMagnetTargetRef = useRef<StackMagnetTarget | null>(null);
+  const stackNodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const stackMap = useMemo(() => buildStackMap(nodeStacks), [nodeStacks]);
+
+  useEffect(() => {
+    if (!stackMagnetDropCommitId) return;
+    const frame = window.requestAnimationFrame(() => setStackMagnetDropCommitId(null));
+    return () => window.cancelAnimationFrame(frame);
+  }, [stackMagnetDropCommitId]);
+
+  const registerStackNodeRef = useCallback((key: string, el: HTMLDivElement | null) => {
+    if (el) stackNodeRefs.current.set(key, el);
+    else stackNodeRefs.current.delete(key);
+  }, []);
+
+  const getRenderedStackHeight = useCallback((nodeId: string, fallbackHeight: number): number => {
+    const el = stackNodeRefs.current.get(nodeId);
+    if (!el) return fallbackHeight;
+
+    let height = el.offsetHeight || fallbackHeight;
+    const activeTarget = stackMagnetTargetRef.current;
+    if (activeTarget?.targetStackId === nodeId) {
+      const placeholderEl = el.querySelector<HTMLElement>('[data-stack-magnet-placeholder]');
+      const placeholderHeight = placeholderEl?.offsetHeight ?? activeTarget.placeholderHeight;
+      const placeholderGap = placeholderEl ? STACK_MAGNET_PLACEHOLDER_GAP : 0;
+      height -= placeholderHeight + placeholderGap;
+    }
+
+    return Math.max(0, height);
+  }, []);
 
   const getStackMagnetTarget = useCallback(
     (nodeId: string, x: number, y: number): StackMagnetTarget | null => {
@@ -389,7 +420,7 @@ const NodeView: React.FC<NodeViewProps> = ({
         return null;
       }
 
-      const draggedHeight = estimateNodeHeight(nodeId, stackMap);
+      const draggedHeight = getRenderedStackHeight(nodeId, estimateNodeHeight(nodeId, stackMap));
       const draggedRect = {
         x,
         y,
@@ -403,6 +434,7 @@ const NodeView: React.FC<NodeViewProps> = ({
         centerDistance: number;
         pullX: number;
         pullY: number;
+        placeholderHeight: number;
       } | null = null;
 
       for (const targetStack of nodeStacks) {
@@ -416,32 +448,47 @@ const NodeView: React.FC<NodeViewProps> = ({
           continue;
         }
 
-        const targetHeight = estimateNodeHeight(targetBase.id, stackMap);
+        const targetHeight = getRenderedStackHeight(
+          targetBase.id,
+          estimateNodeHeight(targetBase.id, stackMap),
+        );
         const targetRect = {
           x: targetPos.x,
           y: targetPos.y,
           width: NODE_WIDTH,
           height: targetHeight,
         };
-        const distance = getRectGapDistance(draggedRect, targetRect);
+        const placeholderRect = {
+          x: targetRect.x,
+          y: targetRect.y + targetRect.height,
+          width: NODE_WIDTH,
+          height: draggedHeight,
+        };
+        const draggedCenter = getRectCenter(draggedRect);
+        const placeholderCenter = getRectCenter(placeholderRect);
+        const deltaX = placeholderCenter.x - draggedCenter.x;
+        const deltaY = placeholderCenter.y - draggedCenter.y;
+        const distance = Math.hypot(deltaX, deltaY);
         if (distance > STACK_MAGNET_RADIUS) {
           continue;
         }
 
-        const draggedCenter = getRectCenter(draggedRect);
-        const targetCenter = getRectCenter(targetRect);
-        const deltaX = targetCenter.x - draggedCenter.x;
-        const deltaY = targetCenter.y - draggedCenter.y;
-        const centerDistance = Math.hypot(deltaX, deltaY);
-        const strength = 1 - distance / STACK_MAGNET_RADIUS;
-        const pullDistance = STACK_MAGNET_MAX_PULL * strength;
-        const pullScale = centerDistance > 0 ? pullDistance / centerDistance : 0;
+        const overlap = getRectOverlap(draggedRect, placeholderRect);
+        const minWidth = Math.min(draggedRect.width, placeholderRect.width);
+        const hasEnoughOverlap = overlap.width >= minWidth * STACK_MAGNET_MIN_HORIZONTAL_OVERLAP;
+        if (!hasEnoughOverlap) {
+          continue;
+        }
+
+        const anchorDistance = distance;
+        const strength = smoothStep(1 - distance / STACK_MAGNET_RADIUS);
         const candidate = {
           targetStackId: targetBase.id,
           distance,
-          centerDistance,
-          pullX: deltaX * pullScale,
-          pullY: deltaY * pullScale,
+          centerDistance: anchorDistance,
+          pullX: deltaX * strength,
+          pullY: deltaY * strength,
+          placeholderHeight: draggedHeight,
         };
 
         if (
@@ -458,15 +505,17 @@ const NodeView: React.FC<NodeViewProps> = ({
             targetStackId: best.targetStackId,
             pullX: best.pullX,
             pullY: best.pullY,
+            placeholderHeight: best.placeholderHeight,
           }
         : null;
     },
-    [nodePositions, nodeStacks, stackMap],
+    [getRenderedStackHeight, nodePositions, nodeStacks, stackMap],
   );
 
   const { startDrag: startDragRaw, dragNodeId } = useNodeDrag({
     zoom: viewport.zoom,
     onDrag: (nodeId, x, y) => {
+      setStackMagnetDropCommitId(null);
       setNodePosition(nodeId, x, y);
       const nextTarget = getStackMagnetTarget(nodeId, x, y);
       stackMagnetTargetRef.current = nextTarget;
@@ -478,6 +527,7 @@ const NodeView: React.FC<NodeViewProps> = ({
       setStackMagnetTarget(null);
 
       if (target && stackNodeOntoStack(nodeId, target.targetStackId)) {
+        setStackMagnetDropCommitId(target.targetStackId);
         preDragPositionsRef.current = null;
         return;
       }
@@ -493,6 +543,7 @@ const NodeView: React.FC<NodeViewProps> = ({
     (e: React.MouseEvent, nodeId: string, x: number, y: number) => {
       preDragPositionsRef.current = { ...nodePositions };
       stackMagnetTargetRef.current = null;
+      setStackMagnetDropCommitId(null);
       setStackMagnetTarget(null);
       startDragRaw(e, nodeId, x, y);
     },
@@ -708,6 +759,7 @@ const NodeView: React.FC<NodeViewProps> = ({
           return (
             <div
               key={baseNode.id}
+              ref={(el) => registerStackNodeRef(baseNode.id, el)}
               data-graph-node="true"
               style={{
                 position: 'absolute',
@@ -715,9 +767,9 @@ const NodeView: React.FC<NodeViewProps> = ({
                 top: pos.y,
                 zIndex: dragNodeId === baseNode.id ? 10 : isMagnetTarget ? 5 : 1,
                 transform: dragPull
-                  ? `translate(${dragPull.x}px, ${dragPull.y}px) scale(0.98)`
+                  ? `translate3d(${dragPull.x}px, ${dragPull.y}px, 0) scale(0.98)`
                   : undefined,
-                transition: dragPull ? 'transform 120ms ease-out' : undefined,
+                willChange: dragPull ? 'transform' : undefined,
               }}
             >
               <StackNodeCard
@@ -726,6 +778,10 @@ const NodeView: React.FC<NodeViewProps> = ({
                 isSelected={isStackSelected}
                 isStackMagnetTarget={isMagnetTarget}
                 isStackMagnetSource={dragNodeId === baseNode.id && !!stackMagnetTarget}
+                isStackMagnetDropCommit={stackMagnetDropCommitId === baseNode.id}
+                stackMagnetPlaceholderHeight={
+                  isMagnetTarget ? stackMagnetTarget.placeholderHeight : 0
+                }
                 selectedNodeId={selectedNodeId}
                 thumbnailMode={thumbnailMode}
                 connectionMap={connectionMap}
@@ -814,6 +870,11 @@ function computeBounds(
 
 type GraphRect = { x: number; y: number; width: number; height: number };
 
+function smoothStep(value: number): number {
+  const t = Math.max(0, Math.min(1, value));
+  return t * t * (3 - 2 * t);
+}
+
 function getRectCenter(rect: GraphRect): { x: number; y: number } {
   return {
     x: rect.x + rect.width / 2,
@@ -821,10 +882,11 @@ function getRectCenter(rect: GraphRect): { x: number; y: number } {
   };
 }
 
-function getRectGapDistance(a: GraphRect, b: GraphRect): number {
-  const horizontalGap = Math.max(b.x - (a.x + a.width), a.x - (b.x + b.width), 0);
-  const verticalGap = Math.max(b.y - (a.y + a.height), a.y - (b.y + b.height), 0);
-  return Math.hypot(horizontalGap, verticalGap);
+function getRectOverlap(a: GraphRect, b: GraphRect): { width: number; height: number } {
+  return {
+    width: Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)),
+    height: Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)),
+  };
 }
 
 export default NodeView;

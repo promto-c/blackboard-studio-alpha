@@ -126,7 +126,7 @@ export const ComfyExecuteSection: React.FC<ComfyExecuteSectionProps> = ({
   onCancelRun,
   onClearInspectorLog,
 }) => {
-  const outputStripRef = React.useRef<HTMLDivElement | null>(null);
+  const [outputStripElement, setOutputStripElement] = React.useState<HTMLDivElement | null>(null);
   const [visibleOutputSlots, setVisibleOutputSlots] = React.useState(DEFAULT_VISIBLE_OUTPUT_SLOTS);
   const visibleRecentOutputs = React.useMemo(() => {
     const availableSlots = Math.max(0, visibleOutputSlots - pendingGeneratedOutputSlots.length);
@@ -134,11 +134,13 @@ export const ComfyExecuteSection: React.FC<ComfyExecuteSectionProps> = ({
   }, [pendingGeneratedOutputSlots.length, recentGeneratedOutputs, visibleOutputSlots]);
 
   React.useEffect(() => {
-    const outputStrip = outputStripRef.current;
+    const outputStrip = outputStripElement;
     if (!outputStrip) return;
 
     const updateVisibleOutputSlots = () => {
       const width = outputStrip.getBoundingClientRect().width;
+      if (width <= 0) return;
+
       const nextSlots = Math.max(
         1,
         Math.floor((width + OUTPUT_TILE_GAP_PX) / (OUTPUT_TILE_SIZE_PX + OUTPUT_TILE_GAP_PX)) + 1,
@@ -149,16 +151,23 @@ export const ComfyExecuteSection: React.FC<ComfyExecuteSectionProps> = ({
     };
 
     updateVisibleOutputSlots();
+    const animationFrame = window.requestAnimationFrame(updateVisibleOutputSlots);
 
     if (typeof ResizeObserver === 'undefined') {
       window.addEventListener('resize', updateVisibleOutputSlots);
-      return () => window.removeEventListener('resize', updateVisibleOutputSlots);
+      return () => {
+        window.cancelAnimationFrame(animationFrame);
+        window.removeEventListener('resize', updateVisibleOutputSlots);
+      };
     }
 
     const resizeObserver = new ResizeObserver(updateVisibleOutputSlots);
     resizeObserver.observe(outputStrip);
-    return () => resizeObserver.disconnect();
-  }, []);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+    };
+  }, [outputStripElement]);
 
   const runActions = (
     <ComfyRunButtonGroup
@@ -192,7 +201,10 @@ export const ComfyExecuteSection: React.FC<ComfyExecuteSectionProps> = ({
             </span>
           </div>
           <div className="flex min-w-0 gap-1.5">
-            <div ref={outputStripRef} className="flex min-w-0 flex-1 gap-1.5 overflow-hidden">
+            <div
+              ref={setOutputStripElement}
+              className="flex min-w-0 flex-1 gap-1.5 overflow-hidden"
+            >
               {pendingGeneratedOutputSlots.map((slot) => (
                 <ComfyOutputPlaceholder
                   key={slot.id}

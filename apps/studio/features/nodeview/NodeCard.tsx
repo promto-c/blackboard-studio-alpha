@@ -186,6 +186,58 @@ function OutputPort({ portKey, registerPortRef, onOutputPortMouseDown }: OutputP
   );
 }
 
+type StackMagnetPlaceholderProps = {
+  isActive: boolean;
+  instantClose: boolean;
+  height: number;
+};
+
+function StackMagnetPlaceholder({ isActive, instantClose, height }: StackMagnetPlaceholderProps) {
+  const [isRendered, setIsRendered] = React.useState(isActive);
+  const [isExpanded, setIsExpanded] = React.useState(false);
+  const targetHeight = Math.max(44, height);
+
+  React.useEffect(() => {
+    let frame = 0;
+    let timer = 0;
+
+    if (isActive) {
+      setIsRendered(true);
+      frame = window.requestAnimationFrame(() => setIsExpanded(true));
+    } else {
+      if (instantClose) {
+        setIsExpanded(false);
+        setIsRendered(false);
+        return undefined;
+      }
+
+      setIsExpanded(false);
+      timer = window.setTimeout(() => setIsRendered(false), 160);
+    }
+
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [instantClose, isActive]);
+
+  if (!isRendered) return null;
+
+  return (
+    <div
+      data-stack-magnet-placeholder="true"
+      className="pointer-events-none w-full overflow-hidden transition-[height,opacity] duration-150 ease-out"
+      style={{ height: isExpanded ? targetHeight : 0, opacity: isExpanded ? 1 : 0 }}
+      aria-hidden="true"
+    >
+      <div className="relative h-full w-full overflow-hidden rounded-md border border-dashed border-primary-400/70 bg-primary-950/20">
+        <div className="absolute left-1/2 top-0 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary-300 bg-gray-900" />
+        <div className="absolute inset-2 rounded bg-primary-500/5" />
+      </div>
+    </div>
+  );
+}
+
 // --- Scene Node ---
 
 export const SceneNodeCard: React.FC<{
@@ -293,6 +345,8 @@ interface StackNodeCardProps {
   isDragTarget: boolean;
   isStackMagnetTarget?: boolean;
   isStackMagnetSource?: boolean;
+  isStackMagnetDropCommit?: boolean;
+  stackMagnetPlaceholderHeight?: number;
   onSelect: () => void;
   onSelectNode: (nodeId: string) => void;
   onDragStart: (e: React.MouseEvent) => void;
@@ -318,6 +372,8 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
   isDragTarget,
   isStackMagnetTarget = false,
   isStackMagnetSource = false,
+  isStackMagnetDropCommit = false,
+  stackMagnetPlaceholderHeight = 0,
   onSelect,
   onSelectNode,
   onDragStart,
@@ -439,6 +495,12 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
           </div>
         );
       })}
+
+      <StackMagnetPlaceholder
+        isActive={isStackMagnetTarget}
+        instantClose={isStackMagnetDropCommit}
+        height={stackMagnetPlaceholderHeight}
+      />
     </NodeCardShell>
   );
 };
