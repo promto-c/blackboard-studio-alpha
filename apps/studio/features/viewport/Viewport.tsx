@@ -77,6 +77,7 @@ const Viewport: React.FC = () => {
   const selectedRotoPathIds = useEditorSelector((s) => s.selectedRotoPathIds);
   const selectedRotoPointRefs = useEditorSelector((s) => s.selectedRotoPointRefs);
   const isPlaying = useEditorSelector((s) => s.isPlaying);
+  const playbackDirection = useEditorSelector((s) => s.playbackDirection);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
   const isFrameScrubbing = useEditorSelector((s) => s.isFrameScrubbing);
   const activeViewportTool = useEditorSelector((s) => s.activeViewportTool);
@@ -193,6 +194,16 @@ const Viewport: React.FC = () => {
   const pixelReadBuffer8Ref = useRef(new Uint8Array(4));
   const pixelReadBuffer16Ref = useRef(new Uint16Array(4));
   const pixelReadBuffer32Ref = useRef(new Float32Array(4));
+  const mouseScenePosRef = useRef(mouseScenePos);
+  const isPlayingRef = useRef(isPlaying);
+
+  useEffect(() => {
+    mouseScenePosRef.current = mouseScenePos;
+  }, [mouseScenePos]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
 
   const handleSmoothnessChange = (newEpsilon: number) => {
     updateRotoRefinement({ epsilon: newEpsilon });
@@ -200,7 +211,9 @@ const Viewport: React.FC = () => {
 
   const handleFrameRendered = useCallback(() => {
     signalFrameRendered();
-    setRenderVersion((version) => version + 1);
+    if (mouseScenePosRef.current && !isPlayingRef.current) {
+      setRenderVersion((version) => version + 1);
+    }
   }, [signalFrameRendered]);
 
   const threeStuff = useRef({
@@ -275,7 +288,7 @@ const Viewport: React.FC = () => {
   });
 
   // --- Video sync ---
-  useViewportVideoSync({ nodes, currentFrame, isPlaying, fps, textureCacheRef });
+  useViewportVideoSync({ nodes, currentFrame, isPlaying, playbackDirection, fps, textureCacheRef });
 
   // --- Scrubbing ---
   const { isScrubbing, startScrub } = useViewportScrubbing({
@@ -902,10 +915,15 @@ const Viewport: React.FC = () => {
         !viewportRef.current ||
         !sceneNode ||
         !finalCompBufferRef.current ||
-        !hasRenderableOutput ||
-        isLoading
+        !hasRenderableOutput
       ) {
         setPixelInfo(null);
+        return;
+      }
+
+      // Frame seeks briefly enter a loading state. Keep the inspector mounted with
+      // the last sampled value, then refresh it when the new frame renders.
+      if (isLoading) {
         return;
       }
 
@@ -932,8 +950,15 @@ const Viewport: React.FC = () => {
   );
 
   useEffect(() => {
+    if (isPlaying) return;
     updatePixelInfoAtScenePos(mouseScenePos);
-  }, [mouseScenePos, renderVersion, updatePixelInfoAtScenePos, viewerNodeId]);
+  }, [isPlaying, mouseScenePos, renderVersion, updatePixelInfoAtScenePos, viewerNodeId]);
+
+  useEffect(() => {
+    if (!sceneNode || !hasRenderableOutput) {
+      setPixelInfo(null);
+    }
+  }, [hasRenderableOutput, sceneNode]);
 
   const handleMouseMove = useCallback(
     (e: ViewportMouseEvent) => {

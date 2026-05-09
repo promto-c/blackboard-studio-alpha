@@ -15,6 +15,7 @@ export const getInitialState = () => ({
   activeProjectBranchId: MAIN_PROJECT_BRANCH_ID,
   projectBranches: [] as ProjectBranchRecord[],
   isFrameScrubbing: false,
+  playbackDirection: 1 as 1 | -1,
   selectedPaintLayerIds: [] as string[],
   selectedPaintStrokeIds: [] as string[],
   selectedRotoLayerIds: [] as string[],

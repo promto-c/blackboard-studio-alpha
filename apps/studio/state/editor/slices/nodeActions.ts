@@ -17,7 +17,6 @@ import { buildMergeModel, isMergeNodeId, type MergeModel } from '@/utils/mergeNo
 import { buildNodeStacks, hasPreviousStackTarget } from '@/utils/nodeStacks';
 import {
   isNodeStacked,
-  isAutoStackedNewNodeType,
   isStackedAdjustmentNode,
   isStackAdjustmentType,
 } from '@/utils/nodePredicates';
@@ -147,19 +146,7 @@ export function createNodeActions(
         ? currentNodes.findIndex((node) => node.id === selectedNodeId)
         : -1;
       const selectedNode = selectedIndex !== -1 ? currentNodes[selectedIndex] : null;
-      let finalNewNode: AnyNode;
-      const isNewNodeAdjustment = isAutoStackedNewNodeType(newNodeBase.type);
-      if (isNewNodeAdjustment && selectedNode) {
-        const isSelectedSource = nodeFlags(selectedNode.type).isSource;
-        const isSelectedNodeStackedAdjustment = isStackedAdjustmentNode(selectedNode);
-        if (isSelectedSource || isSelectedNodeStackedAdjustment) {
-          finalNewNode = { ...newNodeBase, stacked: true } as AnyNode;
-        } else {
-          finalNewNode = newNodeBase as AnyNode;
-        }
-      } else {
-        finalNewNode = newNodeBase as AnyNode;
-      }
+      const finalNewNode = newNodeBase as AnyNode;
       const newNodes = [...currentNodes];
       if (!selectedNode || nodeFlags(selectedNode.type).isSceneLike) {
         newNodes.push(finalNewNode);

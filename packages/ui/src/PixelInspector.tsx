@@ -20,7 +20,7 @@ const formatValue = (value: number, bitDepth: 8 | 16 | 32): string => {
   return value.toFixed(4);
 };
 
-const PixelInspector: React.FC<PixelInspectorProps> = ({ info, bitDepth }) => {
+const PixelInspector = React.memo(function PixelInspector({ info, bitDepth }: PixelInspectorProps) {
   if (!info) {
     return null;
   }
@@ -48,6 +48,6 @@ const PixelInspector: React.FC<PixelInspectorProps> = ({ info, bitDepth }) => {
       </div>
     </div>
   );
-};
+});
 
 export default PixelInspector;

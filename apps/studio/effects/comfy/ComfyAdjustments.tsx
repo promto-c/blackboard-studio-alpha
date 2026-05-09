@@ -1233,6 +1233,7 @@ const ComfyAdjustmentsPanel: React.FC<{ node: ComfyNode }> = ({ node }) => {
       source: getRunSource(1),
     });
     let jobAbortController: AbortController | null = null;
+    let jobPromptRef: { promptId: string; endpoint: string } | null = null;
     let jobCancelled = false;
     let jobFinished = false;
     const finishJobOnce = (updates: Parameters<typeof finishBackgroundJob>[1]) => {
@@ -1243,9 +1244,8 @@ const ComfyAdjustmentsPanel: React.FC<{ node: ComfyNode }> = ({ node }) => {
 
     const cancelWithInterrupt = () => {
       jobCancelled = true;
-      const latest = defaultComfyRunCoordinator.getLatestPrompt(endpoint);
-      if (latest) {
-        void interruptComfyPrompt(latest.promptId, latest.endpoint).catch(() => {});
+      if (jobPromptRef) {
+        void interruptComfyPrompt(jobPromptRef.promptId, jobPromptRef.endpoint).catch(() => {});
       }
       if (jobAbortController) {
         jobAbortController.abort();
@@ -1340,6 +1340,10 @@ const ComfyAdjustmentsPanel: React.FC<{ node: ComfyNode }> = ({ node }) => {
               prompt,
               clientId,
             });
+            jobPromptRef = {
+              promptId: queued.promptId,
+              endpoint,
+            };
 
             queuedRuns.push({
               runIndex,
@@ -2035,6 +2039,10 @@ const ComfyAdjustmentsPanel: React.FC<{ node: ComfyNode }> = ({ node }) => {
               clientId,
             });
             queuedPromptId = queued.promptId;
+            jobPromptRef = {
+              promptId: queued.promptId,
+              endpoint,
+            };
             updateNode(node.id, { lastPromptId: queued.promptId }, false);
 
             defaultComfyRunCoordinator.setLatestPrompt(endpoint, {

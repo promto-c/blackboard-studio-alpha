@@ -417,7 +417,6 @@ export interface BokehBlurNode extends EffectNode {
   type: typeof NodeType.BOKEH_BLUR;
   uniforms: Record<string, AnyUniform>;
   depthSource: DepthSource;
-  depthNodeId?: string;
   previewDepth?: boolean;
   depthInvert?: boolean;
 }
@@ -811,11 +810,16 @@ export type ViewerSlot = (typeof VIEWER_SLOTS)[number];
 export type ViewerSlotAssignments = Partial<Record<ViewerSlot, NodeId>>;
 
 export interface RenderSettings {
+  exportMode?: 'single' | 'sequence';
   filename: string;
   format: 'image/jpeg' | 'image/png' | 'image/webp';
   quality: number;
   outputColorSpace: 'scene_linear' | 'srgb' | 'match_viewport';
   includeAlpha: boolean;
+  sequenceFilenamePattern?: string;
+  sequenceStartFrame?: number;
+  sequenceEndFrame?: number;
+  sequencePadding?: number;
 }
 
 export interface CacheStatus {

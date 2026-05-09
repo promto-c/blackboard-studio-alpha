@@ -90,11 +90,14 @@ export const getInitialState = () => ({
     lastCustomSaturation: 1,
   } as ViewerSettings,
   renderSettings: {
+    exportMode: 'single' as const,
     filename: 'export',
     format: 'image/jpeg' as const,
     quality: 90,
     outputColorSpace: 'srgb' as const,
     includeAlpha: false,
+    sequenceStartFrame: 0,
+    sequencePadding: 4,
   } as RenderSettings,
   cacheStatus: {
     memoryUsed: 0,

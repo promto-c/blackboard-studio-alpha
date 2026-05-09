@@ -1,6 +1,12 @@
 import { AnyNode } from '@blackboard/types';
 import type { EffectRegistryLike } from './types';
 
+const isPipelineAdjustmentRenderMode = (renderMode?: string): boolean =>
+  renderMode === 'shader' ||
+  renderMode === 'multipass' ||
+  renderMode === 'paint' ||
+  renderMode === 'mask';
+
 export const createNodePredicates = (effectRegistry: EffectRegistryLike) => ({
   isStackAdjustmentType: (type: string): boolean => {
     const def = effectRegistry.get(type);
@@ -13,18 +19,7 @@ export const createNodePredicates = (effectRegistry: EffectRegistryLike) => ({
 
   isExportAdjustmentType: (type: string): boolean => {
     const def = effectRegistry.get(type);
-    return (
-      !!def &&
-      (def.renderMode === 'shader' || def.renderMode === 'multipass' || def.renderMode === 'paint')
-    );
-  },
-
-  isAutoStackedNewNodeType: (type: string): boolean => {
-    const def = effectRegistry.get(type);
-    return (
-      !!def &&
-      (def.renderMode === 'shader' || def.renderMode === 'multipass' || def.renderMode === 'paint')
-    );
+    return !!def && isPipelineAdjustmentRenderMode(def.renderMode);
   },
 
   isStackedAdjustmentNode: (node: AnyNode): boolean => {
@@ -38,9 +33,7 @@ export const createNodePredicates = (effectRegistry: EffectRegistryLike) => ({
 
   isStackedExportAdjustmentNode: (node: AnyNode): boolean => {
     const def = effectRegistry.get(node.type);
-    const isExportAdj =
-      !!def &&
-      (def.renderMode === 'shader' || def.renderMode === 'multipass' || def.renderMode === 'paint');
+    const isExportAdj = !!def && isPipelineAdjustmentRenderMode(def.renderMode);
     return isExportAdj && 'stacked' in node && !!(node as any).stacked;
   },
 

@@ -94,6 +94,94 @@ void main() {
 }
 `;
 
+export const STRAIGHT_TEXTURE_OVER_SHADER = `
+precision highp float;
+
+in vec2 v_uv;
+uniform sampler2D u_tBackdrop;
+uniform sampler2D u_tDiffuse;
+uniform float u_opacity;
+out vec4 fragColor;
+
+vec4 straight_over(vec4 src, vec4 dst) {
+  src.a = clamp(src.a, 0.0, 1.0);
+  dst.a = clamp(dst.a, 0.0, 1.0);
+  float inv_src_a = 1.0 - src.a;
+  float out_a = src.a + dst.a * inv_src_a;
+  vec3 weighted_rgb = src.rgb * src.a + dst.rgb * dst.a * inv_src_a;
+  vec3 out_rgb = out_a > 0.000001 ? weighted_rgb / out_a : src.rgb;
+  return vec4(out_rgb, out_a);
+}
+
+void main() {
+  vec4 dst = texture(u_tBackdrop, v_uv);
+  vec4 src = texture(u_tDiffuse, v_uv);
+  src.a *= u_opacity;
+  fragColor = straight_over(src, dst);
+}
+`;
+
+export const STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER = `
+precision highp float;
+
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform sampler2D u_tBackdrop;
+uniform sampler2D u_tDiffuse;
+uniform float u_opacity;
+uniform float u_scale;
+uniform vec2 u_offset; // in pixels, from center of scene
+uniform vec2 u_scene_res;
+uniform vec2 u_image_res;
+uniform int u_input_transform; // 0: sRGB -> Linear, 1: No-op, 2: Linear -> sRGB
+uniform bool u_flipY;
+
+vec3 srgb_to_linear(vec3 color) {
+  return pow(color, vec3(2.2));
+}
+
+vec3 linear_to_srgb(vec3 color) {
+  return pow(color, vec3(1.0/2.2));
+}
+
+vec4 straight_over(vec4 src, vec4 dst) {
+  src.a = clamp(src.a, 0.0, 1.0);
+  dst.a = clamp(dst.a, 0.0, 1.0);
+  float inv_src_a = 1.0 - src.a;
+  float out_a = src.a + dst.a * inv_src_a;
+  vec3 weighted_rgb = src.rgb * src.a + dst.rgb * dst.a * inv_src_a;
+  vec3 out_rgb = out_a > 0.000001 ? weighted_rgb / out_a : src.rgb;
+  return vec4(out_rgb, out_a);
+}
+
+void main() {
+  vec4 dst = texture(u_tBackdrop, v_uv);
+
+  vec2 scene_px = v_uv * u_scene_res - (u_scene_res / 2.0);
+  vec2 img_space_px = (scene_px - u_offset) / u_scale;
+  vec2 image_uv = img_space_px / u_image_res + 0.5;
+
+  if (u_flipY) {
+    image_uv.y = 1.0 - image_uv.y;
+  }
+
+  vec4 src = vec4(0.0);
+  if (image_uv.x >= 0.0 && image_uv.x <= 1.0 && image_uv.y >= 0.0 && image_uv.y <= 1.0) {
+    src = texture(u_tDiffuse, image_uv);
+  }
+
+  if (u_input_transform == 0) {
+    src.rgb = srgb_to_linear(src.rgb);
+  } else if (u_input_transform == 2) {
+    src.rgb = linear_to_srgb(src.rgb);
+  }
+
+  src.a *= u_opacity;
+  fragColor = straight_over(src, dst);
+}
+`;
+
 export const VIEWER_SHADER = `
 precision highp float;
 

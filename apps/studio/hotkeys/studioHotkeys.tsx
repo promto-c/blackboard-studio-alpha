@@ -71,6 +71,10 @@ interface StudioHotkeyActionSet {
     pointRefs?: RotoPointRef[];
   }) => void;
   playPause: () => void;
+  playForward: () => void;
+  playBackward: () => void;
+  pausePlayback: () => void;
+  goToRecentFrame: () => boolean;
   redo: () => void;
   redoDrawingPoint: () => void;
   seekFrame: (frame: number) => void;
@@ -278,6 +282,37 @@ export const createBaseCommands = (): HotkeyCommand[] => [
     },
   },
   {
+    id: 'timeline.playBackward',
+    run: (context) => {
+      const actions = getStudioActions(context);
+      actions.playBackward();
+      return true;
+    },
+  },
+  {
+    id: 'timeline.pausePlayback',
+    run: (context) => {
+      const actions = getStudioActions(context);
+      actions.pausePlayback();
+      return true;
+    },
+  },
+  {
+    id: 'timeline.playForward',
+    run: (context) => {
+      const actions = getStudioActions(context);
+      actions.playForward();
+      return true;
+    },
+  },
+  {
+    id: 'timeline.goToRecentFrame',
+    run: (context) => {
+      const actions = getStudioActions(context);
+      return actions.goToRecentFrame();
+    },
+  },
+  {
     id: 'timeline.seekVisibleKeyframe',
     run: (context, args) => {
       const direction = (args as { direction: 'next' | 'prev' }).direction;
@@ -474,6 +509,10 @@ export const baseBindings: HotkeyBinding[] = [
   },
   { keys: 'Z', command: 'timeline.seekRelativeFrame', args: { delta: -1 } },
   { keys: 'X', command: 'timeline.seekRelativeFrame', args: { delta: 1 } },
+  { keys: 'C', command: 'timeline.goToRecentFrame', weight: 400, repeat: false },
+  { keys: 'J', command: 'timeline.playBackward', weight: 400, repeat: false },
+  { keys: 'K', command: 'timeline.pausePlayback', weight: 400, repeat: false },
+  { keys: 'L', command: 'timeline.playForward', weight: 400, repeat: false },
   { keys: 'Space', command: 'timeline.togglePlayback', repeat: false, scope: 'timeline' },
   {
     keys: 'Shift+Z',

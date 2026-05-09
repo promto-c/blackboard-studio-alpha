@@ -6,7 +6,6 @@ export const predicates = createNodePredicates(effectRegistry);
 
 export const isStackAdjustmentType = predicates.isStackAdjustmentType;
 export const isExportAdjustmentType = predicates.isExportAdjustmentType;
-export const isAutoStackedNewNodeType = predicates.isAutoStackedNewNodeType;
 export const isStackedAdjustmentNode = predicates.isStackedAdjustmentNode;
 export const isStackedExportAdjustmentNode = predicates.isStackedExportAdjustmentNode;
 

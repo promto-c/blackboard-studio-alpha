@@ -11,6 +11,7 @@ interface UseViewportVideoSyncParams {
   nodes: AnyNode[];
   currentFrame: number;
   isPlaying: boolean;
+  playbackDirection?: 1 | -1;
   fps: number;
   textureCacheRef: MutableRefObject<Map<string, CacheEntry>>;
 }
@@ -24,6 +25,7 @@ export function useViewportVideoSync({
   nodes,
   currentFrame,
   isPlaying,
+  playbackDirection = 1,
   fps,
   textureCacheRef,
 }: UseViewportVideoSyncParams): void {
@@ -52,14 +54,14 @@ export function useViewportVideoSync({
               video.currentTime = targetTime;
             }
 
-            if (isPlaying && video.paused) {
+            if (isPlaying && playbackDirection > 0 && video.paused) {
               video.play().catch(() => {});
-            } else if (!isPlaying && !video.paused) {
+            } else if ((!isPlaying || playbackDirection < 0) && !video.paused) {
               video.pause();
             }
           }
         }
       }
     });
-  }, [currentFrame, isPlaying, nodes, fps]);
+  }, [currentFrame, isPlaying, playbackDirection, nodes, fps]);
 }

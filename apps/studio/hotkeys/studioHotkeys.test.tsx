@@ -288,6 +288,34 @@ describe('studio hotkey effect bindings', () => {
     });
     expect(lookup.get('X')?.scope).toBeUndefined();
 
+    expect(lookup.get('C')).toMatchObject({
+      command: 'timeline.goToRecentFrame',
+      weight: 400,
+      repeat: false,
+    });
+    expect(lookup.get('C')?.scope).toBeUndefined();
+
+    expect(lookup.get('J')).toMatchObject({
+      command: 'timeline.playBackward',
+      weight: 400,
+      repeat: false,
+    });
+    expect(lookup.get('J')?.scope).toBeUndefined();
+
+    expect(lookup.get('K')).toMatchObject({
+      command: 'timeline.pausePlayback',
+      weight: 400,
+      repeat: false,
+    });
+    expect(lookup.get('K')?.scope).toBeUndefined();
+
+    expect(lookup.get('L')).toMatchObject({
+      command: 'timeline.playForward',
+      weight: 400,
+      repeat: false,
+    });
+    expect(lookup.get('L')?.scope).toBeUndefined();
+
     expect(lookup.get('Shift+Z')).toMatchObject({
       command: 'timeline.seekVisibleKeyframe',
       args: { direction: 'prev' },
@@ -382,6 +410,30 @@ describe('studio hotkey effect bindings', () => {
 
     expect(result[0]).toMatchObject({
       command: 'viewport.selectAll',
+      weight: 400,
+    });
+  });
+
+  it('prioritizes C for recent-frame navigation above effect tool bindings', () => {
+    const selectedNode = {
+      id: 'paint-1',
+      name: 'Paint',
+      type: NodeType.PAINT,
+      visible: true,
+    } as AnyNode;
+
+    const compiledBindings = [...baseBindings, ...getEffectBindingsForSelection(selectedNode)]
+      .map((binding, index) => compileHotkeyBinding('test', binding, index + 1))
+      .filter(Boolean) as NonNullable<ReturnType<typeof compileHotkeyBinding>>[];
+
+    const result = resolveHotkeyBinding(
+      compiledBindings,
+      createEvent({ key: 'c', code: 'KeyC' }),
+      createContext(),
+    );
+
+    expect(result[0]).toMatchObject({
+      command: 'timeline.goToRecentFrame',
       weight: 400,
     });
   });

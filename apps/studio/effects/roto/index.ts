@@ -353,7 +353,6 @@ export const rotoEffect: EffectDefinition = {
     layers: [],
     invert: false,
     motionBlur: { ...DEFAULT_ROTO_MOTION_BLUR },
-    stacked: false,
   }),
   getStabilizeTransform: (node, frame, context) => {
     const rotoNode = node as RotoNode;

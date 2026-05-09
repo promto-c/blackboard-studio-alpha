@@ -16,6 +16,7 @@ import { effectRegistry } from '@/effects/effectRegistry';
 import { getAsset } from '@/state/assetStorage';
 import { createExrTexture } from '@/utils/exr';
 import { getBlobName, isExrFileLike } from '@/utils/mediaFiles';
+import { createRotoMaskTextureBundle } from '@/utils/rotoMaskTexture';
 
 export type {
   RenderPipelineResult,
@@ -187,14 +188,28 @@ export const renderWithSharedPipeline = async (options: RenderPipelineOptions) =
     options.sceneNode.bitDepth,
     options.sceneNode,
   );
+  const rotoMasks = createRotoMaskTextureBundle(nodes, options.sceneNode, frame);
 
-  return _renderWithSharedPipeline({
-    ...options,
-    nodes,
-    effectRegistry,
-    getAsset,
-    loadAssetTexture: loadStudioAssetTexture,
-  });
+  try {
+    const result = await _renderWithSharedPipeline({
+      ...options,
+      nodes,
+      effectRegistry,
+      getAsset,
+      getRotoMaskTexture: (nodeId) => rotoMasks.textures.get(nodeId),
+      loadAssetTexture: loadStudioAssetTexture,
+    });
+    return {
+      ...result,
+      dispose: () => {
+        result.dispose();
+        rotoMasks.dispose();
+      },
+    };
+  } catch (error) {
+    rotoMasks.dispose();
+    throw error;
+  }
 };
 
 export const renderViewportFrameWithSharedPipeline = (options: ViewportPipelineOptions) =>

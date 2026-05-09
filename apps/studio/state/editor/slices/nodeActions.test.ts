@@ -8,10 +8,18 @@ vi.mock('@google/genai', () => ({
 
 vi.mock('@/effects/effectRegistry', () => ({
   effectRegistry: new Map([
-    ['scene', { category: 'Scene', renderMode: 'source' }],
-    ['image', { category: 'Image', renderMode: 'source' }],
-    ['grade', { category: 'Adjustment', renderMode: 'shader' }],
-    ['blur', { category: 'Effect', renderMode: 'multipass' }],
+    ['scene', { category: 'Scene', renderMode: 'source', getInitialNodeProps: () => ({}) }],
+    [
+      'image',
+      {
+        category: 'Image',
+        renderMode: 'source',
+        flags: { isSource: true },
+        getInitialNodeProps: () => ({}),
+      },
+    ],
+    ['grade', { category: 'Adjustment', renderMode: 'shader', getInitialNodeProps: () => ({}) }],
+    ['blur', { category: 'Effect', renderMode: 'multipass', getInitialNodeProps: () => ({}) }],
   ]),
 }));
 
@@ -78,6 +86,32 @@ const legacyGrade = (id: string): AnyNode =>
 const blur = (id: string, stacked = false): AnyNode =>
   ({ id, type: NodeType.BLUR, name: id, visible: true, stacked }) as AnyNode;
 
+describe('createNodeActions addNode', () => {
+  it('does not stack a new adjustment when a source node is selected', () => {
+    const nodes = [scene(), image('image-1')];
+    const { actions, getState } = createHarness(nodes);
+    getState().selectedNodeId = 'image-1';
+
+    actions.addNode(NodeType.GRADE);
+
+    const addedNode = getState().nodes.find((node) => node.type === NodeType.GRADE);
+    expect(addedNode).toBeDefined();
+    expect(addedNode).not.toHaveProperty('stacked');
+  });
+
+  it('does not stack a new adjustment when a stacked adjustment is selected', () => {
+    const nodes = [scene(), image('image-1'), grade('grade-1', true)];
+    const { actions, getState } = createHarness(nodes);
+    getState().selectedNodeId = 'grade-1';
+
+    actions.addNode(NodeType.BLUR);
+
+    const addedNode = getState().nodes.find((node) => node.type === NodeType.BLUR);
+    expect(addedNode).toBeDefined();
+    expect(addedNode).not.toHaveProperty('stacked');
+  });
+});
+
 describe('createNodeActions history frame targeting', () => {
   it('pushes the affected target frame when setting a keyframe off the playhead', () => {
     const node = {
@@ -127,7 +161,7 @@ describe('createNodeActions history frame targeting', () => {
 });
 
 describe('createNodeActions stackNodeOntoStack', () => {
-  it('stacks an adjustment that was created before stacked:false was stored', () => {
+  it('stacks an unstacked adjustment that has no stacked flag', () => {
     const nodes = [scene(), image('image-1'), legacyGrade('grade-1')];
     const { actions, getState, pushHistory } = createHarness(nodes);
 

@@ -3,8 +3,14 @@ import { isLoopingTimelineNode } from '@/utils/nodePredicates';
 
 type PlaybackMode = 'every_frame' | 'realtime';
 
+const wrapFrame = (frame: number, maxFrames: number) => {
+  const frameCount = Math.max(1, maxFrames + 1);
+  return ((frame % frameCount) + frameCount) % frameCount;
+};
+
 interface PlaybackState {
   isPlaying: boolean;
+  playbackDirection?: 1 | -1;
   fps: number;
   currentFrame: number;
   maxFrames: number;
@@ -45,6 +51,7 @@ export function usePlayback(
 
       const fps = current.fps || 30;
       const interval = 1000 / fps;
+      const playbackDirection = current.playbackDirection ?? 1;
 
       if (playbackMode === 'every_frame') {
         if (renderLockRef.current) {
@@ -53,16 +60,15 @@ export function usePlayback(
         }
 
         const hasLoopingVideo = current.nodes.some(isLoopingTimelineNode);
-        let nextFrame = current.currentFrame + 1;
-        if (nextFrame > current.maxFrames) {
+        let nextFrame = current.currentFrame + playbackDirection;
+        if (nextFrame > current.maxFrames || nextFrame < 0) {
           if (hasLoopingVideo) {
-            const frameCount = Math.max(1, current.maxFrames + 1);
-            nextFrame = nextFrame % frameCount;
+            nextFrame = wrapFrame(nextFrame, current.maxFrames);
           } else {
             renderLockRef.current = false;
             store.setState(() => ({
               isPlaying: false,
-              currentFrame: current.maxFrames,
+              currentFrame: playbackDirection > 0 ? current.maxFrames : 0,
             }));
             animationFrameRef.current = requestAnimationFrame(runPlayback);
             return;
@@ -81,14 +87,14 @@ export function usePlayback(
         const framesToAdvance = Math.max(1, Math.floor(delta / interval));
         lastFrameTimeRef.current = timestamp - (delta % interval);
         store.setState((s) => {
-          let nextFrame = s.currentFrame + framesToAdvance;
+          const direction = s.playbackDirection ?? 1;
+          let nextFrame = s.currentFrame + framesToAdvance * direction;
           const hasLoopingVideo = s.nodes.some(isLoopingTimelineNode);
-          if (nextFrame > s.maxFrames) {
+          if (nextFrame > s.maxFrames || nextFrame < 0) {
             if (hasLoopingVideo) {
-              const frameCount = Math.max(1, s.maxFrames + 1);
-              nextFrame = nextFrame % frameCount;
+              nextFrame = wrapFrame(nextFrame, s.maxFrames);
             } else {
-              return { isPlaying: false, currentFrame: s.maxFrames };
+              return { isPlaying: false, currentFrame: direction > 0 ? s.maxFrames : 0 };
             }
           }
           return { currentFrame: nextFrame };

@@ -12,7 +12,7 @@ vi.mock('@google/genai', () => ({
 import {
   isStackAdjustmentType,
   isExportAdjustmentType,
-  isAutoStackedNewNodeType,
+  isStackedExportAdjustmentNode,
   hasStackedFlag,
   isNodeStacked,
   isLoopingTimelineNode,
@@ -43,26 +43,37 @@ describe('isExportAdjustmentType', () => {
     expect(isExportAdjustmentType(NodeType.BLUR)).toBe(true);
     expect(isExportAdjustmentType(NodeType.CHROMA_KEY)).toBe(true);
     expect(isExportAdjustmentType(NodeType.PAINT)).toBe(true);
+    expect(isExportAdjustmentType(NodeType.ROTO)).toBe(true);
   });
 
-  it('returns false for roto and warp (stack-only)', () => {
-    expect(isExportAdjustmentType(NodeType.ROTO)).toBe(false);
+  it('returns false for non-export stack-only types', () => {
     expect(isExportAdjustmentType(NodeType.WARP)).toBe(false);
   });
 });
 
-describe('isAutoStackedNewNodeType', () => {
-  it('returns true for auto-stacked types', () => {
-    expect(isAutoStackedNewNodeType(NodeType.GRADE)).toBe(true);
-    expect(isAutoStackedNewNodeType(NodeType.BLUR)).toBe(true);
-    expect(isAutoStackedNewNodeType(NodeType.PAINT)).toBe(true);
+describe('isStackedExportAdjustmentNode', () => {
+  it('treats stacked roto as a pipeline adjustment', () => {
+    expect(
+      isStackedExportAdjustmentNode({
+        id: 'roto',
+        type: NodeType.ROTO,
+        name: 'Roto',
+        visible: true,
+        stacked: true,
+      } as AnyNode),
+    ).toBe(true);
   });
 
-  it('returns false for non-auto-stacked types', () => {
-    expect(isAutoStackedNewNodeType(NodeType.IMAGE)).toBe(false);
-    expect(isAutoStackedNewNodeType(NodeType.MERGE)).toBe(false);
-    expect(isAutoStackedNewNodeType(NodeType.ROTO)).toBe(false);
-    expect(isAutoStackedNewNodeType(NodeType.WARP)).toBe(false);
+  it('treats unstacked roto as a global export adjustment', () => {
+    expect(
+      isStackedExportAdjustmentNode({
+        id: 'roto',
+        type: NodeType.ROTO,
+        name: 'Roto',
+        visible: true,
+        stacked: false,
+      } as AnyNode),
+    ).toBe(false);
   });
 });
 

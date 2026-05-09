@@ -19,6 +19,8 @@ import type {
 import {
   PAINT_OVER_SHADER,
   ROTO_SHADER,
+  STRAIGHT_TEXTURE_OVER_SHADER,
+  STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
   TEXTURE_SHADER,
   TEXTURE_OPACITY_SHADER,
   TRANSFORMED_TEXTURE_SHADER,
@@ -132,8 +134,11 @@ export interface RenderPipelineOptions {
    * before presenting to the canvas. Useful for high-precision readback workflows.
    */
   captureFinalOutput?: boolean;
+  /** Preserve source alpha in final display conversion, even when viewport settings flatten it. */
+  preserveAlpha?: boolean;
   effectRegistry: EffectRegistryLike;
   getAsset: (id: string) => Promise<Blob | null>;
+  getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
   loadAssetTexture?: (params: {
     assetId: string;
     blob: Blob;
@@ -166,6 +171,19 @@ const getSceneRenderTargetOptions = (sceneNode: SceneNode): THREE.RenderTargetOp
     depthBuffer: false,
     stencilBuffer: false,
   };
+};
+
+const clearRenderTargetTransparent = (
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget | null,
+): void => {
+  const previousClearColor = renderer.getClearColor(new THREE.Color());
+  const previousClearAlpha = renderer.getClearAlpha();
+
+  renderer.setRenderTarget(target);
+  renderer.setClearColor(0x000000, 0);
+  renderer.clear();
+  renderer.setClearColor(previousClearColor, previousClearAlpha);
 };
 
 // ---------------------------------------------------------------------------
@@ -399,6 +417,11 @@ const applyBlendMode = (material: THREE.ShaderMaterial, mode: BlendMode): void =
   material.transparent = true;
 };
 
+const applyNoBlending = (material: THREE.ShaderMaterial): void => {
+  material.blending = THREE.NoBlending;
+  material.transparent = false;
+};
+
 /**
  * Collects all nodes referenced by generic input ports that need texture preloading.
  */
@@ -422,18 +445,6 @@ const collectInputPreloadTargets = (
     const inputPorts = getInputPortsForNode(node, effectRegistry);
 
     if (!inputs && !fallbackSourceNode) {
-      // Backward compat: check legacy depthNodeId
-      if (
-        'depthNodeId' in node &&
-        (node as any).depthSource === 'node' &&
-        (node as any).depthNodeId
-      ) {
-        const depthNode = allNodes.find((l) => l.id === (node as any).depthNodeId);
-        if (depthNode && isMediaNodeWithRegistry(depthNode, effectRegistry)) {
-          targets.push({ node: depthNode as MediaNode, frame });
-        }
-      }
-
       if (isMediaNodeWithRegistry(node, effectRegistry)) {
         previousMediaNode = node;
       }
@@ -474,7 +485,6 @@ const collectInputPreloadTargets = (
 
 /**
  * Resolves all declared input port connections for a node and returns shader uniforms.
- * Falls back to legacy depthNodeId for backward compatibility.
  */
 const resolveInputUniforms = (
   node: AnyNode,
@@ -500,14 +510,6 @@ const resolveInputUniforms = (
     if (Object.keys(uniforms).length > 0) return uniforms;
   } else if (inputs) {
     return {};
-  }
-
-  // Backward compat: legacy depthNodeId
-  if ('depthNodeId' in node && (node as any).depthSource === 'node' && (node as any).depthNodeId) {
-    const texture = getTextureForNodeId((node as any).depthNodeId, frame);
-    if (texture) {
-      return { u_tDepth: { value: texture } };
-    }
   }
 
   return {};
@@ -844,9 +846,29 @@ export const renderWithSharedPipeline = async (
     const swapMainBuffers = () => {
       [readBuffer, writeBuffer] = [writeBuffer, readBuffer];
     };
-
-    renderer.setRenderTarget(readBuffer);
-    renderer.clear();
+    const copyTargetToWriteBuffer = (sourceTarget: THREE.WebGLRenderTarget) => {
+      const copyMaterial = getMaterial('copy_to_main_write', TEXTURE_SHADER, {
+        u_tDiffuse: { value: sourceTarget.texture },
+      });
+      applyNoBlending(copyMaterial);
+      quad.material = copyMaterial;
+      renderer.setRenderTarget(writeBuffer);
+      renderer.render(scene, camera);
+    };
+    const renderStraightOverToMain = (
+      material: THREE.ShaderMaterial,
+      target: THREE.WebGLRenderTarget = writeBuffer,
+    ) => {
+      applyNoBlending(material);
+      quad.material = material;
+      renderer.setRenderTarget(target);
+      renderer.render(scene, camera);
+      if (target !== writeBuffer) {
+        copyTargetToWriteBuffer(target);
+      }
+      swapMainBuffers();
+    };
+    clearRenderTargetTransparent(renderer, readBuffer);
 
     let previousMediaNode: AnyNode | null = null;
     for (let i = 0; i < visibleNodes.length; i += 1) {
@@ -915,12 +937,12 @@ export const renderWithSharedPipeline = async (
         }
 
         let finalComposite: THREE.ShaderMaterial;
+        let straightOverTarget = writeBuffer;
         if (stackedNodes.length > 0) {
           let stackRead = writeBuffer;
           let stackWrite = auxBuffer;
 
-          renderer.setRenderTarget(stackRead);
-          renderer.clear();
+          clearRenderTargetTransparent(renderer, stackRead);
           const basePass = getMaterial(`${baseNode.id}_stack_base`, TRANSFORMED_TEXTURE_SHADER, {
             u_tDiffuse: { value: texture },
             u_opacity: { value: 1 },
@@ -1015,6 +1037,19 @@ export const renderWithSharedPipeline = async (
               } else {
                 shouldSwap = false;
               }
+            } else if (stackedMode === 'mask') {
+              const maskTexture = options.getRotoMaskTexture?.(stackedNode.id);
+              if (maskTexture) {
+                const material = getMaterial(stackedNode.id, ROTO_SHADER, {
+                  u_tDiffuse: { value: stackRead.texture },
+                  u_tMask: { value: maskTexture },
+                });
+                quad.material = material;
+                renderer.setRenderTarget(stackWrite);
+                renderer.render(scene, camera);
+              } else {
+                shouldSwap = false;
+              }
             } else {
               shouldSwap = false;
             }
@@ -1024,28 +1059,68 @@ export const renderWithSharedPipeline = async (
             }
           }
 
-          finalComposite = getMaterial(`${baseNode.id}_stack_comp`, TEXTURE_OPACITY_SHADER, {
-            u_tDiffuse: { value: stackRead.texture },
-            u_opacity: { value: opacity / 100 },
-          });
+          const operator = (baseNode as any).operator ?? BlendMode.OVER;
+          if (operator === BlendMode.OVER) {
+            straightOverTarget = stackRead === writeBuffer ? auxBuffer : writeBuffer;
+            finalComposite = getMaterial(
+              `${baseNode.id}_stack_comp_straight_over`,
+              STRAIGHT_TEXTURE_OVER_SHADER,
+              {
+                u_tBackdrop: { value: readBuffer.texture },
+                u_tDiffuse: { value: stackRead.texture },
+                u_opacity: { value: opacity / 100 },
+              },
+            );
+          } else {
+            finalComposite = getMaterial(`${baseNode.id}_stack_comp`, TEXTURE_OPACITY_SHADER, {
+              u_tDiffuse: { value: stackRead.texture },
+              u_opacity: { value: opacity / 100 },
+            });
+          }
         } else {
-          finalComposite = getMaterial(`${baseNode.id}_comp`, TRANSFORMED_TEXTURE_SHADER, {
-            u_tDiffuse: { value: texture },
-            u_opacity: { value: opacity / 100 },
-            u_scale: { value: scale },
-            u_offset: { value: offset },
-            u_scene_res: {
-              value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
-            },
-            u_image_res: { value: new THREE.Vector2(width, height) },
-            u_input_transform: { value: inputTransform },
-          });
+          const operator = (baseNode as any).operator ?? BlendMode.OVER;
+          if (operator === BlendMode.OVER) {
+            finalComposite = getMaterial(
+              `${baseNode.id}_comp_straight_over`,
+              STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
+              {
+                u_tBackdrop: { value: readBuffer.texture },
+                u_tDiffuse: { value: texture },
+                u_opacity: { value: opacity / 100 },
+                u_scale: { value: scale },
+                u_offset: { value: offset },
+                u_scene_res: {
+                  value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
+                },
+                u_image_res: { value: new THREE.Vector2(width, height) },
+                u_input_transform: { value: inputTransform },
+                u_flipY: { value: false },
+              },
+            );
+          } else {
+            finalComposite = getMaterial(`${baseNode.id}_comp`, TRANSFORMED_TEXTURE_SHADER, {
+              u_tDiffuse: { value: texture },
+              u_opacity: { value: opacity / 100 },
+              u_scale: { value: scale },
+              u_offset: { value: offset },
+              u_scene_res: {
+                value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
+              },
+              u_image_res: { value: new THREE.Vector2(width, height) },
+              u_input_transform: { value: inputTransform },
+            });
+          }
         }
 
-        quad.material = finalComposite;
-        applyBlendMode(finalComposite, (baseNode as any).operator);
-        renderer.setRenderTarget(readBuffer);
-        renderer.render(scene, camera);
+        const operator = (baseNode as any).operator ?? BlendMode.OVER;
+        if (operator === BlendMode.OVER) {
+          renderStraightOverToMain(finalComposite, straightOverTarget);
+        } else {
+          quad.material = finalComposite;
+          applyBlendMode(finalComposite, operator);
+          renderer.setRenderTarget(readBuffer);
+          renderer.render(scene, camera);
+        }
 
         if (isDynamicTexture) {
           texture?.dispose();
@@ -1107,26 +1182,46 @@ export const renderWithSharedPipeline = async (
         }
 
         const opacity = getValueAtFrame((baseNode as any).opacity ?? 100, frame);
-        const mergeComposite = getMaterial(
-          `${baseNode.id}_merge_comp`,
-          TRANSFORMED_TEXTURE_SHADER,
-          {
-            u_tDiffuse: { value: texture },
-            u_opacity: { value: opacity / 100 },
-            u_scale: { value: scale },
-            u_offset: { value: offset },
-            u_scene_res: {
-              value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
-            },
-            u_image_res: { value: new THREE.Vector2(width, height) },
-            u_input_transform: { value: inputTransform },
-            u_flipY: { value: false },
-          },
-        );
-        quad.material = mergeComposite;
-        applyBlendMode(mergeComposite, (baseNode as any).operator ?? BlendMode.OVER);
-        renderer.setRenderTarget(readBuffer);
-        renderer.render(scene, camera);
+        const operator = (baseNode as any).operator ?? BlendMode.OVER;
+        const mergeComposite =
+          operator === BlendMode.OVER
+            ? getMaterial(
+                `${baseNode.id}_merge_comp_straight_over`,
+                STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
+                {
+                  u_tBackdrop: { value: readBuffer.texture },
+                  u_tDiffuse: { value: texture },
+                  u_opacity: { value: opacity / 100 },
+                  u_scale: { value: scale },
+                  u_offset: { value: offset },
+                  u_scene_res: {
+                    value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
+                  },
+                  u_image_res: { value: new THREE.Vector2(width, height) },
+                  u_input_transform: { value: inputTransform },
+                  u_flipY: { value: false },
+                },
+              )
+            : getMaterial(`${baseNode.id}_merge_comp`, TRANSFORMED_TEXTURE_SHADER, {
+                u_tDiffuse: { value: texture },
+                u_opacity: { value: opacity / 100 },
+                u_scale: { value: scale },
+                u_offset: { value: offset },
+                u_scene_res: {
+                  value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
+                },
+                u_image_res: { value: new THREE.Vector2(width, height) },
+                u_input_transform: { value: inputTransform },
+                u_flipY: { value: false },
+              });
+        if (operator === BlendMode.OVER) {
+          renderStraightOverToMain(mergeComposite);
+        } else {
+          quad.material = mergeComposite;
+          applyBlendMode(mergeComposite, operator);
+          renderer.setRenderTarget(readBuffer);
+          renderer.render(scene, camera);
+        }
 
         if (isDynamicTexture) {
           texture.dispose();
@@ -1203,6 +1298,18 @@ export const renderWithSharedPipeline = async (
             renderer.render(scene, camera);
             swapMainBuffers();
           }
+        } else if (adjMode === 'mask') {
+          const maskTexture = options.getRotoMaskTexture?.(baseNode.id);
+          if (maskTexture) {
+            const material = getMaterial(`${baseNode.id}_global_mask`, ROTO_SHADER, {
+              u_tDiffuse: { value: readBuffer.texture },
+              u_tMask: { value: maskTexture },
+            });
+            quad.material = material;
+            renderer.setRenderTarget(writeBuffer);
+            renderer.render(scene, camera);
+            swapMainBuffers();
+          }
         }
       }
     }
@@ -1232,7 +1339,9 @@ export const renderWithSharedPipeline = async (
         throw new Error('viewerSettings is required when finalColorSpace is match_viewport.');
       }
       const channelIndex = VIEWER_CHANNELS.indexOf(viewerSettings.channels);
-      const alphaOverlayActive = viewerSettings.alphaOverlay && viewerSettings.channels !== 'A';
+      const outputChannelIndex = options.preserveAlpha && channelIndex === 4 ? 0 : channelIndex;
+      const alphaOverlayActive =
+        !options.preserveAlpha && viewerSettings.alphaOverlay && viewerSettings.channels !== 'A';
       finalMaterial = getMaterial('final_viewport', VIEWER_SHADER, {
         u_tDiffuse: { value: readBuffer.texture },
         u_gain: { value: viewerSettings.gain },
@@ -1242,8 +1351,8 @@ export const renderWithSharedPipeline = async (
           value:
             viewerSettings.ocioView !== 'Raw' && options.sceneNode.colorSpace === 'Linear' ? 1 : 0,
         },
-        u_channel: { value: channelIndex >= 0 ? channelIndex : 0 },
-        u_ignoreAlpha: { value: viewerSettings.channels !== 'A' },
+        u_channel: { value: outputChannelIndex >= 0 ? outputChannelIndex : 0 },
+        u_ignoreAlpha: { value: !options.preserveAlpha && viewerSettings.channels !== 'A' },
         u_alphaOverlay: { value: alphaOverlayActive },
         u_alphaOverlayColor: { value: new THREE.Color(...alphaOverlayStyle.color) },
         u_alphaOverlayOpacity: { value: alphaOverlayStyle.opacity },
@@ -1254,14 +1363,12 @@ export const renderWithSharedPipeline = async (
     quad.material = finalMaterial;
 
     if (finalOutputTarget) {
-      renderer.setRenderTarget(finalOutputTarget);
-      renderer.clear();
+      clearRenderTargetTransparent(renderer, finalOutputTarget);
       renderer.render(scene, camera);
     }
 
-    renderer.setRenderTarget(null);
     if (presentToCanvas) {
-      renderer.clear();
+      clearRenderTargetTransparent(renderer, null);
       renderer.render(scene, camera);
     }
 
@@ -1392,9 +1499,30 @@ export const renderViewportFrameWithSharedPipeline = (
   const swapMainBuffers = () => {
     [readBuffer, writeBuffer] = [writeBuffer, readBuffer];
   };
+  const copyTargetToWriteBuffer = (sourceTarget: THREE.WebGLRenderTarget) => {
+    const copyMaterial = getMaterial('copy_to_main_write', TEXTURE_SHADER, {
+      u_tDiffuse: { value: sourceTarget.texture },
+    });
+    applyNoBlending(copyMaterial);
+    resources.quad.material = copyMaterial;
+    renderer.setRenderTarget(writeBuffer);
+    renderer.render(resources.scene, resources.camera);
+  };
+  const renderStraightOverToMain = (
+    material: THREE.ShaderMaterial,
+    target: THREE.WebGLRenderTarget = writeBuffer,
+  ) => {
+    applyNoBlending(material);
+    resources.quad.material = material;
+    renderer.setRenderTarget(target);
+    renderer.render(resources.scene, resources.camera);
+    if (target !== writeBuffer) {
+      copyTargetToWriteBuffer(target);
+    }
+    swapMainBuffers();
+  };
 
-  renderer.setRenderTarget(readBuffer);
-  renderer.clear();
+  clearRenderTargetTransparent(renderer, readBuffer);
 
   const visibleNodes = getVisiblePipelineNodes(nodes, effectRegistry);
   let previousMediaNode: AnyNode | null = null;
@@ -1464,11 +1592,11 @@ export const renderViewportFrameWithSharedPipeline = (
       }
 
       let finalCompositeMaterial: THREE.ShaderMaterial;
+      let straightOverTarget = writeBuffer;
       if (stackedNodes.length > 0) {
         let stackRead = writeBuffer;
         let stackWrite = auxBuffer;
-        renderer.setRenderTarget(stackRead);
-        renderer.clear();
+        clearRenderTargetTransparent(renderer, stackRead);
 
         const baseMaterial = getMaterial(
           `${baseNode.id}_base_transformed`,
@@ -1585,33 +1713,73 @@ export const renderViewportFrameWithSharedPipeline = (
           }
         }
 
-        finalCompositeMaterial = getMaterial(`${baseNode.id}_comp`, TEXTURE_OPACITY_SHADER, {
-          u_tDiffuse: { value: stackRead.texture },
-          u_opacity: { value: opacity / 100 },
-        });
-      } else {
-        finalCompositeMaterial = getMaterial(
-          `${baseNode.id}_comp_transformed`,
-          TRANSFORMED_TEXTURE_SHADER,
-          {
-            u_tDiffuse: { value: texture },
-            u_opacity: { value: opacity / 100 },
-            u_scale: { value: scale },
-            u_offset: { value: offset },
-            u_scene_res: {
-              value: new THREE.Vector2(sceneNode.width, sceneNode.height),
+        const operator = (baseNode as any).operator ?? BlendMode.OVER;
+        if (operator === BlendMode.OVER) {
+          straightOverTarget = stackRead === writeBuffer ? auxBuffer : writeBuffer;
+          finalCompositeMaterial = getMaterial(
+            `${baseNode.id}_comp_straight_over`,
+            STRAIGHT_TEXTURE_OVER_SHADER,
+            {
+              u_tBackdrop: { value: readBuffer.texture },
+              u_tDiffuse: { value: stackRead.texture },
+              u_opacity: { value: opacity / 100 },
             },
-            u_image_res: { value: new THREE.Vector2(width, height) },
-            u_input_transform: { value: inputTransform },
-            u_flipY: { value: false },
-          },
-        );
+          );
+        } else {
+          finalCompositeMaterial = getMaterial(`${baseNode.id}_comp`, TEXTURE_OPACITY_SHADER, {
+            u_tDiffuse: { value: stackRead.texture },
+            u_opacity: { value: opacity / 100 },
+          });
+        }
+      } else {
+        const operator = (baseNode as any).operator ?? BlendMode.OVER;
+        if (operator === BlendMode.OVER) {
+          finalCompositeMaterial = getMaterial(
+            `${baseNode.id}_comp_transformed_straight_over`,
+            STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
+            {
+              u_tBackdrop: { value: readBuffer.texture },
+              u_tDiffuse: { value: texture },
+              u_opacity: { value: opacity / 100 },
+              u_scale: { value: scale },
+              u_offset: { value: offset },
+              u_scene_res: {
+                value: new THREE.Vector2(sceneNode.width, sceneNode.height),
+              },
+              u_image_res: { value: new THREE.Vector2(width, height) },
+              u_input_transform: { value: inputTransform },
+              u_flipY: { value: false },
+            },
+          );
+        } else {
+          finalCompositeMaterial = getMaterial(
+            `${baseNode.id}_comp_transformed`,
+            TRANSFORMED_TEXTURE_SHADER,
+            {
+              u_tDiffuse: { value: texture },
+              u_opacity: { value: opacity / 100 },
+              u_scale: { value: scale },
+              u_offset: { value: offset },
+              u_scene_res: {
+                value: new THREE.Vector2(sceneNode.width, sceneNode.height),
+              },
+              u_image_res: { value: new THREE.Vector2(width, height) },
+              u_input_transform: { value: inputTransform },
+              u_flipY: { value: false },
+            },
+          );
+        }
       }
 
-      resources.quad.material = finalCompositeMaterial;
-      applyBlendMode(finalCompositeMaterial, (baseNode as any).operator);
-      renderer.setRenderTarget(readBuffer);
-      renderer.render(resources.scene, resources.camera);
+      const operator = (baseNode as any).operator ?? BlendMode.OVER;
+      if (operator === BlendMode.OVER) {
+        renderStraightOverToMain(finalCompositeMaterial, straightOverTarget);
+      } else {
+        resources.quad.material = finalCompositeMaterial;
+        applyBlendMode(finalCompositeMaterial, operator);
+        renderer.setRenderTarget(readBuffer);
+        renderer.render(resources.scene, resources.camera);
+      }
       index += consumedCount;
     } else if (baseMode === 'merge') {
       const sourceNodeId = (baseNode as { inputs?: Record<string, string> }).inputs?.source;
@@ -1671,27 +1839,47 @@ export const renderViewportFrameWithSharedPipeline = (
       }
 
       const opacity = getValueAtFrame((baseNode as any).opacity ?? 100, frame);
-      const mergeCompositeMaterial = getMaterial(
-        `${baseNode.id}_merge_comp_transformed`,
-        TRANSFORMED_TEXTURE_SHADER,
-        {
-          u_tDiffuse: { value: texture },
-          u_opacity: { value: opacity / 100 },
-          u_scale: { value: scale },
-          u_offset: { value: offset },
-          u_scene_res: {
-            value: new THREE.Vector2(sceneNode.width, sceneNode.height),
-          },
-          u_image_res: { value: new THREE.Vector2(width, height) },
-          u_input_transform: { value: inputTransform },
-          u_flipY: { value: false },
-        },
-      );
+      const operator = (baseNode as any).operator ?? BlendMode.OVER;
+      const mergeCompositeMaterial =
+        operator === BlendMode.OVER
+          ? getMaterial(
+              `${baseNode.id}_merge_comp_transformed_straight_over`,
+              STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
+              {
+                u_tBackdrop: { value: readBuffer.texture },
+                u_tDiffuse: { value: texture },
+                u_opacity: { value: opacity / 100 },
+                u_scale: { value: scale },
+                u_offset: { value: offset },
+                u_scene_res: {
+                  value: new THREE.Vector2(sceneNode.width, sceneNode.height),
+                },
+                u_image_res: { value: new THREE.Vector2(width, height) },
+                u_input_transform: { value: inputTransform },
+                u_flipY: { value: false },
+              },
+            )
+          : getMaterial(`${baseNode.id}_merge_comp_transformed`, TRANSFORMED_TEXTURE_SHADER, {
+              u_tDiffuse: { value: texture },
+              u_opacity: { value: opacity / 100 },
+              u_scale: { value: scale },
+              u_offset: { value: offset },
+              u_scene_res: {
+                value: new THREE.Vector2(sceneNode.width, sceneNode.height),
+              },
+              u_image_res: { value: new THREE.Vector2(width, height) },
+              u_input_transform: { value: inputTransform },
+              u_flipY: { value: false },
+            });
 
-      resources.quad.material = mergeCompositeMaterial;
-      applyBlendMode(mergeCompositeMaterial, (baseNode as any).operator ?? BlendMode.OVER);
-      renderer.setRenderTarget(readBuffer);
-      renderer.render(resources.scene, resources.camera);
+      if (operator === BlendMode.OVER) {
+        renderStraightOverToMain(mergeCompositeMaterial);
+      } else {
+        resources.quad.material = mergeCompositeMaterial;
+        applyBlendMode(mergeCompositeMaterial, operator);
+        renderer.setRenderTarget(readBuffer);
+        renderer.render(resources.scene, resources.camera);
+      }
     } else if (isStackAdjustmentType(baseNode.type) && !isStackedAdjustmentNode(baseNode)) {
       const adjMode = getRenderMode(baseNode, effectRegistry);
 
@@ -1794,8 +1982,7 @@ export const renderViewportFrameWithSharedPipeline = (
     u_alphaOverlayBgDarken: { value: alphaOverlayStyle.bgDarken },
   });
   resources.quad.material = viewerMaterial;
-  renderer.setRenderTarget(null);
-  renderer.clear();
+  clearRenderTargetTransparent(renderer, null);
   renderer.render(resources.scene, resources.camera);
 
   return { renderTargets, finalCompositeTarget: readBuffer };

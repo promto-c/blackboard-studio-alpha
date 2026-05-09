@@ -60,8 +60,7 @@ const BokehAdjustments: React.FC<{ node: AnyNode }> = ({ node: anyNode }) => {
     return undefined;
   }, [nodes, node.id]);
 
-  // Resolve depth node ID from generic inputs.
-  const depthNodeId = node.inputs?.depth ?? node.depthNodeId;
+  const depthNodeId = node.inputs?.depth;
 
   useEffect(() => {
     // If mode is 'node' and no valid ID is set, set the default.
