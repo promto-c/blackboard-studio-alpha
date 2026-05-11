@@ -2,11 +2,14 @@ import React, { useRef, useState, useEffect } from 'react';
 import { ScrollArea } from '@blackboard/ui';
 import { useEditorActions } from '@/state/editorContext';
 import { getProjectIndex } from '@/state/persist';
+import { getAsset } from '@/state/assetStorage';
 import { ProjectIndexEntry } from '@blackboard/types';
 import {
   formatStorageBytes,
+  getCachedStorageResult,
   getProjectStorageSummary,
-  type ProjectStorageSummary,
+  shouldAutoCalculate,
+  type ProjectStorageResult,
 } from '@/state/projectStorage';
 import { useDirectoryImportMode } from '@/hooks/useDirectoryImportMode';
 import { getDirectoryPickerSupport } from '@/utils/directoryPickerSupport';
@@ -56,8 +59,11 @@ const WelcomeScreen: React.FC = () => {
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [projects, setProjects] = useState<ProjectIndexEntry[]>([]);
   const [projectStorageById, setProjectStorageById] = useState<
-    Record<string, ProjectStorageSummary | null | undefined>
+    Record<string, ProjectStorageResult | undefined>
   >({});
+  const [calculatingProjectIds, setCalculatingProjectIds] = useState<Set<string>>(new Set());
+  const [lazyThumbnails, setLazyThumbnails] = useState<Record<string, string>>({});
+  const objectUrlsRef = useRef<Set<string>>(new Set());
   const [view, setView] = useState<'main' | 'newProject' | 'preferences'>('main');
   const [isImportingProject, setIsImportingProject] = useState(false);
   const [exportingProjectId, setExportingProjectId] = useState<string | null>(null);
@@ -67,36 +73,126 @@ const WelcomeScreen: React.FC = () => {
   const directoryPickerSupport = getDirectoryPickerSupport();
 
   useEffect(() => {
-    const projectList = getProjectIndex().sort((a, b) => b.lastModified - a.lastModified);
-    setProjects(projectList);
+    const timer = setTimeout(() => {
+      const projectList = getProjectIndex().sort((a, b) => b.lastModified - a.lastModified);
+      const limitedProjects = projectList.slice(0, 25);
+
+      const initialStorage: Record<string, ProjectStorageResult | undefined> = {};
+      for (const project of limitedProjects) {
+        const result = getCachedStorageResult(project);
+        if (result) {
+          initialStorage[project.id] = result;
+        }
+      }
+      setProjectStorageById(initialStorage);
+
+      setProjects(limitedProjects);
+    }, 50);
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const CONCURRENCY = 4;
+    const abortController = new AbortController();
+    const objectUrls = objectUrlsRef.current;
+
+    const loadThumbnails = async () => {
+      const toLoad = projects.filter((p) => p.thumbnailAssetId && !p.thumbnail);
+      for (let i = 0; i < toLoad.length; i += CONCURRENCY) {
+        if (abortController.signal.aborted) return;
+        const batch = toLoad.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(
+          batch.map(async (project) => {
+            try {
+              const blob = await getAsset(project.thumbnailAssetId!);
+              if (!blob) return null;
+              const url = URL.createObjectURL(blob);
+              objectUrls.add(url);
+              return { id: project.id, url };
+            } catch {
+              return null;
+            }
+          }),
+        );
+        for (const result of results) {
+          if (result) {
+            setLazyThumbnails((prev) => ({ ...prev, [result.id]: result.url }));
+          }
+        }
+      }
+    };
+
+    void loadThumbnails();
+
+    return () => {
+      abortController.abort();
+    };
+  }, [projects]);
+
+  useEffect(() => {
+    const urls = objectUrlsRef.current;
+    return () => {
+      urls.forEach((url) => URL.revokeObjectURL(url));
+      urls.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const abortController = new AbortController();
 
     const loadStorageSummaries = async () => {
-      if (projects.length === 0) {
-        setProjectStorageById({});
-        return;
-      }
+      if (projects.length === 0) return;
 
-      const entries = await Promise.all(
-        projects.map(
-          async (project) => [project.id, await getProjectStorageSummary(project)] as const,
-        ),
-      );
+      for (let i = 0; i < projects.length; i++) {
+        if (abortController.signal.aborted) return;
 
-      if (!cancelled) {
-        setProjectStorageById(Object.fromEntries(entries));
+        const project = projects[i];
+        const autoCalc = shouldAutoCalculate(project, i);
+        if (!autoCalc) continue;
+
+        await new Promise((r) => setTimeout(r, 0));
+        if (abortController.signal.aborted) return;
+
+        const summary = await getProjectStorageSummary(project, abortController.signal);
+        if (abortController.signal.aborted) return;
+
+        setProjectStorageById((prev) => ({
+          ...prev,
+          [project.id]: { summary, isStale: false },
+        }));
       }
     };
 
     void loadStorageSummaries();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => abortController.abort();
   }, [projects]);
+
+  const handleCalculateStorage = async (project: ProjectIndexEntry) => {
+    if (calculatingProjectIds.has(project.id)) return;
+
+    const abortController = new AbortController();
+    setCalculatingProjectIds((prev) => new Set(prev).add(project.id));
+
+    try {
+      const summary = await getProjectStorageSummary(project, abortController.signal);
+      if (!abortController.signal.aborted) {
+        setProjectStorageById((prev) => ({
+          ...prev,
+          [project.id]: {
+            summary,
+            isStale: false,
+          },
+        }));
+      }
+    } finally {
+      setCalculatingProjectIds((prev) => {
+        const next = new Set(prev);
+        next.delete(project.id);
+        return next;
+      });
+    }
+  };
 
   const handleOpenMediaClick = () => mediaInputRef.current?.click();
   const handleOpenProjectClick = () => projectInputRef.current?.click();
@@ -376,8 +472,13 @@ const WelcomeScreen: React.FC = () => {
                 fadeEdges
                 className="bg-gray-800/50 rounded-lg p-2 space-y-2 max-h-64 overflow-y-auto"
               >
-                {projects.map((project) => {
+                {projects.map((project, projectIndex) => {
                   const storage = projectStorageById[project.id];
+                  const isCalculating = calculatingProjectIds.has(project.id);
+                  const canAutoCalc = shouldAutoCalculate(project, projectIndex);
+                  const summary = storage?.summary;
+                  const isStale = storage?.isStale ?? false;
+                  const approxPrefix = isStale ? '~' : '';
 
                   return (
                     <div
@@ -386,37 +487,85 @@ const WelcomeScreen: React.FC = () => {
                       className="group flex items-center p-3 rounded-md hover:bg-gray-700 cursor-pointer transition-colors"
                     >
                       <div className="flex min-w-0 flex-1 items-center gap-4">
-                        {project.thumbnail ? (
-                          <img
-                            src={project.thumbnail}
-                            alt={project.name}
-                            className="w-20 h-12 object-cover rounded bg-gray-700 flex-shrink-0"
-                          />
-                        ) : (
-                          <div className="w-20 h-12 bg-gray-700 rounded flex-shrink-0 flex items-center justify-center text-gray-500">
-                            <Icons.Photo className="w-6 h-6" />
-                          </div>
-                        )}
+                        {(() => {
+                          const thumbSrc =
+                            project.thumbnail ||
+                            (project.thumbnailAssetId ? lazyThumbnails[project.id] : undefined);
+                          return thumbSrc ? (
+                            <img
+                              src={thumbSrc}
+                              alt={project.name}
+                              loading="lazy"
+                              className="w-20 h-12 object-cover rounded bg-gray-700 flex-shrink-0"
+                            />
+                          ) : (
+                            <div className="w-20 h-12 bg-gray-700 rounded flex-shrink-0 flex items-center justify-center text-gray-500">
+                              <Icons.Photo className="w-6 h-6" />
+                            </div>
+                          );
+                        })()}
                         <div className="overflow-hidden">
                           <p className="font-medium text-white truncate">{project.name}</p>
                           <p className="text-xs text-gray-400 truncate">
                             Last modified: {new Date(project.lastModified).toLocaleString()}
                           </p>
-                          {storage === undefined ? (
-                            <p className="mt-1 text-[10px] text-gray-500">Calculating storage...</p>
-                          ) : storage ? (
+                          {isCalculating ? (
+                            <p className="mt-1 text-[10px] text-gray-500">
+                              {isStale && summary
+                                ? `Approx ${approxPrefix}${formatStorageBytes(summary.totalBytes)} — updating...`
+                                : 'Calculating storage...'}
+                            </p>
+                          ) : storage === undefined ? (
+                            canAutoCalc ? (
+                              <p className="mt-1 text-[10px] text-gray-500">
+                                Calculating storage...
+                              </p>
+                            ) : project.estimatedSize != null ? (
+                              <p className="mt-1 text-[10px] text-gray-500">
+                                Est. {formatStorageBytes(project.estimatedSize)}
+                              </p>
+                            ) : (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCalculateStorage(project);
+                                }}
+                                className="mt-1 text-[10px] text-primary-400 hover:text-primary-300 transition-colors"
+                              >
+                                Calculate size
+                              </button>
+                            )
+                          ) : summary ? (
                             <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[10px] text-gray-400">
-                              <span className="font-medium text-gray-200">
-                                Total {formatStorageBytes(storage.totalBytes)}
+                              <span
+                                className={`font-medium ${
+                                  isStale ? 'text-amber-400' : 'text-gray-200'
+                                }`}
+                              >
+                                {isStale && 'Approx '}
+                                {approxPrefix}Total {formatStorageBytes(summary.totalBytes)}
                               </span>
-                              <span>Assets {formatStorageBytes(storage.breakdown.assets)}</span>
-                              <span>Renders {formatStorageBytes(storage.breakdown.renders)}</span>
-                              <span>Cache {formatStorageBytes(storage.breakdown.cache)}</span>
                               <span>
-                                Project data {formatStorageBytes(storage.breakdown.projectData)}
+                                {approxPrefix}Assets {formatStorageBytes(summary.breakdown.assets)}
                               </span>
-                              <span>Exports {formatStorageBytes(storage.breakdown.exports)}</span>
-                              <span>Temp {formatStorageBytes(storage.breakdown.temp)}</span>
+                              <span>
+                                {approxPrefix}Renders{' '}
+                                {formatStorageBytes(summary.breakdown.renders)}
+                              </span>
+                              <span>
+                                {approxPrefix}Cache {formatStorageBytes(summary.breakdown.cache)}
+                              </span>
+                              <span>
+                                {approxPrefix}Project data{' '}
+                                {formatStorageBytes(summary.breakdown.projectData)}
+                              </span>
+                              <span>
+                                {approxPrefix}Exports{' '}
+                                {formatStorageBytes(summary.breakdown.exports)}
+                              </span>
+                              <span>
+                                {approxPrefix}Temp {formatStorageBytes(summary.breakdown.temp)}
+                              </span>
                             </div>
                           ) : (
                             <p className="mt-1 text-[10px] text-gray-500">Storage unavailable</p>

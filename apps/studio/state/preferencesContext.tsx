@@ -352,6 +352,8 @@ interface Preferences {
   paintStrokePathsVisible: boolean;
   paintStrokePathsMode: PaintStrokePathsMode;
   viewportInterpolation: 'nearest' | 'linear';
+  onnxRuntimeWebGpuEnabled: boolean;
+  onnxRuntimeWasmEnabled: boolean;
 }
 
 interface PreferencesContextType extends Preferences {
@@ -426,6 +428,8 @@ const defaultPrefs: Preferences = {
   paintStrokePathsVisible: false,
   paintStrokePathsMode: 'all',
   viewportInterpolation: 'nearest',
+  onnxRuntimeWebGpuEnabled: true,
+  onnxRuntimeWasmEnabled: true,
 };
 
 const loadPreferences = (): Preferences => {
@@ -651,6 +655,12 @@ const loadPreferences = (): Preferences => {
       ) {
         prefsToSet.viewportInterpolation = loadedPrefs.viewportInterpolation;
       }
+      if (typeof loadedPrefs.onnxRuntimeWebGpuEnabled === 'boolean') {
+        prefsToSet.onnxRuntimeWebGpuEnabled = loadedPrefs.onnxRuntimeWebGpuEnabled;
+      }
+      if (typeof loadedPrefs.onnxRuntimeWasmEnabled === 'boolean') {
+        prefsToSet.onnxRuntimeWasmEnabled = loadedPrefs.onnxRuntimeWasmEnabled;
+      }
     }
   } catch (error) {
     console.error('Failed to load preferences:', error);
@@ -730,6 +740,8 @@ export const PreferencesProvider: React.FC<{ children: ReactNode }> = ({ childre
         paintStrokePathsVisible: newPrefs.paintStrokePathsVisible,
         paintStrokePathsMode: newPrefs.paintStrokePathsMode,
         viewportInterpolation: newPrefs.viewportInterpolation,
+        onnxRuntimeWebGpuEnabled: newPrefs.onnxRuntimeWebGpuEnabled,
+        onnxRuntimeWasmEnabled: newPrefs.onnxRuntimeWasmEnabled,
       };
       localStorage.setItem(PREFERENCES_KEY, JSON.stringify(toStore));
     } catch (error) {

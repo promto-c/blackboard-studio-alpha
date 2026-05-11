@@ -6,6 +6,7 @@ import { getStaticThumbnailAssetId, hasMediaThumbnail } from '@/features/nodes/n
 import { NodeActionMenu } from '@/features/nodes/NodeActionMenu';
 import { createExecutionAction, createStackingAction } from '@/features/nodes/nodeActionFactories';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import { isSourceNodeType } from '@/utils/nodePredicates';
 import * as Icons from '@blackboard/icons';
 import { ImageThumbnail, LiveThumbnail, ViewerSlotBadges } from '@/components';
 import type { ThumbnailMode } from '@/state/preferencesContext';
@@ -69,7 +70,10 @@ type PortSpec = { nodeId: string; portName: string; label: string };
 
 function buildStackInputPorts(stack: AnyNode[]) {
   const baseNode = stack[0];
-  const ports: PortSpec[] = [{ nodeId: baseNode.id, portName: 'pipe', label: 'in' }];
+  const isSource = isSourceNodeType(baseNode.type);
+  const ports: PortSpec[] = isSource
+    ? []
+    : [{ nodeId: baseNode.id, portName: 'pipe', label: 'in' }];
 
   for (const node of stack) {
     for (const port of getInputPortsForNode(node)) {
@@ -246,8 +250,7 @@ export const SceneNodeCard: React.FC<{
   onSelect: () => void;
   onDragStart: (e: React.MouseEvent) => void;
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
-  onOutputPortMouseDown: (e: React.MouseEvent) => void;
-}> = ({ sceneNode, isSelected, onSelect, onDragStart, registerPortRef, onOutputPortMouseDown }) => {
+}> = ({ sceneNode, isSelected, onSelect, onDragStart, registerPortRef }) => {
   return (
     <NodeCardShell
       isSelected={isSelected}
@@ -260,12 +263,6 @@ export const SceneNodeCard: React.FC<{
       <span className="text-xs text-gray-500 font-mono mt-1">
         {sceneNode.width}x{sceneNode.height}
       </span>
-
-      <OutputPort
-        portKey={`${sceneNode.id}:output`}
-        registerPortRef={registerPortRef}
-        onOutputPortMouseDown={onOutputPortMouseDown}
-      />
     </NodeCardShell>
   );
 };

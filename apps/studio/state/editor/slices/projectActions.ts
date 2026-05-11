@@ -19,6 +19,7 @@ import {
   type RotoPath,
 } from '@blackboard/types';
 import {
+  SCHEMA_VERSION,
   saveProject,
   loadProjectState,
   saveProjectIndex,
@@ -272,7 +273,7 @@ export function createProjectActions(
     opacity: 100,
     operator: BlendMode.OVER,
     colorSpace: opts.colorSpace ?? 'sRGB',
-    transform: opts.transform ?? { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+    transform: opts.transform ?? { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
   });
 
   const createVideoNode = (opts: {
@@ -281,7 +282,8 @@ export function createProjectActions(
     width: number;
     height: number;
     duration: number;
-    scale?: number;
+    scaleX?: number;
+    scaleY?: number;
   }): VideoNode => ({
     id: `vid_${Date.now()}`,
     type: NodeType.VIDEO,
@@ -292,7 +294,13 @@ export function createProjectActions(
     height: opts.height,
     opacity: 100,
     operator: BlendMode.OVER,
-    transform: { x: 0, y: 0, scale: opts.scale ?? 1, fitMode: ImageFitMode.FIT },
+    transform: {
+      x: 0,
+      y: 0,
+      scaleX: opts.scaleX ?? 1,
+      scaleY: opts.scaleY ?? 1,
+      fitMode: ImageFitMode.FIT,
+    },
     duration: opts.duration,
     loop: true,
   });
@@ -303,7 +311,8 @@ export function createProjectActions(
     width: number;
     height: number;
     colorSpace?: ImageSequenceNode['colorSpace'];
-    scale?: number;
+    scaleX?: number;
+    scaleY?: number;
   }): ImageSequenceNode => ({
     id: `seq_${Date.now()}`,
     type: NodeType.IMAGE_SEQUENCE,
@@ -314,7 +323,13 @@ export function createProjectActions(
     height: opts.height,
     opacity: 100,
     operator: BlendMode.OVER,
-    transform: { x: 0, y: 0, scale: opts.scale ?? 1, fitMode: ImageFitMode.FIT },
+    transform: {
+      x: 0,
+      y: 0,
+      scaleX: opts.scaleX ?? 1,
+      scaleY: opts.scaleY ?? 1,
+      fitMode: ImageFitMode.FIT,
+    },
     colorSpace: opts.colorSpace ?? 'sRGB',
     fps: 30,
     startFrame: 0,
@@ -746,11 +761,18 @@ export function createProjectActions(
     timestamp = Date.now(),
     thumbnail?: string | null,
   ) => {
+    const state = get();
     const index = getProjectIndex();
     saveProjectIndex(
       index.map((entry) =>
         entry.id === projectId
-          ? { ...entry, lastModified: timestamp, thumbnail: thumbnail ?? entry.thumbnail }
+          ? {
+              ...entry,
+              lastModified: timestamp,
+              thumbnail: thumbnail ?? entry.thumbnail,
+              thumbnailAssetId: state.thumbnailAssetId ?? entry.thumbnailAssetId,
+              schemaVersion: SCHEMA_VERSION,
+            }
           : entry,
       ),
     );
@@ -1003,7 +1025,23 @@ export function createProjectActions(
   };
 
   const projectActions = {
-    setProjectThumbnail: (thumbnail: string | null) => set(() => ({ thumbnail })),
+    setProjectThumbnail: (thumbnail: string | null) => {
+      const prevAssetId = get().thumbnailAssetId;
+      set(() => ({ thumbnail }));
+      if (thumbnail) {
+        fetch(thumbnail)
+          .then((r) => r.blob())
+          .then((blob) => saveAsset(blob))
+          .then((assetId) => {
+            set(() => ({ thumbnailAssetId: assetId }));
+            if (prevAssetId) deleteAssets([prevAssetId]).catch(() => {});
+          })
+          .catch(() => {});
+      } else if (prevAssetId) {
+        deleteAssets([prevAssetId]).catch(() => {});
+        set(() => ({ thumbnailAssetId: undefined }));
+      }
+    },
 
     applyComfyNodeRunResult: async ({
       projectId,
@@ -1197,7 +1235,12 @@ export function createProjectActions(
         }));
         const index = getProjectIndex();
         saveProjectIndex([
-          { id: newProjectId, name: projectName, lastModified: Date.now() },
+          {
+            id: newProjectId,
+            name: projectName,
+            lastModified: Date.now(),
+            schemaVersion: SCHEMA_VERSION,
+          },
           ...index,
         ]);
         void saveProject(newProjectId, persistedState);
@@ -1282,7 +1325,12 @@ export function createProjectActions(
       }));
       const index = getProjectIndex();
       saveProjectIndex([
-        { id: newProjectId, name: projectName, lastModified: Date.now() },
+        {
+          id: newProjectId,
+          name: projectName,
+          lastModified: Date.now(),
+          schemaVersion: SCHEMA_VERSION,
+        },
         ...index,
       ]);
       void saveProject(newProjectId, persistedState);
@@ -1336,7 +1384,12 @@ export function createProjectActions(
       }));
       const index = getProjectIndex();
       saveProjectIndex([
-        { id: newProjectId, name: projectName, lastModified: Date.now() },
+        {
+          id: newProjectId,
+          name: projectName,
+          lastModified: Date.now(),
+          schemaVersion: SCHEMA_VERSION,
+        },
         ...index,
       ]);
       void saveProject(newProjectId, persistedState);
@@ -1369,7 +1422,10 @@ export function createProjectActions(
         fps: 30,
       }));
       const index = getProjectIndex();
-      saveProjectIndex([{ id: newProjectId, name, lastModified: Date.now() }, ...index]);
+      saveProjectIndex([
+        { id: newProjectId, name, lastModified: Date.now(), schemaVersion: SCHEMA_VERSION },
+        ...index,
+      ]);
       void saveProject(newProjectId, persistedState);
     },
 
@@ -1390,6 +1446,7 @@ export function createProjectActions(
           name: importedProject.projectName,
           lastModified: Date.now(),
           thumbnail: importedProject.thumbnail ?? undefined,
+          schemaVersion: SCHEMA_VERSION,
         },
         ...index,
       ]);
@@ -1507,6 +1564,11 @@ export function createProjectActions(
       const assetIds = new Set<string>();
       const branches = getProjectBranches(projectId);
 
+      const indexEntry = getProjectIndex().find((e) => e.id === projectId);
+      if (indexEntry?.thumbnailAssetId) {
+        assetIds.add(indexEntry.thumbnailAssetId);
+      }
+
       for (const branch of branches) {
         const projectState = await loadProjectState(
           getProjectBranchStorageId(projectId, branch.id),
@@ -1545,7 +1607,7 @@ export function createProjectActions(
         if (!sceneNode) return;
 
         const assetId = await saveAsset(file);
-        const { scale } = calculateTransformForFitMode(
+        const { scaleX, scaleY } = calculateTransformForFitMode(
           { width, height },
           { width: sceneNode.width, height: sceneNode.height },
           ImageFitMode.FIT,
@@ -1557,7 +1619,7 @@ export function createProjectActions(
           width,
           height,
           colorSpace: getImportedImageColorSpace(file),
-          transform: { x: 0, y: 0, scale, fitMode: ImageFitMode.FIT },
+          transform: { x: 0, y: 0, scaleX, scaleY, fitMode: ImageFitMode.FIT },
         });
         const newNodes = [...get().nodes, newImageNode];
         set(() => ({
@@ -1577,7 +1639,7 @@ export function createProjectActions(
         if (!sceneNode) return;
 
         const assetId = await saveAsset(file);
-        const { scale } = calculateTransformForFitMode(
+        const { scaleX, scaleY } = calculateTransformForFitMode(
           { width, height },
           { width: sceneNode.width, height: sceneNode.height },
           ImageFitMode.FIT,
@@ -1589,7 +1651,8 @@ export function createProjectActions(
           width,
           height,
           duration,
-          scale,
+          scaleX,
+          scaleY,
         });
 
         const newNodes = [...get().nodes, newVideoNode];
@@ -1619,7 +1682,7 @@ export function createProjectActions(
       const sceneNode = findSceneNode(get().nodes);
       if (!sceneNode) return;
 
-      const { scale } = calculateTransformForFitMode(
+      const { scaleX, scaleY } = calculateTransformForFitMode(
         { width, height },
         { width: sceneNode.width, height: sceneNode.height },
         ImageFitMode.FIT,
@@ -1633,7 +1696,8 @@ export function createProjectActions(
         width,
         height,
         colorSpace: getImportedImageColorSpace(firstEntry.file),
-        scale,
+        scaleX,
+        scaleY,
       });
 
       const newNodes = [...get().nodes, sequenceNode];
@@ -1671,7 +1735,7 @@ export function createProjectActions(
       const sceneNode = findSceneNode(get().nodes);
       if (!sceneNode) return;
 
-      const { scale } = calculateTransformForFitMode(
+      const { scaleX, scaleY } = calculateTransformForFitMode(
         { width, height },
         { width: sceneNode.width, height: sceneNode.height },
         ImageFitMode.FIT,
@@ -1683,7 +1747,8 @@ export function createProjectActions(
         width,
         height,
         colorSpace: getImportedImageColorSpace(firstEntry.file),
-        scale,
+        scaleX,
+        scaleY,
       });
 
       const newNodes = [...get().nodes, sequenceNode];

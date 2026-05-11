@@ -7,6 +7,8 @@ import {
 
 const PROJECT_INDEX_KEY = 'blackboard-studio-project-index-v1';
 
+export const SCHEMA_VERSION = 1;
+
 // --- Project Index ---
 
 export const getProjectIndex = (): ProjectIndexEntry[] => {
@@ -46,7 +48,6 @@ export const saveProject = async (id: string, state: StoredProjectState): Promis
 export const loadProjectState = async (id: string): Promise<StoredProjectState | null> => {
   try {
     const stored = await loadProjectStateFromDB(id);
-
     if (stored) {
       // Validate history to prevent crashes from corrupt/old data
       if (

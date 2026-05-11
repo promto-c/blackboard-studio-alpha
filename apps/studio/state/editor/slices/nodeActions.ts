@@ -126,52 +126,77 @@ export function createNodeActions(
     debouncedSave: () => void;
   },
 ) {
+  function createNode(
+    nodeType: NodeType,
+    props: Record<string, unknown> = {},
+    options?: { name?: string },
+  ): { finalNewNode: AnyNode; newNodes: AnyNode[]; name: string } | null {
+    const definition = effectRegistry.get(nodeType);
+    if (!definition) return null;
+    const { nodes: currentNodes, selectedNodeId } = get();
+    let name = options?.name ?? definition.name;
+    const existingCount = getNodeCount(currentNodes, nodeType);
+    if (!options?.name && existingCount > 0) name = `${definition.name} ${existingCount + 1}`;
+    const nodeData = definition.getInitialNodeProps?.() ?? definition.getInitialNodeProps();
+    const newNodeBase = {
+      ...nodeData,
+      ...props,
+      id: `${nodeType}_${Date.now()}`,
+      type: nodeType,
+      name,
+      visible: true,
+    };
+    const selectedIndex = selectedNodeId
+      ? currentNodes.findIndex((node) => node.id === selectedNodeId)
+      : -1;
+    const selectedNode = selectedIndex !== -1 ? currentNodes[selectedIndex] : null;
+    const finalNewNode = newNodeBase as AnyNode;
+    const newNodes = [...currentNodes];
+    if (!selectedNode || nodeFlags(selectedNode.type).isSceneLike) {
+      newNodes.push(finalNewNode);
+    } else {
+      let insertIndex = selectedIndex;
+      for (let i = selectedIndex + 1; i < currentNodes.length; i++) {
+        const nextNode = currentNodes[i];
+        if (isStackedAdjustmentNode(nextNode)) {
+          insertIndex = i;
+        } else {
+          break;
+        }
+      }
+      newNodes.splice(insertIndex + 1, 0, finalNewNode);
+    }
+    return { finalNewNode, newNodes, name };
+  }
+
+  function commitNewNode(finalNewNode: AnyNode, newNodes: AnyNode[], name: string) {
+    set(() => ({
+      nodes: newNodes,
+      selectedNodeId: finalNewNode.id,
+      activeTab: EditorTab.Flow,
+      activeViewportTool: getDefaultViewportTool(finalNewNode.type),
+    }));
+    deps.pushHistory({
+      label: `Add ${name} Node`,
+      state: { nodes: newNodes, selectedNodeId: finalNewNode.id },
+    });
+  }
+
   return {
     addNode: (nodeType: NodeType) => {
-      const definition = effectRegistry.get(nodeType);
-      if (!definition) return;
-      const { nodes: currentNodes, selectedNodeId } = get();
-      let name = definition.name;
-      const existingCount = getNodeCount(currentNodes, nodeType);
-      if (existingCount > 0) name = `${definition.name} ${existingCount + 1}`;
-      const nodeData = definition.getInitialNodeProps?.() ?? definition.getInitialNodeProps();
-      const newNodeBase = {
-        ...nodeData,
-        id: `${nodeType}_${Date.now()}`,
-        type: nodeType,
-        name,
-        visible: true,
-      };
-      const selectedIndex = selectedNodeId
-        ? currentNodes.findIndex((node) => node.id === selectedNodeId)
-        : -1;
-      const selectedNode = selectedIndex !== -1 ? currentNodes[selectedIndex] : null;
-      const finalNewNode = newNodeBase as AnyNode;
-      const newNodes = [...currentNodes];
-      if (!selectedNode || nodeFlags(selectedNode.type).isSceneLike) {
-        newNodes.push(finalNewNode);
-      } else {
-        let insertIndex = selectedIndex;
-        for (let i = selectedIndex + 1; i < currentNodes.length; i++) {
-          const nextNode = currentNodes[i];
-          if (isStackedAdjustmentNode(nextNode)) {
-            insertIndex = i;
-          } else {
-            break;
-          }
-        }
-        newNodes.splice(insertIndex + 1, 0, finalNewNode);
-      }
-      set(() => ({
-        nodes: newNodes,
-        selectedNodeId: finalNewNode.id,
-        activeTab: EditorTab.Flow,
-        activeViewportTool: getDefaultViewportTool(finalNewNode.type),
-      }));
-      deps.pushHistory({
-        label: `Add ${name} Node`,
-        state: { nodes: newNodes, selectedNodeId: finalNewNode.id },
-      });
+      const result = createNode(nodeType);
+      if (!result) return;
+      commitNewNode(result.finalNewNode, result.newNodes, result.name);
+    },
+
+    addNodeWithProps: (
+      nodeType: NodeType,
+      props: Record<string, unknown>,
+      options?: { name?: string },
+    ) => {
+      const result = createNode(nodeType, props, options);
+      if (!result) return;
+      commitNewNode(result.finalNewNode, result.newNodes, result.name);
     },
 
     updateNode: (nodeId: string, updates: Partial<AnyNode>, withHistory = false) => {

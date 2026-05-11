@@ -28,6 +28,7 @@ export const NodeType = {
   CHROMA_KEY: 'chroma_key',
   WARP: 'warp',
   COMFY: 'comfy',
+  ONNX_MODEL: 'onnx_model',
 } as const;
 
 type BuiltinNodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -49,6 +50,7 @@ export enum ImageFitMode {
   FIT = 'fit',
   FILL = 'fill',
   NONE = 'none',
+  STRETCH = 'stretch',
 }
 
 export type DirectoryImportMode = 'copy' | 'reference';
@@ -113,7 +115,8 @@ export interface Blur {
 export interface ImageTransform {
   x: AnimatableNumber;
   y: AnimatableNumber;
-  scale: AnimatableNumber;
+  scaleX: AnimatableNumber;
+  scaleY: AnimatableNumber;
   fitMode: ImageFitMode;
 }
 
@@ -744,6 +747,124 @@ export interface ComfyNode extends EffectNode {
   lastError?: string;
 }
 
+export type OnnxBackend = 'webgpu' | 'wasm';
+export type OnnxPrecision =
+  | 'fp16'
+  | 'fp32'
+  | 'fp64'
+  | 'bfloat16'
+  | 'int8'
+  | 'uint8'
+  | 'int16'
+  | 'uint16'
+  | 'int32'
+  | 'uint32'
+  | 'quantized'
+  | 'q4'
+  | 'q4f16'
+  | 'q2'
+  | 'unknown';
+export type OnnxModelScale = 'small' | 'base' | 'large' | 'unknown';
+export type OnnxModelTask = 'depth-estimation' | 'inpainting' | 'generic';
+export type OnnxNormalization = 'imagenet' | 'zeroToOne' | 'none';
+
+export interface OnnxInputMetadata {
+  name: string;
+  type: string;
+  dims: number[];
+  isDynamic: boolean;
+  dimsLabel: string;
+  kind: 'image' | 'scalar';
+  defaultValue?: number | string | boolean;
+}
+
+export interface OnnxOutputMetadata {
+  name: string;
+  type: string;
+  dims: number[];
+  isDynamic: boolean;
+  dimsLabel: string;
+  kind: 'image' | 'scalar';
+}
+
+export interface OnnxNodeOutput {
+  id: string;
+  name: string;
+  outputIndex: number;
+  src: string;
+  width: number;
+  height: number;
+  createdAt: number;
+  kind: 'image' | 'scalar';
+  scalarValue?: number;
+  dims: number[];
+  type: string;
+}
+
+export interface OnnxModelExternalData {
+  path: string;
+  cacheKey: string;
+  sizeBytes?: number;
+}
+
+export interface OnnxModelVariantMetadata {
+  id: string;
+  repoName: string;
+  filePath: string;
+  label: string;
+  sizeBytes?: number;
+  precision?: OnnxPrecision;
+  scale?: OnnxModelScale;
+  supportedBackends: OnnxBackend[];
+  inputShape?: number[];
+  outputShape?: number[];
+  preprocessing?: string;
+  postprocessing?: string;
+  externalDataFiles?: { path: string; size?: number }[];
+  inputMetadata?: OnnxInputMetadata[];
+  outputMetadata?: OnnxOutputMetadata[];
+  metadataError?: string;
+}
+
+export interface InstalledOnnxModel {
+  id: string;
+  recipeId: string;
+  name: string;
+  repoName: string;
+  variant: OnnxModelVariantMetadata;
+  cacheKey: string;
+  installedAt: number;
+  sizeBytes?: number;
+  externalData?: OnnxModelExternalData[];
+}
+
+export type OnnxChannelMode = 'RGB' | 'R' | 'G' | 'B' | 'A' | 'Luminance';
+
+export interface OnnxModelNode extends EffectNode {
+  type: typeof NodeType.ONNX_MODEL;
+  modelId?: string;
+  modelName?: string;
+  modelRepo?: string;
+  variantId?: string;
+  variantLabel?: string;
+  backend: OnnxBackend;
+  inputSize: { width: number; height: number };
+  task: OnnxModelTask;
+  inputChannelModes?: Record<string, OnnxChannelMode>;
+  inputValues?: Record<string, number | string | boolean>;
+  outputs?: OnnxNodeOutput[];
+  activeOutputId?: string;
+  src: string;
+  width: number;
+  height: number;
+  opacity: AnimatableNumber;
+  operator: BlendMode;
+  transform: ImageTransform;
+  colorSpace: 'sRGB' | 'Linear' | 'Raw';
+  lastRunAt?: number;
+  lastError?: string;
+}
+
 export type AnyEffectNode =
   | ImageNode
   | VideoNode
@@ -761,7 +882,8 @@ export type AnyEffectNode =
   | PaintNode
   | ChromaKeyNode
   | WarpNode
-  | ComfyNode;
+  | ComfyNode
+  | OnnxModelNode;
 
 export type AnyNode = SceneNode | OutputNode | GroupNode | AnyEffectNode;
 
@@ -938,6 +1060,9 @@ export interface ProjectIndexEntry {
   name: string;
   lastModified: number;
   thumbnail?: string;
+  thumbnailAssetId?: string;
+  estimatedSize?: number;
+  schemaVersion?: number;
 }
 
 export interface FlowValidationIssue {

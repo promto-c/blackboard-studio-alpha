@@ -41,7 +41,7 @@ const IMAGE_NODE: AnyNode = {
   opacity: 100,
   operator: BlendMode.OVER,
   colorSpace: 'sRGB',
-  transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+  transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
 };
 
 const VIDEO_NODE: AnyNode = {
@@ -56,7 +56,7 @@ const VIDEO_NODE: AnyNode = {
   operator: BlendMode.OVER,
   duration: 10,
   loop: true,
-  transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+  transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
 };
 
 const GRADE_NODE: AnyNode = {

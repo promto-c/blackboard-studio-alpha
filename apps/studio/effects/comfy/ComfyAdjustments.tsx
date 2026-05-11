@@ -595,18 +595,17 @@ const ComfyAdjustmentsPanel: React.FC<{ node: ComfyNode }> = ({ node }) => {
   };
 
   const handleActivateGeneratedOutput = (output: GeneratedOutput) => {
+    const { scaleX, scaleY } =
+      sceneNode && 'width' in sceneNode && 'height' in sceneNode
+        ? calculateTransformForFitMode(
+            { width: output.width, height: output.height },
+            { width: sceneNode.width, height: sceneNode.height },
+            node.transform.fitMode,
+          )
+        : { scaleX: 1, scaleY: 1 };
     const transform =
       sceneNode && 'width' in sceneNode && 'height' in sceneNode
-        ? {
-            ...node.transform,
-            ...calculateTransformForFitMode(
-              { width: output.width, height: output.height },
-              { width: sceneNode.width, height: sceneNode.height },
-              node.transform.fitMode,
-            ),
-            x: 0,
-            y: 0,
-          }
+        ? { ...node.transform, scaleX, scaleY, x: 0, y: 0 }
         : node.transform;
 
     updateNode(

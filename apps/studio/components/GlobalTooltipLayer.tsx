@@ -209,7 +209,7 @@ const GlobalTooltipLayer: React.FC = () => {
     const handleFocusIn = (event: FocusEvent) => {
       const target = getTooltipTarget(event.target);
       if (!target || target === activeTargetRef.current) return;
-      scheduleTooltip(target, true);
+      scheduleTooltip(target, false);
     };
 
     const handleFocusOut = (event: FocusEvent) => {

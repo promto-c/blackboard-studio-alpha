@@ -1,4 +1,5 @@
 import {
+  SCHEMA_VERSION,
   getProjectBranchStorageId,
   getProjectIndex,
   saveProject,
@@ -47,16 +48,23 @@ export const createProjectAutosave = (
     }
 
     const timestamp = Date.now();
-    await saveProject(
-      getProjectBranchStorageId(projectId, activeProjectBranchId),
-      buildPersistedProjectState(snapshot),
-    );
+    const persistedState = buildPersistedProjectState(snapshot);
+    await saveProject(getProjectBranchStorageId(projectId, activeProjectBranchId), persistedState);
     touchProjectBranch(projectId, activeProjectBranchId, timestamp);
+
+    const estimatedSize = new Blob([JSON.stringify(persistedState)]).size;
 
     const index = getProjectIndex();
     const nextIndex = index.map((entry) =>
       entry.id === projectId
-        ? { ...entry, lastModified: timestamp, thumbnail: thumbnail ?? undefined }
+        ? {
+            ...entry,
+            lastModified: timestamp,
+            thumbnail: thumbnail ?? undefined,
+            thumbnailAssetId: snapshot.thumbnailAssetId ?? entry.thumbnailAssetId,
+            estimatedSize,
+            schemaVersion: SCHEMA_VERSION,
+          }
         : entry,
     );
     saveProjectIndex(nextIndex);

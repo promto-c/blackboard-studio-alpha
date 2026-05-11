@@ -68,7 +68,8 @@ export const mediaTransformAnimation: EffectAnimationBehavior = {
       return props;
     }
 
-    addProp('Scale', 'transform.scale', node.transform.scale, 'Transform');
+    addProp('Scale X', 'transform.scaleX', node.transform.scaleX, 'Transform');
+    addProp('Scale Y', 'transform.scaleY', node.transform.scaleY, 'Transform');
     addProp('Position X', 'transform.x', node.transform.x, 'Transform');
     addProp('Position Y', 'transform.y', node.transform.y, 'Transform');
 

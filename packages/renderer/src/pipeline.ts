@@ -884,7 +884,8 @@ export const renderWithSharedPipeline = async (
         let width = 0;
         let height = 0;
         let isDynamicTexture = false;
-        let scale = 1;
+        let scaleX = 1;
+        let scaleY = 1;
         const offset = new THREE.Vector2(0, 0);
         let opacity = 100;
         let inputTransform = 1;
@@ -897,7 +898,8 @@ export const renderWithSharedPipeline = async (
           width = (baseNode as any).width;
           height = (baseNode as any).height;
           if ((baseNode as any).transform) {
-            scale = getValueAtFrame((baseNode as any).transform.scale, frame);
+            scaleX = getValueAtFrame((baseNode as any).transform.scaleX, frame);
+            scaleY = getValueAtFrame((baseNode as any).transform.scaleY, frame);
             offset.set(
               getValueAtFrame((baseNode as any).transform.x, frame),
               getValueAtFrame((baseNode as any).transform.y, frame),
@@ -946,7 +948,8 @@ export const renderWithSharedPipeline = async (
           const basePass = getMaterial(`${baseNode.id}_stack_base`, TRANSFORMED_TEXTURE_SHADER, {
             u_tDiffuse: { value: texture },
             u_opacity: { value: 1 },
-            u_scale: { value: scale },
+            u_scaleX: { value: scaleX },
+            u_scaleY: { value: scaleY },
             u_offset: { value: offset },
             u_scene_res: {
               value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
@@ -1087,7 +1090,8 @@ export const renderWithSharedPipeline = async (
                 u_tBackdrop: { value: readBuffer.texture },
                 u_tDiffuse: { value: texture },
                 u_opacity: { value: opacity / 100 },
-                u_scale: { value: scale },
+                u_scaleX: { value: scaleX },
+                u_scaleY: { value: scaleY },
                 u_offset: { value: offset },
                 u_scene_res: {
                   value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
@@ -1101,7 +1105,8 @@ export const renderWithSharedPipeline = async (
             finalComposite = getMaterial(`${baseNode.id}_comp`, TRANSFORMED_TEXTURE_SHADER, {
               u_tDiffuse: { value: texture },
               u_opacity: { value: opacity / 100 },
-              u_scale: { value: scale },
+              u_scaleX: { value: scaleX },
+              u_scaleY: { value: scaleY },
               u_offset: { value: offset },
               u_scene_res: {
                 value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
@@ -1140,7 +1145,8 @@ export const renderWithSharedPipeline = async (
         let width = 0;
         let height = 0;
         let isDynamicTexture = false;
-        let scale = 1;
+        let scaleX = 1;
+        let scaleY = 1;
         const offset = new THREE.Vector2(0, 0);
         let inputTransform = 1;
 
@@ -1153,7 +1159,8 @@ export const renderWithSharedPipeline = async (
           width = (sourceNode as any).width;
           height = (sourceNode as any).height;
           if ((sourceNode as any).transform) {
-            scale = getValueAtFrame((sourceNode as any).transform.scale, frame);
+            scaleX = getValueAtFrame((sourceNode as any).transform.scaleX, frame);
+            scaleY = getValueAtFrame((sourceNode as any).transform.scaleY, frame);
             offset.set(
               getValueAtFrame((sourceNode as any).transform.x, frame),
               getValueAtFrame((sourceNode as any).transform.y, frame),
@@ -1192,7 +1199,8 @@ export const renderWithSharedPipeline = async (
                   u_tBackdrop: { value: readBuffer.texture },
                   u_tDiffuse: { value: texture },
                   u_opacity: { value: opacity / 100 },
-                  u_scale: { value: scale },
+                  u_scaleX: { value: scaleX },
+                  u_scaleY: { value: scaleY },
                   u_offset: { value: offset },
                   u_scene_res: {
                     value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
@@ -1205,7 +1213,8 @@ export const renderWithSharedPipeline = async (
             : getMaterial(`${baseNode.id}_merge_comp`, TRANSFORMED_TEXTURE_SHADER, {
                 u_tDiffuse: { value: texture },
                 u_opacity: { value: opacity / 100 },
-                u_scale: { value: scale },
+                u_scaleX: { value: scaleX },
+                u_scaleY: { value: scaleY },
                 u_offset: { value: offset },
                 u_scene_res: {
                   value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
@@ -1537,7 +1546,8 @@ export const renderViewportFrameWithSharedPipeline = (
       let texture: THREE.Texture | undefined;
       let width = 0;
       let height = 0;
-      let scale = 1;
+      let scaleX = 1;
+      let scaleY = 1;
       const offset = new THREE.Vector2(0, 0);
       let opacity = 100;
 
@@ -1548,7 +1558,8 @@ export const renderViewportFrameWithSharedPipeline = (
         }
         width = baseNode.width;
         height = baseNode.height;
-        scale = getValueAtFrame(baseNode.transform.scale, frame);
+        scaleX = getValueAtFrame(baseNode.transform.scaleX, frame);
+        scaleY = getValueAtFrame(baseNode.transform.scaleY, frame);
         offset.set(
           getValueAtFrame(baseNode.transform.x, frame),
           getValueAtFrame(baseNode.transform.y, frame),
@@ -1604,7 +1615,8 @@ export const renderViewportFrameWithSharedPipeline = (
           {
             u_tDiffuse: { value: texture },
             u_opacity: { value: 1 },
-            u_scale: { value: scale },
+            u_scaleX: { value: scaleX },
+            u_scaleY: { value: scaleY },
             u_offset: { value: offset },
             u_scene_res: {
               value: new THREE.Vector2(sceneNode.width, sceneNode.height),
@@ -1741,7 +1753,8 @@ export const renderViewportFrameWithSharedPipeline = (
               u_tBackdrop: { value: readBuffer.texture },
               u_tDiffuse: { value: texture },
               u_opacity: { value: opacity / 100 },
-              u_scale: { value: scale },
+              u_scaleX: { value: scaleX },
+              u_scaleY: { value: scaleY },
               u_offset: { value: offset },
               u_scene_res: {
                 value: new THREE.Vector2(sceneNode.width, sceneNode.height),
@@ -1758,7 +1771,8 @@ export const renderViewportFrameWithSharedPipeline = (
             {
               u_tDiffuse: { value: texture },
               u_opacity: { value: opacity / 100 },
-              u_scale: { value: scale },
+              u_scaleX: { value: scaleX },
+              u_scaleY: { value: scaleY },
               u_offset: { value: offset },
               u_scene_res: {
                 value: new THREE.Vector2(sceneNode.width, sceneNode.height),
@@ -1794,7 +1808,8 @@ export const renderViewportFrameWithSharedPipeline = (
       let texture: THREE.Texture | undefined;
       let width = 0;
       let height = 0;
-      let scale = 1;
+      let scaleX = 1;
+      let scaleY = 1;
       const offset = new THREE.Vector2(0, 0);
 
       const sourceMode = getRenderMode(sourceNode, effectRegistry);
@@ -1805,7 +1820,8 @@ export const renderViewportFrameWithSharedPipeline = (
         }
         width = (sourceNode as MediaNode).width;
         height = (sourceNode as MediaNode).height;
-        scale = getValueAtFrame((sourceNode as MediaNode).transform.scale, frame);
+        scaleX = getValueAtFrame((sourceNode as MediaNode).transform.scaleX, frame);
+        scaleY = getValueAtFrame((sourceNode as MediaNode).transform.scaleY, frame);
         offset.set(
           getValueAtFrame((sourceNode as MediaNode).transform.x, frame),
           getValueAtFrame((sourceNode as MediaNode).transform.y, frame),
@@ -1849,7 +1865,8 @@ export const renderViewportFrameWithSharedPipeline = (
                 u_tBackdrop: { value: readBuffer.texture },
                 u_tDiffuse: { value: texture },
                 u_opacity: { value: opacity / 100 },
-                u_scale: { value: scale },
+                u_scaleX: { value: scaleX },
+                u_scaleY: { value: scaleY },
                 u_offset: { value: offset },
                 u_scene_res: {
                   value: new THREE.Vector2(sceneNode.width, sceneNode.height),
@@ -1862,7 +1879,8 @@ export const renderViewportFrameWithSharedPipeline = (
           : getMaterial(`${baseNode.id}_merge_comp_transformed`, TRANSFORMED_TEXTURE_SHADER, {
               u_tDiffuse: { value: texture },
               u_opacity: { value: opacity / 100 },
-              u_scale: { value: scale },
+              u_scaleX: { value: scaleX },
+              u_scaleY: { value: scaleY },
               u_offset: { value: offset },
               u_scene_res: {
                 value: new THREE.Vector2(sceneNode.width, sceneNode.height),

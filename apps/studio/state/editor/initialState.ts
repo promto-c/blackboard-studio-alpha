@@ -12,6 +12,7 @@ import { MAIN_PROJECT_BRANCH_ID, type ProjectBranchRecord } from '@/state/projec
 export const getInitialHistoryEntry = getBaseInitialHistoryEntry;
 export const getInitialState = () => ({
   ...getBaseInitialState(),
+  thumbnailAssetId: undefined as string | undefined,
   activeProjectBranchId: MAIN_PROJECT_BRANCH_ID,
   projectBranches: [] as ProjectBranchRecord[],
   isFrameScrubbing: false,

@@ -23,7 +23,7 @@ export interface RotoMaskTextureBundle {
   dispose: () => void;
 }
 
-const createMaskCanvas = (
+export const createMaskCanvas = (
   node: RotoNode,
   sceneNode: SceneNode,
   frame: number,

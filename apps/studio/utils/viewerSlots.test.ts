@@ -41,7 +41,7 @@ const IMAGE_A: AnyNode = {
   opacity: 100,
   operator: BlendMode.OVER,
   colorSpace: 'sRGB',
-  transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+  transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
 };
 
 const IMAGE_B: AnyNode = {
@@ -55,7 +55,7 @@ const IMAGE_B: AnyNode = {
   opacity: 100,
   operator: BlendMode.OVER,
   colorSpace: 'sRGB',
-  transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+  transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
 };
 
 const IMAGE_C: AnyNode = {
@@ -69,7 +69,7 @@ const IMAGE_C: AnyNode = {
   opacity: 100,
   operator: BlendMode.OVER,
   colorSpace: 'sRGB',
-  transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+  transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
 };
 
 const GRADE_B: AnyNode = {

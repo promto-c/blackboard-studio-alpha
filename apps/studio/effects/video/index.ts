@@ -29,7 +29,7 @@ export const videoEffect: EffectDefinition = {
     height: 0,
     opacity: 100,
     operator: BlendMode.OVER,
-    transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.FIT },
+    transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
     duration: 0,
     loop: true,
   }),

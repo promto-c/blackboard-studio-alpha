@@ -1098,11 +1098,12 @@ const Viewport: React.FC = () => {
       return null;
     }
     const mediaNode = selectedNode;
-    const scaleAtFrame = getValueAtFrame(mediaNode.transform.scale, visualFrame);
+    const scaleXAtFrame = getValueAtFrame(mediaNode.transform.scaleX, visualFrame);
+    const scaleYAtFrame = getValueAtFrame(mediaNode.transform.scaleY, visualFrame);
     const xAtFrame = getValueAtFrame(mediaNode.transform.x, visualFrame);
     const yAtFrame = getValueAtFrame(mediaNode.transform.y, visualFrame);
-    const width = mediaNode.width * scaleAtFrame;
-    const height = mediaNode.height * scaleAtFrame;
+    const width = mediaNode.width * scaleXAtFrame;
+    const height = mediaNode.height * scaleYAtFrame;
     const x = sceneNode.width / 2 + xAtFrame - width / 2;
     const y = sceneNode.height / 2 - yAtFrame - height / 2;
     return {

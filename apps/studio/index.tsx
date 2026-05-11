@@ -5,6 +5,7 @@ import { StudioHotkeysProvider } from '@/hotkeys';
 import { PreferencesProvider, initTheme } from './state/preferencesContext';
 import { EditorProvider } from './state/editorContext';
 import { OcioProvider } from './state/ocioContext';
+import { InstalledOnnxModelsProvider } from './state/installedOnnxModelsContext';
 
 // Initialize theme before React renders to avoid a flash of unstyled content
 initTheme();
@@ -18,13 +19,15 @@ const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
     <PreferencesProvider>
-      <OcioProvider>
-        <EditorProvider>
-          <StudioHotkeysProvider>
-            <App />
-          </StudioHotkeysProvider>
-        </EditorProvider>
-      </OcioProvider>
+      <InstalledOnnxModelsProvider>
+        <OcioProvider>
+          <EditorProvider>
+            <StudioHotkeysProvider>
+              <App />
+            </StudioHotkeysProvider>
+          </EditorProvider>
+        </OcioProvider>
+      </InstalledOnnxModelsProvider>
     </PreferencesProvider>
   </React.StrictMode>,
 );

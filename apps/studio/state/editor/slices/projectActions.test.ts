@@ -276,7 +276,7 @@ describe('createProjectActions', () => {
       height: 64,
       opacity: 100,
       operator: BlendMode.OVER,
-      transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+      transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
       colorSpace: 'sRGB',
       generatedOutputs: [],
     };
@@ -366,7 +366,7 @@ describe('createProjectActions', () => {
       height: 64,
       opacity: 100,
       operator: BlendMode.OVER,
-      transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+      transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
       colorSpace: 'sRGB',
       generatedOutputs: [],
     };
@@ -460,7 +460,7 @@ describe('createProjectActions', () => {
       height: 20,
       opacity: 100,
       operator: BlendMode.OVER,
-      transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+      transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
       colorSpace: 'sRGB',
     };
     const rotoNode: RotoNode = {
@@ -571,7 +571,7 @@ describe('createProjectActions', () => {
       height: 20,
       opacity: 100,
       operator: BlendMode.OVER,
-      transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.NONE },
+      transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
       colorSpace: 'sRGB',
     };
     const rotoNode: RotoNode = {

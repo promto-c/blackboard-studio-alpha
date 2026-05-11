@@ -1,4 +1,5 @@
 export {
+  SCHEMA_VERSION,
   getProjectIndex,
   saveProjectIndex,
   saveProject,

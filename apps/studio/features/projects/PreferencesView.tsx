@@ -36,6 +36,7 @@ import {
   normalizeComfyEndpoint,
   testComfyConnection,
 } from '@/services/comfy/client';
+import OnnxModelsPreferences from './OnnxModelsPreferences';
 import * as Icons from '@blackboard/icons';
 import type {
   AiProvider,
@@ -52,45 +53,60 @@ type PreferencesSectionId =
   | 'appearance'
   | 'editing'
   | 'integrations'
+  | 'models'
   | 'rotoMotion'
   | 'performance';
 type PreferenceSectionIcon = React.ComponentType<{ className?: string }>;
+type PreferenceSectionGroup = 'app' | 'node';
 
 const preferenceSections: {
   id: PreferencesSectionId;
   label: string;
   description: string;
   icon: PreferenceSectionIcon;
+  group: PreferenceSectionGroup;
 }[] = [
   {
     id: 'appearance',
     label: 'Appearance',
     description: 'Theme, panel finish, and preview styling',
     icon: Icons.Sun,
+    group: 'app',
   },
   {
     id: 'editing',
     label: 'Editing',
     description: 'Playback defaults and editor behavior',
     icon: Icons.Brush,
+    group: 'app',
   },
   {
     id: 'integrations',
     label: 'Integrations',
     description: 'External services and local backends',
     icon: Icons.Link,
+    group: 'app',
   },
   {
-    id: 'rotoMotion',
-    label: 'Roto Motion',
-    description: 'Cue overlays and interactive blur previews',
-    icon: Icons.Curve,
+    id: 'models',
+    label: 'Models',
+    description: 'Browser ONNX inference and model cache',
+    icon: Icons.CubeTransparent,
+    group: 'app',
   },
   {
     id: 'performance',
     label: 'Performance',
     description: 'Prefetching, memory, and cache budgets',
     icon: Icons.ComputerDesktop,
+    group: 'app',
+  },
+  {
+    id: 'rotoMotion',
+    label: 'Roto',
+    description: 'Motion cues, tracking, and blur for the Roto node',
+    icon: Icons.Curve,
+    group: 'node',
   },
 ];
 
@@ -527,6 +543,7 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
         : 'Provider setup pending',
       `Comfy ${trimmedComfyEndpoint}`,
     ],
+    models: ['ONNX Runtime Web', 'Hugging Face import', 'WebGPU with WASM fallback'],
     rotoMotion: [
       rotoMotionBlurPreviewBackend === 'gpu_float' ? 'GPU quality blur' : 'Realtime canvas blur',
       rotoPointWeightMode === 'local' ? 'Default local pull' : 'Default full pull',
@@ -1327,10 +1344,12 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
             </SettingsRow>
           </SettingsGroup>
         );
+      case 'models':
+        return <OnnxModelsPreferences />;
       case 'rotoMotion':
         return (
           <SettingsGroup
-            title="Roto Motion"
+            title="Roto"
             description="Tune rotoscoping feedback so cue overlays and motion blur stay readable while editing."
             icon={Icons.Curve}
             highlights={activeSectionHighlights.rotoMotion}
@@ -1662,39 +1681,45 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
         uiStyle={uiStyle}
         sidebar={
           <div>
-            <p className="px-2 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-500">
-              Sections
-            </p>
-            <nav className="grid gap-1 sm:grid-cols-2 md:grid-cols-1">
-              {preferenceSections.map((section) => {
-                const SectionIcon = section.icon;
-                const isActive = activeSection === section.id;
+            {(['app', 'node'] as PreferenceSectionGroup[]).map((group) => (
+              <div key={group} className="mb-2">
+                <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+                  {group === 'app' ? 'Application' : 'Node Specific'}
+                </p>
+                <nav className="grid gap-1 sm:grid-cols-2 md:grid-cols-1">
+                  {preferenceSections
+                    .filter((section) => section.group === group)
+                    .map((section) => {
+                      const SectionIcon = section.icon;
+                      const isActive = activeSection === section.id;
 
-                return (
-                  <button
-                    key={section.id}
-                    type="button"
-                    onClick={() => setActiveSection(section.id)}
-                    className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50 ${
-                      isActive
-                        ? 'bg-white/[0.08] text-white'
-                        : 'text-gray-400 hover:bg-white/[0.05] hover:text-white'
-                    }`}
-                    aria-current={isActive ? 'page' : undefined}
-                    title={section.description}
-                  >
-                    <span
-                      className={`flex h-6 w-6 flex-shrink-0 items-center justify-center ${
-                        isActive ? 'text-primary-200' : 'text-gray-500'
-                      }`}
-                    >
-                      <SectionIcon className="h-4 w-4" />
-                    </span>
-                    <span className="truncate font-medium">{section.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
+                      return (
+                        <button
+                          key={section.id}
+                          type="button"
+                          onClick={() => setActiveSection(section.id)}
+                          className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50 ${
+                            isActive
+                              ? 'bg-white/[0.08] text-white'
+                              : 'text-gray-400 hover:bg-white/[0.05] hover:text-white'
+                          }`}
+                          aria-current={isActive ? 'page' : undefined}
+                          title={section.description}
+                        >
+                          <span
+                            className={`flex h-6 w-6 flex-shrink-0 items-center justify-center ${
+                              isActive ? 'text-primary-200' : 'text-gray-500'
+                            }`}
+                          >
+                            <SectionIcon className="h-4 w-4" />
+                          </span>
+                          <span className="truncate font-medium">{section.label}</span>
+                        </button>
+                      );
+                    })}
+                </nav>
+              </div>
+            ))}
           </div>
         }
       >

@@ -9,27 +9,35 @@ export const calculateTransformForFitMode = (
   imageSize: { width: number; height: number },
   sceneSize: { width: number; height: number },
   fitMode: ImageFitMode,
-): { scale: number; x: number; y: number } => {
+): { scaleX: number; scaleY: number; x: number; y: number } => {
   if (fitMode === ImageFitMode.NONE) {
-    return { scale: 1, x: 0, y: 0 };
+    return { scaleX: 1, scaleY: 1, x: 0, y: 0 };
   }
 
   const imageAspect = imageSize.width / imageSize.height;
   const sceneAspect = sceneSize.width / sceneSize.height;
 
   if (fitMode === ImageFitMode.FIT) {
-    const scale =
+    const s =
       imageAspect > sceneAspect
         ? sceneSize.width / imageSize.width
         : sceneSize.height / imageSize.height;
-    return { scale, x: 0, y: 0 };
+    return { scaleX: s, scaleY: s, x: 0, y: 0 };
   }
 
-  const scale =
+  if (fitMode === ImageFitMode.STRETCH) {
+    return {
+      scaleX: sceneSize.width / imageSize.width,
+      scaleY: sceneSize.height / imageSize.height,
+      x: 0,
+      y: 0,
+    };
+  }
+  const s =
     imageAspect > sceneAspect
       ? sceneSize.height / imageSize.height
       : sceneSize.width / imageSize.width;
-  return { scale, x: 0, y: 0 };
+  return { scaleX: s, scaleY: s, x: 0, y: 0 };
 };
 
 export const getMedian = (values: number[]): number => {

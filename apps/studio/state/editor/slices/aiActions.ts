@@ -2036,7 +2036,7 @@ export function createAiActions(
         opacity: 100,
         operator: BlendMode.OVER,
         colorSpace: 'sRGB',
-        transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.FIT },
+        transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
         aiMetadata: {
           sourceNodeId,
           prompt: '',

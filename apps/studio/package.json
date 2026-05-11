@@ -21,6 +21,7 @@
     "@blackboard/types": "workspace:*",
     "@blackboard/ui": "workspace:*",
     "@google/genai": "^1.16.0",
+    "onnxruntime-web": "^1.16.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-markdown": "^10.1.0",

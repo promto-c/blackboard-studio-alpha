@@ -46,7 +46,8 @@ out vec4 fragColor;
 
 uniform sampler2D u_tDiffuse;
 uniform float u_opacity;
-uniform float u_scale;
+uniform float u_scaleX;
+uniform float u_scaleY;
 uniform vec2 u_offset; // in pixels, from center of scene
 uniform vec2 u_scene_res;
 uniform vec2 u_image_res;
@@ -69,8 +70,9 @@ void main() {
   // 1. Inverse translate
   vec2 img_space_px = scene_px - u_offset;
 
-  // 2. Inverse scale
-  img_space_px /= u_scale;
+  // 2. Inverse scale (separate X and Y)
+  img_space_px.x /= u_scaleX;
+  img_space_px.y /= u_scaleY;
 
   // Convert from centered image space to image UV space [0,1]
   vec2 image_uv = img_space_px / u_image_res + 0.5;
@@ -130,7 +132,8 @@ out vec4 fragColor;
 uniform sampler2D u_tBackdrop;
 uniform sampler2D u_tDiffuse;
 uniform float u_opacity;
-uniform float u_scale;
+uniform float u_scaleX;
+uniform float u_scaleY;
 uniform vec2 u_offset; // in pixels, from center of scene
 uniform vec2 u_scene_res;
 uniform vec2 u_image_res;
@@ -159,7 +162,9 @@ void main() {
   vec4 dst = texture(u_tBackdrop, v_uv);
 
   vec2 scene_px = v_uv * u_scene_res - (u_scene_res / 2.0);
-  vec2 img_space_px = (scene_px - u_offset) / u_scale;
+  vec2 img_space_px = scene_px - u_offset;
+  img_space_px.x /= u_scaleX;
+  img_space_px.y /= u_scaleY;
   vec2 image_uv = img_space_px / u_image_res + 0.5;
 
   if (u_flipY) {

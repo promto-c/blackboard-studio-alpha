@@ -32,7 +32,8 @@ const createImageNode = (id: string): AnyNode =>
     transform: {
       x: 0,
       y: 0,
-      scale: 1,
+      scaleX: 1,
+      scaleY: 1,
       fitMode: ImageFitMode.FIT,
     },
     colorSpace: 'sRGB',

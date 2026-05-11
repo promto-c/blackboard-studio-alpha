@@ -35,7 +35,7 @@ export const imageEffect: EffectDefinition = {
     height: 0,
     opacity: 100,
     operator: BlendMode.OVER,
-    transform: { x: 0, y: 0, scale: 1, fitMode: ImageFitMode.FIT },
+    transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
     colorSpace: 'sRGB',
   }),
   getAssetIds: (node) => {
@@ -64,7 +64,7 @@ export const imageEffect: EffectDefinition = {
       const sceneNode = context.sceneNode as SceneNode;
 
       if (newTransformPartial.fitMode && newTransformPartial.fitMode !== oldTransform.fitMode) {
-        const { scale } = calculateTransformForFitMode(
+        const { scaleX, scaleY } = calculateTransformForFitMode(
           { width: imgNode.width, height: imgNode.height },
           { width: sceneNode.width, height: sceneNode.height },
           newTransformPartial.fitMode,
@@ -72,7 +72,7 @@ export const imageEffect: EffectDefinition = {
         return {
           changes: {
             ...changes,
-            transform: { ...oldTransform, ...newTransformPartial, scale, x: 0, y: 0 },
+            transform: { ...oldTransform, ...newTransformPartial, scaleX, scaleY, x: 0, y: 0 },
           },
           label,
         };

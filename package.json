@@ -3,6 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "turbo run dev",
+    "dev:studio": "pnpm --filter @blackboard/studio dev",
+    "dev:packages": "turbo run dev --filter='./packages/*'",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "lint:fix": "eslint . --fix",

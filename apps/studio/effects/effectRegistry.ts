@@ -25,6 +25,7 @@ import { paintEffect } from './paint';
 import { chromaKeyEffect } from './chroma_key';
 import { warpEffect } from './warp';
 import { comfyEffect } from './comfy';
+import { onnxEffect } from './onnx';
 
 // A mutable map of all registered effects, keyed by their node type string.
 // Plugins can register new effects via registerPlugin() from @blackboard/plugin-sdk.
@@ -49,6 +50,7 @@ effectRegistry.set(NodeType.PAINT, paintEffect);
 effectRegistry.set(NodeType.CHROMA_KEY, chromaKeyEffect);
 effectRegistry.set(NodeType.WARP, warpEffect);
 effectRegistry.set(NodeType.COMFY, comfyEffect);
+effectRegistry.set(NodeType.ONNX_MODEL, onnxEffect);
 
 // --- Categorized lists for UI generation ---
 
@@ -58,6 +60,7 @@ const toolRegistry: ToolDefinition[] = [
   videoEffect,
   imageSequenceEffect,
   comfyEffect,
+  onnxEffect,
   textEffect,
   mergeEffect,
   aiInpaintingTool,

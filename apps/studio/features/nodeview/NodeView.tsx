@@ -713,7 +713,6 @@ const NodeView: React.FC<NodeViewProps> = ({
               startDrag(e, sceneNode.id, pos.x, pos.y);
             }}
             registerPortRef={registerPortRef}
-            onOutputPortMouseDown={(e) => handleOutputPortMouseDown(e, sceneNode.id)}
           />
         </div>
 
