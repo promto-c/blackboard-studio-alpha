@@ -180,15 +180,25 @@ const NodeView: React.FC<NodeViewProps> = ({
       };
     });
   }, [mergeModel]);
+  const graphNodeIds = useMemo(() => {
+    const ids = new Set<string>([OUTPUT_NODE_ID]);
+    for (const stack of nodeStacks) {
+      ids.add(stack[0].id);
+    }
+    for (const md of mergeNodeData) {
+      ids.add(md.mergeId);
+    }
+    return ids;
+  }, [mergeNodeData, nodeStacks]);
 
   // --- Pipe connections (implicit from node order, with merge handling) ---
 
   const pipeConnections = useMemo(() => {
-    if (!sceneNode) return [];
     const conns: Connection[] = [];
 
-    // "previousExitId" tracks the current output in the main pipeline chain.
-    let previousExitId: string = sceneNode.id;
+    // Scene is a global control, not a pipeline node. "previousExitId" tracks
+    // the current output from real graph stacks only.
+    let previousExitId: string | null = null;
 
     for (const stack of nodeStacks) {
       const baseNode = stack[0];
@@ -196,13 +206,15 @@ const NodeView: React.FC<NodeViewProps> = ({
       const mergeInfo = mergeModel.info.get(baseNode.id);
 
       if (mergeInfo?.isMergeSource && mergeInfo.mergeId) {
-        // Existing pipeline result -> Merge background
-        conns.push({
-          sourceNodeId: previousExitId,
-          targetNodeId: mergeInfo.mergeId,
-          targetPortName: 'merge-input-0',
-          isPipe: true,
-        });
+        if (previousExitId) {
+          // Existing pipeline result -> Merge background
+          conns.push({
+            sourceNodeId: previousExitId,
+            targetNodeId: mergeInfo.mergeId,
+            targetPortName: 'merge-input-0',
+            isPipe: true,
+          });
+        }
 
         // Source branch -> Merge foreground
         conns.push({
@@ -216,25 +228,29 @@ const NodeView: React.FC<NodeViewProps> = ({
         continue;
       }
 
-      conns.push({
-        sourceNodeId: previousExitId,
-        targetNodeId: baseNode.id,
-        targetPortName: 'pipe',
-        isPipe: true,
-      });
+      if (previousExitId) {
+        conns.push({
+          sourceNodeId: previousExitId,
+          targetNodeId: baseNode.id,
+          targetPortName: 'pipe',
+          isPipe: true,
+        });
+      }
       previousExitId = baseNode.id;
     }
 
     // Last exit -> Output
-    conns.push({
-      sourceNodeId: previousExitId,
-      targetNodeId: OUTPUT_NODE_ID,
-      targetPortName: 'pipe',
-      isPipe: true,
-    });
+    if (previousExitId) {
+      conns.push({
+        sourceNodeId: previousExitId,
+        targetNodeId: OUTPUT_NODE_ID,
+        targetPortName: 'pipe',
+        isPipe: true,
+      });
+    }
 
     return conns;
-  }, [sceneNode, nodeStacks, mergeModel]);
+  }, [nodeStacks, mergeModel]);
 
   // --- Explicit connections (from node.inputs) ---
 
@@ -590,11 +606,11 @@ const NodeView: React.FC<NodeViewProps> = ({
     if (!hasPositions) {
       const positions = autoArrangeNodes({ pushHistory: false });
       // Fit viewport to show all nodes
-      const bounds = computeBounds(positions, stackMap);
+      const bounds = computeBounds(positions, stackMap, graphNodeIds);
       if (bounds) fitAll(bounds, { right: fitInsetRight });
     } else {
       // Fit viewport to existing positions
-      const bounds = computeBounds(nodePositions, stackMap);
+      const bounds = computeBounds(nodePositions, stackMap, graphNodeIds);
       if (bounds) fitAll(bounds, { right: fitInsetRight });
     }
     initialLayoutDone.current = true;
@@ -603,6 +619,7 @@ const NodeView: React.FC<NodeViewProps> = ({
     containerRef,
     fitAll,
     fitInsetRight,
+    graphNodeIds,
     layoutTick,
     nodePositions,
     nodes.length,
@@ -614,16 +631,7 @@ const NodeView: React.FC<NodeViewProps> = ({
     if (!initialLayoutDone.current || nodes.length === 0) return;
 
     // Collect all node IDs that should have positions
-    const expectedIds = new Set<string>();
-    if (sceneNode) expectedIds.add(sceneNode.id);
-    expectedIds.add(OUTPUT_NODE_ID);
-    for (const stack of nodeStacks) {
-      expectedIds.add(stack[0].id);
-    }
-    // Also include virtual merge node IDs
-    for (const md of mergeNodeData) {
-      expectedIds.add(md.mergeId);
-    }
+    const expectedIds = graphNodeIds;
 
     // Find missing positions
     const missing: string[] = [];
@@ -640,7 +648,7 @@ const NodeView: React.FC<NodeViewProps> = ({
       const newPositions = placeNewNodes(nodePositions, missing, pipelineOrder, nodeStacks);
       setNodePositions(newPositions, { pushHistory: false });
     }
-  }, [mergeNodeData, nodePositions, nodeStacks, nodes, sceneNode, setNodePositions]);
+  }, [graphNodeIds, nodePositions, nodeStacks, nodes, setNodePositions]);
 
   // --- Render ---
 
@@ -681,6 +689,19 @@ const NodeView: React.FC<NodeViewProps> = ({
       {/* Grid background */}
       <CanvasGrid zoom={viewport.zoom} />
 
+      {/* Scene is a global graph control, pinned outside pan/zoom content. */}
+      <div className="absolute left-3 top-10 z-20" data-graph-node="true">
+        <SceneNodeCard
+          sceneNode={sceneNode}
+          isSelected={isSceneSelected}
+          onSelect={() => selectNode(sceneNode.id)}
+          onDragStart={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+          }}
+        />
+      </div>
+
       {/* Transformed content node */}
       <div ref={contentRef} style={getTransformStyle()}>
         {/* Connection wires */}
@@ -692,29 +713,6 @@ const NodeView: React.FC<NodeViewProps> = ({
           onCutConnection={detachPipeConnection}
           dragPreview={dragPreview}
         />
-
-        {/* Scene node */}
-        <div
-          data-graph-node="true"
-          style={{
-            position: 'absolute',
-            left: getPos(sceneNode.id).x,
-            top: getPos(sceneNode.id).y,
-            zIndex: dragNodeId === sceneNode.id ? 10 : 1,
-          }}
-        >
-          <SceneNodeCard
-            sceneNode={sceneNode}
-            isSelected={isSceneSelected}
-            onSelect={() => selectNode(sceneNode.id)}
-            onDragStart={(e) => {
-              if (isPanning.current) return;
-              const pos = getPos(sceneNode.id);
-              startDrag(e, sceneNode.id, pos.x, pos.y);
-            }}
-            registerPortRef={registerPortRef}
-          />
-        </div>
 
         {/* Output node */}
         <div
@@ -847,6 +845,7 @@ const NodeView: React.FC<NodeViewProps> = ({
 function computeBounds(
   positions: Record<string, { x: number; y: number }>,
   stackMap?: Map<string, AnyNode[]>,
+  includedIds?: Set<string>,
 ): { minX: number; minY: number; maxX: number; maxY: number } | null {
   const entries = Object.entries(positions);
   if (entries.length === 0) return null;
@@ -855,14 +854,19 @@ function computeBounds(
     minY = Infinity,
     maxX = -Infinity,
     maxY = -Infinity;
+  let hasIncludedPosition = false;
 
   for (const [id, pos] of entries) {
+    if (includedIds && !includedIds.has(id)) continue;
+    hasIncludedPosition = true;
     const h = stackMap ? estimateNodeHeight(id, stackMap) : 100;
     if (pos.x < minX) minX = pos.x;
     if (pos.y < minY) minY = pos.y;
     if (pos.x + NODE_WIDTH > maxX) maxX = pos.x + NODE_WIDTH;
     if (pos.y + h > maxY) maxY = pos.y + h;
   }
+
+  if (!hasIncludedPosition) return null;
 
   return { minX, minY, maxX, maxY };
 }

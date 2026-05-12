@@ -6,7 +6,7 @@ export const NODE_WIDTH = 192;
 export const VERTICAL_GAP = 60;
 export const HORIZONTAL_GAP = 60;
 
-/** Approximate fixed-height cards (scene, output, merge). */
+/** Approximate fixed-height cards (output, merge; scene uses the fallback only). */
 const SCENE_NODE_HEIGHT = 76;
 const OUTPUT_NODE_HEIGHT = 64;
 const MERGE_NODE_HEIGHT = 76;
@@ -67,21 +67,28 @@ const DEFAULT_MERGE_SOURCE_OFFSET = {
  * Compute auto-layout positions for all nodes in the node graph.
  *
  * Creates a single vertical column pipeline matching the node view order:
- *   Scene -> Stack1 -> Stack2 -> ... -> StackN -> Output
+ *   Stack1 -> Stack2 -> ... -> StackN -> Output
+ *
+ * Scene is intentionally omitted from the graph pipeline. It behaves like a
+ * global rule/control and is rendered as a pinned overlay in the graph view.
  *
  * Every source after the first source in the flow gets its own virtual merge
  * node. The source stack is placed on a side branch and the merge node stays
  * in the main column.
  */
 export function computeAutoLayout(
-  nodes: AnyNode[],
+  _nodes: AnyNode[],
   layerStacks: AnyNode[][],
 ): Record<string, { x: number; y: number }> {
   const positions: Record<string, { x: number; y: number }> = {};
 
-  if (nodes.length === 0) return positions;
+  if (_nodes.length === 0) return positions;
 
-  const sceneNode = nodes.find((l) => l.type === NodeType.SCENE);
+  if (layerStacks.length === 0) {
+    positions[OUTPUT_NODE_ID] = { x: -NODE_WIDTH / 2, y: 0 };
+    return positions;
+  }
+
   const mergeModel = buildMergeModel(layerStacks);
 
   // Single vertical column, all centered at x=0
@@ -91,14 +98,7 @@ export function computeAutoLayout(
   // Track the Y of the last node placed in the main column so merge
   // sources can be aligned beside it.
   let lastMainY = 0;
-  let lastMainHeight = sceneNode ? SCENE_NODE_HEIGHT : 0;
-
-  // Place Scene node
-  if (sceneNode) {
-    positions[sceneNode.id] = { x: centerX, y: currentY };
-    lastMainY = currentY;
-    currentY += SCENE_NODE_HEIGHT + VERTICAL_GAP;
-  }
+  let lastMainHeight = 0;
 
   // Place stacks, handling per-source merge nodes
   for (const stack of layerStacks) {
@@ -136,12 +136,10 @@ export function computeAutoLayout(
 
 /**
  * Build the ordered pipeline of node IDs matching the node graph order.
- * Scene -> Stack1 -> Stack2 -> Merge2 -> Stack3 -> Merge3 -> ... -> Output
+ * Stack1 -> Stack2 -> Merge2 -> Stack3 -> Merge3 -> ... -> Output
  */
-export function buildPipelineOrder(nodes: AnyNode[], layerStacks: AnyNode[][]): string[] {
+export function buildPipelineOrder(_nodes: AnyNode[], layerStacks: AnyNode[][]): string[] {
   const ids: string[] = [];
-  const sceneNode = nodes.find((l) => l.type === NodeType.SCENE);
-  if (sceneNode) ids.push(sceneNode.id);
 
   const mergeModel = buildMergeModel(layerStacks);
   for (const stack of layerStacks) {

@@ -117,7 +117,7 @@ export const MissingModelWarning: React.FC<{
             return (
               <div
                 key={missingOption.control.id}
-                className="flex flex-wrap items-center justify-between gap-2 px-2 py-1.5"
+                className="flex items-center justify-between gap-2 px-2 py-1.5"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-1.5">

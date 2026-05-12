@@ -249,21 +249,30 @@ export const SceneNodeCard: React.FC<{
   isSelected: boolean;
   onSelect: () => void;
   onDragStart: (e: React.MouseEvent) => void;
-  registerPortRef: (key: string, el: HTMLDivElement | null) => void;
-}> = ({ sceneNode, isSelected, onSelect, onDragStart, registerPortRef }) => {
+}> = ({ sceneNode, isSelected, onSelect, onDragStart }) => {
   return (
-    <NodeCardShell
-      isSelected={isSelected}
-      onSelect={onSelect}
-      onDragStart={onDragStart}
-      className="flex flex-col items-center justify-center p-3"
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
+      onMouseDown={onDragStart}
+      className={[
+        'inline-flex w-max max-w-[min(18rem,calc(100vw-1.5rem))] items-center justify-between gap-5',
+        'rounded-lg border px-2 py-2 text-xs cursor-pointer select-none shadow-lg backdrop-blur-md transition-colors',
+        isSelected
+          ? 'border-primary-500 supports-[backdrop-filter]:bg-primary-900/50'
+          : 'border-gray-700/50 supports-[backdrop-filter]:bg-gray-800/45 hover:border-gray-600 hover:bg-gray-700/50',
+      ].join(' ')}
     >
-      <NodeIcon node={sceneNode} />
-      <span className="text-xs text-gray-300 font-medium mt-2">{sceneNode.name}</span>
-      <span className="text-xs text-gray-500 font-mono mt-1">
+      <div className="flex min-w-0 items-center gap-2 font-medium text-gray-300">
+        <NodeIcon node={sceneNode} />
+        <span className="truncate">{sceneNode.name}</span>
+      </div>
+      <span className="shrink-0 font-mono text-gray-400">
         {sceneNode.width}x{sceneNode.height}
       </span>
-    </NodeCardShell>
+    </div>
   );
 };
 
