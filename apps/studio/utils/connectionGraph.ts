@@ -1,26 +1,32 @@
-import type { AnyNode } from '@blackboard/types';
+import {
+  removeCycleCreatingFlowConnections,
+  validateRootFlow,
+  type AnyNode,
+} from '@blackboard/types';
+import { buildFlowFromNodes } from '@/state/editor/flowModel';
 
 /**
  * Check whether connecting `sourceId` as an input to `consumerId`
- * would create a cycle in the flow graph.
- * Uses BFS from the source node through its own inputs.
+ * would create a cycle in the persisted flow graph.
  */
-export function wouldCreateCycle(nodes: AnyNode[], consumerId: string, sourceId: string): boolean {
-  const visited = new Set<string>();
-  const queue = [sourceId];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (current === consumerId) return true;
-    if (visited.has(current)) continue;
-    visited.add(current);
-    const node = nodes.find((candidate) => candidate.id === current);
-    if (node?.inputs) {
-      for (const refId of Object.values(node.inputs)) {
-        queue.push(refId);
-      }
-    }
-  }
-  return false;
+export function wouldCreateCycle(
+  nodes: AnyNode[],
+  consumerId: string,
+  sourceId: string,
+  portName = '__candidate_input__',
+): boolean {
+  const candidateNodes = nodes.map((node) =>
+    node.id === consumerId
+      ? ({ ...node, inputs: { ...(node.inputs ?? {}), [portName]: sourceId } } as AnyNode)
+      : node,
+  );
+  const candidateFlow = buildFlowFromNodes(candidateNodes);
+  const repairedFlow = removeCycleCreatingFlowConnections(candidateFlow);
+
+  return (
+    validateRootFlow(candidateFlow).some((issue) => issue.code === 'connection_cycle') &&
+    repairedFlow.relationships.length !== candidateFlow.relationships.length
+  );
 }
 
 /** Returns all input connections for a node as an array. */

@@ -112,6 +112,36 @@ describe('createNodeActions addNode', () => {
   });
 });
 
+describe('createNodeActions connectNodeInput', () => {
+  it('rejects connections that would make the persisted flow cyclic', () => {
+    const nodes = [scene(), image('base'), grade('target'), blur('source')];
+    const { actions, getState, pushHistory } = createHarness(nodes);
+
+    actions.connectNodeInput('target', 'comfy-input:workflow:12:image', 'source');
+
+    expect(getState().nodes.find((node) => node.id === 'target')).not.toHaveProperty('inputs');
+    expect(pushHistory).not.toHaveBeenCalled();
+  });
+
+  it('connects lower merge sources into earlier source inputs', () => {
+    const nodes = [scene(), image('target'), image('source')];
+    const { actions, getState, pushHistory } = createHarness(nodes);
+
+    actions.connectNodeInput('target', 'comfy-input:workflow:12:image', 'source');
+
+    expect(getState().nodes.find((node) => node.id === 'target')).toEqual(
+      expect.objectContaining({
+        inputs: { 'comfy-input:workflow:12:image': 'source' },
+      }),
+    );
+    expect(pushHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: 'Connect comfy-input:workflow:12:image input',
+      }),
+    );
+  });
+});
+
 describe('createNodeActions history frame targeting', () => {
   it('pushes the affected target frame when setting a keyframe off the playhead', () => {
     const node = {

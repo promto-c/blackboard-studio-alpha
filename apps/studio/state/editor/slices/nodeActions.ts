@@ -514,7 +514,7 @@ export function createNodeActions(
       // Validation
       if (nodeId === sourceNodeId) return;
       if (!nodes.find((l) => l.id === sourceNodeId)) return;
-      if (wouldCreateCycle(nodes, nodeId, sourceNodeId)) return;
+      if (wouldCreateCycle(nodes, nodeId, sourceNodeId, portName)) return;
 
       const node = nodes.find((l) => l.id === nodeId);
       if (!node) return;

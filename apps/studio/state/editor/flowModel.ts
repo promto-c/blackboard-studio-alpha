@@ -10,6 +10,8 @@ import {
   NodeType,
   OutputNode,
 } from '@blackboard/types';
+import { buildMergeModel } from '@/utils/mergeNodes';
+import { buildNodeStacks } from '@/utils/nodeStacks';
 
 export const ROOT_FLOW_ID = 'root-flow';
 export const OUTPUT_NODE_ID = 'output';
@@ -114,7 +116,6 @@ export const buildFlowFromNodes = (
   const relationships: FlowRelationship[] = [];
   const nodes: AnyNode[] = [];
   const nodeOrder: string[] = [];
-  const baseNodeIds: string[] = [];
 
   const existingOutputNode = orderedNodes.find(isOutputNode);
   const outputNode = normalizeNodeForFlow(existingOutputNode ?? createOutputNode()) as OutputNode;
@@ -149,7 +150,6 @@ export const buildFlowFromNodes = (
         targetNodeId: node.id,
       } satisfies FlowStackRelationship);
     } else {
-      baseNodeIds.push(node.id);
       currentBaseNodeId = node.id;
     }
 
@@ -169,7 +169,18 @@ export const buildFlowFromNodes = (
   nodeOrder.push(outputNode.id);
 
   if (sceneNodeId) {
-    relationships.push(...buildPipeRelationships(sceneNodeId, outputNode.id, baseNodeIds));
+    const stackModel = buildNodeStacks(orderedNodes);
+    const mergeModel = buildMergeModel(stackModel);
+    const pipeNodeIds = stackModel
+      .map((stack) => stack[0])
+      .filter((baseNode) => {
+        if (baseNode.detachedFromPipe) return false;
+        const mergeInfo = mergeModel.info.get(baseNode.id);
+        return !mergeInfo?.isMergeSource;
+      })
+      .map((baseNode) => baseNode.id);
+
+    relationships.push(...buildPipeRelationships(sceneNodeId, outputNode.id, pipeNodeIds));
   }
 
   return {

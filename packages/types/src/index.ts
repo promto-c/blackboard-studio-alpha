@@ -1086,6 +1086,139 @@ export const isFlowStackRelationship = (
   relationship: FlowRelationship,
 ): relationship is FlowStackRelationship => relationship.kind === 'stack';
 
+const hasFlowConnectionCycle = (
+  nodeIds: Iterable<NodeId>,
+  relationships: FlowRelationship[],
+): boolean => {
+  const adjacency = new Map<string, string[]>();
+  for (const relationship of relationships) {
+    if (!isFlowConnection(relationship)) {
+      continue;
+    }
+
+    if (!adjacency.has(relationship.sourceNodeId)) {
+      adjacency.set(relationship.sourceNodeId, []);
+    }
+
+    adjacency.get(relationship.sourceNodeId)!.push(relationship.targetNodeId);
+  }
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+
+  const hasCycle = (nodeId: string): boolean => {
+    if (visiting.has(nodeId)) {
+      return true;
+    }
+    if (visited.has(nodeId)) {
+      return false;
+    }
+
+    visiting.add(nodeId);
+    const nextNodeIds = adjacency.get(nodeId) ?? [];
+    for (const nextNodeId of nextNodeIds) {
+      if (hasCycle(nextNodeId)) {
+        return true;
+      }
+    }
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+    return false;
+  };
+
+  for (const nodeId of nodeIds) {
+    if (hasCycle(nodeId)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const BUILTIN_SOURCE_NODE_TYPES = new Set<string>([
+  NodeType.IMAGE,
+  NodeType.VIDEO,
+  NodeType.IMAGE_SEQUENCE,
+  NodeType.TEXT,
+  NodeType.COMFY,
+  NodeType.ONNX_MODEL,
+]);
+
+const getBuiltinMergeSourceNodeIds = (flow: Flow): Set<string> => {
+  const nodesById = new Map(flow.nodes.map((node) => [node.id, node]));
+  const mergeSourceNodeIds = new Set<string>();
+  let sourceCount = 0;
+
+  for (const nodeId of flow.nodeOrder) {
+    const node = nodesById.get(nodeId);
+    if (!node || node.detachedFromPipe || !BUILTIN_SOURCE_NODE_TYPES.has(node.type)) {
+      continue;
+    }
+
+    if (sourceCount > 0) {
+      mergeSourceNodeIds.add(node.id);
+    }
+    sourceCount += 1;
+  }
+
+  return mergeSourceNodeIds;
+};
+
+export const removeCycleCreatingFlowConnections = (flow: Flow): Flow => {
+  const nodeIds = flow.nodes.map((node) => node.id);
+  const mergeSourceNodeIds = getBuiltinMergeSourceNodeIds(flow);
+  const baseRelationships = flow.relationships.filter(
+    (relationship) =>
+      !isFlowConnection(relationship) ||
+      (relationship.targetPort === 'pipe' &&
+        !mergeSourceNodeIds.has(relationship.sourceNodeId) &&
+        !mergeSourceNodeIds.has(relationship.targetNodeId)),
+  );
+  const explicitConnections = flow.relationships.filter(
+    (relationship): relationship is FlowConnection =>
+      isFlowConnection(relationship) && relationship.targetPort !== 'pipe',
+  );
+  const removedRelationshipIds = new Set(
+    flow.relationships
+      .filter(
+        (relationship) =>
+          isFlowConnection(relationship) &&
+          relationship.targetPort === 'pipe' &&
+          (mergeSourceNodeIds.has(relationship.sourceNodeId) ||
+            mergeSourceNodeIds.has(relationship.targetNodeId)),
+      )
+      .map((relationship) => relationship.id),
+  );
+
+  if (hasFlowConnectionCycle(nodeIds, baseRelationships)) {
+    return flow;
+  }
+
+  const keptExplicitConnections: FlowConnection[] = [];
+
+  for (const relationship of explicitConnections) {
+    const nextRelationships = [...baseRelationships, ...keptExplicitConnections, relationship];
+
+    if (hasFlowConnectionCycle(nodeIds, nextRelationships)) {
+      removedRelationshipIds.add(relationship.id);
+      continue;
+    }
+
+    keptExplicitConnections.push(relationship);
+  }
+
+  if (removedRelationshipIds.size === 0) {
+    return flow;
+  }
+
+  return {
+    ...flow,
+    relationships: flow.relationships.filter(
+      (relationship) => !removedRelationshipIds.has(relationship.id),
+    ),
+  };
+};
+
 export const validateRootFlow = (flow: Flow): FlowValidationIssue[] => {
   const issues: FlowValidationIssue[] = [];
   const nodesById = new Map<string, AnyNode>();
@@ -1165,50 +1298,11 @@ export const validateRootFlow = (flow: Flow): FlowValidationIssue[] => {
     }
   }
 
-  const adjacency = new Map<string, string[]>();
-  for (const relationship of flow.relationships) {
-    if (!isFlowConnection(relationship)) {
-      continue;
-    }
-
-    if (!adjacency.has(relationship.sourceNodeId)) {
-      adjacency.set(relationship.sourceNodeId, []);
-    }
-
-    adjacency.get(relationship.sourceNodeId)!.push(relationship.targetNodeId);
-  }
-
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-
-  const hasCycle = (nodeId: string): boolean => {
-    if (visiting.has(nodeId)) {
-      return true;
-    }
-    if (visited.has(nodeId)) {
-      return false;
-    }
-
-    visiting.add(nodeId);
-    const nextNodeIds = adjacency.get(nodeId) ?? [];
-    for (const nextNodeId of nextNodeIds) {
-      if (hasCycle(nextNodeId)) {
-        return true;
-      }
-    }
-    visiting.delete(nodeId);
-    visited.add(nodeId);
-    return false;
-  };
-
-  for (const nodeId of nodeIds) {
-    if (hasCycle(nodeId)) {
-      issues.push({
-        code: 'connection_cycle',
-        message: 'Flow connections must not contain cycles.',
-      });
-      break;
-    }
+  if (hasFlowConnectionCycle(nodeIds, flow.relationships)) {
+    issues.push({
+      code: 'connection_cycle',
+      message: 'Flow connections must not contain cycles.',
+    });
   }
 
   return issues;
