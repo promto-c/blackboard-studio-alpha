@@ -47,7 +47,7 @@ const makeNode = (overrides: Partial<RotoNode> = {}): RotoNode => ({
   id: 'roto_1',
   type: NodeType.ROTO,
   name: 'Roto',
-  visible: true,
+  enabled: true,
   paths: [],
   layers: [],
   invert: false,
@@ -391,7 +391,7 @@ describe('getRotoCreationParentLayerId', () => {
 });
 
 describe('deleteRotoLayer', () => {
-  it('reparents child layers and shapes to the deleted layer parent', () => {
+  it('removes the layer along with all descendant layers and their shapes', () => {
     const node = makeNode({
       layers: [
         { id: 'layer_root', name: 'Root Group' },
@@ -402,12 +402,27 @@ describe('deleteRotoLayer', () => {
 
     const updates = deleteRotoLayer(node, 'layer_root');
 
-    expect(updates.layers).toEqual([
-      expect.objectContaining({ id: 'layer_child', parentLayerId: null }),
-    ]);
-    expect(updates.paths).toEqual([
-      expect.objectContaining({ id: 'shape_1', parentLayerId: 'layer_child' }),
-    ]);
+    // Root layer and its descendant should be removed entirely
+    expect(updates.layers).toEqual([]);
+    expect(updates.paths).toEqual([]);
+  });
+
+  it('keeps top-level shapes and cousin layers when deleting a nested layer', () => {
+    const node = makeNode({
+      layers: [
+        { id: 'layer_top', name: 'Top' },
+        { id: 'layer_child', name: 'Child', parentLayerId: 'layer_top' },
+      ],
+      paths: [
+        makePath('shape_bg', 'Background'),
+        makePath('shape_inside', 'Inside', 'layer_child'),
+      ],
+    });
+
+    const updates = deleteRotoLayer(node, 'layer_child');
+
+    expect(updates.layers).toEqual([expect.objectContaining({ id: 'layer_top' })]);
+    expect(updates.paths).toEqual([expect.objectContaining({ id: 'shape_bg' })]);
   });
 });
 

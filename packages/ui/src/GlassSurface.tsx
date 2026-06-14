@@ -58,7 +58,7 @@ const useDarkMode = () => {
   return isDark;
 };
 
-const GlassSurface: React.FC<GlassSurfaceProps> = ({
+function GlassSurface({
   children,
   width = 200,
   height = 80,
@@ -79,7 +79,7 @@ const GlassSurface: React.FC<GlassSurfaceProps> = ({
   mixBlendMode = 'difference',
   className = '',
   style = {},
-}) => {
+}: GlassSurfaceProps) {
   const uniqueId = useId().replace(/:/g, '-');
   const filterId = `glass-filter-${uniqueId}`;
   const redGradId = `red-grad-${uniqueId}`;
@@ -393,6 +393,6 @@ const GlassSurface: React.FC<GlassSurfaceProps> = ({
       </div>
     </div>
   );
-};
+}
 
 export default GlassSurface;

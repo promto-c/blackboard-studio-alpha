@@ -1,4 +1,4 @@
-export interface ItemsClipboardRecord<TKind extends string = string, TPayload = unknown> {
+interface ItemsClipboardRecord<TKind extends string = string, TPayload = unknown> {
   kind: TKind;
   version: 1;
   payload: TPayload;
@@ -28,16 +28,4 @@ export const readItemsClipboard = <TKind extends string, TPayload>(
   }
 
   return cloneClipboardValue(currentItemsClipboard as ItemsClipboardRecord<TKind, TPayload>);
-};
-
-export const hasItemsClipboard = (kind?: string): boolean => {
-  if (!currentItemsClipboard) {
-    return false;
-  }
-
-  return kind ? currentItemsClipboard.kind === kind : true;
-};
-
-export const clearItemsClipboard = (): void => {
-  currentItemsClipboard = null;
 };

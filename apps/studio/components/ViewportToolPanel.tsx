@@ -10,11 +10,15 @@ type ViewportToolPanelHeaderToggle = {
   ariaLabel?: string;
 };
 
-export const ViewportToolPanelHeader: React.FC<{
+export function ViewportToolPanelHeader({
+  title,
+  onClose,
+  toggle,
+}: {
   title: string;
   onClose: () => void;
   toggle?: ViewportToolPanelHeaderToggle;
-}> = ({ title, onClose, toggle }) => {
+}) {
   const panelTitle = (
     <h3 className="text-xs font-semibold text-white uppercase tracking-wide">{title}</h3>
   );
@@ -66,16 +70,21 @@ export const ViewportToolPanelHeader: React.FC<{
       {closeButton}
     </div>
   );
-};
+}
 
-export const ViewportToolPanel: React.FC<{ children: React.ReactNode; width?: string }> = ({
+export function ViewportToolPanel({
   children,
   width = 'w-64',
-}) => (
-  <div
-    className={`glass-component ${width} bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-lg shadow-lg p-3 pointer-events-auto animate-[fadeIn_150ms_ease-out]`}
-    onMouseDown={(e) => e.stopPropagation()}
-  >
-    {children}
-  </div>
-);
+}: {
+  children: React.ReactNode;
+  width?: string;
+}) {
+  return (
+    <div
+      className={`glass-component ${width} bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-lg shadow-lg p-3 pointer-events-auto animate-[fadeIn_150ms_ease-out]`}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {children}
+    </div>
+  );
+}

@@ -13,7 +13,7 @@ interface RotoControlPointProps {
   onMouseLeave?: () => void;
 }
 
-const RotoControlPoint: React.FC<RotoControlPointProps> = ({
+function RotoControlPoint({
   cx,
   cy,
   zoom,
@@ -24,7 +24,7 @@ const RotoControlPoint: React.FC<RotoControlPointProps> = ({
   onMouseDown,
   onMouseEnter,
   onMouseLeave,
-}) => {
+}: RotoControlPointProps) {
   const baseRadius = 5 / zoom;
   const strokeWidth = 1 / zoom;
 
@@ -91,6 +91,6 @@ const RotoControlPoint: React.FC<RotoControlPointProps> = ({
       />
     </g>
   );
-};
+}
 
 export default RotoControlPoint;

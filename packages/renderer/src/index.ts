@@ -4,24 +4,21 @@
 export type {
   ShaderUniformMap,
   RenderMode,
-  EffectRenderContext,
-  RendererEffectEntry,
-  EffectRegistryLike,
+  RenderContext,
+  RendererNodeEntry,
+  NodeRegistryLike,
+  RendererColorManagement,
+  ResolveOutputContext,
+  PaintTextureBundle,
+  RendererInputPort,
+  RendererOutputPort,
+  RendererOcioGpuTexture,
+  RendererOcioGpuUniform,
+  RendererOcioShaderInfo,
 } from './types';
 
 // GLSL shaders and utilities
-export {
-  VERTEX_SHADER,
-  TEXTURE_SHADER,
-  TRANSFORMED_TEXTURE_SHADER,
-  VIEWER_SHADER,
-  OCIO_VIEWER_SHADER_TEMPLATE,
-  DEFAULT_CUSTOM_SHADER,
-  ROTO_SHADER,
-  PAINT_OVER_SHADER,
-  parseUniformsFromGLSL,
-  parseInputPortsFromGLSL,
-} from './glsl';
+export { RendererShader, parseUniformsFromGLSL, parseInputPortsFromGLSL } from './glsl';
 
 // Animation utilities
 export {
@@ -47,9 +44,12 @@ export { assertWebGL2Renderer, createStudioRenderer, createStudioShaderMaterial 
 export {
   renderWithSharedPipeline,
   renderViewportFrameWithSharedPipeline,
+  renderPipeline,
   type RenderPipelineOptions,
   type RenderPipelineResult,
+  type PipelineResources,
   type ViewportPipelineResources,
   type ViewportPipelineOptions,
   type ViewportPipelineResult,
+  isPromiseLike,
 } from './pipeline';

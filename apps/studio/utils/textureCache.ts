@@ -50,8 +50,9 @@ export class TextureCache {
       return;
     }
 
-    const width = (texture.image as any)?.width || video?.videoWidth || 1024;
-    const height = (texture.image as any)?.height || video?.videoHeight || 1024;
+    const img = texture.image as { width?: number; height?: number } | null;
+    const width = img?.width || video?.videoWidth || 1024;
+    const height = img?.height || video?.videoHeight || 1024;
     const sizeBytes = width * height * this.getBytesPerPixel(texture);
 
     // Ensure we have space
@@ -135,9 +136,9 @@ export class TextureCache {
     return assetIds.map((id) => this.cache.has(id));
   }
 
-  public prune(keepIds: Set<string>) {
+  public prune(keepIds: Set<string>, shouldKeep?: (id: string) => boolean) {
     for (const id of Array.from(this.cache.keys())) {
-      if (!keepIds.has(id)) this.remove(id);
+      if (!keepIds.has(id) && !shouldKeep?.(id)) this.remove(id);
     }
   }
 

@@ -12,10 +12,7 @@ export type ScrollAreaAxis = 'x' | 'y' | 'both';
  * - content: an optional inner wrapper for padding / spacing
  *
  * For new code, prefer the explicit `root*`, `viewport*`, and `content*` props.
- *
- * Backward compatibility:
- * - `containerClassName` / `containerStyle` still target the root
- * - `className` / `style` still target the viewport
+ * `className` / `style` still target the viewport
  *
  * @example
  * Basic vertical scrolling that fills a flex layout
@@ -75,12 +72,6 @@ export interface ScrollAreaProps extends React.HTMLAttributes<HTMLDivElement> {
 
   /** Inline styles applied to the optional inner content wrapper. */
   contentStyle?: React.CSSProperties;
-
-  /** Deprecated alias for `rootClassName`. Kept for backward compatibility. */
-  containerClassName?: string;
-
-  /** Deprecated alias for `rootStyle`. Kept for backward compatibility. */
-  containerStyle?: React.CSSProperties;
 
   /** Controls which axis may scroll. When omitted, callers can still manage overflow via viewport classes. */
   axis?: ScrollAreaAxis;
@@ -291,8 +282,7 @@ const ScrollArea = React.forwardRef<HTMLDivElement, ScrollAreaProps>(
     {
       children,
       className = '',
-      containerClassName = '',
-      containerStyle,
+
       contentClassName = '',
       contentStyle,
       axis,
@@ -723,7 +713,6 @@ const ScrollArea = React.forwardRef<HTMLDivElement, ScrollAreaProps>(
         className={joinClassNames(
           'relative overflow-hidden',
           fill && 'flex min-h-0 min-w-0 flex-1 flex-col',
-          containerClassName,
           rootClassName,
         )}
         onBlur={handleRootBlur}
@@ -732,7 +721,6 @@ const ScrollArea = React.forwardRef<HTMLDivElement, ScrollAreaProps>(
         onPointerLeave={handleRootPointerLeave}
         onPointerMove={handleRootPointerMove}
         style={{
-          ...containerStyle,
           ...rootStyle,
         }}
       >

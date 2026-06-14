@@ -1,6 +1,13 @@
 import React, { useRef, useMemo, useCallback, useState, useEffect, useLayoutEffect } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { AnyNode, EditorTab, SceneNode, ViewerSlotAssignments } from '@blackboard/types';
+import {
+  AnyNode,
+  EditorTab,
+  NodePositions,
+  NodeType,
+  SceneNode,
+  ViewerSlotAssignments,
+} from '@blackboard/types';
 import { getInputConnections } from '@/utils/connectionGraph';
 import {
   buildPipelineOrder,
@@ -12,9 +19,18 @@ import {
 import { useCanvasViewport } from '@/hooks/useCanvasViewport';
 import { useNodeDrag } from '@/hooks/useNodeDrag';
 import { usePreferences } from '@/state/preferencesContext';
-import { buildMergeModel, getMergeSourceNodeId, isMergeNodeId } from '@/utils/mergeNodes';
-import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { isStackAdjustmentType } from '@/utils/nodePredicates';
+
+import {
+  getOutputPipeEdge,
+  getSelectedNodeIdsForGrouping,
+  isFlowOutputDetached,
+  OUTPUT_NODE_ID,
+} from '@/state/editor/flowModel';
+import {
+  isStackAdjustmentType,
+  participatesInImplicitPipeline,
+  usesImplicitPipelineInput,
+} from '@/utils/nodePredicates';
 import { hasPreviousStackTarget } from '@/utils/nodeStacks';
 import {
   useHotkeyScope,
@@ -25,18 +41,20 @@ import {
 } from '@/hotkeys';
 import CanvasGrid from './CanvasGrid';
 import ConnectionWires from './ConnectionWires';
-import { SceneNodeCard, OutputNodeCard, StackNodeCard } from './NodeCard';
-import MergeNodeCard from './MergeNodeCard';
-import ImageImportToolButton from '@/effects/image/ImageImportToolButton';
-import ImageSequenceToolButton from '@/effects/image_sequence/ImageSequenceToolButton';
-import AiInpaintingToolButton from '@/effects/ai/AiInpaintingToolButton';
+import { SceneNodeCard, OutputNodeCard, StackNodeCard, PreviewNodeCard } from './NodeCard';
+import {
+  computePreviewEntry,
+  computeGraphPreviewPosition,
+} from '@/features/nodes/previewPlaceholder';
+import MediaSourceImportToolButton from '@/nodes/builtin/media_source/MediaSourceImportToolButton';
+import ImageSequenceToolButton from '@/nodes/builtin/image_sequence/ImageSequenceToolButton';
 import { getActiveNodeJobMap } from '@/features/nodes/NodeProgressBackground';
 import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
-
 // --- Types ---
 
 interface Connection {
   sourceNodeId: string;
+  sourcePortName?: string;
   targetNodeId: string;
   targetPortName: string;
   isPipe?: boolean;
@@ -44,6 +62,7 @@ interface Connection {
 
 interface DragConnectState {
   sourceNodeId: string;
+  sourcePortName: string;
   cursorX: number;
   cursorY: number;
 }
@@ -55,11 +74,21 @@ interface StackMagnetTarget {
   placeholderHeight: number;
 }
 
+interface MarqueeSelectionState {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  additive: boolean;
+  hasDragged: boolean;
+}
+
 interface NodeViewProps {
   sceneNode: SceneNode | undefined;
   nodeStacks: AnyNode[][];
   selectedStackIds: Set<string>;
   selectedNodeId: string | null;
+  selectedNodeIds: string[];
   isSceneSelected: boolean;
   isOutputNodeSelected: boolean;
   viewerNodeId: string | null;
@@ -71,39 +100,68 @@ const STACK_MAGNET_RADIUS = 36;
 const STACK_MAGNET_MIN_HORIZONTAL_OVERLAP = 0.55;
 const STACK_MAGNET_PLACEHOLDER_GAP = 2;
 
-// --- Main Component ---
-
-const NodeView: React.FC<NodeViewProps> = ({
+function NodeView({
   sceneNode,
   nodeStacks,
   selectedStackIds,
   selectedNodeId,
+  selectedNodeIds,
   isSceneSelected,
   isOutputNodeSelected,
   viewerNodeId,
   viewerSlots,
   fitInsetRight = 0,
-}) => {
+}: NodeViewProps) {
   const nodes = useEditorSelector((s) => s.nodes);
+  const activeFlow = useEditorSelector((s) => {
+    const flowId = s.activeFlowId ?? s.rootFlowId;
+    return flowId ? s.flows[flowId] : null;
+  });
   const backgroundJobs = useEditorSelector((s) => s.backgroundJobs);
-  const nodePositions = useEditorSelector((s) => s.nodePositions);
+  const previewNodeType = useEditorSelector((s) => s.previewNodeType);
+  const nodePositions = useEditorSelector((s) => {
+    const flowId = s.activeFlowId ?? s.rootFlowId;
+    return (flowId ? s.nodePositionsByFlow[flowId] : undefined) ?? {};
+  });
   const {
     selectNode,
-    toggleNodeVisibility,
+    selectNodes,
+    toggleNodeSelection,
+    toggleNodeEnabled,
     deleteNode,
     updateNode,
     connectNodeInput,
     disconnectNodeInput,
+    setOutputPipeDetached,
     setNodePosition,
     setNodePositions,
     commitNodePosition,
     autoArrangeNodes,
     toggleNodeStacking,
     stackNodeOntoStack,
+    groupSelectedNodes,
+    openGroupNode,
     setActiveTab,
+    pasteNodesFromClipboard,
+    setPendingNodePosition,
   } = useEditorActions();
   const { thumbnailMode } = usePreferences();
+  const activeTab = useEditorSelector((s) => s.activeTab);
   const activeNodeJobMap = useMemo(() => getActiveNodeJobMap(backgroundJobs), [backgroundJobs]);
+  const canGroupSelection = useMemo(
+    () => getSelectedNodeIdsForGrouping(nodes, selectedNodeIds).length > 0,
+    [nodes, selectedNodeIds],
+  );
+  const selectNodeFromPointer = useCallback(
+    (event: React.MouseEvent, nodeId: string) => {
+      if (event.shiftKey || event.metaKey || event.ctrlKey) {
+        toggleNodeSelection(nodeId);
+        return;
+      }
+      selectNode(nodeId);
+    },
+    [selectNode, toggleNodeSelection],
+  );
 
   // --- Canvas viewport (pan/zoom) ---
   const {
@@ -124,6 +182,10 @@ const NodeView: React.FC<NodeViewProps> = ({
   );
   const contentRef = useRef<HTMLDivElement>(null);
   const [layoutTick, setLayoutTick] = useState(0);
+  const [marqueeSelection, setMarqueeSelection] = useState<MarqueeSelectionState | null>(null);
+  const marqueeSelectionRef = useRef<MarqueeSelectionState | null>(null);
+  const suppressNextCanvasClickRef = useRef(false);
+  const lastGraphPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
 
   const registerPortRef = useCallback((key: string, el: HTMLDivElement | null) => {
     if (el) portRefs.current.set(key, el);
@@ -160,38 +222,22 @@ const NodeView: React.FC<NodeViewProps> = ({
     return () => clearTimeout(timer);
   }, [nodes]);
 
-  const mergeModel = useMemo(() => buildMergeModel(nodeStacks), [nodeStacks]);
   const canStackNode = useCallback(
     (nodeId: string) => hasPreviousStackTarget(nodes, nodeId),
     [nodes],
   );
+  const outputPipeEdge = useMemo(() => getOutputPipeEdge(activeFlow), [activeFlow]);
+  const isOutputDetached = useMemo(() => isFlowOutputDetached(activeFlow), [activeFlow]);
 
-  // Virtual merge node IDs and their positions
-  const mergeNodeData = useMemo(() => {
-    return mergeModel.mergeNodes.map(({ mergeId, sourceStack }) => {
-      const sourceNode = sourceStack[0] as Partial<{
-        operator: unknown;
-        opacity: unknown;
-      }>;
-      return {
-        mergeId,
-        blendMode: sourceNode?.operator,
-        opacity: typeof sourceNode?.opacity === 'number' ? sourceNode.opacity : undefined,
-      };
-    });
-  }, [mergeModel]);
   const graphNodeIds = useMemo(() => {
     const ids = new Set<string>([OUTPUT_NODE_ID]);
     for (const stack of nodeStacks) {
       ids.add(stack[0].id);
     }
-    for (const md of mergeNodeData) {
-      ids.add(md.mergeId);
-    }
     return ids;
-  }, [mergeNodeData, nodeStacks]);
+  }, [nodeStacks]);
 
-  // --- Pipe connections (implicit from node order, with merge handling) ---
+  // --- Pipe connections (implicit from node order) ---
 
   const pipeConnections = useMemo(() => {
     const conns: Connection[] = [];
@@ -202,35 +248,15 @@ const NodeView: React.FC<NodeViewProps> = ({
 
     for (const stack of nodeStacks) {
       const baseNode = stack[0];
-      if (baseNode.detachedFromPipe) continue;
-      const mergeInfo = mergeModel.info.get(baseNode.id);
-
-      if (mergeInfo?.isMergeSource && mergeInfo.mergeId) {
-        if (previousExitId) {
-          // Existing pipeline result -> Merge background
-          conns.push({
-            sourceNodeId: previousExitId,
-            targetNodeId: mergeInfo.mergeId,
-            targetPortName: 'merge-input-0',
-            isPipe: true,
-          });
-        }
-
-        // Source branch -> Merge foreground
-        conns.push({
-          sourceNodeId: baseNode.id,
-          targetNodeId: mergeInfo.mergeId,
-          targetPortName: 'merge-input-1',
-          isPipe: true,
-        });
-
-        previousExitId = mergeInfo.mergeId;
+      if (!participatesInImplicitPipeline(baseNode.type)) {
         continue;
       }
+      if (baseNode.detachedFromPipe) continue;
 
-      if (previousExitId) {
+      if (previousExitId && usesImplicitPipelineInput(baseNode.type)) {
         conns.push({
           sourceNodeId: previousExitId,
+          sourcePortName: 'output',
           targetNodeId: baseNode.id,
           targetPortName: 'pipe',
           isPipe: true,
@@ -239,10 +265,11 @@ const NodeView: React.FC<NodeViewProps> = ({
       previousExitId = baseNode.id;
     }
 
-    // Last exit -> Output
-    if (previousExitId) {
+    // Last implicit pipeline exit -> Output, unless Output has been explicitly rewired/detached.
+    if (previousExitId && !outputPipeEdge && !isOutputDetached) {
       conns.push({
         sourceNodeId: previousExitId,
+        sourcePortName: 'output',
         targetNodeId: OUTPUT_NODE_ID,
         targetPortName: 'pipe',
         isPipe: true,
@@ -250,25 +277,48 @@ const NodeView: React.FC<NodeViewProps> = ({
     }
 
     return conns;
-  }, [nodeStacks, mergeModel]);
+  }, [nodeStacks, outputPipeEdge, isOutputDetached]);
 
   // --- Explicit connections (from node.inputs) ---
 
   const explicitConnections = useMemo(() => {
     const conns: Connection[] = [];
     for (const node of nodes) {
-      for (const { portName, sourceNodeId } of getInputConnections(node)) {
-        conns.push({ sourceNodeId, targetNodeId: node.id, targetPortName: portName });
+      for (const { portName, sourceNodeId, sourcePortName } of getInputConnections(node)) {
+        conns.push({
+          sourceNodeId,
+          sourcePortName,
+          targetNodeId: node.id,
+          targetPortName: portName,
+        });
       }
     }
+    if (outputPipeEdge) {
+      conns.push({
+        sourceNodeId: outputPipeEdge.sourceNodeId,
+        sourcePortName: outputPipeEdge.sourcePort,
+        targetNodeId: OUTPUT_NODE_ID,
+        targetPortName: outputPipeEdge.targetPort,
+      });
+    }
     return conns;
-  }, [nodes]);
+  }, [nodes, outputPipeEdge]);
 
   // Merge all connections
-  const allConnections = useMemo(
-    () => [...pipeConnections, ...explicitConnections],
-    [pipeConnections, explicitConnections],
-  );
+  const allConnections = useMemo(() => {
+    const explicitTargetKeys = new Set(
+      explicitConnections.map(
+        (connection) => `${connection.targetNodeId}:${connection.targetPortName}`,
+      ),
+    );
+    return [
+      ...pipeConnections.filter(
+        (connection) =>
+          !explicitTargetKeys.has(`${connection.targetNodeId}:${connection.targetPortName}`),
+      ),
+      ...explicitConnections,
+    ];
+  }, [pipeConnections, explicitConnections]);
 
   const connectionMap = useMemo(() => {
     const map = new Map<string, Connection>();
@@ -283,10 +333,7 @@ const NodeView: React.FC<NodeViewProps> = ({
   const getPipeDetachTargetId = useCallback((conn: Connection): string | null => {
     if (!conn.isPipe) return null;
     if (conn.targetPortName === 'pipe') {
-      return conn.targetNodeId === OUTPUT_NODE_ID ? null : conn.targetNodeId;
-    }
-    if (conn.targetPortName.startsWith('merge-input-') && isMergeNodeId(conn.targetNodeId)) {
-      return getMergeSourceNodeId(conn.targetNodeId);
+      return conn.targetNodeId;
     }
     return null;
   }, []);
@@ -294,12 +341,54 @@ const NodeView: React.FC<NodeViewProps> = ({
     (conn: Connection): boolean => {
       const targetNodeId = getPipeDetachTargetId(conn);
       if (!targetNodeId) return false;
+      if (targetNodeId === OUTPUT_NODE_ID) {
+        setOutputPipeDetached(true);
+        setSelectedConnection(null);
+        return true;
+      }
       updateNode(targetNodeId, { detachedFromPipe: true } as Partial<AnyNode>, true);
       setSelectedConnection(null);
       return true;
     },
-    [getPipeDetachTargetId, updateNode],
+    [getPipeDetachTargetId, setOutputPipeDetached, updateNode],
   );
+  const canCutConnection = useCallback(
+    (conn: Connection): boolean => !conn.isPipe || getPipeDetachTargetId(conn) !== null,
+    [getPipeDetachTargetId],
+  );
+  const cutConnection = useCallback(
+    (conn: Connection): boolean => {
+      if (conn.isPipe) {
+        return detachPipeConnection(conn);
+      }
+      disconnectNodeInput(conn.targetNodeId, conn.targetPortName);
+      setSelectedConnection(null);
+      return true;
+    },
+    [detachPipeConnection, disconnectNodeInput],
+  );
+  const updateGraphPointerPosition = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      lastGraphPointerPositionRef.current = {
+        x: (event.clientX - rect.left - viewport.panX) / viewport.zoom,
+        y: (event.clientY - rect.top - viewport.panY) / viewport.zoom,
+      };
+    },
+    [containerRef, viewport.panX, viewport.panY, viewport.zoom],
+  );
+  const getGraphPastePosition = useCallback((): { x: number; y: number } | null => {
+    if (lastGraphPointerPositionRef.current) return lastGraphPointerPositionRef.current;
+    const container = containerRef.current;
+    if (!container) return null;
+    const rect = container.getBoundingClientRect();
+    return {
+      x: (rect.width / 2 - viewport.panX) / viewport.zoom,
+      y: (rect.height / 2 - viewport.panY) / viewport.zoom,
+    };
+  }, [containerRef, viewport.panX, viewport.panY, viewport.zoom]);
   const connectionCommands = useMemo<HotkeyCommand[]>(
     () => [
       {
@@ -309,15 +398,35 @@ const NodeView: React.FC<NodeViewProps> = ({
             return false;
           }
           if (selectedConnection.isPipe) {
-            return detachPipeConnection(selectedConnection);
+            return cutConnection(selectedConnection);
           }
-          disconnectNodeInput(selectedConnection.targetNodeId, selectedConnection.targetPortName);
-          setSelectedConnection(null);
+          return cutConnection(selectedConnection);
+        },
+      },
+      {
+        id: 'flow.graph.groupSelectedNodes.runtime',
+        run: () => {
+          if (!canGroupSelection) return false;
+          groupSelectedNodes();
+          return true;
+        },
+      },
+      {
+        id: 'flow.graph.pasteNodes.runtime',
+        run: () => {
+          void pasteNodesFromClipboard({ position: getGraphPastePosition() });
           return true;
         },
       },
     ],
-    [detachPipeConnection, disconnectNodeInput, selectedConnection],
+    [
+      canGroupSelection,
+      cutConnection,
+      getGraphPastePosition,
+      groupSelectedNodes,
+      pasteNodesFromClipboard,
+      selectedConnection,
+    ],
   );
   const connectionBindings = useMemo<HotkeyBinding[]>(
     () => [
@@ -326,6 +435,18 @@ const NodeView: React.FC<NodeViewProps> = ({
         command: 'flow.graph.deleteSelectedConnection.runtime',
         scope: 'flow.graph',
         weight: 400,
+      },
+      {
+        keys: ['Mod+G'],
+        command: 'flow.graph.groupSelectedNodes.runtime',
+        scope: 'flow.graph',
+        weight: 400,
+      },
+      {
+        keys: 'Mod+V',
+        command: 'flow.graph.pasteNodes.runtime',
+        scope: 'flow.graph',
+        weight: 450,
       },
     ],
     [],
@@ -336,12 +457,20 @@ const NodeView: React.FC<NodeViewProps> = ({
   // --- Drag-to-connect (port wiring) ---
   const [dragConnectState, setDragConnectState] = useState<DragConnectState | null>(null);
 
-  const handleOutputPortMouseDown = useCallback((e: React.MouseEvent, nodeId: string) => {
-    e.stopPropagation();
-    e.preventDefault();
-    setSelectedConnection(null);
-    setDragConnectState({ sourceNodeId: nodeId, cursorX: e.clientX, cursorY: e.clientY });
-  }, []);
+  const handleOutputPortMouseDown = useCallback(
+    (e: React.MouseEvent, nodeId: string, sourcePortName = 'output') => {
+      e.stopPropagation();
+      e.preventDefault();
+      setSelectedConnection(null);
+      setDragConnectState({
+        sourceNodeId: nodeId,
+        sourcePortName,
+        cursorX: e.clientX,
+        cursorY: e.clientY,
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!dragConnectState) return;
@@ -360,13 +489,17 @@ const NodeView: React.FC<NodeViewProps> = ({
           const targetNodeId = portEl.getAttribute('data-node-id');
           const targetPortName = portEl.getAttribute('data-port-name');
           if (targetNodeId && targetPortName && targetNodeId !== dragConnectState.sourceNodeId) {
-            if (targetPortName === 'pipe') {
+            connectNodeInput(
+              targetNodeId,
+              targetPortName,
+              dragConnectState.sourceNodeId,
+              dragConnectState.sourcePortName,
+            );
+            if (targetPortName === 'pipe' && targetNodeId !== OUTPUT_NODE_ID) {
               const targetNode = nodes.find((candidate) => candidate.id === targetNodeId);
               if (targetNode?.detachedFromPipe) {
                 updateNode(targetNodeId, { detachedFromPipe: false } as Partial<AnyNode>, true);
               }
-            } else {
-              connectNodeInput(targetNodeId, targetPortName, dragConnectState.sourceNodeId);
             }
           }
         }
@@ -388,6 +521,7 @@ const NodeView: React.FC<NodeViewProps> = ({
     const contentRect = contentRef.current.getBoundingClientRect();
     return {
       sourceNodeId: dragConnectState.sourceNodeId,
+      sourcePortName: dragConnectState.sourcePortName,
       cursorX: (dragConnectState.cursorX - contentRect.left) / viewport.zoom,
       cursorY: (dragConnectState.cursorY - contentRect.top) / viewport.zoom,
     };
@@ -395,11 +529,31 @@ const NodeView: React.FC<NodeViewProps> = ({
 
   // --- Node dragging ---
   const preDragPositionsRef = useRef<Record<string, { x: number; y: number }> | null>(null);
+  const multiDragStartPositionsRef = useRef<NodePositions | null>(null);
   const [stackMagnetTarget, setStackMagnetTarget] = useState<StackMagnetTarget | null>(null);
   const [stackMagnetDropCommitId, setStackMagnetDropCommitId] = useState<string | null>(null);
   const stackMagnetTargetRef = useRef<StackMagnetTarget | null>(null);
   const stackNodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const stackMap = useMemo(() => buildStackMap(nodeStacks), [nodeStacks]);
+
+  // ── Graph view preview (ghost card while hovering a tool button) ────
+  const previewInfo = useMemo<{
+    nodeType: NodeType;
+    name: string;
+    isMerge: boolean;
+    position: { x: number; y: number };
+  } | null>(() => {
+    const entry = computePreviewEntry(previewNodeType, nodeStacks);
+    if (!entry) return null;
+
+    const position = computeGraphPreviewPosition(
+      nodeStacks,
+      nodePositions,
+      stackMap,
+      selectedNodeId,
+    );
+    return { ...entry, position };
+  }, [previewNodeType, nodeStacks, nodePositions, stackMap, selectedNodeId]);
 
   useEffect(() => {
     if (!stackMagnetDropCommitId) return;
@@ -528,10 +682,59 @@ const NodeView: React.FC<NodeViewProps> = ({
     [getRenderedStackHeight, nodePositions, nodeStacks, stackMap],
   );
 
+  const getSelectedDragPositionIds = useCallback(
+    (nodeId: string): string[] => {
+      const selectedPositionIds = new Set<string>();
+
+      for (const stack of nodeStacks) {
+        const baseNode = stack[0];
+        if (selectedStackIds.has(baseNode.id) && nodePositions[baseNode.id]) {
+          selectedPositionIds.add(baseNode.id);
+        }
+      }
+
+      for (const selectedId of selectedNodeIds) {
+        if (graphNodeIds.has(selectedId) && nodePositions[selectedId]) {
+          selectedPositionIds.add(selectedId);
+        }
+      }
+
+      if (!selectedPositionIds.has(nodeId)) {
+        return nodePositions[nodeId] ? [nodeId] : [];
+      }
+
+      return Array.from(selectedPositionIds);
+    },
+    [graphNodeIds, nodePositions, nodeStacks, selectedNodeIds, selectedStackIds],
+  );
+
   const { startDrag: startDragRaw, dragNodeId } = useNodeDrag({
     zoom: viewport.zoom,
     onDrag: (nodeId, x, y) => {
       setStackMagnetDropCommitId(null);
+      const multiDragStartPositions = multiDragStartPositionsRef.current;
+      const sourceStartPosition = multiDragStartPositions?.[nodeId];
+
+      if (multiDragStartPositions && sourceStartPosition) {
+        const deltaX = x - sourceStartPosition.x;
+        const deltaY = y - sourceStartPosition.y;
+        const nextPositions = { ...nodePositions };
+
+        for (const draggedNodeId of Object.keys(multiDragStartPositions)) {
+          const startPosition = multiDragStartPositions[draggedNodeId];
+          if (!startPosition) continue;
+          nextPositions[draggedNodeId] = {
+            x: startPosition.x + deltaX,
+            y: startPosition.y + deltaY,
+          };
+        }
+
+        setNodePositions(nextPositions, { pushHistory: false });
+        stackMagnetTargetRef.current = null;
+        setStackMagnetTarget(null);
+        return;
+      }
+
       setNodePosition(nodeId, x, y);
       const nextTarget = getStackMagnetTarget(nodeId, x, y);
       stackMagnetTargetRef.current = nextTarget;
@@ -541,6 +744,7 @@ const NodeView: React.FC<NodeViewProps> = ({
       const target = stackMagnetTargetRef.current;
       stackMagnetTargetRef.current = null;
       setStackMagnetTarget(null);
+      multiDragStartPositionsRef.current = null;
 
       if (target && stackNodeOntoStack(nodeId, target.targetStackId)) {
         setStackMagnetDropCommitId(target.targetStackId);
@@ -558,12 +762,22 @@ const NodeView: React.FC<NodeViewProps> = ({
   const startDrag = useCallback(
     (e: React.MouseEvent, nodeId: string, x: number, y: number) => {
       preDragPositionsRef.current = { ...nodePositions };
+      const selectedDragPositionIds = getSelectedDragPositionIds(nodeId);
+      multiDragStartPositionsRef.current =
+        selectedDragPositionIds.length > 1
+          ? Object.fromEntries(
+              selectedDragPositionIds.map((selectedId) => [
+                selectedId,
+                { ...nodePositions[selectedId] },
+              ]),
+            )
+          : null;
       stackMagnetTargetRef.current = null;
       setStackMagnetDropCommitId(null);
       setStackMagnetTarget(null);
       startDragRaw(e, nodeId, x, y);
     },
-    [nodePositions, startDragRaw],
+    [getSelectedDragPositionIds, nodePositions, startDragRaw],
   );
 
   const openAddNodesPanel = useCallback(
@@ -572,16 +786,35 @@ const NodeView: React.FC<NodeViewProps> = ({
       if (!(target instanceof Element)) return;
 
       const interactiveElement = target.closest(
-        'a, button, input, textarea, select, [role="button"], [data-graph-node], [data-port-input]',
+        'a, button, input, textarea, select, [role="button"], [data-graph-node], [data-port-input], [data-connection-wire]',
       );
       if (interactiveElement) return;
 
       event.preventDefault();
       event.stopPropagation();
       setSelectedConnection(null);
+
+      // Save the graph-space position so the next node created from the
+      // tools panel lands at the double-click position on the canvas.
+      const container = containerRef.current;
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        setPendingNodePosition({
+          x: (event.clientX - rect.left - viewport.panX) / viewport.zoom,
+          y: (event.clientY - rect.top - viewport.panY) / viewport.zoom,
+        });
+      }
+
       setActiveTab(EditorTab.Tools);
     },
-    [setActiveTab],
+    [
+      containerRef,
+      setActiveTab,
+      setPendingNodePosition,
+      viewport.panX,
+      viewport.panY,
+      viewport.zoom,
+    ],
   );
 
   const handleExecuteNode = useCallback(
@@ -591,6 +824,142 @@ const NodeView: React.FC<NodeViewProps> = ({
     },
     [selectNode],
   );
+
+  const getContainerPoint = useCallback(
+    (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const container = containerRef.current;
+      if (!container) return null;
+      const rect = container.getBoundingClientRect();
+      return { x: clientX - rect.left, y: clientY - rect.top };
+    },
+    [containerRef],
+  );
+
+  const containerPointToGraphPoint = useCallback(
+    (point: { x: number; y: number }): { x: number; y: number } => ({
+      x: (point.x - viewport.panX) / viewport.zoom,
+      y: (point.y - viewport.panY) / viewport.zoom,
+    }),
+    [viewport.panX, viewport.panY, viewport.zoom],
+  );
+
+  const selectNodesInMarquee = useCallback(
+    (selection: MarqueeSelectionState) => {
+      const start = containerPointToGraphPoint({ x: selection.startX, y: selection.startY });
+      const end = containerPointToGraphPoint({ x: selection.currentX, y: selection.currentY });
+      const selectionRect = getNormalizedRect(start.x, start.y, end.x, end.y);
+      const nextSelectedIds = new Set(selection.additive ? selectedNodeIds : []);
+
+      for (const stack of nodeStacks) {
+        const baseNode = stack[0];
+        const position = nodePositions[baseNode.id];
+        if (!position) continue;
+
+        const stackRect = {
+          x: position.x,
+          y: position.y,
+          width: NODE_WIDTH,
+          height: getRenderedStackHeight(baseNode.id, estimateNodeHeight(baseNode.id, stackMap)),
+        };
+        if (rectsIntersect(selectionRect, stackRect)) {
+          nextSelectedIds.add(baseNode.id);
+        }
+      }
+
+      const outputPosition = nodePositions[OUTPUT_NODE_ID];
+      if (outputPosition) {
+        const outputRect = {
+          x: outputPosition.x,
+          y: outputPosition.y,
+          width: NODE_WIDTH,
+          height: estimateNodeHeight(OUTPUT_NODE_ID, stackMap),
+        };
+        if (rectsIntersect(selectionRect, outputRect)) {
+          nextSelectedIds.add(OUTPUT_NODE_ID);
+        }
+      }
+
+      selectNodes(Array.from(nextSelectedIds) as string[]);
+    },
+    [
+      containerPointToGraphPoint,
+      getRenderedStackHeight,
+      nodePositions,
+      nodeStacks,
+      selectNodes,
+      selectedNodeIds,
+      stackMap,
+    ],
+  );
+
+  const startMarqueeSelection = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || isPanning.current) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const interactiveElement = target.closest(
+        'a, button, input, textarea, select, [role="button"], [data-graph-node], [data-port-input], [data-connection-wire]',
+      );
+      if (interactiveElement) return;
+
+      const start = getContainerPoint(event.clientX, event.clientY);
+      if (!start) return;
+
+      event.preventDefault();
+      setSelectedConnection(null);
+      const nextSelection = {
+        startX: start.x,
+        startY: start.y,
+        currentX: start.x,
+        currentY: start.y,
+        additive: event.shiftKey || event.metaKey || event.ctrlKey,
+        hasDragged: false,
+      };
+      marqueeSelectionRef.current = nextSelection;
+      setMarqueeSelection(nextSelection);
+    },
+    [getContainerPoint, isPanning],
+  );
+
+  useEffect(() => {
+    if (!marqueeSelection) return;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const point = getContainerPoint(event.clientX, event.clientY);
+      if (!point) return;
+
+      setMarqueeSelection((current) => {
+        if (!current) return null;
+        const distance = Math.hypot(point.x - current.startX, point.y - current.startY);
+        const nextSelection = {
+          ...current,
+          currentX: point.x,
+          currentY: point.y,
+          hasDragged: current.hasDragged || distance >= 4,
+        };
+        marqueeSelectionRef.current = nextSelection;
+        return nextSelection;
+      });
+    };
+
+    const handleMouseUp = () => {
+      const finalSelection = marqueeSelectionRef.current;
+      marqueeSelectionRef.current = null;
+      setMarqueeSelection(null);
+      if (!finalSelection?.hasDragged) return;
+
+      suppressNextCanvasClickRef.current = true;
+      selectNodesInMarquee(finalSelection);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [getContainerPoint, marqueeSelection, selectNodesInMarquee]);
 
   // --- Auto-layout initialization ---
   const initialLayoutDone = useRef(false);
@@ -652,16 +1021,15 @@ const NodeView: React.FC<NodeViewProps> = ({
 
   // --- Render ---
 
-  if (!sceneNode) {
+  if (!sceneNode && nodeStacks.length === 0) {
     return (
       <div className="h-full flex items-center justify-center p-4">
         <div className="text-center text-xs text-gray-500">
           <p>Add nodes to see the node graph.</p>
           <div className="mt-4 flex justify-center">
             <div className="flex flex-wrap justify-center gap-2">
-              <ImageImportToolButton />
+              <MediaSourceImportToolButton />
               <ImageSequenceToolButton />
-              <AiInpaintingToolButton />
             </div>
           </div>
         </div>
@@ -678,29 +1046,48 @@ const NodeView: React.FC<NodeViewProps> = ({
       style={{ cursor: getCursorStyle() }}
       onMouseDown={(e) => {
         handleMouseDown(e);
+        startMarqueeSelection(e);
         // Click on empty canvas deselects connection
         if (e.target === e.currentTarget || e.target === contentRef.current) {
           setSelectedConnection(null);
         }
       }}
+      onMouseMove={updateGraphPointerPosition}
       onDoubleClick={openAddNodesPanel}
-      onClick={() => setSelectedConnection(null)}
+      onClick={(event) => {
+        if (suppressNextCanvasClickRef.current) {
+          suppressNextCanvasClickRef.current = false;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        setSelectedConnection(null);
+      }}
     >
       {/* Grid background */}
       <CanvasGrid zoom={viewport.zoom} />
 
-      {/* Scene is a global graph control, pinned outside pan/zoom content. */}
-      <div className="absolute left-3 top-10 z-20" data-graph-node="true">
-        <SceneNodeCard
-          sceneNode={sceneNode}
-          isSelected={isSceneSelected}
-          onSelect={() => selectNode(sceneNode.id)}
-          onDragStart={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-          }}
+      {marqueeSelection?.hasDragged ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute z-30 rounded border border-primary-300/80 bg-primary-400/15 shadow-[0_0_0_1px_rgb(var(--color-primary-900)/0.35)]"
+          style={getMarqueeSelectionStyle(marqueeSelection)}
         />
-      </div>
+      ) : null}
+
+      {sceneNode ? (
+        <div className="absolute left-3 top-10 z-20" data-graph-node="true">
+          <SceneNodeCard
+            sceneNode={sceneNode}
+            isSelected={isSceneSelected}
+            onSelect={() => selectNode(sceneNode.id)}
+            onDragStart={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+            }}
+          />
+        </div>
+      ) : null}
 
       {/* Transformed content node */}
       <div ref={contentRef} style={getTransformStyle()}>
@@ -710,7 +1097,8 @@ const NodeView: React.FC<NodeViewProps> = ({
           portPositions={portPositions}
           selectedConnection={selectedConnection}
           onSelectConnection={setSelectedConnection}
-          onCutConnection={detachPipeConnection}
+          canCutConnection={canCutConnection}
+          onCutConnection={cutConnection}
           dragPreview={dragPreview}
         />
 
@@ -727,9 +1115,10 @@ const NodeView: React.FC<NodeViewProps> = ({
           <OutputNodeCard
             isSelected={isOutputNodeSelected}
             isDragTarget={!!dragConnectState}
+            isConnected={connectionMap.has(`${OUTPUT_NODE_ID}:pipe`)}
             viewerNodeId={viewerNodeId}
             viewerSlots={viewerSlots}
-            onSelect={() => selectNode(OUTPUT_NODE_ID)}
+            onSelect={(event) => selectNodeFromPointer(event, OUTPUT_NODE_ID)}
             onDragStart={(e) => {
               if (isPanning.current) return;
               const pos = getPos(OUTPUT_NODE_ID);
@@ -738,6 +1127,33 @@ const NodeView: React.FC<NodeViewProps> = ({
             registerPortRef={registerPortRef}
           />
         </div>
+
+        {/* Preview ghost card / generic placeholder */}
+        {previewInfo || (activeTab === EditorTab.Tools && nodeStacks.length > 0) ? (
+          <div
+            data-graph-node="true"
+            style={{
+              position: 'absolute',
+              left:
+                previewInfo?.position.x ??
+                computeGraphPreviewPosition(nodeStacks, nodePositions, stackMap, selectedNodeId).x,
+              top:
+                previewInfo?.position.y ??
+                computeGraphPreviewPosition(nodeStacks, nodePositions, stackMap, selectedNodeId).y,
+              zIndex: 1,
+            }}
+          >
+            {previewInfo ? (
+              <PreviewNodeCard
+                nodeType={previewInfo.nodeType}
+                name={previewInfo.name}
+                isMerge={previewInfo.isMerge}
+              />
+            ) : (
+              <PreviewNodeCard nodeType={NodeType.SCENE} name="Add Node" />
+            )}
+          </div>
+        ) : null}
 
         {/* Stack nodes */}
         {nodeStacks.map((stack) => {
@@ -780,22 +1196,26 @@ const NodeView: React.FC<NodeViewProps> = ({
                   isMagnetTarget ? stackMagnetTarget.placeholderHeight : 0
                 }
                 selectedNodeId={selectedNodeId}
+                selectedNodeIds={selectedNodeIds}
                 thumbnailMode={thumbnailMode}
                 connectionMap={connectionMap}
                 viewerNodeId={viewerNodeId}
                 viewerSlots={viewerSlots}
                 isDragTarget={!!dragConnectState && dragConnectState.sourceNodeId !== baseNode.id}
-                onSelect={() => selectNode(baseNode.id)}
-                onSelectNode={(nodeId) => selectNode(nodeId)}
+                onSelect={(event) => selectNodeFromPointer(event, baseNode.id)}
+                onSelectNode={(event, nodeId) => selectNodeFromPointer(event, nodeId)}
+                onOpenGroupNode={openGroupNode}
                 onDragStart={(e) => {
                   if (isPanning.current) return;
                   startDrag(e, baseNode.id, pos.x, pos.y);
                 }}
-                onToggleVisibility={toggleNodeVisibility}
+                onToggleEnabled={toggleNodeEnabled}
                 onToggleStacking={toggleNodeStacking}
                 canStackNode={canStackNode}
                 onDeleteNode={deleteNode}
-                onOutputPortMouseDown={(e) => handleOutputPortMouseDown(e, baseNode.id)}
+                onOutputPortMouseDown={(e, sourcePortName) =>
+                  handleOutputPortMouseDown(e, baseNode.id, sourcePortName)
+                }
                 registerPortRef={registerPortRef}
                 activeNodeJobMap={activeNodeJobMap}
                 onExecuteNode={handleExecuteNode}
@@ -803,44 +1223,10 @@ const NodeView: React.FC<NodeViewProps> = ({
             </div>
           );
         })}
-
-        {/* Virtual merge nodes */}
-        {mergeNodeData.map(({ mergeId, blendMode, opacity }) => {
-          const pos = getPos(mergeId);
-          const isMergeSelected = selectedNodeId === mergeId;
-          return (
-            <div
-              key={mergeId}
-              data-graph-node="true"
-              style={{
-                position: 'absolute',
-                left: pos.x,
-                top: pos.y,
-                zIndex: dragNodeId === mergeId ? 10 : 1,
-              }}
-            >
-              <MergeNodeCard
-                mergeId={mergeId}
-                blendMode={blendMode}
-                opacity={opacity}
-                isSelected={isMergeSelected}
-                viewerNodeId={viewerNodeId}
-                viewerSlots={viewerSlots}
-                registerPortRef={registerPortRef}
-                onSelect={() => selectNode(mergeId)}
-                onDragStart={(e) => {
-                  if (isPanning.current) return;
-                  startDrag(e, mergeId, pos.x, pos.y);
-                }}
-                inputCount={2}
-              />
-            </div>
-          );
-        })}
       </div>
     </div>
   );
-};
+}
 
 function computeBounds(
   positions: Record<string, { x: number; y: number }>,
@@ -872,6 +1258,36 @@ function computeBounds(
 }
 
 type GraphRect = { x: number; y: number; width: number; height: number };
+
+function getNormalizedRect(x1: number, y1: number, x2: number, y2: number): GraphRect {
+  const x = Math.min(x1, x2);
+  const y = Math.min(y1, y2);
+  return {
+    x,
+    y,
+    width: Math.max(x1, x2) - x,
+    height: Math.max(y1, y2) - y,
+  };
+}
+
+function getMarqueeSelectionStyle(selection: MarqueeSelectionState): React.CSSProperties {
+  const rect = getNormalizedRect(
+    selection.startX,
+    selection.startY,
+    selection.currentX,
+    selection.currentY,
+  );
+  return {
+    left: rect.x,
+    top: rect.y,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function rectsIntersect(a: GraphRect, b: GraphRect): boolean {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
 
 function smoothStep(value: number): number {
   const t = Math.max(0, Math.min(1, value));

@@ -10,13 +10,13 @@ interface DirectoryImportModeModalProps {
   onSelect: (mode: DirectoryImportMode, rememberChoice: boolean) => void;
 }
 
-const DirectoryImportModeModal: React.FC<DirectoryImportModeModalProps> = ({
+function DirectoryImportModeModal({
   isOpen,
   referenceEnabled = true,
   referenceDisabledReason,
   onClose,
   onSelect,
-}) => {
+}: DirectoryImportModeModalProps) {
   const [rememberChoice, setRememberChoice] = useState(false);
 
   useEffect(() => {
@@ -113,6 +113,6 @@ const DirectoryImportModeModal: React.FC<DirectoryImportModeModalProps> = ({
       </div>
     </div>
   );
-};
+}
 
 export default DirectoryImportModeModal;

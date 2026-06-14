@@ -11,7 +11,6 @@ export interface InspectorLogFooterProps {
   progressPercent?: number;
   actions?: React.ReactNode;
   className?: string;
-  sticky?: boolean;
 }
 
 const variantClasses: Record<
@@ -50,7 +49,7 @@ const variantClasses: Record<
 
 const clampProgressPercent = (value: number): number => Math.min(100, Math.max(0, value));
 
-const InspectorLogFooter: React.FC<InspectorLogFooterProps> = ({
+export function InspectorLogFooter({
   message,
   label = 'Log',
   variant = 'info',
@@ -59,8 +58,7 @@ const InspectorLogFooter: React.FC<InspectorLogFooterProps> = ({
   progressPercent,
   actions,
   className = '',
-  sticky = true,
-}) => {
+}: InspectorLogFooterProps) {
   const classes = variantClasses[variant];
   const hasProgress = progressIndeterminate || progressPercent !== undefined;
   if (!message && !hasProgress && !actions) return null;
@@ -107,6 +105,4 @@ const InspectorLogFooter: React.FC<InspectorLogFooterProps> = ({
       </div>
     </div>
   );
-};
-
-export default InspectorLogFooter;
+}

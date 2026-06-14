@@ -10,4 +10,4 @@ export {
   loadProjectStateFromDB,
   deleteProjectStateFromDB,
   type AssetReferenceExportRecord,
-} from '@blackboard/state';
+} from '@blackboard/project-store';

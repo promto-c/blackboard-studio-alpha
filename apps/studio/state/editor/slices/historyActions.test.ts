@@ -9,10 +9,7 @@ type TestState = {
       nodes?: Array<{ id: string; name?: string }>;
       selectedNodeId?: string | null;
       currentFrame?: number;
-      selectedPaintLayerIds?: string[];
-      selectedPaintStrokeIds?: string[];
-      selectedRotoLayerIds?: string[];
-      selectedRotoPathIds?: string[];
+      hierarchySelections?: Record<string, { layerIds: string[]; itemIds: string[] }>;
       selectedRotoPointRefs?: Array<{ pathId: string; pointIndex: number }>;
       selectedKeyframes?: Array<{ nodeId?: string; path: string; frame: number }>;
     };
@@ -24,10 +21,7 @@ type TestState = {
   nodes: Array<{ id: string; name?: string }>;
   currentFrame: number;
   selectedNodeId: string | null;
-  selectedPaintLayerIds: string[];
-  selectedPaintStrokeIds: string[];
-  selectedRotoLayerIds: string[];
-  selectedRotoPathIds: string[];
+  hierarchySelections: Record<string, { layerIds: string[]; itemIds: string[] }>;
   selectedRotoPointRefs: Array<{ pathId: string; pointIndex: number }>;
   selectedKeyframes: Array<{ nodeId?: string; path: string; frame: number }>;
 };
@@ -39,10 +33,9 @@ const createHarness = () => {
     nodes: [{ id: 'node-current' }],
     currentFrame: 24,
     selectedNodeId: 'node-current',
-    selectedPaintLayerIds: ['paint-layer-1'],
-    selectedPaintStrokeIds: ['paint-stroke-1'],
-    selectedRotoLayerIds: ['roto-layer-1'],
-    selectedRotoPathIds: ['roto-path-1'],
+    hierarchySelections: {
+      'node-current': { layerIds: ['roto-layer-1'], itemIds: ['roto-path-1'] },
+    },
     selectedRotoPointRefs: [{ pathId: 'roto-path-1', pointIndex: 2 }],
     selectedKeyframes: [{ nodeId: 'node-current', path: 'opacity', frame: 24 }],
   };
@@ -75,14 +68,21 @@ describe('createHistoryActions', () => {
       state: {
         currentFrame: 24,
         selectedNodeId: 'node-current',
-        selectedPaintLayerIds: ['paint-layer-1'],
-        selectedPaintStrokeIds: ['paint-stroke-1'],
-        selectedRotoLayerIds: ['roto-layer-1'],
-        selectedRotoPathIds: ['roto-path-1'],
+        hierarchySelections: {
+          'node-current': { layerIds: ['roto-layer-1'], itemIds: ['roto-path-1'] },
+        },
         selectedRotoPointRefs: [{ pathId: 'roto-path-1', pointIndex: 2 }],
         selectedKeyframes: [{ nodeId: 'node-current', path: 'opacity', frame: 24 }],
       },
     });
+  });
+
+  it('normalizes missing runtime history labels', () => {
+    const { actions, getState } = createHarness();
+
+    actions.pushHistory({ state: {} } as never);
+
+    expect(getState().history[1].label).toBe('Edit');
   });
 
   it('lets explicit history state override captured context', () => {
@@ -93,7 +93,9 @@ describe('createHistoryActions', () => {
       state: {
         currentFrame: 48,
         selectedNodeId: 'node-target',
-        selectedRotoPathIds: ['roto-path-2'],
+        hierarchySelections: {
+          'node-target': { layerIds: [], itemIds: ['roto-path-2'] },
+        },
       },
     });
 
@@ -102,7 +104,9 @@ describe('createHistoryActions', () => {
       state: {
         currentFrame: 48,
         selectedNodeId: 'node-target',
-        selectedRotoPathIds: ['roto-path-2'],
+        hierarchySelections: {
+          'node-target': { layerIds: [], itemIds: ['roto-path-2'] },
+        },
       },
     });
   });
@@ -157,6 +161,94 @@ describe('createHistoryActions', () => {
       label: 'Nudge Stroke',
       state: { selectedNodeId: 'node-b' },
     });
+  });
+
+  it('requests a backup before replacing a redo path after undo', () => {
+    const { getState, setState } = createHarness();
+    const backupRedoHistory = vi.fn();
+    const debouncedSave = vi.fn();
+    const set = (fn: (prevState: TestState) => Partial<TestState> | TestState) => {
+      setState(fn(getState()));
+    };
+    const actions = createHistoryActions(set as never, getState as never, debouncedSave, {
+      backupRedoHistory,
+    });
+
+    setState({
+      historyIndex: 0,
+      history: [
+        { id: 'hist_base', label: 'Base', state: { selectedNodeId: 'node-a' } },
+        {
+          id: 'hist_checkpoint',
+          label: 'Old Checkpoint',
+          checkpointLabel: 'Old Checkpoint',
+          state: { selectedNodeId: 'node-b' },
+        },
+        { id: 'hist_old_head', label: 'Old Head', state: { selectedNodeId: 'node-c' } },
+      ],
+    });
+
+    actions.pushHistory({ label: 'New Branch Edit', state: { selectedNodeId: 'node-d' } });
+
+    expect(backupRedoHistory).toHaveBeenCalledWith({
+      history: expect.arrayContaining([
+        expect.objectContaining({ id: 'hist_checkpoint' }),
+        expect.objectContaining({ id: 'hist_old_head' }),
+      ]),
+      historyIndex: 0,
+      nextEntry: expect.objectContaining({ label: 'New Branch Edit' }),
+    });
+    expect(getState().history.map((entry) => entry.label)).toEqual(['Base', 'New Branch Edit']);
+  });
+
+  it('limits open-project undo history using the configured cap', () => {
+    const { getState, setState } = createHarness();
+    const debouncedSave = vi.fn();
+    const set = (fn: (prevState: TestState) => Partial<TestState> | TestState) => {
+      setState(fn(getState()));
+    };
+    const actions = createHistoryActions(set as never, getState as never, debouncedSave, {
+      getUndoHistoryLimit: () => 2,
+    });
+
+    setState({
+      historyIndex: 2,
+      history: [
+        { id: 'hist_1', label: 'One', state: { selectedNodeId: 'node-a' } },
+        { id: 'hist_2', label: 'Two', state: { selectedNodeId: 'node-b' } },
+        { id: 'hist_3', label: 'Three', state: { selectedNodeId: 'node-c' } },
+      ],
+    });
+
+    actions.pushHistory({ label: 'Four', state: { selectedNodeId: 'node-d' } });
+
+    expect(getState().history.map((entry) => entry.label)).toEqual(['Two', 'Three', 'Four']);
+    expect(getState().historyIndex).toBe(2);
+  });
+
+  it('can keep unlimited open-project undo history', () => {
+    const { getState, setState } = createHarness();
+    const debouncedSave = vi.fn();
+    const set = (fn: (prevState: TestState) => Partial<TestState> | TestState) => {
+      setState(fn(getState()));
+    };
+    const actions = createHistoryActions(set as never, getState as never, debouncedSave, {
+      getUndoHistoryLimit: () => null,
+    });
+
+    setState({
+      historyIndex: 2,
+      history: [
+        { id: 'hist_1', label: 'One', state: { selectedNodeId: 'node-a' } },
+        { id: 'hist_2', label: 'Two', state: { selectedNodeId: 'node-b' } },
+        { id: 'hist_3', label: 'Three', state: { selectedNodeId: 'node-c' } },
+      ],
+    });
+
+    actions.pushHistory({ label: 'Four', state: { selectedNodeId: 'node-d' } });
+
+    expect(getState().history.map((entry) => entry.label)).toEqual(['One', 'Two', 'Three', 'Four']);
+    expect(getState().historyIndex).toBe(3);
   });
 
   it('uses the undone entry context when restoring the previous history state', () => {
@@ -279,5 +371,31 @@ describe('createHistoryActions', () => {
     actions.toggleHistoryCheckpoint(1);
 
     expect(getState().history[1].checkpointLabel).toBeUndefined();
+  });
+
+  it('adds checkpoint metadata to the current history entry without toggling it off', () => {
+    const { actions, getState, setState, debouncedSave } = createHarness();
+
+    setState({
+      historyIndex: 1,
+      history: [
+        { id: 'hist_base', label: 'Base', state: { selectedNodeId: 'node-a' } },
+        { id: 'hist_grade', label: 'Grade Clip', state: { selectedNodeId: 'node-b' } },
+      ],
+    });
+
+    actions.checkpointCurrentHistoryEntry();
+
+    expect(getState().history[1]).toMatchObject({
+      checkpointLabel: 'Grade Clip',
+    });
+    expect(debouncedSave).toHaveBeenCalledTimes(1);
+
+    actions.checkpointCurrentHistoryEntry();
+
+    expect(getState().history[1]).toMatchObject({
+      checkpointLabel: 'Grade Clip',
+    });
+    expect(debouncedSave).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,41 +1,51 @@
 import * as THREE from 'three';
 import {
+  AnimatableNumber,
   AnyNode,
   BlendMode,
-  ImageNode,
   ImageSequenceNode,
+  MediaSourceNode,
+  NodeType,
   SceneNode,
   TextNode,
-  VideoNode,
   ViewerSettings,
 } from '@blackboard/types';
 import type {
+  RendererMediaCompositeLayer,
   ShaderUniformMap,
-  EffectRenderContext,
+  RenderContext,
   RenderMode,
-  EffectRegistryLike,
+  NodeRegistryLike,
   RendererInputPort,
+  RendererColorManagement,
+  RendererOcioGpuTexture,
+  RendererOcioGpuUniform,
+  RendererOcioShaderInfo,
+  ResolveOutputContext,
 } from './types';
-import {
-  PAINT_OVER_SHADER,
-  ROTO_SHADER,
-  STRAIGHT_TEXTURE_OVER_SHADER,
-  STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
-  TEXTURE_SHADER,
-  TEXTURE_OPACITY_SHADER,
-  TRANSFORMED_TEXTURE_SHADER,
-  VERTEX_SHADER,
-  VIEWER_SHADER,
-} from './glsl';
+import { RendererShader } from './glsl';
 import { getValueAtFrame } from './animation';
 import { createNodePredicates } from './nodePredicates';
 import { assertWebGL2Renderer, createStudioRenderer, createStudioShaderMaterial } from './webgl';
 
-type MediaNode = ImageNode | VideoNode | ImageSequenceNode;
+type MediaNode = MediaSourceNode | ImageSequenceNode;
+
+// ---------------------------------------------------------------------------
+// Node-specific shaders — handled by the generic shader/warp multipass paths
+// in renderAdjustmentNodeToTarget. Paint and mask rendering is done via
+// renderOutput on the node definitions.
+// ---------------------------------------------------------------------------
 
 const VIEWER_CHANNELS: ViewerSettings['channels'][] = ['RGB', 'R', 'G', 'B', 'A'];
+const CHANNEL_PORTS = ['r', 'g', 'b', 'a'] as const;
+type ChannelPort = (typeof CHANNEL_PORTS)[number];
+const SOURCE_ALPHA_MODE_UNIFORM = {
+  file: 0,
+  opaque: 1,
+  transparent: 2,
+} as const;
 
-export interface AlphaOverlayStyle {
+interface AlphaOverlayStyle {
   color: [number, number, number];
   opacity: number;
   bgDarken: number;
@@ -106,7 +116,7 @@ const getTransparentInputTexture = (): THREE.Texture => {
 /**
  * Check if a node's type has the `isMediaNode` flag in the registry.
  */
-const isMediaNodeWithRegistry = (node: AnyNode, reg: EffectRegistryLike): node is MediaNode => {
+const isMediaNodeWithRegistry = (node: AnyNode, reg: NodeRegistryLike): node is MediaNode => {
   const def = reg.get(node.type);
   return !!def?.flags?.isMediaNode;
 };
@@ -121,6 +131,7 @@ export interface RenderPipelineOptions {
   finalColorSpace: 'raw_texture' | 'scene_linear' | 'srgb' | 'match_viewport';
   viewerSettings?: ViewerSettings;
   alphaOverlayStyle?: AlphaOverlayStyle;
+  colorManagement?: RendererColorManagement;
   textureCacheMode?: 'none' | 'persistent';
   canvas?: HTMLCanvasElement;
   /** When provided, this renderer is reused instead of creating (and disposing) a new one. */
@@ -136,9 +147,12 @@ export interface RenderPipelineOptions {
   captureFinalOutput?: boolean;
   /** Preserve source alpha in final display conversion, even when viewport settings flatten it. */
   preserveAlpha?: boolean;
-  effectRegistry: EffectRegistryLike;
+  nodeRegistry: NodeRegistryLike;
   getAsset: (id: string) => Promise<Blob | null>;
   getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoAlphaMode?: (nodeId: string) => number;
   loadAssetTexture?: (params: {
     assetId: string;
     blob: Blob;
@@ -186,6 +200,51 @@ const clearRenderTargetTransparent = (
   renderer.setClearColor(previousClearColor, previousClearAlpha);
 };
 
+interface RenderFormatSize {
+  width: number;
+  height: number;
+}
+
+const getPositiveIntegerDimension = (value: unknown): number | null => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return Math.max(1, Math.round(value));
+};
+
+const getReformatSourceSize = (nodes: AnyNode[], fallback: RenderFormatSize): RenderFormatSize => {
+  const reformatNode = nodes.find(
+    (node) => node.enabled !== false && node.type === NodeType.REFORMAT,
+  ) as (AnyNode & { sourceWidth?: unknown; sourceHeight?: unknown }) | undefined;
+  const width = getPositiveIntegerDimension(reformatNode?.sourceWidth);
+  const height = getPositiveIntegerDimension(reformatNode?.sourceHeight);
+  return width && height ? { width, height } : fallback;
+};
+
+const getReformatTargetSize = (node: AnyNode): RenderFormatSize | null => {
+  if (node.type !== NodeType.REFORMAT) return null;
+  const width = getPositiveIntegerDimension((node as { width?: unknown }).width);
+  const height = getPositiveIntegerDimension((node as { height?: unknown }).height);
+  return width && height ? { width, height } : null;
+};
+
+const getScaledRenderTargetSize = (
+  logicalSize: RenderFormatSize,
+  renderScale: RenderFormatSize,
+): RenderFormatSize => ({
+  width: Math.max(1, Math.round(logicalSize.width * renderScale.width)),
+  height: Math.max(1, Math.round(logicalSize.height * renderScale.height)),
+});
+
+const ensureRenderTargetSize = (
+  target: THREE.WebGLRenderTarget,
+  logicalSize: RenderFormatSize,
+  renderScale: RenderFormatSize,
+): void => {
+  const physicalSize = getScaledRenderTargetSize(logicalSize, renderScale);
+  if (target.width !== physicalSize.width || target.height !== physicalSize.height) {
+    target.setSize(physicalSize.width, physicalSize.height);
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Registry-aware texture key and asset ID helpers
 // ---------------------------------------------------------------------------
@@ -196,10 +255,25 @@ const clearRenderTargetTransparent = (
 const getMediaTextureKeyFromRegistry = (
   node: AnyNode,
   frame: number,
-  reg: EffectRegistryLike,
+  reg: NodeRegistryLike,
 ): string | null => {
   const def = reg.get(node.type);
   return def?.mediaDescriptor?.getMediaTextureKey?.(node, frame) || null;
+};
+
+const getMediaCompositeLayersFromRegistry = (
+  node: AnyNode,
+  frame: number,
+  sceneNode: SceneNode,
+  reg: NodeRegistryLike,
+): RendererMediaCompositeLayer[] => {
+  const def = reg.get(node.type);
+  return (
+    def?.mediaDescriptor?.getCompositeLayers?.(node, frame, {
+      frame,
+      sceneNode,
+    }) ?? []
+  ).filter((layer) => layer.textureKey && layer.width > 0 && layer.height > 0);
 };
 
 /**
@@ -207,8 +281,8 @@ const getMediaTextureKeyFromRegistry = (
  */
 const getMediaAssetIdsFromRegistry = (
   node: AnyNode,
-  frame: number,
-  reg: EffectRegistryLike,
+  _frame: number,
+  reg: NodeRegistryLike,
 ): string[] => {
   const def = reg.get(node.type);
   return def?.mediaDescriptor?.getAssetIds?.(node) ?? [];
@@ -217,13 +291,338 @@ const getMediaAssetIdsFromRegistry = (
 /**
  * Get color space for a media node using the registry's media descriptor.
  */
-const getColorSpaceFromRegistry = (node: AnyNode, reg: EffectRegistryLike): string | undefined => {
+const getColorSpaceFromRegistry = (node: AnyNode, reg: NodeRegistryLike): string | undefined => {
   const def = reg.get(node.type);
   return def?.mediaDescriptor?.getColorSpace?.(node);
 };
 
-const getPaintInputTransform = (sceneColorSpace: SceneNode['colorSpace']): number =>
-  sceneColorSpace === 'Linear' ? 0 : 1;
+const isVideoFileNodeWithRegistry = (node: AnyNode, reg: NodeRegistryLike): boolean => {
+  const def = reg.get(node.type);
+  return !!(def?.mediaDescriptor?.isVideoFile?.(node) ?? def?.flags?.isVideoFile);
+};
+
+const getInputColorTransform = (
+  sourceColorSpace: string | undefined,
+  sceneColorSpace: SceneNode['colorSpace'],
+): number => {
+  if (sourceColorSpace === 'sRGB' && sceneColorSpace === 'Linear') return 0;
+  if ((sourceColorSpace === 'Linear' || sourceColorSpace === 'Raw') && sceneColorSpace === 'sRGB') {
+    return 2;
+  }
+  return 1;
+};
+
+const getNodeInputColorTransform = (
+  node: AnyNode,
+  sceneColorSpace: SceneNode['colorSpace'],
+  reg: NodeRegistryLike,
+): number => getInputColorTransform(getColorSpaceFromRegistry(node, reg), sceneColorSpace);
+
+const getLayerInputColorTransform = (
+  layer: RendererMediaCompositeLayer,
+  sceneColorSpace: SceneNode['colorSpace'],
+): number => getInputColorTransform(layer.colorSpace, sceneColorSpace);
+
+const getResolvedColorSpace = (
+  colorSpace: string | undefined,
+  colorManagement?: RendererColorManagement,
+): string | undefined => colorManagement?.resolveColorSpaceName?.(colorSpace) ?? colorSpace;
+
+const getOcioColorSpaceTransform = (
+  sourceColorSpace: string | undefined,
+  sceneColorSpace: SceneNode['colorSpace'],
+  colorManagement?: RendererColorManagement,
+): RendererOcioShaderInfo | null => {
+  if (!colorManagement?.getColorSpaceTransform) return null;
+  return colorManagement.getColorSpaceTransform(
+    sourceColorSpace,
+    getResolvedColorSpace(sceneColorSpace, colorManagement),
+  );
+};
+
+const getOcioDisplayViewTransform = (
+  sceneColorSpace: SceneNode['colorSpace'],
+  viewerSettings: ViewerSettings,
+  colorManagement?: RendererColorManagement,
+): RendererOcioShaderInfo | null => {
+  if (!colorManagement?.getDisplayViewTransform) return null;
+  return colorManagement.getDisplayViewTransform(
+    getResolvedColorSpace(sceneColorSpace, colorManagement),
+    (viewerSettings as { ocioDisplay?: string }).ocioDisplay || colorManagement.defaultDisplay,
+    viewerSettings.ocioView || colorManagement.defaultView,
+  );
+};
+
+const getOcioSrgbOutputTransform = (
+  sceneColorSpace: SceneNode['colorSpace'],
+  colorManagement?: RendererColorManagement,
+): RendererOcioShaderInfo | null => {
+  if (!colorManagement?.getColorSpaceTransform) return null;
+  return colorManagement.getColorSpaceTransform(
+    getResolvedColorSpace(sceneColorSpace, colorManagement),
+    colorManagement.textureColorSpace ?? 'sRGB',
+  );
+};
+
+const getOcioTextureCacheKey = (
+  shaderInfo: RendererOcioShaderInfo,
+  texture: RendererOcioGpuTexture,
+): string =>
+  `${shaderInfo.cacheId || shaderInfo.key}:${texture.samplerName}:${texture.dimensions}:${texture.width}x${texture.height}x${texture.depth}`;
+
+const getOcioTextureFormat = (texture: RendererOcioGpuTexture): THREE.PixelFormat =>
+  texture.channels === 1 ? THREE.RedFormat : THREE.RGBFormat;
+
+const createOcioDataTexture = (texture: RendererOcioGpuTexture): THREE.Texture => {
+  if (texture.dimensions === 3) {
+    const dataTexture = new THREE.Data3DTexture(
+      texture.values,
+      texture.width,
+      texture.height,
+      texture.depth,
+    );
+    dataTexture.format = getOcioTextureFormat(texture);
+    dataTexture.type = THREE.FloatType;
+    dataTexture.wrapR = THREE.ClampToEdgeWrapping;
+    dataTexture.unpackAlignment = 1;
+    dataTexture.generateMipmaps = false;
+    dataTexture.colorSpace = THREE.NoColorSpace;
+    dataTexture.internalFormat = texture.channels === 1 ? 'R32F' : 'RGB32F';
+    dataTexture.needsUpdate = true;
+    return dataTexture;
+  }
+
+  const dataTexture = new THREE.DataTexture(
+    texture.values,
+    texture.width,
+    texture.height,
+    getOcioTextureFormat(texture),
+    THREE.FloatType,
+  );
+  dataTexture.unpackAlignment = 1;
+  dataTexture.generateMipmaps = false;
+  dataTexture.colorSpace = THREE.NoColorSpace;
+  dataTexture.internalFormat = texture.channels === 1 ? 'R32F' : 'RGB32F';
+  dataTexture.needsUpdate = true;
+  return dataTexture;
+};
+
+const applyOcioTextureSampling = (
+  threeTexture: THREE.Texture,
+  ocioTexture: RendererOcioGpuTexture,
+): void => {
+  const filter = ocioTexture.interpolation === 'nearest' ? THREE.NearestFilter : THREE.LinearFilter;
+  threeTexture.minFilter = filter;
+  threeTexture.magFilter = filter;
+  threeTexture.wrapS = THREE.ClampToEdgeWrapping;
+  threeTexture.wrapT = THREE.ClampToEdgeWrapping;
+};
+
+const getOcioThreeTexture = (
+  shaderInfo: RendererOcioShaderInfo,
+  texture: RendererOcioGpuTexture,
+  textureCache: Map<string, THREE.Texture>,
+  ownedTextures?: THREE.Texture[],
+): THREE.Texture => {
+  const key = getOcioTextureCacheKey(shaderInfo, texture);
+  const cached = textureCache.get(key);
+  if (cached) return cached;
+
+  const threeTexture = createOcioDataTexture(texture);
+  applyOcioTextureSampling(threeTexture, texture);
+  textureCache.set(key, threeTexture);
+  ownedTextures?.push(threeTexture);
+  return threeTexture;
+};
+
+const getOcioUniformValue = (uniform: RendererOcioGpuUniform): unknown => {
+  if (uniform.type === 'bool') return uniform.value === true;
+  if (uniform.type === 'float3' && Array.isArray(uniform.value)) {
+    return new THREE.Vector3(uniform.value[0] ?? 0, uniform.value[1] ?? 0, uniform.value[2] ?? 0);
+  }
+  if (uniform.type === 'vector_float' && Array.isArray(uniform.value)) {
+    return new Float32Array(uniform.value);
+  }
+  if (uniform.type === 'vector_int' && Array.isArray(uniform.value)) {
+    return new Int32Array(uniform.value);
+  }
+  return uniform.value;
+};
+
+const createOcioUniforms = (
+  shaderInfo: RendererOcioShaderInfo | null | undefined,
+  textureCache: Map<string, THREE.Texture>,
+  ownedTextures?: THREE.Texture[],
+): ShaderUniformMap => {
+  if (!shaderInfo) return {};
+
+  const uniforms: ShaderUniformMap = {};
+  shaderInfo.textures.forEach((texture) => {
+    uniforms[texture.samplerName] = {
+      value: getOcioThreeTexture(shaderInfo, texture, textureCache, ownedTextures),
+    };
+  });
+  shaderInfo.uniforms.forEach((uniform) => {
+    uniforms[uniform.name] = { value: getOcioUniformValue(uniform) };
+  });
+  return uniforms;
+};
+
+const buildOcioTransformedTextureShader = (
+  ocioTransform: RendererOcioShaderInfo | null | undefined,
+  compositeOver: boolean,
+): string => `
+precision highp float;
+precision highp int;
+
+in vec2 v_uv;
+out vec4 fragColor;
+
+${compositeOver ? 'uniform sampler2D u_tBackdrop;' : ''}
+uniform sampler2D u_tDiffuse;
+uniform float u_opacity;
+uniform float u_scaleX;
+uniform float u_scaleY;
+uniform vec2 u_offset;
+uniform vec2 u_scene_res;
+uniform vec2 u_image_res;
+uniform int u_input_transform;
+uniform bool u_flipY;
+uniform int u_source_alpha_mode;
+
+${
+  ocioTransform
+    ? ocioTransform.shaderText
+    : `
+vec3 srgb_to_linear(vec3 color) {
+  return pow(color, vec3(2.2));
+}
+
+vec3 linear_to_srgb(vec3 color) {
+  return pow(color, vec3(1.0/2.2));
+}
+`
+}
+
+${
+  compositeOver
+    ? `
+vec4 straight_over(vec4 src, vec4 dst) {
+  src.a = clamp(src.a, 0.0, 1.0);
+  dst.a = clamp(dst.a, 0.0, 1.0);
+  float inv_src_a = 1.0 - src.a;
+  float out_a = src.a + dst.a * inv_src_a;
+  vec3 weighted_rgb = src.rgb * src.a + dst.rgb * dst.a * inv_src_a;
+  vec3 out_rgb = out_a > 0.000001 ? weighted_rgb / out_a : src.rgb;
+  return vec4(out_rgb, out_a);
+}
+`
+    : ''
+}
+
+void main() {
+  vec2 scene_px = v_uv * u_scene_res - (u_scene_res / 2.0);
+  vec2 img_space_px = scene_px - u_offset;
+  img_space_px.x /= u_scaleX;
+  img_space_px.y /= u_scaleY;
+  vec2 image_uv = img_space_px / u_image_res + 0.5;
+
+  if (u_flipY) {
+    image_uv.y = 1.0 - image_uv.y;
+  }
+
+  vec4 src = vec4(0.0);
+  bool inside_image = image_uv.x >= 0.0 && image_uv.x <= 1.0 && image_uv.y >= 0.0 && image_uv.y <= 1.0;
+  if (inside_image) {
+    src = texture(u_tDiffuse, image_uv);
+    if (u_source_alpha_mode == 1) {
+      src.a = 1.0;
+    } else if (u_source_alpha_mode == 2) {
+      src.a = 0.0;
+    }
+  }
+
+  ${
+    ocioTransform
+      ? `src = ${ocioTransform.functionName}(src);`
+      : `if (u_input_transform == 0) {
+    src.rgb = srgb_to_linear(src.rgb);
+  } else if (u_input_transform == 2) {
+    src.rgb = linear_to_srgb(src.rgb);
+  }`
+  }
+
+  src.a *= u_opacity;
+  ${
+    compositeOver
+      ? `vec4 dst = texture(u_tBackdrop, v_uv);
+  fragColor = straight_over(src, dst);`
+      : 'fragColor = src;'
+  }
+}
+`;
+
+const buildOcioViewerShader = (
+  ocioTransform: RendererOcioShaderInfo | null | undefined,
+): string => {
+  if (!ocioTransform) return RendererShader.VIEWER;
+
+  return `
+precision highp float;
+precision highp int;
+
+in vec2 v_uv;
+uniform sampler2D u_tDiffuse;
+uniform float u_gain;
+uniform float u_gamma;
+uniform float u_saturation;
+uniform int u_channel;
+uniform bool u_ignoreAlpha;
+uniform bool u_alphaOverlay;
+uniform vec3 u_alphaOverlayColor;
+uniform float u_alphaOverlayOpacity;
+uniform float u_alphaOverlayBgDarken;
+out vec4 fragColor;
+
+${ocioTransform.shaderText}
+
+vec3 signed_pow_viewer(vec3 color, float exponent) {
+  return sign(color) * pow(abs(color), vec3(exponent));
+}
+
+float luminance_viewer(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+  vec4 tex = texture(u_tDiffuse, v_uv);
+  vec3 color = tex.rgb * u_gain;
+
+  vec4 ocioColor = ${ocioTransform.functionName}(vec4(color, tex.a));
+  color = ocioColor.rgb;
+
+  color = signed_pow_viewer(color, 1.0 / max(u_gamma, 0.0001));
+  float luma_val = luminance_viewer(color);
+  color = mix(vec3(luma_val), color, u_saturation);
+
+  if (u_channel == 1) color = vec3(color.r);
+  if (u_channel == 2) color = vec3(color.g);
+  if (u_channel == 3) color = vec3(color.b);
+  if (u_channel == 4) color = vec3(tex.a);
+
+  if (u_alphaOverlay && u_channel != 4) {
+    float matte = clamp(tex.a, 0.0, 1.0);
+    float non_matte = 1.0 - matte;
+    color *= 1.0 - (clamp(u_alphaOverlayBgDarken, 0.0, 1.0) * non_matte);
+
+    float overlay_mix = clamp(u_alphaOverlayOpacity, 0.0, 1.0) * matte;
+    color = mix(color, clamp(u_alphaOverlayColor, 0.0, 1.0), overlay_mix);
+  }
+
+  bool should_ignore_alpha = u_ignoreAlpha || (u_alphaOverlay && u_channel != 4);
+  float final_alpha = (u_channel == 4 || should_ignore_alpha) ? 1.0 : tex.a;
+  fragColor = vec4(clamp(color, 0.0, 1.0), final_alpha);
+}
+`;
+};
 
 const buildTextTexture = (
   node: TextNode,
@@ -268,19 +667,19 @@ const buildTextTexture = (
 
 const getEffectUniforms = (
   node: AnyNode,
-  context: EffectRenderContext,
-  effectRegistry: EffectRegistryLike,
+  context: RenderContext,
+  nodeRegistry: NodeRegistryLike,
 ): ShaderUniformMap => {
-  const definition = effectRegistry.get(node.type);
+  const definition = nodeRegistry.get(node.type);
   if (!definition?.getUniforms) return {};
   return definition.getUniforms(node, context);
 };
 
 const getInputPortsForNode = (
   node: AnyNode,
-  effectRegistry: EffectRegistryLike,
+  nodeRegistry: NodeRegistryLike,
 ): RendererInputPort[] => {
-  const inputPorts = effectRegistry.get(node.type)?.inputPorts;
+  const inputPorts = nodeRegistry.get(node.type)?.inputPorts;
   if (!inputPorts) return [];
   return typeof inputPorts === 'function' ? inputPorts(node) : inputPorts;
 };
@@ -297,7 +696,7 @@ const getNumericNodeUniformValue = (
   ];
   const value = uniform?.value;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (Array.isArray(value)) return getValueAtFrame(value as any, frame);
+  if (Array.isArray(value)) return getValueAtFrame(value as AnimatableNumber, frame);
   return null;
 };
 
@@ -321,26 +720,26 @@ const isTemporalInputPort = (port: RendererInputPort): boolean =>
   !!port.frameOffsetUniform ||
   !!port.absoluteFrameUniform;
 
-const getVisiblePipelineNodes = (
-  nodes: AnyNode[],
-  effectRegistry: EffectRegistryLike,
-): AnyNode[] => {
+const getVisiblePipelineNodes = (nodes: AnyNode[], nodeRegistry: NodeRegistryLike): AnyNode[] => {
   const visibleNodes: AnyNode[] = [];
   let skippingDetachedStack = false;
 
   for (const node of nodes) {
-    const def = effectRegistry.get(node.type);
+    const def = nodeRegistry.get(node.type);
     if (def?.flags?.isSceneLike) {
       skippingDetachedStack = false;
       continue;
     }
-
-    const isStacked = !!(node as { stacked?: boolean }).stacked;
-    if (!isStacked) {
-      skippingDetachedStack = !!(node as { detachedFromPipe?: boolean }).detachedFromPipe;
+    if (def?.renderMode === 'utility' && !def.flags?.isRenderable) {
+      continue;
     }
 
-    if (skippingDetachedStack || !node.visible) {
+    const isStacked = !!node.stacked;
+    if (!isStacked) {
+      skippingDetachedStack = !!node.detachedFromPipe;
+    }
+
+    if (skippingDetachedStack || !node.enabled) {
       continue;
     }
 
@@ -350,27 +749,39 @@ const getVisiblePipelineNodes = (
   return visibleNodes;
 };
 
-const getEffectShader = (node: AnyNode, effectRegistry: EffectRegistryLike): string | null => {
-  const definition = effectRegistry.get(node.type);
+const getEffectShader = (node: AnyNode, nodeRegistry: NodeRegistryLike): string | null => {
+  const definition = nodeRegistry.get(node.type);
   const shader = definition?.getShader?.(node);
   return typeof shader === 'string' ? shader : null;
 };
 
-const getRenderMode = (node: AnyNode, effectRegistry: EffectRegistryLike): RenderMode | null => {
-  const definition = effectRegistry.get(node.type);
+const getRenderMode = (node: AnyNode, nodeRegistry: NodeRegistryLike): RenderMode | null => {
+  const definition = nodeRegistry.get(node.type);
   return definition?.renderMode ?? null;
 };
 
 const getMultipassShaders = (
   node: AnyNode,
-  effectRegistry: EffectRegistryLike,
+  nodeRegistry: NodeRegistryLike,
 ): { horizontal: string; vertical: string } | null => {
-  const definition = effectRegistry.get(node.type);
+  const definition = nodeRegistry.get(node.type);
   const shader = definition?.getShader?.(node);
   if (shader && typeof shader === 'object' && 'horizontal' in shader) {
     return shader as { horizontal: string; vertical: string };
   }
   return null;
+};
+
+const getRenderScale = (
+  node: AnyNode,
+  context: RenderContext,
+  nodeRegistry: NodeRegistryLike,
+): number => {
+  const definition = nodeRegistry.get(node.type);
+  if (definition?.renderScale) {
+    return definition.renderScale(node, context);
+  }
+  return 1;
 };
 
 const withDiffuseUniform = (
@@ -382,6 +793,145 @@ const withDiffuseUniform = (
     ...uniforms,
   };
 };
+
+const getChannelIndex = (channel: string | undefined, fallback: ChannelPort): number => {
+  const resolved = CHANNEL_PORTS.includes(channel as ChannelPort)
+    ? (channel as ChannelPort)
+    : fallback;
+  return CHANNEL_PORTS.indexOf(resolved);
+};
+
+const getInputSourcePort = (
+  node: AnyNode,
+  inputPort: string,
+  fallback: ChannelPort | 'output' = 'output',
+): string =>
+  (node as { inputSourcePorts?: Record<string, string> }).inputSourcePorts?.[inputPort] ?? fallback;
+
+const getSourceAlphaModeUniform = (node: unknown): number => {
+  const sourceAlphaMode = (node as { sourceAlphaMode?: string } | null | undefined)
+    ?.sourceAlphaMode;
+  if (sourceAlphaMode === 'opaque') return SOURCE_ALPHA_MODE_UNIFORM.opaque;
+  if (sourceAlphaMode === 'transparent') return SOURCE_ALPHA_MODE_UNIFORM.transparent;
+  return SOURCE_ALPHA_MODE_UNIFORM.file;
+};
+
+// ---------------------------------------------------------------------------
+// Scaled multipass renderer — downsamples before blur, upsamples after.
+// Avoids duplicating the downscale/upscale logic across all 4 multipass
+// code paths in the two render functions.
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a multipass effect (H + V separable) with optional downscale.
+ * When renderScale < 1, the input is bilinearly downsampled before the
+ * blur passes, then upsampled to the output target after.
+ *
+ * @returns true if the effect was rendered (shaders found).
+ */
+function renderScaledMultipass(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  camera: THREE.OrthographicCamera,
+  quad: THREE.Mesh,
+  getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial,
+  nodeRegistry: NodeRegistryLike,
+  renderContext: RenderContext,
+  node: AnyNode,
+  inputTexture: THREE.Texture,
+  outputTarget: THREE.WebGLRenderTarget,
+  fullWidth: number,
+  fullHeight: number,
+  radiusScale: number,
+  renderTargetOptions: THREE.RenderTargetOptions,
+): boolean {
+  const shaders = getMultipassShaders(node, nodeRegistry);
+  if (!shaders) return false;
+
+  const blurUniforms = getEffectUniforms(node, renderContext, nodeRegistry);
+  const radius = getNumericUniformValue(blurUniforms, 'u_radius', 0) * radiusScale;
+  const renderScale = getRenderScale(node, renderContext, nodeRegistry);
+  const scratchTargets: THREE.WebGLRenderTarget[] = [];
+  const createScratchTarget = (width: number, height: number): THREE.WebGLRenderTarget => {
+    const target = new THREE.WebGLRenderTarget(width, height, renderTargetOptions);
+    scratchTargets.push(target);
+    return target;
+  };
+
+  const hMatId = `${node.id}_blur_h`;
+  const vMatId = `${node.id}_blur_v`;
+
+  try {
+    if (renderScale >= 1) {
+      // Full-resolution path
+      const tempRT = createScratchTarget(fullWidth, fullHeight);
+
+      const hPass = getMaterial(hMatId, shaders.horizontal, {
+        u_tDiffuse: { value: inputTexture },
+        u_radius: { value: radius },
+        u_resolution_x: { value: fullWidth },
+      });
+      quad.material = hPass;
+      renderer.setRenderTarget(tempRT);
+      renderer.render(scene, camera);
+
+      const vPass = getMaterial(vMatId, shaders.vertical, {
+        u_tDiffuse: { value: tempRT.texture },
+        u_radius: { value: radius },
+        u_resolution_y: { value: fullHeight },
+      });
+      quad.material = vPass;
+      renderer.setRenderTarget(outputTarget);
+      renderer.render(scene, camera);
+    } else {
+      // Scaled path — downsample, blur at lower res, upsample
+      const sW = Math.max(1, Math.round(fullWidth * renderScale));
+      const sH = Math.max(1, Math.round(fullHeight * renderScale));
+      const scaledRT1 = createScratchTarget(sW, sH);
+      const scaledRT2 = createScratchTarget(sW, sH);
+
+      // Downsample
+      const downsampleMat = getMaterial(`${node.id}_ds`, RendererShader.TEXTURE, {
+        u_tDiffuse: { value: inputTexture },
+      });
+      quad.material = downsampleMat;
+      renderer.setRenderTarget(scaledRT1);
+      renderer.render(scene, camera);
+
+      // Horizontal pass at scaled resolution
+      const hPass = getMaterial(hMatId, shaders.horizontal, {
+        u_tDiffuse: { value: scaledRT1.texture },
+        u_radius: { value: radius },
+        u_resolution_x: { value: sW },
+      });
+      quad.material = hPass;
+      renderer.setRenderTarget(scaledRT2);
+      renderer.render(scene, camera);
+
+      // Vertical pass at scaled resolution
+      const vPass = getMaterial(vMatId, shaders.vertical, {
+        u_tDiffuse: { value: scaledRT2.texture },
+        u_radius: { value: radius },
+        u_resolution_y: { value: sH },
+      });
+      quad.material = vPass;
+      renderer.setRenderTarget(scaledRT1);
+      renderer.render(scene, camera);
+
+      // Upsample back to full resolution
+      const upsampleMat = getMaterial(`${node.id}_us`, RendererShader.TEXTURE, {
+        u_tDiffuse: { value: scaledRT1.texture },
+      });
+      quad.material = upsampleMat;
+      renderer.setRenderTarget(outputTarget);
+      renderer.render(scene, camera);
+    }
+
+    return true;
+  } finally {
+    scratchTargets.forEach((target) => target.dispose());
+  }
+}
 
 const getNumericUniformValue = (
   uniforms: ShaderUniformMap,
@@ -433,7 +983,7 @@ interface InputPreloadTarget {
 const collectInputPreloadTargets = (
   visibleNodes: AnyNode[],
   allNodes: AnyNode[],
-  effectRegistry: EffectRegistryLike,
+  nodeRegistry: NodeRegistryLike,
   frame: number,
 ): InputPreloadTarget[] => {
   const targets: InputPreloadTarget[] = [];
@@ -441,11 +991,11 @@ const collectInputPreloadTargets = (
 
   for (const node of visibleNodes) {
     const fallbackSourceNode = previousMediaNode;
-    const inputs = (node as any).inputs as Record<string, string> | undefined;
-    const inputPorts = getInputPortsForNode(node, effectRegistry);
+    const inputs = node.inputs;
+    const inputPorts = getInputPortsForNode(node, nodeRegistry);
 
     if (!inputs && !fallbackSourceNode) {
-      if (isMediaNodeWithRegistry(node, effectRegistry)) {
+      if (isMediaNodeWithRegistry(node, nodeRegistry)) {
         previousMediaNode = node;
       }
       continue;
@@ -458,7 +1008,7 @@ const collectInputPreloadTargets = (
           (fallbackSourceNode && isTemporalInputPort(port) ? fallbackSourceNode.id : undefined);
         if (sourceId) {
           const sourceNode = allNodes.find((l) => l.id === sourceId);
-          if (sourceNode && isMediaNodeWithRegistry(sourceNode, effectRegistry)) {
+          if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
             targets.push({
               node: sourceNode as MediaNode,
               frame: getInputPortFrame(node, port, frame),
@@ -470,13 +1020,13 @@ const collectInputPreloadTargets = (
       // No input ports declared but has inputs — still resolve them (forward compat)
       for (const sourceId of Object.values(inputs)) {
         const sourceNode = allNodes.find((l) => l.id === sourceId);
-        if (sourceNode && isMediaNodeWithRegistry(sourceNode, effectRegistry)) {
+        if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
           targets.push({ node: sourceNode as MediaNode, frame });
         }
       }
     }
 
-    if (isMediaNodeWithRegistry(node, effectRegistry)) {
+    if (isMediaNodeWithRegistry(node, nodeRegistry)) {
       previousMediaNode = node;
     }
   }
@@ -488,13 +1038,13 @@ const collectInputPreloadTargets = (
  */
 const resolveInputUniforms = (
   node: AnyNode,
-  effectRegistry: EffectRegistryLike,
+  nodeRegistry: NodeRegistryLike,
   frame: number,
   getTextureForNodeId: (nodeId: string, targetFrame: number) => THREE.Texture | undefined,
   fallbackSourceNode?: AnyNode | null,
 ): ShaderUniformMap => {
-  const inputs = (node as any).inputs as Record<string, string> | undefined;
-  const inputPorts = getInputPortsForNode(node, effectRegistry);
+  const inputs = node.inputs;
+  const inputPorts = getInputPortsForNode(node, nodeRegistry);
 
   if (inputPorts.length > 0 && (inputs || fallbackSourceNode)) {
     const uniforms: ShaderUniformMap = {};
@@ -515,6 +1065,619 @@ const resolveInputUniforms = (
   return {};
 };
 
+type MaybePromise<T> = T | Promise<T>;
+type PaintTextureBundle = { color: THREE.Texture; alpha: THREE.Texture };
+type RenderOutputTexture = (
+  nodeId: string,
+  sourcePortName?: string,
+) => MaybePromise<THREE.Texture | undefined>;
+
+export const isPromiseLike = <T>(value: MaybePromise<T>): value is Promise<T> =>
+  typeof value === 'object' &&
+  value !== null &&
+  'then' in value &&
+  typeof (value as Promise<T>).then === 'function';
+
+interface AdjustmentRenderOptions {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  quad: THREE.Mesh;
+  getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial;
+  nodeRegistry: NodeRegistryLike;
+  renderContext: RenderContext;
+  node: AnyNode;
+  inputTexture: THREE.Texture;
+  outputTarget: THREE.WebGLRenderTarget;
+  width: number;
+  height: number;
+  blurRadiusScale: number;
+  renderTargetOptions: THREE.RenderTargetOptions;
+  sceneColorSpace: SceneNode['colorSpace'];
+  fallbackSourceNode?: AnyNode | null;
+  getInputTextureForNode: (nodeId: string, targetFrame: number) => THREE.Texture | undefined;
+  getPaintTextures: (node: AnyNode) => MaybePromise<PaintTextureBundle | null | undefined>;
+  getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoAlphaMode?: (nodeId: string) => number;
+  /** Optional custom material ID for shader/warp render modes. */
+  shaderId?: string;
+}
+
+const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePromise<boolean> => {
+  const {
+    renderer,
+    scene,
+    camera,
+    quad,
+    getMaterial,
+    nodeRegistry,
+    renderContext,
+    node,
+    inputTexture,
+    outputTarget,
+    width,
+    height,
+    blurRadiusScale,
+    renderTargetOptions,
+    sceneColorSpace,
+    fallbackSourceNode,
+    getInputTextureForNode,
+    getPaintTextures,
+    getRotoMaskTexture,
+    getRotoAddMaskTexture,
+    getRotoSubMaskTexture,
+    getRotoAlphaMode,
+    shaderId,
+  } = options;
+  const renderMode = getRenderMode(node, nodeRegistry);
+
+  if (renderMode === 'shader' || renderMode === 'warp') {
+    const uniforms = withDiffuseUniform(
+      getEffectUniforms(node, renderContext, nodeRegistry),
+      inputTexture,
+    );
+    Object.assign(
+      uniforms,
+      resolveInputUniforms(
+        node,
+        nodeRegistry,
+        renderContext.frame,
+        getInputTextureForNode,
+        fallbackSourceNode,
+      ),
+    );
+    const shader = getEffectShader(node, nodeRegistry);
+    if (!shader) return false;
+
+    const material = getMaterial(shaderId ?? node.id, shader, uniforms);
+    quad.material = material;
+    renderer.setRenderTarget(outputTarget);
+    renderer.render(scene, camera);
+    return true;
+  }
+
+  if (renderMode === 'multipass') {
+    return renderScaledMultipass(
+      renderer,
+      scene,
+      camera,
+      quad,
+      getMaterial,
+      nodeRegistry,
+      renderContext,
+      node,
+      inputTexture,
+      outputTarget,
+      width,
+      height,
+      blurRadiusScale,
+      renderTargetOptions,
+    );
+  }
+
+  // Check for renderOutput on the node definition (handles paint, mask, and other custom modes)
+  const renderOutputDef = nodeRegistry.get(node.type)?.renderOutput;
+  if (renderOutputDef) {
+    const roCtx: ResolveOutputContext = {
+      frame: renderContext.frame,
+      nodes: renderContext.nodes as AnyNode[],
+      sceneNode: { colorSpace: sceneColorSpace } as SceneNode,
+      renderer,
+      scene,
+      camera,
+      quad,
+      getMaterial,
+      resolveOutput: (nodeId) => getInputTextureForNode(nodeId, renderContext.frame) ?? undefined,
+      compositeBuffer: outputTarget,
+      getMediaTexture: (n, f) => getInputTextureForNode(n.id, f) ?? undefined,
+      getRotoMaskTexture,
+      getRotoAddMaskTexture,
+      getRotoSubMaskTexture,
+      getRotoAlphaMode,
+      getPaintTextures: (_nId) => {
+        const ptResult = getPaintTextures(node);
+        if (isPromiseLike(ptResult)) return undefined;
+        return ptResult ?? undefined;
+      },
+      nodeRegistry,
+      clearRenderTargetTransparent: (t) => clearRenderTargetTransparent(renderer, t),
+      applyNoBlending,
+      getInputSourcePort,
+      getChannelIndex: (ch, fallback) => getChannelIndex(ch, (fallback || 'r') as ChannelPort),
+      getTransparentInputTexture,
+    };
+    const roResult = renderOutputDef(node, outputTarget, inputTexture, roCtx);
+    if (roResult) {
+      if (isPromiseLike(roResult)) {
+        throw new Error(
+          'Asynchronous renderOutput is not supported in renderAdjustmentNodeToTarget',
+        );
+      }
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const collectAdjacentStackedNodes = (
+  visibleNodes: AnyNode[],
+  startIndex: number,
+  isStackedNode: (node: AnyNode) => boolean,
+): { stackedNodes: AnyNode[]; consumedCount: number } => {
+  const stackedNodes: AnyNode[] = [];
+  let consumedCount = 0;
+  for (let upperIndex = startIndex + 1; upperIndex < visibleNodes.length; upperIndex += 1) {
+    const upperNode = visibleNodes[upperIndex];
+    if (!isStackedNode(upperNode)) break;
+    stackedNodes.push(upperNode);
+    consumedCount += 1;
+  }
+  return { stackedNodes, consumedCount };
+};
+
+interface UtilityOutputRenderOptions {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  quad: THREE.Mesh;
+  getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial;
+  node: AnyNode;
+  outputTarget: THREE.WebGLRenderTarget;
+  renderNodeOutputTexture: RenderOutputTexture;
+}
+
+const renderUtilityNodeToTarget = (options: UtilityOutputRenderOptions): MaybePromise<boolean> => {
+  const {
+    renderer,
+    scene,
+    camera,
+    quad,
+    getMaterial,
+    node,
+    outputTarget,
+    renderNodeOutputTexture,
+  } = options;
+
+  const textureResult = renderNodeOutputTexture(node.id);
+  const renderTexture = (texture: THREE.Texture | undefined): boolean => {
+    if (!texture) return false;
+
+    const material = getMaterial(`${node.id}_utility_output`, RendererShader.TEXTURE, {
+      u_tDiffuse: { value: texture },
+    });
+    applyNoBlending(material);
+    quad.material = material;
+    renderer.setRenderTarget(outputTarget);
+    renderer.render(scene, camera);
+    return true;
+  };
+
+  return isPromiseLike(textureResult)
+    ? textureResult.then(renderTexture)
+    : renderTexture(textureResult);
+};
+
+interface MergeNodeRenderOptions {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  quad: THREE.Mesh;
+  getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial;
+  node: AnyNode;
+  nodes: AnyNode[];
+  frame: number;
+  readBuffer: THREE.WebGLRenderTarget;
+  renderNodeOutputTexture: RenderOutputTexture;
+  clearReadBuffer: () => void;
+  renderStraightOverToMain: (material: THREE.ShaderMaterial) => void;
+}
+
+const renderMergeNodeToMain = (options: MergeNodeRenderOptions): MaybePromise<boolean> => {
+  const {
+    renderer,
+    scene,
+    camera,
+    quad,
+    getMaterial,
+    node,
+    nodes,
+    frame,
+    readBuffer,
+    renderNodeOutputTexture,
+    clearReadBuffer,
+    renderStraightOverToMain,
+  } = options;
+  const mergeInputs = (node as { inputs?: Record<string, string> }).inputs ?? {};
+  const explicitPipeTextureResult = mergeInputs.pipe
+    ? renderNodeOutputTexture(mergeInputs.pipe, getInputSourcePort(node, 'pipe'))
+    : undefined;
+
+  const renderWithPipe = (
+    explicitPipeTexture: THREE.Texture | undefined,
+  ): MaybePromise<boolean> => {
+    if (explicitPipeTexture) {
+      const pipeCopyMaterial = getMaterial(`${node.id}_merge_pipe_input`, RendererShader.TEXTURE, {
+        u_tDiffuse: { value: explicitPipeTexture },
+      });
+      applyNoBlending(pipeCopyMaterial);
+      quad.material = pipeCopyMaterial;
+      renderer.setRenderTarget(readBuffer);
+      renderer.render(scene, camera);
+    } else {
+      clearReadBuffer();
+    }
+
+    const sourceNodeId = mergeInputs.source;
+    const sourceNode = sourceNodeId
+      ? nodes.find((candidate) => candidate.id === sourceNodeId)
+      : null;
+
+    if (!sourceNode?.enabled) {
+      return false;
+    }
+
+    const sourceOutputTextureResult = renderNodeOutputTexture(
+      sourceNodeId,
+      getInputSourcePort(node, 'source'),
+    );
+
+    const renderWithSource = (sourceOutputTexture: THREE.Texture | undefined): boolean => {
+      if (!sourceOutputTexture) {
+        return false;
+      }
+
+      const opacity = getValueAtFrame((node as any).opacity ?? 100, frame);
+      const operator = (node as any).operator ?? BlendMode.OVER;
+      const mergeComposite =
+        operator === BlendMode.OVER
+          ? getMaterial(
+              `${node.id}_merge_comp_straight_over`,
+              RendererShader.STRAIGHT_TEXTURE_OVER,
+              {
+                u_tBackdrop: { value: readBuffer.texture },
+                u_tDiffuse: { value: sourceOutputTexture },
+                u_opacity: { value: opacity / 100 },
+              },
+            )
+          : getMaterial(`${node.id}_merge_comp`, RendererShader.TEXTURE_OPACITY, {
+              u_tDiffuse: { value: sourceOutputTexture },
+              u_opacity: { value: opacity / 100 },
+            });
+
+      if (operator === BlendMode.OVER) {
+        renderStraightOverToMain(mergeComposite);
+      } else {
+        quad.material = mergeComposite;
+        applyBlendMode(mergeComposite, operator);
+        renderer.setRenderTarget(readBuffer);
+        renderer.render(scene, camera);
+      }
+
+      return true;
+    };
+
+    return isPromiseLike(sourceOutputTextureResult)
+      ? sourceOutputTextureResult.then(renderWithSource)
+      : renderWithSource(sourceOutputTextureResult);
+  };
+
+  return isPromiseLike(explicitPipeTextureResult)
+    ? explicitPipeTextureResult.then(renderWithPipe)
+    : renderWithPipe(explicitPipeTextureResult);
+};
+
+// ---------------------------------------------------------------------------
+// Shared node output resolver — handles dispatch for all node types.
+// Used by both export and viewport paths to eliminate ~700 lines of
+// duplicated renderNodeOutputTexture code.
+// ---------------------------------------------------------------------------
+
+interface NodeOutputResolveContext {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  quad: THREE.Mesh;
+  getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial;
+  nodes: AnyNode[];
+  frame: number;
+  sceneNode: SceneNode;
+  currentSceneSize: RenderFormatSize;
+  blurRadiusScale: number;
+  renderTargetOptions: THREE.RenderTargetOptions;
+  nodeRegistry: NodeRegistryLike;
+  compositeBuffer: THREE.WebGLRenderTarget;
+  renderContext: RenderContext;
+  getUtilityOutputTarget: (key: string) => THREE.WebGLRenderTarget;
+  utilityRenderStack: Set<string>;
+  checkCache: (cacheKey: string) => boolean;
+  markCache: (cacheKey: string) => void;
+  getMediaTexture: (node: AnyNode, frame: number) => MaybePromise<THREE.Texture | null | undefined>;
+  getPaintTextures: (node: AnyNode) => MaybePromise<PaintTextureBundle | null | undefined>;
+  getTextTexture: (
+    node: TextNode,
+  ) => { texture: THREE.Texture; width: number; height: number } | undefined;
+  renderCompositeMediaToTarget: (
+    node: AnyNode,
+    layers: RendererMediaCompositeLayer[],
+    target: THREE.WebGLRenderTarget,
+  ) => MaybePromise<boolean>;
+  renderFullFrameTextureToTarget: (
+    node: AnyNode,
+    texture: THREE.Texture,
+    target: THREE.WebGLRenderTarget,
+    textureSize?: { width: number; height: number },
+  ) => void;
+  getCachedMediaTexture: (node: AnyNode, frame: number) => THREE.Texture | undefined;
+  getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoAlphaMode?: (nodeId: string) => number;
+  onAsyncInSync?: () => never;
+}
+
+function resolveNodeOutputTexture(
+  nodeId: string,
+  sourcePortName: string,
+  ctx: NodeOutputResolveContext,
+  resolveOutput: RenderOutputTexture,
+): MaybePromise<THREE.Texture | undefined> {
+  const cacheKey = `${nodeId}:${sourcePortName}`;
+  if (ctx.checkCache(cacheKey)) {
+    const existing = ctx.getUtilityOutputTarget(cacheKey);
+    return existing.texture;
+  }
+  if (ctx.utilityRenderStack.has(cacheKey)) return getTransparentInputTexture();
+
+  const node = ctx.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node?.enabled) return undefined;
+  const target = ctx.getUtilityOutputTarget(cacheKey);
+  ctx.utilityRenderStack.add(cacheKey);
+
+  const tryReturn = (
+    result: MaybePromise<THREE.Texture | undefined>,
+  ): MaybePromise<THREE.Texture | undefined> => {
+    if (isPromiseLike(result)) {
+      return result.then((r) => {
+        if (r) ctx.markCache(cacheKey);
+        return r;
+      });
+    }
+    if (result) ctx.markCache(cacheKey);
+    return result;
+  };
+
+  try {
+    if (isMediaNodeWithRegistry(node, ctx.nodeRegistry)) {
+      // When a non-default output port is requested, check for renderOutput
+      if (sourcePortName !== 'output') {
+        const renderOutputDef = ctx.nodeRegistry.get(node.type)?.renderOutput;
+        if (renderOutputDef) {
+          const roCtx: ResolveOutputContext = {
+            frame: ctx.frame,
+            nodes: ctx.nodes,
+            sceneNode: ctx.sceneNode,
+            renderer: ctx.renderer,
+            scene: ctx.scene,
+            camera: ctx.camera,
+            quad: ctx.quad,
+            getMaterial: ctx.getMaterial,
+            resolveOutput,
+            compositeBuffer: ctx.compositeBuffer,
+            getMediaTexture: (n, f) => ctx.getCachedMediaTexture(n, f),
+            getRotoMaskTexture: ctx.getRotoMaskTexture,
+            getRotoAddMaskTexture: ctx.getRotoAddMaskTexture,
+            getRotoSubMaskTexture: ctx.getRotoSubMaskTexture,
+            getRotoAlphaMode: ctx.getRotoAlphaMode,
+            getPaintTextures: (_nId) => {
+              const ptResult = ctx.getPaintTextures(node);
+              if (isPromiseLike(ptResult)) {
+                ctx.onAsyncInSync?.();
+                return undefined;
+              }
+              return ptResult ?? undefined;
+            },
+            nodeRegistry: ctx.nodeRegistry,
+            clearRenderTargetTransparent: (t) => clearRenderTargetTransparent(ctx.renderer, t),
+            applyNoBlending,
+            getInputSourcePort,
+            getChannelIndex: (ch, fallback) =>
+              getChannelIndex(ch, (fallback || 'r') as ChannelPort),
+            getTransparentInputTexture,
+          };
+          const roResult = renderOutputDef(node, target, undefined, roCtx, sourcePortName);
+          if (roResult) {
+            if (isPromiseLike(roResult)) {
+              ctx.onAsyncInSync?.();
+              return (roResult as Promise<boolean>).then((ok) => (ok ? target.texture : undefined));
+            }
+            return target.texture;
+          }
+        }
+      }
+      const compositeLayers = getMediaCompositeLayersFromRegistry(
+        node,
+        ctx.frame,
+        ctx.sceneNode,
+        ctx.nodeRegistry,
+      );
+      if (compositeLayers.length > 0) {
+        const renderedComposite = ctx.renderCompositeMediaToTarget(node, compositeLayers, target);
+        const compositeResult = isPromiseLike(renderedComposite)
+          ? renderedComposite.then((ok) => (ok ? target.texture : undefined))
+          : renderedComposite
+            ? target.texture
+            : undefined;
+        return tryReturn(compositeResult);
+      }
+      const mediaTexture = ctx.getMediaTexture(node, ctx.frame);
+      const renderMedia = (tex: THREE.Texture | null | undefined): THREE.Texture | undefined => {
+        if (!tex) return undefined;
+        ctx.renderFullFrameTextureToTarget(node, tex, target);
+        return target.texture;
+      };
+      const result = isPromiseLike(mediaTexture)
+        ? mediaTexture.then(renderMedia)
+        : renderMedia(mediaTexture);
+      return tryReturn(result);
+    }
+
+    if (getRenderMode(node, ctx.nodeRegistry) === 'text') {
+      const textTexture = ctx.getTextTexture(node as TextNode);
+      if (!textTexture) return undefined;
+      ctx.renderFullFrameTextureToTarget(node, textTexture.texture, target, textTexture);
+      ctx.markCache(cacheKey);
+      return target.texture;
+    }
+
+    // Resolve input texture for renderOutput and generic fallback
+    const hasPipeSource = !!(node as { inputs?: Record<string, string> }).inputs?.pipe;
+    const compositeInputTexture = ctx.compositeBuffer?.texture ?? getTransparentInputTexture();
+
+    const resolveInputAndRender = (): MaybePromise<THREE.Texture | undefined> => {
+      let inputResolved: MaybePromise<THREE.Texture | undefined>;
+      if (hasPipeSource) {
+        const pipeSource = (node as { inputs?: Record<string, string> }).inputs!.pipe!;
+        inputResolved = resolveOutput(pipeSource, getInputSourcePort(node, 'pipe'));
+      } else {
+        inputResolved = compositeInputTexture;
+      }
+
+      const renderWithInput = (
+        resolvedInputTexture: THREE.Texture | undefined,
+      ): MaybePromise<THREE.Texture | undefined> => {
+        const inputTex = resolvedInputTexture ?? compositeInputTexture;
+
+        // Phase 2: check for renderOutput on the node definition
+        const renderOutputDef = ctx.nodeRegistry.get(node.type)?.renderOutput;
+        if (renderOutputDef) {
+          const roCtx: ResolveOutputContext = {
+            frame: ctx.frame,
+            nodes: ctx.nodes,
+            sceneNode: ctx.sceneNode,
+            renderer: ctx.renderer,
+            scene: ctx.scene,
+            camera: ctx.camera,
+            quad: ctx.quad,
+            getMaterial: ctx.getMaterial,
+            resolveOutput,
+            compositeBuffer: ctx.compositeBuffer,
+            getMediaTexture: (n, f) => ctx.getCachedMediaTexture(n, f),
+            getRotoMaskTexture: ctx.getRotoMaskTexture,
+            getRotoAddMaskTexture: ctx.getRotoAddMaskTexture,
+            getRotoSubMaskTexture: ctx.getRotoSubMaskTexture,
+            getRotoAlphaMode: ctx.getRotoAlphaMode,
+            getPaintTextures: (_nId) => {
+              const ptResult = ctx.getPaintTextures(node);
+              // Coerce async to undefined (sync path shouldn't get promises)
+              if (isPromiseLike(ptResult)) {
+                ctx.onAsyncInSync?.();
+                return undefined;
+              }
+              return ptResult ?? undefined;
+            },
+            nodeRegistry: ctx.nodeRegistry,
+            clearRenderTargetTransparent: (t) => clearRenderTargetTransparent(ctx.renderer, t),
+            applyNoBlending,
+            getInputSourcePort,
+            getChannelIndex: (ch, fallback) =>
+              getChannelIndex(ch, (fallback || 'r') as ChannelPort),
+            getTransparentInputTexture,
+          };
+          const roResult = renderOutputDef(node, target, inputTex, roCtx, sourcePortName);
+          if (roResult) {
+            if (isPromiseLike(roResult)) {
+              ctx.onAsyncInSync?.();
+              return (roResult as Promise<boolean>).then((ok) => (ok ? target.texture : undefined));
+            }
+            return target.texture;
+          }
+        }
+
+        // Generic fallback
+        const genericRenderMode = getRenderMode(node, ctx.nodeRegistry);
+        if (
+          genericRenderMode &&
+          (genericRenderMode === 'shader' ||
+            genericRenderMode === 'multipass' ||
+            genericRenderMode === 'mask' ||
+            genericRenderMode === 'paint' ||
+            genericRenderMode === 'warp')
+        ) {
+          const adjResult = renderAdjustmentNodeToTarget({
+            renderer: ctx.renderer,
+            scene: ctx.scene,
+            camera: ctx.camera,
+            quad: ctx.quad,
+            getMaterial: ctx.getMaterial,
+            nodeRegistry: ctx.nodeRegistry,
+            renderContext: ctx.renderContext,
+            node,
+            inputTexture: inputTex,
+            outputTarget: target,
+            width: ctx.currentSceneSize.width,
+            height: ctx.currentSceneSize.height,
+            blurRadiusScale: ctx.blurRadiusScale,
+            renderTargetOptions: ctx.renderTargetOptions,
+            sceneColorSpace: ctx.sceneNode.colorSpace,
+            fallbackSourceNode: null,
+            getInputTextureForNode: (nodeId, targetFrame) => {
+              const sourceNode = ctx.nodes.find((l) => l.id === nodeId);
+              if (sourceNode && isMediaNodeWithRegistry(sourceNode, ctx.nodeRegistry)) {
+                return ctx.getCachedMediaTexture(sourceNode, targetFrame);
+              }
+              return undefined;
+            },
+            getPaintTextures: ctx.getPaintTextures,
+            getRotoMaskTexture: ctx.getRotoMaskTexture,
+            getRotoAddMaskTexture: ctx.getRotoAddMaskTexture,
+            getRotoSubMaskTexture: ctx.getRotoSubMaskTexture,
+            getRotoAlphaMode: ctx.getRotoAlphaMode,
+          }) as MaybePromise<boolean>;
+          const adjThen = (ok: boolean): THREE.Texture | undefined =>
+            ok ? target.texture : undefined;
+          return isPromiseLike(adjResult)
+            ? (adjResult as Promise<boolean>).then(adjThen)
+            : adjThen(adjResult);
+        }
+
+        return undefined;
+      };
+
+      return isPromiseLike(inputResolved)
+        ? inputResolved.then(renderWithInput)
+        : renderWithInput(inputResolved);
+    };
+
+    const result = resolveInputAndRender();
+    return tryReturn(result);
+  } finally {
+    ctx.utilityRenderStack.delete(cacheKey);
+  }
+}
+
 export const renderWithSharedPipeline = async (
   options: RenderPipelineOptions,
 ): Promise<RenderPipelineResult> => {
@@ -524,14 +1687,24 @@ export const renderWithSharedPipeline = async (
   const presentToCanvas = options.presentToCanvas ?? true;
   const keepRendererAlive = options.keepRendererAlive ?? false;
   const alphaOverlayStyle = resolveAlphaOverlayStyle(options.alphaOverlayStyle);
-  const { effectRegistry, getAsset } = options;
+  const { nodeRegistry, getAsset } = options;
   const { isStackedExportAdjustmentNode, isExportAdjustmentType } =
-    createNodePredicates(effectRegistry);
-  const renderContext: EffectRenderContext = {
+    createNodePredicates(nodeRegistry);
+  const finalSceneSize = { width: options.sceneNode.width, height: options.sceneNode.height };
+  const outputRenderScale = {
+    width: options.width / Math.max(1, finalSceneSize.width),
+    height: options.height / Math.max(1, finalSceneSize.height),
+  };
+  let currentSceneSize = getReformatSourceSize(options.nodes, finalSceneSize);
+  const renderContext: RenderContext = {
     frame,
     fps: options.sceneNode.fps || 30,
-    scene: { width: options.sceneNode.width, height: options.sceneNode.height },
+    scene: { ...currentSceneSize },
     nodes: options.nodes,
+  };
+  const setCurrentSceneSize = (size: RenderFormatSize) => {
+    currentSceneSize = size;
+    renderContext.scene = { ...size };
   };
 
   const canvas = options.canvas ?? options.renderer?.domElement ?? document.createElement('canvas');
@@ -559,10 +1732,23 @@ export const renderWithSharedPipeline = async (
 
   const materials = new Map<string, THREE.ShaderMaterial>();
   const renderTargetOptions = getSceneRenderTargetOptions(options.sceneNode);
+  const initialTargetSize = getScaledRenderTargetSize(currentSceneSize, outputRenderScale);
   const renderTargets = [
-    new THREE.WebGLRenderTarget(options.width, options.height, renderTargetOptions),
-    new THREE.WebGLRenderTarget(options.width, options.height, renderTargetOptions),
-    new THREE.WebGLRenderTarget(options.width, options.height, renderTargetOptions),
+    new THREE.WebGLRenderTarget(
+      initialTargetSize.width,
+      initialTargetSize.height,
+      renderTargetOptions,
+    ),
+    new THREE.WebGLRenderTarget(
+      initialTargetSize.width,
+      initialTargetSize.height,
+      renderTargetOptions,
+    ),
+    new THREE.WebGLRenderTarget(
+      initialTargetSize.width,
+      initialTargetSize.height,
+      renderTargetOptions,
+    ),
   ];
   const finalOutputTarget = options.captureFinalOutput
     ? new THREE.WebGLRenderTarget(options.width, options.height, renderTargetOptions)
@@ -571,8 +1757,10 @@ export const renderWithSharedPipeline = async (
   const dynamicTextures: THREE.Texture[] = [];
   const ownedTextures: THREE.Texture[] = [];
   const loadedTextures = new Map<string, THREE.Texture>();
+  const ocioTextures = new Map<string, THREE.Texture>();
   const videos: HTMLVideoElement[] = [];
   const objectUrls: string[] = [];
+  const extraTargets: THREE.WebGLRenderTarget[] = [];
 
   const dispose = () => {
     dynamicTextures.forEach((texture) => texture.dispose());
@@ -585,6 +1773,7 @@ export const renderWithSharedPipeline = async (
     objectUrls.forEach((url) => URL.revokeObjectURL(url));
     materials.forEach((material) => material.dispose());
     renderTargets.forEach((target) => target.dispose());
+    extraTargets.forEach((target) => target.dispose());
     finalOutputTarget?.dispose();
     plane.dispose();
     if (ownsRenderer && !keepRendererAlive) {
@@ -608,7 +1797,7 @@ export const renderWithSharedPipeline = async (
         return existing;
       }
       const material = createStudioShaderMaterial({
-        vertexShader: VERTEX_SHADER,
+        vertexShader: RendererShader.VERTEX,
         fragmentShader: shader,
         uniforms,
       });
@@ -616,23 +1805,19 @@ export const renderWithSharedPipeline = async (
       return material;
     };
 
-    const loadTextureForMediaNode = async (
-      node: AnyNode,
-      targetFrame = frame,
-    ): Promise<THREE.Texture | null> => {
-      const key = getMediaTextureKeyFromRegistry(node, targetFrame, effectRegistry);
-      if (!key) return null;
-
-      // For most media types the texture key doubles as the asset ID
-      // (image, image-sequence). For video the key encodes the frame
-      // number (`${src}:${frame}`) so we fall back to getAssetIds.
-      const def = effectRegistry.get(node.type);
-      const isVideoLike = !!def?.flags?.isVideoFile;
-      const assetId = isVideoLike
-        ? (getMediaAssetIdsFromRegistry(node, targetFrame, effectRegistry)[0] ?? null)
-        : key;
-      if (!assetId) return null;
-
+    const loadTextureForMediaAsset = async ({
+      key,
+      assetId,
+      isVideoLike,
+      node,
+      targetFrame,
+    }: {
+      key: string;
+      assetId: string;
+      isVideoLike: boolean;
+      node: AnyNode;
+      targetFrame: number;
+    }): Promise<THREE.Texture | null> => {
       const existing = loadedTextures.get(key);
       if (existing) return existing;
 
@@ -756,6 +1941,47 @@ export const renderWithSharedPipeline = async (
       return texture;
     };
 
+    const loadTextureForMediaNode = async (
+      node: AnyNode,
+      targetFrame = frame,
+    ): Promise<THREE.Texture | null> => {
+      const key = getMediaTextureKeyFromRegistry(node, targetFrame, nodeRegistry);
+      if (!key) return null;
+
+      // For most media types the texture key doubles as the asset ID
+      // (image, image-sequence). For video the key encodes the frame
+      // number (`${src}:${frame}`) so we fall back to getAssetIds.
+      const isVideoLike = isVideoFileNodeWithRegistry(node, nodeRegistry);
+      const assetId = isVideoLike
+        ? (getMediaAssetIdsFromRegistry(node, targetFrame, nodeRegistry)[0] ?? null)
+        : key;
+      if (!assetId) return null;
+
+      return loadTextureForMediaAsset({
+        key,
+        assetId,
+        isVideoLike,
+        node,
+        targetFrame,
+      });
+    };
+
+    const loadTextureForMediaLayer = async (
+      node: AnyNode,
+      layer: RendererMediaCompositeLayer,
+      targetFrame = frame,
+    ): Promise<THREE.Texture | null> => {
+      const assetId = layer.assetId ?? layer.textureKey;
+      if (!assetId) return null;
+      return loadTextureForMediaAsset({
+        key: layer.textureKey,
+        assetId,
+        isVideoLike: layer.isVideoFile === true,
+        node,
+        targetFrame,
+      });
+    };
+
     const loadPaintTexture = async (
       nodeId: string,
       dataUrl: string,
@@ -817,7 +2043,7 @@ export const renderWithSharedPipeline = async (
       return { color, alpha };
     };
 
-    const visibleNodes = getVisiblePipelineNodes(options.nodes, effectRegistry);
+    const visibleNodes = getVisiblePipelineNodes(options.nodes, nodeRegistry);
 
     const preloadTargets = new Map<string, InputPreloadTarget>();
     const addPreloadTarget = (node: AnyNode, targetFrame: number) => {
@@ -827,33 +2053,273 @@ export const renderWithSharedPipeline = async (
       });
     };
     visibleNodes.forEach((node) => {
-      if (isMediaNodeWithRegistry(node, effectRegistry)) {
+      if (isMediaNodeWithRegistry(node, nodeRegistry)) {
         addPreloadTarget(node, frame);
       }
     });
     // Preload textures for all generic input port references
-    collectInputPreloadTargets(visibleNodes, options.nodes, effectRegistry, frame).forEach(
-      (target) => addPreloadTarget(target.node, target.frame),
+    collectInputPreloadTargets(visibleNodes, options.nodes, nodeRegistry, frame).forEach((target) =>
+      addPreloadTarget(target.node, target.frame),
     );
     await Promise.all(
-      Array.from(preloadTargets.values(), (target) =>
-        loadTextureForMediaNode(target.node, target.frame),
-      ),
+      Array.from(preloadTargets.values(), async (target) => {
+        const layers = getMediaCompositeLayersFromRegistry(
+          target.node,
+          target.frame,
+          options.sceneNode,
+          nodeRegistry,
+        );
+        if (layers.length > 0) {
+          await Promise.all(
+            layers.map((layer) => loadTextureForMediaLayer(target.node, layer, target.frame)),
+          );
+          return;
+        }
+        await loadTextureForMediaNode(target.node, target.frame);
+      }),
     );
 
     let [readBuffer, writeBuffer] = renderTargets;
     const auxBuffer = renderTargets[2];
+    const ensureTargetForSceneSize = (
+      target: THREE.WebGLRenderTarget,
+      size: RenderFormatSize = currentSceneSize,
+    ) => ensureRenderTargetSize(target, size, outputRenderScale);
+    const getCurrentPhysicalSize = () =>
+      getScaledRenderTargetSize(currentSceneSize, outputRenderScale);
     const swapMainBuffers = () => {
       [readBuffer, writeBuffer] = [writeBuffer, readBuffer];
     };
     const copyTargetToWriteBuffer = (sourceTarget: THREE.WebGLRenderTarget) => {
-      const copyMaterial = getMaterial('copy_to_main_write', TEXTURE_SHADER, {
+      ensureTargetForSceneSize(writeBuffer);
+      const copyMaterial = getMaterial('copy_to_main_write', RendererShader.TEXTURE, {
         u_tDiffuse: { value: sourceTarget.texture },
       });
       applyNoBlending(copyMaterial);
       quad.material = copyMaterial;
       renderer.setRenderTarget(writeBuffer);
       renderer.render(scene, camera);
+    };
+    const utilityOutputTargets = new Map<string, THREE.WebGLRenderTarget>();
+    const utilityRenderStack = new Set<string>();
+
+    const getUtilityOutputTarget = (key: string): THREE.WebGLRenderTarget => {
+      const existing = utilityOutputTargets.get(key);
+      if (existing) {
+        ensureTargetForSceneSize(existing);
+        return existing;
+      }
+      const targetSize = getScaledRenderTargetSize(currentSceneSize, outputRenderScale);
+      const target = new THREE.WebGLRenderTarget(
+        targetSize.width,
+        targetSize.height,
+        renderTargetOptions,
+      );
+      utilityOutputTargets.set(key, target);
+      extraTargets.push(target);
+      return target;
+    };
+
+    const renderFullFrameTextureToTarget = (
+      node: AnyNode,
+      texture: THREE.Texture,
+      target: THREE.WebGLRenderTarget,
+    ) => {
+      let width = currentSceneSize.width;
+      let height = currentSceneSize.height;
+      let scaleX = 1;
+      let scaleY = 1;
+      const offset = new THREE.Vector2(0, 0);
+      let inputTransform = 1;
+
+      if (isMediaNodeWithRegistry(node, nodeRegistry)) {
+        width = node.width ?? width;
+        height = node.height ?? height;
+        if (node.transform) {
+          scaleX = getValueAtFrame(node.transform.scaleX, frame);
+          scaleY = getValueAtFrame(node.transform.scaleY, frame);
+          offset.set(
+            getValueAtFrame(node.transform.x, frame),
+            getValueAtFrame(node.transform.y, frame),
+          );
+        }
+        inputTransform = getNodeInputColorTransform(
+          node,
+          options.sceneNode.colorSpace,
+          nodeRegistry,
+        );
+      } else if (getRenderMode(node, nodeRegistry) === 'text') {
+        const textNode = node as TextNode;
+        width = texture.image?.width ?? width;
+        height = texture.image?.height ?? height;
+        offset.set(
+          getValueAtFrame(textNode.position.x, frame),
+          getValueAtFrame(textNode.position.y, frame),
+        );
+      }
+
+      const ocioTransform = isMediaNodeWithRegistry(node, nodeRegistry)
+        ? getOcioColorSpaceTransform(
+            getColorSpaceFromRegistry(node, nodeRegistry),
+            options.sceneNode.colorSpace,
+            options.colorManagement,
+          )
+        : null;
+      const material = getMaterial(
+        `${node.id}_utility_full_frame`,
+        buildOcioTransformedTextureShader(ocioTransform, false),
+        {
+          u_tDiffuse: { value: texture },
+          u_opacity: { value: 1 },
+          u_scaleX: { value: scaleX },
+          u_scaleY: { value: scaleY },
+          u_offset: { value: offset },
+          u_scene_res: {
+            value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+          },
+          u_image_res: { value: new THREE.Vector2(width, height) },
+          u_input_transform: { value: inputTransform },
+          u_source_alpha_mode: { value: getSourceAlphaModeUniform(node) },
+          u_flipY: { value: false },
+          ...createOcioUniforms(ocioTransform, ocioTextures, ownedTextures),
+        },
+      );
+      applyNoBlending(material);
+      quad.material = material;
+      ensureTargetForSceneSize(target);
+      clearRenderTargetTransparent(renderer, target);
+      renderer.setRenderTarget(target);
+      renderer.render(scene, camera);
+    };
+
+    const renderCompositeMediaLayersToTarget = async (
+      node: AnyNode,
+      layers: RendererMediaCompositeLayer[],
+      target: THREE.WebGLRenderTarget,
+    ): Promise<boolean> => {
+      if (layers.length === 0) return false;
+
+      const layerRead = getUtilityOutputTarget(`${node.id}:media-composite:read`);
+      const layerWrite = getUtilityOutputTarget(`${node.id}:media-composite:write`);
+      let readTarget = layerRead;
+      let writeTarget = layerWrite;
+      let renderedAnyLayer = false;
+      clearRenderTargetTransparent(renderer, readTarget);
+
+      for (const layer of layers) {
+        const texture = await loadTextureForMediaLayer(node, layer, frame);
+        if (!texture) continue;
+
+        const transform = layer.transform;
+        const ocioTransform = getOcioColorSpaceTransform(
+          layer.colorSpace,
+          options.sceneNode.colorSpace,
+          options.colorManagement,
+        );
+        const material = getMaterial(
+          `${node.id}:media-composite:${layer.id}`,
+          buildOcioTransformedTextureShader(ocioTransform, true),
+          {
+            u_tBackdrop: { value: readTarget.texture },
+            u_tDiffuse: { value: texture },
+            u_opacity: { value: getValueAtFrame(layer.opacity ?? 100, frame) / 100 },
+            u_scaleX: { value: getValueAtFrame(transform?.scaleX ?? 1, frame) },
+            u_scaleY: { value: getValueAtFrame(transform?.scaleY ?? 1, frame) },
+            u_offset: {
+              value: new THREE.Vector2(
+                getValueAtFrame(transform?.x ?? 0, frame),
+                getValueAtFrame(transform?.y ?? 0, frame),
+              ),
+            },
+            u_scene_res: {
+              value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+            },
+            u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
+            u_input_transform: {
+              value: getLayerInputColorTransform(layer, options.sceneNode.colorSpace),
+            },
+            u_source_alpha_mode: { value: getSourceAlphaModeUniform(layer) },
+            u_flipY: { value: false },
+            ...createOcioUniforms(ocioTransform, ocioTextures, ownedTextures),
+          },
+        );
+        applyNoBlending(material);
+        quad.material = material;
+        ensureTargetForSceneSize(writeTarget);
+        renderer.setRenderTarget(writeTarget);
+        renderer.render(scene, camera);
+        renderedAnyLayer = true;
+        [readTarget, writeTarget] = [writeTarget, readTarget];
+      }
+
+      if (!renderedAnyLayer) return false;
+
+      const copyMaterial = getMaterial(`${node.id}:media-composite:copy`, RendererShader.TEXTURE, {
+        u_tDiffuse: { value: readTarget.texture },
+      });
+      applyNoBlending(copyMaterial);
+      quad.material = copyMaterial;
+      ensureTargetForSceneSize(target);
+      renderer.setRenderTarget(target);
+      renderer.render(scene, camera);
+      return true;
+    };
+
+    const renderNodeOutputTexture = async (
+      nodeId: string,
+      sourcePortName = 'output',
+    ): Promise<THREE.Texture | undefined> => {
+      const resolveCtx: NodeOutputResolveContext = {
+        renderer,
+        scene,
+        camera,
+        quad,
+        getMaterial,
+        nodes: options.nodes,
+        frame,
+        sceneNode: options.sceneNode,
+        currentSceneSize,
+        blurRadiusScale,
+        renderTargetOptions,
+        nodeRegistry,
+        compositeBuffer: readBuffer,
+        getUtilityOutputTarget,
+        utilityRenderStack,
+        checkCache: (key) => utilityOutputTargets.has(key),
+        markCache: () => {},
+        renderContext,
+        getMediaTexture: (n, f) => loadTextureForMediaNode(n, f),
+        getPaintTextures: loadPaintTextures,
+        getTextTexture: (n) => {
+          const tt = buildTextTexture(n as TextNode, frame, dynamicTextures);
+          return { texture: tt.texture, width: tt.width, height: tt.height };
+        },
+        renderCompositeMediaToTarget: renderCompositeMediaLayersToTarget,
+        renderFullFrameTextureToTarget,
+        getCachedMediaTexture: (n, f) => {
+          if (isMediaNodeWithRegistry(n, nodeRegistry)) {
+            const key = getMediaTextureKeyFromRegistry(n, f, nodeRegistry);
+            return key ? loadedTextures.get(key) : undefined;
+          }
+          return undefined;
+        },
+        getRotoMaskTexture: options.getRotoMaskTexture,
+        getRotoAddMaskTexture: options.getRotoAddMaskTexture,
+        getRotoSubMaskTexture: options.getRotoSubMaskTexture,
+        getRotoAlphaMode: options.getRotoAlphaMode,
+      };
+      const result = resolveNodeOutputTexture(
+        nodeId,
+        sourcePortName,
+        resolveCtx,
+        renderNodeOutputTexture,
+      );
+      return isPromiseLike(result) ? result : Promise.resolve(result);
+    };
+    const getExplicitPipeTexture = async (node: AnyNode): Promise<THREE.Texture | undefined> => {
+      const sourceNodeId = (node as { inputs?: Record<string, string> }).inputs?.pipe;
+      if (!sourceNodeId) return undefined;
+      return renderNodeOutputTexture(sourceNodeId, getInputSourcePort(node, 'pipe'));
     };
     const renderStraightOverToMain = (
       material: THREE.ShaderMaterial,
@@ -868,16 +2334,36 @@ export const renderWithSharedPipeline = async (
       }
       swapMainBuffers();
     };
+    ensureTargetForSceneSize(readBuffer);
+    ensureTargetForSceneSize(writeBuffer);
+    ensureTargetForSceneSize(auxBuffer);
     clearRenderTargetTransparent(renderer, readBuffer);
 
     let previousMediaNode: AnyNode | null = null;
     for (let i = 0; i < visibleNodes.length; i += 1) {
       const baseNode = visibleNodes[i];
+      ensureTargetForSceneSize(readBuffer);
+      ensureTargetForSceneSize(writeBuffer);
+      ensureTargetForSceneSize(auxBuffer);
 
-      const baseMode = getRenderMode(baseNode, effectRegistry);
+      const baseMode = getRenderMode(baseNode, nodeRegistry);
 
-      if (baseMode === 'media' || baseMode === 'text') {
-        if (isMediaNodeWithRegistry(baseNode, effectRegistry)) {
+      if (baseMode === 'utility') {
+        const renderedUtility = await renderUtilityNodeToTarget({
+          renderer,
+          scene,
+          camera,
+          quad,
+          getMaterial,
+          node: baseNode,
+          outputTarget: writeBuffer,
+          renderNodeOutputTexture,
+        });
+        if (renderedUtility) {
+          swapMainBuffers();
+        }
+      } else if (baseMode === 'media' || baseMode === 'text') {
+        if (isMediaNodeWithRegistry(baseNode, nodeRegistry)) {
           previousMediaNode = baseNode;
         }
         let texture: THREE.Texture | null = null;
@@ -889,29 +2375,53 @@ export const renderWithSharedPipeline = async (
         const offset = new THREE.Vector2(0, 0);
         let opacity = 100;
         let inputTransform = 1;
+        let baseOcioTransform: RendererOcioShaderInfo | null = null;
 
-        if (isMediaNodeWithRegistry(baseNode, effectRegistry)) {
-          texture = await loadTextureForMediaNode(baseNode);
-          if (!texture) {
-            continue;
-          }
-          width = (baseNode as any).width;
-          height = (baseNode as any).height;
-          if ((baseNode as any).transform) {
-            scaleX = getValueAtFrame((baseNode as any).transform.scaleX, frame);
-            scaleY = getValueAtFrame((baseNode as any).transform.scaleY, frame);
-            offset.set(
-              getValueAtFrame((baseNode as any).transform.x, frame),
-              getValueAtFrame((baseNode as any).transform.y, frame),
+        if (isMediaNodeWithRegistry(baseNode, nodeRegistry)) {
+          const compositeLayers = getMediaCompositeLayersFromRegistry(
+            baseNode,
+            frame,
+            options.sceneNode,
+            nodeRegistry,
+          );
+          if (compositeLayers.length > 0) {
+            const compositeTarget = getUtilityOutputTarget(`${baseNode.id}:media-composite:main`);
+            const renderedComposite = await renderCompositeMediaLayersToTarget(
+              baseNode,
+              compositeLayers,
+              compositeTarget,
             );
-            opacity = getValueAtFrame((baseNode as any).opacity, frame);
+            if (!renderedComposite) continue;
+            texture = compositeTarget.texture;
+            width = currentSceneSize.width;
+            height = currentSceneSize.height;
+          } else {
+            texture = await loadTextureForMediaNode(baseNode);
+            if (!texture) {
+              continue;
+            }
+            width = baseNode.width;
+            height = baseNode.height;
+            if (baseNode.transform) {
+              scaleX = getValueAtFrame(baseNode.transform.scaleX, frame);
+              scaleY = getValueAtFrame(baseNode.transform.scaleY, frame);
+              offset.set(
+                getValueAtFrame(baseNode.transform.x, frame),
+                getValueAtFrame(baseNode.transform.y, frame),
+              );
+            }
+            inputTransform = getNodeInputColorTransform(
+              baseNode,
+              options.sceneNode.colorSpace,
+              nodeRegistry,
+            );
+            baseOcioTransform = getOcioColorSpaceTransform(
+              getColorSpaceFromRegistry(baseNode, nodeRegistry),
+              options.sceneNode.colorSpace,
+              options.colorManagement,
+            );
           }
-          // Registry-aware color space conversion
-          const mediaCS = getColorSpaceFromRegistry(baseNode, effectRegistry);
-          const sceneCS = options.sceneNode.colorSpace;
-          if (mediaCS === 'sRGB' && sceneCS === 'Linear') inputTransform = 0;
-          else if ((mediaCS === 'Linear' || mediaCS === 'Raw') && sceneCS === 'sRGB')
-            inputTransform = 2;
+          opacity = getValueAtFrame(baseNode.opacity, frame);
         } else {
           const textNode = baseNode as TextNode;
           const textTexture = buildTextTexture(textNode, frame, dynamicTextures);
@@ -926,17 +2436,11 @@ export const renderWithSharedPipeline = async (
           isDynamicTexture = true;
         }
 
-        const stackedNodes: AnyNode[] = [];
-        let consumedCount = 0;
-        for (let j = i + 1; j < visibleNodes.length; j += 1) {
-          const upper = visibleNodes[j];
-          if (isStackedExportAdjustmentNode(upper)) {
-            stackedNodes.push(upper);
-            consumedCount += 1;
-          } else {
-            break;
-          }
-        }
+        const { stackedNodes, consumedCount } = collectAdjacentStackedNodes(
+          visibleNodes,
+          i,
+          isStackedExportAdjustmentNode,
+        );
 
         let finalComposite: THREE.ShaderMaterial;
         let straightOverTarget = writeBuffer;
@@ -945,117 +2449,61 @@ export const renderWithSharedPipeline = async (
           let stackWrite = auxBuffer;
 
           clearRenderTargetTransparent(renderer, stackRead);
-          const basePass = getMaterial(`${baseNode.id}_stack_base`, TRANSFORMED_TEXTURE_SHADER, {
-            u_tDiffuse: { value: texture },
-            u_opacity: { value: 1 },
-            u_scaleX: { value: scaleX },
-            u_scaleY: { value: scaleY },
-            u_offset: { value: offset },
-            u_scene_res: {
-              value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
+          const basePass = getMaterial(
+            `${baseNode.id}_stack_base`,
+            buildOcioTransformedTextureShader(baseOcioTransform, false),
+            {
+              u_tDiffuse: { value: texture },
+              u_opacity: { value: 1 },
+              u_scaleX: { value: scaleX },
+              u_scaleY: { value: scaleY },
+              u_offset: { value: offset },
+              u_scene_res: {
+                value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+              },
+              u_image_res: { value: new THREE.Vector2(width, height) },
+              u_input_transform: { value: inputTransform },
+              u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
+              u_flipY: { value: false },
+              ...createOcioUniforms(baseOcioTransform, ocioTextures, ownedTextures),
             },
-            u_image_res: { value: new THREE.Vector2(width, height) },
-            u_input_transform: { value: inputTransform },
-          });
+          );
           quad.material = basePass;
           renderer.render(scene, camera);
 
           for (const stackedNode of stackedNodes) {
-            let shouldSwap = true;
-            const stackedMode = getRenderMode(stackedNode, effectRegistry);
-
-            if (stackedMode === 'shader' || stackedMode === 'warp') {
-              const uniforms = withDiffuseUniform(
-                getEffectUniforms(stackedNode, renderContext, effectRegistry),
-                stackRead.texture,
-              );
-              // Resolve generic input port connections
-              const inputUniforms = resolveInputUniforms(
-                stackedNode,
-                effectRegistry,
-                frame,
-                (nodeId, targetFrame) => {
-                  const sourceNode = options.nodes.find((l) => l.id === nodeId);
-                  if (sourceNode && isMediaNodeWithRegistry(sourceNode, effectRegistry)) {
-                    const key = getMediaTextureKeyFromRegistry(
-                      sourceNode,
-                      targetFrame,
-                      effectRegistry,
-                    );
-                    return key ? loadedTextures.get(key) : undefined;
-                  }
-                  return undefined;
-                },
-                baseNode,
-              );
-              Object.assign(uniforms, inputUniforms);
-              const shader = getEffectShader(stackedNode, effectRegistry);
-              if (shader) {
-                const material = getMaterial(stackedNode.id, shader, uniforms);
-                quad.material = material;
-                renderer.setRenderTarget(stackWrite);
-                renderer.render(scene, camera);
-              } else {
-                shouldSwap = false;
-              }
-            } else if (stackedMode === 'multipass') {
-              const shaders = getMultipassShaders(stackedNode, effectRegistry);
-              if (shaders) {
-                const blurUniforms = getEffectUniforms(stackedNode, renderContext, effectRegistry);
-                const radius =
-                  getNumericUniformValue(blurUniforms, 'u_radius', 0) * blurRadiusScale;
-                const hPass = getMaterial(`${stackedNode.id}_blur_h`, shaders.horizontal, {
-                  u_tDiffuse: { value: stackRead.texture },
-                  u_radius: { value: radius },
-                  u_resolution_x: { value: options.width },
-                });
-                quad.material = hPass;
-                renderer.setRenderTarget(readBuffer);
-                renderer.render(scene, camera);
-                const vPass = getMaterial(`${stackedNode.id}_blur_v`, shaders.vertical, {
-                  u_tDiffuse: { value: readBuffer.texture },
-                  u_radius: { value: radius },
-                  u_resolution_y: { value: options.height },
-                });
-                quad.material = vPass;
-                renderer.setRenderTarget(stackWrite);
-                renderer.render(scene, camera);
-              } else {
-                shouldSwap = false;
-              }
-            } else if (stackedMode === 'paint') {
-              const paintTextures = await loadPaintTextures(stackedNode);
-              if (paintTextures) {
-                const material = getMaterial(`${stackedNode.id}_paint`, PAINT_OVER_SHADER, {
-                  u_tDiffuse: { value: stackRead.texture },
-                  u_tPaint: { value: paintTextures.color },
-                  u_tPaintAlpha: { value: paintTextures.alpha },
-                  u_input_transform: {
-                    value: getPaintInputTransform(options.sceneNode.colorSpace),
-                  },
-                });
-                quad.material = material;
-                renderer.setRenderTarget(stackWrite);
-                renderer.render(scene, camera);
-              } else {
-                shouldSwap = false;
-              }
-            } else if (stackedMode === 'mask') {
-              const maskTexture = options.getRotoMaskTexture?.(stackedNode.id);
-              if (maskTexture) {
-                const material = getMaterial(stackedNode.id, ROTO_SHADER, {
-                  u_tDiffuse: { value: stackRead.texture },
-                  u_tMask: { value: maskTexture },
-                });
-                quad.material = material;
-                renderer.setRenderTarget(stackWrite);
-                renderer.render(scene, camera);
-              } else {
-                shouldSwap = false;
-              }
-            } else {
-              shouldSwap = false;
-            }
+            const physicalSize = getCurrentPhysicalSize();
+            const shouldSwap = await renderAdjustmentNodeToTarget({
+              renderer,
+              scene,
+              camera,
+              quad,
+              getMaterial,
+              nodeRegistry,
+              renderContext,
+              node: stackedNode,
+              inputTexture: stackRead.texture,
+              outputTarget: stackWrite,
+              width: physicalSize.width,
+              height: physicalSize.height,
+              blurRadiusScale,
+              renderTargetOptions,
+              sceneColorSpace: options.sceneNode.colorSpace,
+              fallbackSourceNode: baseNode,
+              getInputTextureForNode: (nodeId, targetFrame) => {
+                const sourceNode = options.nodes.find((l) => l.id === nodeId);
+                if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
+                  const key = getMediaTextureKeyFromRegistry(sourceNode, targetFrame, nodeRegistry);
+                  return key ? loadedTextures.get(key) : undefined;
+                }
+                return undefined;
+              },
+              getPaintTextures: loadPaintTextures,
+              getRotoMaskTexture: options.getRotoMaskTexture,
+              getRotoAddMaskTexture: options.getRotoAddMaskTexture,
+              getRotoSubMaskTexture: options.getRotoSubMaskTexture,
+              getRotoAlphaMode: options.getRotoAlphaMode,
+            });
 
             if (shouldSwap) {
               [stackRead, stackWrite] = [stackWrite, stackRead];
@@ -1067,7 +2515,7 @@ export const renderWithSharedPipeline = async (
             straightOverTarget = stackRead === writeBuffer ? auxBuffer : writeBuffer;
             finalComposite = getMaterial(
               `${baseNode.id}_stack_comp_straight_over`,
-              STRAIGHT_TEXTURE_OVER_SHADER,
+              RendererShader.STRAIGHT_TEXTURE_OVER,
               {
                 u_tBackdrop: { value: readBuffer.texture },
                 u_tDiffuse: { value: stackRead.texture },
@@ -1075,17 +2523,21 @@ export const renderWithSharedPipeline = async (
               },
             );
           } else {
-            finalComposite = getMaterial(`${baseNode.id}_stack_comp`, TEXTURE_OPACITY_SHADER, {
-              u_tDiffuse: { value: stackRead.texture },
-              u_opacity: { value: opacity / 100 },
-            });
+            finalComposite = getMaterial(
+              `${baseNode.id}_stack_comp`,
+              RendererShader.TEXTURE_OPACITY,
+              {
+                u_tDiffuse: { value: stackRead.texture },
+                u_opacity: { value: opacity / 100 },
+              },
+            );
           }
         } else {
           const operator = (baseNode as any).operator ?? BlendMode.OVER;
           if (operator === BlendMode.OVER) {
             finalComposite = getMaterial(
               `${baseNode.id}_comp_straight_over`,
-              STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
+              buildOcioTransformedTextureShader(baseOcioTransform, true),
               {
                 u_tBackdrop: { value: readBuffer.texture },
                 u_tDiffuse: { value: texture },
@@ -1094,26 +2546,35 @@ export const renderWithSharedPipeline = async (
                 u_scaleY: { value: scaleY },
                 u_offset: { value: offset },
                 u_scene_res: {
-                  value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
+                  value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
                 },
                 u_image_res: { value: new THREE.Vector2(width, height) },
                 u_input_transform: { value: inputTransform },
+                u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
                 u_flipY: { value: false },
+                ...createOcioUniforms(baseOcioTransform, ocioTextures, ownedTextures),
               },
             );
           } else {
-            finalComposite = getMaterial(`${baseNode.id}_comp`, TRANSFORMED_TEXTURE_SHADER, {
-              u_tDiffuse: { value: texture },
-              u_opacity: { value: opacity / 100 },
-              u_scaleX: { value: scaleX },
-              u_scaleY: { value: scaleY },
-              u_offset: { value: offset },
-              u_scene_res: {
-                value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
+            finalComposite = getMaterial(
+              `${baseNode.id}_comp`,
+              buildOcioTransformedTextureShader(baseOcioTransform, false),
+              {
+                u_tDiffuse: { value: texture },
+                u_opacity: { value: opacity / 100 },
+                u_scaleX: { value: scaleX },
+                u_scaleY: { value: scaleY },
+                u_offset: { value: offset },
+                u_scene_res: {
+                  value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+                },
+                u_image_res: { value: new THREE.Vector2(width, height) },
+                u_input_transform: { value: inputTransform },
+                u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
+                u_flipY: { value: false },
+                ...createOcioUniforms(baseOcioTransform, ocioTextures, ownedTextures),
               },
-              u_image_res: { value: new THREE.Vector2(width, height) },
-              u_input_transform: { value: inputTransform },
-            });
+            );
           }
         }
 
@@ -1132,192 +2593,69 @@ export const renderWithSharedPipeline = async (
         }
         i += consumedCount;
       } else if (baseMode === 'merge') {
-        const sourceNodeId = (baseNode as { inputs?: Record<string, string> }).inputs?.source;
-        const sourceNode = sourceNodeId
-          ? options.nodes.find((candidate) => candidate.id === sourceNodeId)
-          : null;
-
-        if (!sourceNode?.visible) {
-          continue;
-        }
-
-        let texture: THREE.Texture | null = null;
-        let width = 0;
-        let height = 0;
-        let isDynamicTexture = false;
-        let scaleX = 1;
-        let scaleY = 1;
-        const offset = new THREE.Vector2(0, 0);
-        let inputTransform = 1;
-
-        const sourceMode = getRenderMode(sourceNode, effectRegistry);
-        if (isMediaNodeWithRegistry(sourceNode, effectRegistry)) {
-          texture = await loadTextureForMediaNode(sourceNode);
-          if (!texture) {
-            continue;
-          }
-          width = (sourceNode as any).width;
-          height = (sourceNode as any).height;
-          if ((sourceNode as any).transform) {
-            scaleX = getValueAtFrame((sourceNode as any).transform.scaleX, frame);
-            scaleY = getValueAtFrame((sourceNode as any).transform.scaleY, frame);
-            offset.set(
-              getValueAtFrame((sourceNode as any).transform.x, frame),
-              getValueAtFrame((sourceNode as any).transform.y, frame),
-            );
-          }
-          const mediaCS = getColorSpaceFromRegistry(sourceNode, effectRegistry);
-          const sceneCS = options.sceneNode.colorSpace;
-          if (mediaCS === 'sRGB' && sceneCS === 'Linear') inputTransform = 0;
-          else if ((mediaCS === 'Linear' || mediaCS === 'Raw') && sceneCS === 'sRGB')
-            inputTransform = 2;
-        } else if (sourceMode === 'text') {
-          const textNode = sourceNode as TextNode;
-          const textTexture = buildTextTexture(textNode, frame, dynamicTextures);
-          texture = textTexture.texture;
-          width = textTexture.width;
-          height = textTexture.height;
-          offset.set(
-            getValueAtFrame(textNode.position.x, frame),
-            getValueAtFrame(textNode.position.y, frame),
-          );
-          isDynamicTexture = true;
-        }
-
-        if (!texture) {
-          continue;
-        }
-
-        const opacity = getValueAtFrame((baseNode as any).opacity ?? 100, frame);
-        const operator = (baseNode as any).operator ?? BlendMode.OVER;
-        const mergeComposite =
-          operator === BlendMode.OVER
-            ? getMaterial(
-                `${baseNode.id}_merge_comp_straight_over`,
-                STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
-                {
-                  u_tBackdrop: { value: readBuffer.texture },
-                  u_tDiffuse: { value: texture },
-                  u_opacity: { value: opacity / 100 },
-                  u_scaleX: { value: scaleX },
-                  u_scaleY: { value: scaleY },
-                  u_offset: { value: offset },
-                  u_scene_res: {
-                    value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
-                  },
-                  u_image_res: { value: new THREE.Vector2(width, height) },
-                  u_input_transform: { value: inputTransform },
-                  u_flipY: { value: false },
-                },
-              )
-            : getMaterial(`${baseNode.id}_merge_comp`, TRANSFORMED_TEXTURE_SHADER, {
-                u_tDiffuse: { value: texture },
-                u_opacity: { value: opacity / 100 },
-                u_scaleX: { value: scaleX },
-                u_scaleY: { value: scaleY },
-                u_offset: { value: offset },
-                u_scene_res: {
-                  value: new THREE.Vector2(options.sceneNode.width, options.sceneNode.height),
-                },
-                u_image_res: { value: new THREE.Vector2(width, height) },
-                u_input_transform: { value: inputTransform },
-                u_flipY: { value: false },
-              });
-        if (operator === BlendMode.OVER) {
-          renderStraightOverToMain(mergeComposite);
-        } else {
-          quad.material = mergeComposite;
-          applyBlendMode(mergeComposite, operator);
-          renderer.setRenderTarget(readBuffer);
-          renderer.render(scene, camera);
-        }
-
-        if (isDynamicTexture) {
-          texture.dispose();
-        }
+        await renderMergeNodeToMain({
+          renderer,
+          scene,
+          camera,
+          quad,
+          getMaterial,
+          node: baseNode,
+          nodes: options.nodes,
+          frame,
+          readBuffer,
+          renderNodeOutputTexture,
+          clearReadBuffer: () => clearRenderTargetTransparent(renderer, readBuffer),
+          renderStraightOverToMain,
+        });
       } else if (
         isExportAdjustmentType(baseNode.type) &&
         !isStackedExportAdjustmentNode(baseNode)
       ) {
-        const adjMode = getRenderMode(baseNode, effectRegistry);
+        const adjMode = getRenderMode(baseNode, nodeRegistry);
+        const explicitPipeTexture = await getExplicitPipeTexture(baseNode);
+        const adjustmentInputTexture = explicitPipeTexture ?? readBuffer.texture;
+        const reformatTargetSize =
+          adjMode === 'shader' || adjMode === 'warp' ? getReformatTargetSize(baseNode) : null;
+        const outputSceneSize = reformatTargetSize ?? currentSceneSize;
+        ensureTargetForSceneSize(writeBuffer, outputSceneSize);
+        const physicalSize = getCurrentPhysicalSize();
+        const rendered = await renderAdjustmentNodeToTarget({
+          renderer,
+          scene,
+          camera,
+          quad,
+          getMaterial,
+          nodeRegistry,
+          renderContext,
+          node: baseNode,
+          inputTexture: adjustmentInputTexture,
+          outputTarget: writeBuffer,
+          width: physicalSize.width,
+          height: physicalSize.height,
+          blurRadiusScale,
+          renderTargetOptions,
+          sceneColorSpace: options.sceneNode.colorSpace,
+          fallbackSourceNode: previousMediaNode,
+          getInputTextureForNode: (nodeId, targetFrame) => {
+            const sourceNode = options.nodes.find((l) => l.id === nodeId);
+            if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
+              const key = getMediaTextureKeyFromRegistry(sourceNode, targetFrame, nodeRegistry);
+              return key ? loadedTextures.get(key) : undefined;
+            }
+            return undefined;
+          },
+          getPaintTextures: loadPaintTextures,
+          getRotoMaskTexture: options.getRotoMaskTexture,
+          getRotoAddMaskTexture: options.getRotoAddMaskTexture,
+          getRotoSubMaskTexture: options.getRotoSubMaskTexture,
+          getRotoAlphaMode: options.getRotoAlphaMode,
+          shaderId: `${baseNode.id}_global`,
+        });
 
-        if (adjMode === 'shader' || adjMode === 'warp') {
-          const uniforms = withDiffuseUniform(
-            getEffectUniforms(baseNode, renderContext, effectRegistry),
-            readBuffer.texture,
-          );
-          // Resolve generic input port connections
-          const inputUniforms = resolveInputUniforms(
-            baseNode,
-            effectRegistry,
-            frame,
-            (nodeId, targetFrame) => {
-              const sourceNode = options.nodes.find((l) => l.id === nodeId);
-              if (sourceNode && isMediaNodeWithRegistry(sourceNode, effectRegistry)) {
-                const key = getMediaTextureKeyFromRegistry(sourceNode, targetFrame, effectRegistry);
-                return key ? loadedTextures.get(key) : undefined;
-              }
-              return undefined;
-            },
-            previousMediaNode,
-          );
-          Object.assign(uniforms, inputUniforms);
-          const shader = getEffectShader(baseNode, effectRegistry);
-          if (shader) {
-            const material = getMaterial(`${baseNode.id}_global`, shader, uniforms);
-            quad.material = material;
-            renderer.setRenderTarget(writeBuffer);
-            renderer.render(scene, camera);
-            swapMainBuffers();
-          }
-        } else if (adjMode === 'paint') {
-          const paintTextures = await loadPaintTextures(baseNode);
-          if (paintTextures) {
-            const material = getMaterial(`${baseNode.id}_global_paint`, PAINT_OVER_SHADER, {
-              u_tDiffuse: { value: readBuffer.texture },
-              u_tPaint: { value: paintTextures.color },
-              u_tPaintAlpha: { value: paintTextures.alpha },
-              u_input_transform: { value: getPaintInputTransform(options.sceneNode.colorSpace) },
-            });
-            quad.material = material;
-            renderer.setRenderTarget(writeBuffer);
-            renderer.render(scene, camera);
-            swapMainBuffers();
-          }
-        } else if (adjMode === 'multipass') {
-          const shaders = getMultipassShaders(baseNode, effectRegistry);
-          if (shaders) {
-            const blurUniforms = getEffectUniforms(baseNode, renderContext, effectRegistry);
-            const radius = getNumericUniformValue(blurUniforms, 'u_radius', 0) * blurRadiusScale;
-            const hPass = getMaterial(`${baseNode.id}_global_blur_h`, shaders.horizontal, {
-              u_tDiffuse: { value: readBuffer.texture },
-              u_radius: { value: radius },
-              u_resolution_x: { value: options.width },
-            });
-            quad.material = hPass;
-            renderer.setRenderTarget(auxBuffer);
-            renderer.render(scene, camera);
-            const vPass = getMaterial(`${baseNode.id}_global_blur_v`, shaders.vertical, {
-              u_tDiffuse: { value: auxBuffer.texture },
-              u_radius: { value: radius },
-              u_resolution_y: { value: options.height },
-            });
-            quad.material = vPass;
-            renderer.setRenderTarget(writeBuffer);
-            renderer.render(scene, camera);
-            swapMainBuffers();
-          }
-        } else if (adjMode === 'mask') {
-          const maskTexture = options.getRotoMaskTexture?.(baseNode.id);
-          if (maskTexture) {
-            const material = getMaterial(`${baseNode.id}_global_mask`, ROTO_SHADER, {
-              u_tDiffuse: { value: readBuffer.texture },
-              u_tMask: { value: maskTexture },
-            });
-            quad.material = material;
-            renderer.setRenderTarget(writeBuffer);
-            renderer.render(scene, camera);
-            swapMainBuffers();
+        if (rendered) {
+          swapMainBuffers();
+          if (reformatTargetSize) {
+            setCurrentSceneSize(reformatTargetSize);
           }
         }
       }
@@ -1325,11 +2663,15 @@ export const renderWithSharedPipeline = async (
 
     let finalMaterial: THREE.ShaderMaterial;
     if (options.finalColorSpace === 'raw_texture' || options.finalColorSpace === 'scene_linear') {
-      finalMaterial = getMaterial('final_raw', TEXTURE_SHADER, {
+      finalMaterial = getMaterial('final_raw', RendererShader.TEXTURE, {
         u_tDiffuse: { value: readBuffer.texture },
       });
     } else if (options.finalColorSpace === 'srgb') {
-      finalMaterial = getMaterial('final_srgb', VIEWER_SHADER, {
+      const ocioTransform = getOcioSrgbOutputTransform(
+        options.sceneNode.colorSpace,
+        options.colorManagement,
+      );
+      finalMaterial = getMaterial('final_srgb', buildOcioViewerShader(ocioTransform), {
         u_tDiffuse: { value: readBuffer.texture },
         u_gain: { value: 1 },
         u_gamma: { value: 1 },
@@ -1341,6 +2683,7 @@ export const renderWithSharedPipeline = async (
         u_alphaOverlayColor: { value: new THREE.Color(...alphaOverlayStyle.color) },
         u_alphaOverlayOpacity: { value: alphaOverlayStyle.opacity },
         u_alphaOverlayBgDarken: { value: alphaOverlayStyle.bgDarken },
+        ...createOcioUniforms(ocioTransform, ocioTextures, ownedTextures),
       });
     } else {
       const viewerSettings = options.viewerSettings;
@@ -1351,7 +2694,12 @@ export const renderWithSharedPipeline = async (
       const outputChannelIndex = options.preserveAlpha && channelIndex === 4 ? 0 : channelIndex;
       const alphaOverlayActive =
         !options.preserveAlpha && viewerSettings.alphaOverlay && viewerSettings.channels !== 'A';
-      finalMaterial = getMaterial('final_viewport', VIEWER_SHADER, {
+      const ocioTransform = getOcioDisplayViewTransform(
+        options.sceneNode.colorSpace,
+        viewerSettings,
+        options.colorManagement,
+      );
+      finalMaterial = getMaterial('final_viewport', buildOcioViewerShader(ocioTransform), {
         u_tDiffuse: { value: readBuffer.texture },
         u_gain: { value: viewerSettings.gain },
         u_gamma: { value: viewerSettings.gamma },
@@ -1366,6 +2714,7 @@ export const renderWithSharedPipeline = async (
         u_alphaOverlayColor: { value: new THREE.Color(...alphaOverlayStyle.color) },
         u_alphaOverlayOpacity: { value: alphaOverlayStyle.opacity },
         u_alphaOverlayBgDarken: { value: alphaOverlayStyle.bgDarken },
+        ...createOcioUniforms(ocioTransform, ocioTextures, ownedTextures),
       });
     }
 
@@ -1391,6 +2740,21 @@ export const renderWithSharedPipeline = async (
   }
 };
 
+/**
+ * Unified pipeline resources — same shape as ViewportPipelineResources.
+ * Used by the unified renderPipeline() entry point.
+ */
+export type PipelineResources = ViewportPipelineResources;
+
+/**
+ * Unified render pipeline entry point.
+ * The primary export for rendering. For async export/offscreen rendering this
+ * delegates to renderWithSharedPipeline. The renderNodeOutputTexture dispatch
+ * logic is shared between both export and viewport paths via the module-level
+ * resolveNodeOutputTexture() function.
+ */
+export const renderPipeline = renderWithSharedPipeline;
+
 export interface ViewportPipelineResources {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -1398,6 +2762,8 @@ export interface ViewportPipelineResources {
   quad: THREE.Mesh;
   materials: Map<string, THREE.ShaderMaterial>;
   renderTargets: THREE.WebGLRenderTarget[];
+  utilityTargets?: Map<string, THREE.WebGLRenderTarget>;
+  ocioTextures?: Map<string, THREE.Texture>;
 }
 
 export interface ViewportPipelineOptions {
@@ -1407,13 +2773,22 @@ export interface ViewportPipelineOptions {
   frame: number;
   viewerSettings: ViewerSettings;
   alphaOverlayStyle?: AlphaOverlayStyle;
+  colorManagement?: RendererColorManagement;
   getMediaTexture: (node: MediaNode, frame: number) => THREE.Texture | undefined;
+  getMediaTextureByKey?: (
+    key: string,
+    assetId: string | undefined,
+    isVideoLike: boolean,
+  ) => THREE.Texture | undefined;
   getTextTexture: (
     node: TextNode,
   ) => { texture: THREE.Texture; width: number; height: number } | undefined;
   getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoAlphaMode?: (nodeId: string) => number;
   getPaintTextures?: (nodeId: string) => { color: THREE.Texture; alpha: THREE.Texture } | undefined;
-  effectRegistry: EffectRegistryLike;
+  nodeRegistry: NodeRegistryLike;
 }
 
 export interface ViewportPipelineResult {
@@ -1430,58 +2805,90 @@ export const renderViewportFrameWithSharedPipeline = (
     sceneNode,
     frame,
     viewerSettings,
+    colorManagement,
     getMediaTexture,
+    getMediaTextureByKey,
     getTextTexture,
     getRotoMaskTexture,
+    getRotoAddMaskTexture,
+    getRotoSubMaskTexture,
+    getRotoAlphaMode,
     getPaintTextures,
-    effectRegistry,
+    nodeRegistry,
   } = options;
   const alphaOverlayStyle = resolveAlphaOverlayStyle(options.alphaOverlayStyle);
-  const { isStackedAdjustmentNode, isStackAdjustmentType } = createNodePredicates(effectRegistry);
-  const renderContext: EffectRenderContext = {
+  const { isStackedAdjustmentNode, isStackAdjustmentType } = createNodePredicates(nodeRegistry);
+  const finalSceneSize = { width: sceneNode.width, height: sceneNode.height };
+  const outputRenderScale = { width: 1, height: 1 };
+  let currentSceneSize = getReformatSourceSize(nodes, finalSceneSize);
+  const renderContext: RenderContext = {
     frame,
     fps: sceneNode.fps || 30,
-    scene: { width: sceneNode.width, height: sceneNode.height },
+    scene: { ...currentSceneSize },
     nodes: nodes,
+  };
+  const setCurrentSceneSize = (size: RenderFormatSize) => {
+    currentSceneSize = size;
+    renderContext.scene = { ...size };
   };
 
   const renderer = resources.renderer;
+  resources.ocioTextures ??= new Map<string, THREE.Texture>();
   assertWebGL2Renderer(renderer);
   renderer.setSize(sceneNode.width, sceneNode.height);
   renderer.autoClear = false;
 
+  const targetType =
+    sceneNode.bitDepth === 32
+      ? THREE.FloatType
+      : sceneNode.bitDepth === 16
+        ? THREE.HalfFloatType
+        : THREE.UnsignedByteType;
+  const renderTargetOptions = {
+    type: targetType,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    format: THREE.RGBAFormat,
+    colorSpace: THREE.NoColorSpace,
+    depthBuffer: false,
+    stencilBuffer: false,
+  };
+
   let renderTargets = resources.renderTargets;
   if (
     renderTargets.length === 0 ||
-    renderTargets[0].width !== sceneNode.width ||
-    renderTargets[0].height !== sceneNode.height
+    renderTargets[0].width !== currentSceneSize.width ||
+    renderTargets[0].height !== currentSceneSize.height
   ) {
     renderTargets.forEach((target) => target.dispose());
+    resources.utilityTargets?.forEach((target) => target.dispose());
+    resources.utilityTargets?.clear();
 
-    const targetType =
-      sceneNode.bitDepth === 32
-        ? THREE.FloatType
-        : sceneNode.bitDepth === 16
-          ? THREE.HalfFloatType
-          : THREE.UnsignedByteType;
-    const targetOptions = {
-      type: targetType,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.NoColorSpace,
-      depthBuffer: false,
-      stencilBuffer: false,
-    };
     renderTargets = [
-      new THREE.WebGLRenderTarget(sceneNode.width, sceneNode.height, targetOptions),
-      new THREE.WebGLRenderTarget(sceneNode.width, sceneNode.height, targetOptions),
-      new THREE.WebGLRenderTarget(sceneNode.width, sceneNode.height, targetOptions),
+      new THREE.WebGLRenderTarget(
+        currentSceneSize.width,
+        currentSceneSize.height,
+        renderTargetOptions,
+      ),
+      new THREE.WebGLRenderTarget(
+        currentSceneSize.width,
+        currentSceneSize.height,
+        renderTargetOptions,
+      ),
+      new THREE.WebGLRenderTarget(
+        currentSceneSize.width,
+        currentSceneSize.height,
+        renderTargetOptions,
+      ),
     ];
   }
 
   let [readBuffer, writeBuffer] = renderTargets;
   const auxBuffer = renderTargets[2];
+  const ensureTargetForSceneSize = (
+    target: THREE.WebGLRenderTarget,
+    size: RenderFormatSize = currentSceneSize,
+  ) => ensureRenderTargetSize(target, size, outputRenderScale);
   const getMaterial = (
     id: string,
     shader: string,
@@ -1498,7 +2905,7 @@ export const renderViewportFrameWithSharedPipeline = (
     }
 
     const material = createStudioShaderMaterial({
-      vertexShader: VERTEX_SHADER,
+      vertexShader: RendererShader.VERTEX,
       fragmentShader: shader,
       uniforms,
     });
@@ -1509,13 +2916,224 @@ export const renderViewportFrameWithSharedPipeline = (
     [readBuffer, writeBuffer] = [writeBuffer, readBuffer];
   };
   const copyTargetToWriteBuffer = (sourceTarget: THREE.WebGLRenderTarget) => {
-    const copyMaterial = getMaterial('copy_to_main_write', TEXTURE_SHADER, {
+    ensureTargetForSceneSize(writeBuffer);
+    const copyMaterial = getMaterial('copy_to_main_write', RendererShader.TEXTURE, {
       u_tDiffuse: { value: sourceTarget.texture },
     });
     applyNoBlending(copyMaterial);
     resources.quad.material = copyMaterial;
     renderer.setRenderTarget(writeBuffer);
     renderer.render(resources.scene, resources.camera);
+  };
+  resources.utilityTargets ??= new Map<string, THREE.WebGLRenderTarget>();
+  const utilityRenderedThisFrame = new Set<string>();
+  const utilityRenderStack = new Set<string>();
+
+  const getUtilityOutputTarget = (key: string): THREE.WebGLRenderTarget => {
+    const existing = resources.utilityTargets?.get(key);
+    if (existing) {
+      ensureTargetForSceneSize(existing);
+      return existing;
+    }
+    const target = new THREE.WebGLRenderTarget(
+      currentSceneSize.width,
+      currentSceneSize.height,
+      renderTargetOptions,
+    );
+    resources.utilityTargets!.set(key, target);
+    return target;
+  };
+
+  const renderFullFrameTextureToTarget = (
+    node: AnyNode,
+    texture: THREE.Texture,
+    target: THREE.WebGLRenderTarget,
+    textureSize?: { width: number; height: number },
+  ) => {
+    let width = textureSize?.width ?? currentSceneSize.width;
+    let height = textureSize?.height ?? currentSceneSize.height;
+    let scaleX = 1;
+    let scaleY = 1;
+    const offset = new THREE.Vector2(0, 0);
+    let inputTransform = 1;
+
+    if (isMediaNodeWithRegistry(node, nodeRegistry)) {
+      width = (node as MediaNode).width ?? width;
+      height = (node as MediaNode).height ?? height;
+      scaleX = getValueAtFrame((node as MediaNode).transform.scaleX, frame);
+      scaleY = getValueAtFrame((node as MediaNode).transform.scaleY, frame);
+      offset.set(
+        getValueAtFrame((node as MediaNode).transform.x, frame),
+        getValueAtFrame((node as MediaNode).transform.y, frame),
+      );
+      inputTransform = getNodeInputColorTransform(node, sceneNode.colorSpace, nodeRegistry);
+    } else if (getRenderMode(node, nodeRegistry) === 'text') {
+      const textNode = node as TextNode;
+      offset.set(
+        getValueAtFrame(textNode.position.x, frame),
+        getValueAtFrame(textNode.position.y, frame),
+      );
+    }
+
+    const ocioTransform = isMediaNodeWithRegistry(node, nodeRegistry)
+      ? getOcioColorSpaceTransform(
+          getColorSpaceFromRegistry(node, nodeRegistry),
+          sceneNode.colorSpace,
+          colorManagement,
+        )
+      : null;
+    const material = getMaterial(
+      `${node.id}_utility_full_frame`,
+      buildOcioTransformedTextureShader(ocioTransform, false),
+      {
+        u_tDiffuse: { value: texture },
+        u_opacity: { value: 1 },
+        u_scaleX: { value: scaleX },
+        u_scaleY: { value: scaleY },
+        u_offset: { value: offset },
+        u_scene_res: { value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height) },
+        u_image_res: { value: new THREE.Vector2(width, height) },
+        u_input_transform: { value: inputTransform },
+        u_source_alpha_mode: { value: getSourceAlphaModeUniform(node) },
+        u_flipY: { value: false },
+        ...createOcioUniforms(ocioTransform, resources.ocioTextures!),
+      },
+    );
+    applyNoBlending(material);
+    resources.quad.material = material;
+    ensureTargetForSceneSize(target);
+    clearRenderTargetTransparent(renderer, target);
+    renderer.setRenderTarget(target);
+    renderer.render(resources.scene, resources.camera);
+  };
+
+  const renderCompositeMediaLayersToTarget = (
+    node: AnyNode,
+    layers: RendererMediaCompositeLayer[],
+    target: THREE.WebGLRenderTarget,
+  ): boolean => {
+    if (layers.length === 0) return false;
+
+    const layerRead = getUtilityOutputTarget(`${node.id}:media-composite:read`);
+    const layerWrite = getUtilityOutputTarget(`${node.id}:media-composite:write`);
+    let readTarget = layerRead;
+    let writeTarget = layerWrite;
+    let renderedAnyLayer = false;
+    clearRenderTargetTransparent(renderer, readTarget);
+
+    for (const layer of layers) {
+      const texture = getMediaTextureByKey?.(
+        layer.textureKey,
+        layer.assetId,
+        layer.isVideoFile === true,
+      );
+      if (!texture) continue;
+
+      const transform = layer.transform;
+      const ocioTransform = getOcioColorSpaceTransform(
+        layer.colorSpace,
+        sceneNode.colorSpace,
+        colorManagement,
+      );
+      const material = getMaterial(
+        `${node.id}:media-composite:${layer.id}`,
+        buildOcioTransformedTextureShader(ocioTransform, true),
+        {
+          u_tBackdrop: { value: readTarget.texture },
+          u_tDiffuse: { value: texture },
+          u_opacity: { value: getValueAtFrame(layer.opacity ?? 100, frame) / 100 },
+          u_scaleX: { value: getValueAtFrame(transform?.scaleX ?? 1, frame) },
+          u_scaleY: { value: getValueAtFrame(transform?.scaleY ?? 1, frame) },
+          u_offset: {
+            value: new THREE.Vector2(
+              getValueAtFrame(transform?.x ?? 0, frame),
+              getValueAtFrame(transform?.y ?? 0, frame),
+            ),
+          },
+          u_scene_res: {
+            value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+          },
+          u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
+          u_input_transform: { value: getLayerInputColorTransform(layer, sceneNode.colorSpace) },
+          u_source_alpha_mode: { value: getSourceAlphaModeUniform(layer) },
+          u_flipY: { value: false },
+          ...createOcioUniforms(ocioTransform, resources.ocioTextures!),
+        },
+      );
+      applyNoBlending(material);
+      resources.quad.material = material;
+      ensureTargetForSceneSize(writeTarget);
+      renderer.setRenderTarget(writeTarget);
+      renderer.render(resources.scene, resources.camera);
+      renderedAnyLayer = true;
+      [readTarget, writeTarget] = [writeTarget, readTarget];
+    }
+
+    if (!renderedAnyLayer) return false;
+
+    const copyMaterial = getMaterial(`${node.id}:media-composite:copy`, RendererShader.TEXTURE, {
+      u_tDiffuse: { value: readTarget.texture },
+    });
+    applyNoBlending(copyMaterial);
+    resources.quad.material = copyMaterial;
+    ensureTargetForSceneSize(target);
+    renderer.setRenderTarget(target);
+    renderer.render(resources.scene, resources.camera);
+    return true;
+  };
+
+  const renderNodeOutputTexture = (
+    nodeId: string,
+    sourcePortName = 'output',
+  ): THREE.Texture | undefined => {
+    const resolveCtx: NodeOutputResolveContext = {
+      renderer,
+      scene: resources.scene,
+      camera: resources.camera,
+      quad: resources.quad,
+      getMaterial,
+      nodes,
+      frame,
+      sceneNode,
+      currentSceneSize,
+      blurRadiusScale: 1,
+      renderTargetOptions,
+      nodeRegistry,
+      compositeBuffer: readBuffer,
+      getUtilityOutputTarget,
+      utilityRenderStack,
+      checkCache: (key) => utilityRenderedThisFrame.has(key),
+      markCache: (key) => utilityRenderedThisFrame.add(key),
+      renderContext,
+      getMediaTexture: (n, f) => getMediaTexture(n as MediaNode, f),
+      getPaintTextures: (n) => getPaintTextures?.(n.id),
+      getTextTexture: (n) => getTextTexture(n as TextNode),
+      renderCompositeMediaToTarget: renderCompositeMediaLayersToTarget,
+      renderFullFrameTextureToTarget,
+      getCachedMediaTexture: (n, f) => getMediaTexture(n as MediaNode, f),
+      getRotoMaskTexture,
+      getRotoAddMaskTexture,
+      getRotoSubMaskTexture,
+      getRotoAlphaMode,
+      onAsyncInSync: () => {
+        throw new Error('Viewport renderNodeOutputTexture must remain synchronous.');
+      },
+    };
+    const result = resolveNodeOutputTexture(
+      nodeId,
+      sourcePortName,
+      resolveCtx,
+      renderNodeOutputTexture,
+    );
+    if (isPromiseLike(result)) {
+      throw new Error('Viewport renderNodeOutputTexture must remain synchronous.');
+    }
+    return result;
+  };
+  const getExplicitPipeTexture = (node: AnyNode): THREE.Texture | undefined => {
+    const sourceNodeId = (node as { inputs?: Record<string, string> }).inputs?.pipe;
+    if (!sourceNodeId) return undefined;
+    return renderNodeOutputTexture(sourceNodeId, getInputSourcePort(node, 'pipe'));
   };
   const renderStraightOverToMain = (
     material: THREE.ShaderMaterial,
@@ -1531,16 +3149,39 @@ export const renderViewportFrameWithSharedPipeline = (
     swapMainBuffers();
   };
 
+  ensureTargetForSceneSize(readBuffer);
+  ensureTargetForSceneSize(writeBuffer);
+  ensureTargetForSceneSize(auxBuffer);
   clearRenderTargetTransparent(renderer, readBuffer);
 
-  const visibleNodes = getVisiblePipelineNodes(nodes, effectRegistry);
+  const visibleNodes = getVisiblePipelineNodes(nodes, nodeRegistry);
   let previousMediaNode: AnyNode | null = null;
   for (let index = 0; index < visibleNodes.length; index += 1) {
     const baseNode = visibleNodes[index];
-    const baseMode = getRenderMode(baseNode, effectRegistry);
+    ensureTargetForSceneSize(readBuffer);
+    ensureTargetForSceneSize(writeBuffer);
+    ensureTargetForSceneSize(auxBuffer);
+    const baseMode = getRenderMode(baseNode, nodeRegistry);
 
-    if (baseMode === 'media' || baseMode === 'text') {
-      if (isMediaNodeWithRegistry(baseNode, effectRegistry)) {
+    if (baseMode === 'utility') {
+      const renderedUtility = renderUtilityNodeToTarget({
+        renderer,
+        scene: resources.scene,
+        camera: resources.camera,
+        quad: resources.quad,
+        getMaterial,
+        node: baseNode,
+        outputTarget: writeBuffer,
+        renderNodeOutputTexture,
+      });
+      if (isPromiseLike(renderedUtility)) {
+        throw new Error('Viewport utility rendering must remain synchronous.');
+      }
+      if (renderedUtility) {
+        swapMainBuffers();
+      }
+    } else if (baseMode === 'media' || baseMode === 'text') {
+      if (isMediaNodeWithRegistry(baseNode, nodeRegistry)) {
         previousMediaNode = baseNode;
       }
       let texture: THREE.Texture | undefined;
@@ -1550,20 +3191,41 @@ export const renderViewportFrameWithSharedPipeline = (
       let scaleY = 1;
       const offset = new THREE.Vector2(0, 0);
       let opacity = 100;
+      let isCompositeMediaTexture = false;
 
-      if (isMediaNodeWithRegistry(baseNode, effectRegistry)) {
-        texture = getMediaTexture(baseNode as MediaNode, frame);
-        if (!texture) {
-          continue;
-        }
-        width = baseNode.width;
-        height = baseNode.height;
-        scaleX = getValueAtFrame(baseNode.transform.scaleX, frame);
-        scaleY = getValueAtFrame(baseNode.transform.scaleY, frame);
-        offset.set(
-          getValueAtFrame(baseNode.transform.x, frame),
-          getValueAtFrame(baseNode.transform.y, frame),
+      if (isMediaNodeWithRegistry(baseNode, nodeRegistry)) {
+        const compositeLayers = getMediaCompositeLayersFromRegistry(
+          baseNode,
+          frame,
+          sceneNode,
+          nodeRegistry,
         );
+        if (compositeLayers.length > 0) {
+          const compositeTarget = getUtilityOutputTarget(`${baseNode.id}:media-composite:main`);
+          const renderedComposite = renderCompositeMediaLayersToTarget(
+            baseNode,
+            compositeLayers,
+            compositeTarget,
+          );
+          if (!renderedComposite) continue;
+          texture = compositeTarget.texture;
+          width = currentSceneSize.width;
+          height = currentSceneSize.height;
+          isCompositeMediaTexture = true;
+        } else {
+          texture = getMediaTexture(baseNode as MediaNode, frame);
+          if (!texture) {
+            continue;
+          }
+          width = baseNode.width;
+          height = baseNode.height;
+          scaleX = getValueAtFrame(baseNode.transform.scaleX, frame);
+          scaleY = getValueAtFrame(baseNode.transform.scaleY, frame);
+          offset.set(
+            getValueAtFrame(baseNode.transform.x, frame),
+            getValueAtFrame(baseNode.transform.y, frame),
+          );
+        }
         opacity = getValueAtFrame(baseNode.opacity, frame);
       } else {
         const textTexture = getTextTexture(baseNode as TextNode);
@@ -1580,27 +3242,23 @@ export const renderViewportFrameWithSharedPipeline = (
         opacity = getValueAtFrame((baseNode as TextNode).opacity, frame);
       }
 
-      let inputTransform = 1;
-      const mediaCS = getColorSpaceFromRegistry(baseNode, effectRegistry);
-      if (mediaCS) {
-        if (mediaCS === 'sRGB' && sceneNode.colorSpace === 'Linear') {
-          inputTransform = 0;
-        } else if ((mediaCS === 'Linear' || mediaCS === 'Raw') && sceneNode.colorSpace === 'sRGB') {
-          inputTransform = 2;
-        }
-      }
+      const inputTransform = isCompositeMediaTexture
+        ? 1
+        : getNodeInputColorTransform(baseNode, sceneNode.colorSpace, nodeRegistry);
+      const baseOcioTransform =
+        !isCompositeMediaTexture && isMediaNodeWithRegistry(baseNode, nodeRegistry)
+          ? getOcioColorSpaceTransform(
+              getColorSpaceFromRegistry(baseNode, nodeRegistry),
+              sceneNode.colorSpace,
+              colorManagement,
+            )
+          : null;
 
-      const stackedNodes: AnyNode[] = [];
-      let consumedCount = 0;
-      for (let upperIndex = index + 1; upperIndex < visibleNodes.length; upperIndex += 1) {
-        const upperNode = visibleNodes[upperIndex];
-        if (isStackedAdjustmentNode(upperNode)) {
-          stackedNodes.push(upperNode);
-          consumedCount += 1;
-        } else {
-          break;
-        }
-      }
+      const { stackedNodes, consumedCount } = collectAdjacentStackedNodes(
+        visibleNodes,
+        index,
+        isStackedAdjustmentNode,
+      );
 
       let finalCompositeMaterial: THREE.ShaderMaterial;
       let straightOverTarget = writeBuffer;
@@ -1611,7 +3269,7 @@ export const renderViewportFrameWithSharedPipeline = (
 
         const baseMaterial = getMaterial(
           `${baseNode.id}_base_transformed`,
-          TRANSFORMED_TEXTURE_SHADER,
+          buildOcioTransformedTextureShader(baseOcioTransform, false),
           {
             u_tDiffuse: { value: texture },
             u_opacity: { value: 1 },
@@ -1619,105 +3277,52 @@ export const renderViewportFrameWithSharedPipeline = (
             u_scaleY: { value: scaleY },
             u_offset: { value: offset },
             u_scene_res: {
-              value: new THREE.Vector2(sceneNode.width, sceneNode.height),
+              value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
             },
             u_image_res: { value: new THREE.Vector2(width, height) },
             u_input_transform: { value: inputTransform },
+            u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
             u_flipY: { value: false },
+            ...createOcioUniforms(baseOcioTransform, resources.ocioTextures!),
           },
         );
         resources.quad.material = baseMaterial;
         renderer.render(resources.scene, resources.camera);
 
         for (const stackedNode of stackedNodes) {
-          let shouldSwap = true;
-          const stackedMode = getRenderMode(stackedNode, effectRegistry);
+          const shouldSwap = renderAdjustmentNodeToTarget({
+            renderer,
+            scene: resources.scene,
+            camera: resources.camera,
+            quad: resources.quad,
+            getMaterial,
+            nodeRegistry,
+            renderContext,
+            node: stackedNode,
+            inputTexture: stackRead.texture,
+            outputTarget: stackWrite,
+            width: currentSceneSize.width,
+            height: currentSceneSize.height,
+            blurRadiusScale: 1,
+            renderTargetOptions,
+            sceneColorSpace: sceneNode.colorSpace,
+            fallbackSourceNode: baseNode,
+            getInputTextureForNode: (nodeId, targetFrame) => {
+              const sourceNode = nodes.find((l) => l.id === nodeId);
+              if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
+                return getMediaTexture(sourceNode as MediaNode, targetFrame);
+              }
+              return undefined;
+            },
+            getPaintTextures: (node) => getPaintTextures?.(node.id),
+            getRotoMaskTexture,
+            getRotoAddMaskTexture,
+            getRotoSubMaskTexture,
+            getRotoAlphaMode,
+          });
 
-          if (stackedMode === 'shader' || stackedMode === 'warp') {
-            const uniforms = withDiffuseUniform(
-              getEffectUniforms(stackedNode, renderContext, effectRegistry),
-              stackRead.texture,
-            );
-            // Resolve generic input port connections
-            const inputUniforms = resolveInputUniforms(
-              stackedNode,
-              effectRegistry,
-              frame,
-              (nodeId, targetFrame) => {
-                const sourceNode = nodes.find((l) => l.id === nodeId);
-                if (sourceNode && isMediaNodeWithRegistry(sourceNode, effectRegistry)) {
-                  return getMediaTexture(sourceNode as MediaNode, targetFrame);
-                }
-                return undefined;
-              },
-              baseNode,
-            );
-            Object.assign(uniforms, inputUniforms);
-            const shader = getEffectShader(stackedNode, effectRegistry);
-            if (shader) {
-              const material = getMaterial(stackedNode.id, shader, uniforms);
-              resources.quad.material = material;
-              renderer.setRenderTarget(stackWrite);
-              renderer.render(resources.scene, resources.camera);
-            } else {
-              shouldSwap = false;
-            }
-          } else if (stackedMode === 'multipass') {
-            const shaders = getMultipassShaders(stackedNode, effectRegistry);
-            if (shaders) {
-              const blurUniforms = getEffectUniforms(stackedNode, renderContext, effectRegistry);
-              const radius = getNumericUniformValue(blurUniforms, 'u_radius', 0);
-              const hMaterial = getMaterial(`${stackedNode.id}_h`, shaders.horizontal, {
-                u_tDiffuse: { value: stackRead.texture },
-                u_radius: { value: radius },
-                u_resolution_x: { value: sceneNode.width },
-              });
-              resources.quad.material = hMaterial;
-              renderer.setRenderTarget(stackWrite);
-              renderer.render(resources.scene, resources.camera);
-
-              const vMaterial = getMaterial(`${stackedNode.id}_v`, shaders.vertical, {
-                u_tDiffuse: { value: stackWrite.texture },
-                u_radius: { value: radius },
-                u_resolution_y: { value: sceneNode.height },
-              });
-              resources.quad.material = vMaterial;
-              renderer.setRenderTarget(stackRead);
-              renderer.render(resources.scene, resources.camera);
-              shouldSwap = false;
-            } else {
-              shouldSwap = false;
-            }
-          } else if (stackedMode === 'mask') {
-            const maskTexture = getRotoMaskTexture?.(stackedNode.id);
-            if (maskTexture) {
-              const material = getMaterial(stackedNode.id, ROTO_SHADER, {
-                u_tDiffuse: { value: stackRead.texture },
-                u_tMask: { value: maskTexture },
-              });
-              resources.quad.material = material;
-              renderer.setRenderTarget(stackWrite);
-              renderer.render(resources.scene, resources.camera);
-            } else {
-              shouldSwap = false;
-            }
-          } else if (stackedMode === 'paint') {
-            const paintTextures = getPaintTextures?.(stackedNode.id);
-            if (paintTextures) {
-              const material = getMaterial(`${stackedNode.id}_paint`, PAINT_OVER_SHADER, {
-                u_tDiffuse: { value: stackRead.texture },
-                u_tPaint: { value: paintTextures.color },
-                u_tPaintAlpha: { value: paintTextures.alpha },
-                u_input_transform: { value: getPaintInputTransform(sceneNode.colorSpace) },
-              });
-              resources.quad.material = material;
-              renderer.setRenderTarget(stackWrite);
-              renderer.render(resources.scene, resources.camera);
-            } else {
-              shouldSwap = false;
-            }
-          } else {
-            shouldSwap = false;
+          if (isPromiseLike(shouldSwap)) {
+            throw new Error('Viewport stacked adjustment rendering must remain synchronous.');
           }
 
           if (shouldSwap) {
@@ -1730,7 +3335,7 @@ export const renderViewportFrameWithSharedPipeline = (
           straightOverTarget = stackRead === writeBuffer ? auxBuffer : writeBuffer;
           finalCompositeMaterial = getMaterial(
             `${baseNode.id}_comp_straight_over`,
-            STRAIGHT_TEXTURE_OVER_SHADER,
+            RendererShader.STRAIGHT_TEXTURE_OVER,
             {
               u_tBackdrop: { value: readBuffer.texture },
               u_tDiffuse: { value: stackRead.texture },
@@ -1738,17 +3343,21 @@ export const renderViewportFrameWithSharedPipeline = (
             },
           );
         } else {
-          finalCompositeMaterial = getMaterial(`${baseNode.id}_comp`, TEXTURE_OPACITY_SHADER, {
-            u_tDiffuse: { value: stackRead.texture },
-            u_opacity: { value: opacity / 100 },
-          });
+          finalCompositeMaterial = getMaterial(
+            `${baseNode.id}_comp`,
+            RendererShader.TEXTURE_OPACITY,
+            {
+              u_tDiffuse: { value: stackRead.texture },
+              u_opacity: { value: opacity / 100 },
+            },
+          );
         }
       } else {
         const operator = (baseNode as any).operator ?? BlendMode.OVER;
         if (operator === BlendMode.OVER) {
           finalCompositeMaterial = getMaterial(
             `${baseNode.id}_comp_transformed_straight_over`,
-            STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
+            buildOcioTransformedTextureShader(baseOcioTransform, true),
             {
               u_tBackdrop: { value: readBuffer.texture },
               u_tDiffuse: { value: texture },
@@ -1757,17 +3366,19 @@ export const renderViewportFrameWithSharedPipeline = (
               u_scaleY: { value: scaleY },
               u_offset: { value: offset },
               u_scene_res: {
-                value: new THREE.Vector2(sceneNode.width, sceneNode.height),
+                value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
               },
               u_image_res: { value: new THREE.Vector2(width, height) },
               u_input_transform: { value: inputTransform },
+              u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
               u_flipY: { value: false },
+              ...createOcioUniforms(baseOcioTransform, resources.ocioTextures!),
             },
           );
         } else {
           finalCompositeMaterial = getMaterial(
             `${baseNode.id}_comp_transformed`,
-            TRANSFORMED_TEXTURE_SHADER,
+            buildOcioTransformedTextureShader(baseOcioTransform, false),
             {
               u_tDiffuse: { value: texture },
               u_opacity: { value: opacity / 100 },
@@ -1775,11 +3386,13 @@ export const renderViewportFrameWithSharedPipeline = (
               u_scaleY: { value: scaleY },
               u_offset: { value: offset },
               u_scene_res: {
-                value: new THREE.Vector2(sceneNode.width, sceneNode.height),
+                value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
               },
               u_image_res: { value: new THREE.Vector2(width, height) },
               u_input_transform: { value: inputTransform },
+              u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
               u_flipY: { value: false },
+              ...createOcioUniforms(baseOcioTransform, resources.ocioTextures!),
             },
           );
         }
@@ -1796,187 +3409,70 @@ export const renderViewportFrameWithSharedPipeline = (
       }
       index += consumedCount;
     } else if (baseMode === 'merge') {
-      const sourceNodeId = (baseNode as { inputs?: Record<string, string> }).inputs?.source;
-      const sourceNode = sourceNodeId
-        ? nodes.find((candidate) => candidate.id === sourceNodeId)
-        : null;
-
-      if (!sourceNode?.visible) {
-        continue;
-      }
-
-      let texture: THREE.Texture | undefined;
-      let width = 0;
-      let height = 0;
-      let scaleX = 1;
-      let scaleY = 1;
-      const offset = new THREE.Vector2(0, 0);
-
-      const sourceMode = getRenderMode(sourceNode, effectRegistry);
-      if (isMediaNodeWithRegistry(sourceNode, effectRegistry)) {
-        texture = getMediaTexture(sourceNode as MediaNode, frame);
-        if (!texture) {
-          continue;
-        }
-        width = (sourceNode as MediaNode).width;
-        height = (sourceNode as MediaNode).height;
-        scaleX = getValueAtFrame((sourceNode as MediaNode).transform.scaleX, frame);
-        scaleY = getValueAtFrame((sourceNode as MediaNode).transform.scaleY, frame);
-        offset.set(
-          getValueAtFrame((sourceNode as MediaNode).transform.x, frame),
-          getValueAtFrame((sourceNode as MediaNode).transform.y, frame),
-        );
-      } else if (sourceMode === 'text') {
-        const textTexture = getTextTexture(sourceNode as TextNode);
-        if (!textTexture) {
-          continue;
-        }
-        texture = textTexture.texture;
-        width = textTexture.width;
-        height = textTexture.height;
-        offset.set(
-          getValueAtFrame((sourceNode as TextNode).position.x, frame),
-          getValueAtFrame((sourceNode as TextNode).position.y, frame),
-        );
-      }
-
-      if (!texture) {
-        continue;
-      }
-
-      let inputTransform = 1;
-      const mediaCS = getColorSpaceFromRegistry(sourceNode, effectRegistry);
-      if (mediaCS) {
-        if (mediaCS === 'sRGB' && sceneNode.colorSpace === 'Linear') {
-          inputTransform = 0;
-        } else if ((mediaCS === 'Linear' || mediaCS === 'Raw') && sceneNode.colorSpace === 'sRGB') {
-          inputTransform = 2;
-        }
-      }
-
-      const opacity = getValueAtFrame((baseNode as any).opacity ?? 100, frame);
-      const operator = (baseNode as any).operator ?? BlendMode.OVER;
-      const mergeCompositeMaterial =
-        operator === BlendMode.OVER
-          ? getMaterial(
-              `${baseNode.id}_merge_comp_transformed_straight_over`,
-              STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER,
-              {
-                u_tBackdrop: { value: readBuffer.texture },
-                u_tDiffuse: { value: texture },
-                u_opacity: { value: opacity / 100 },
-                u_scaleX: { value: scaleX },
-                u_scaleY: { value: scaleY },
-                u_offset: { value: offset },
-                u_scene_res: {
-                  value: new THREE.Vector2(sceneNode.width, sceneNode.height),
-                },
-                u_image_res: { value: new THREE.Vector2(width, height) },
-                u_input_transform: { value: inputTransform },
-                u_flipY: { value: false },
-              },
-            )
-          : getMaterial(`${baseNode.id}_merge_comp_transformed`, TRANSFORMED_TEXTURE_SHADER, {
-              u_tDiffuse: { value: texture },
-              u_opacity: { value: opacity / 100 },
-              u_scaleX: { value: scaleX },
-              u_scaleY: { value: scaleY },
-              u_offset: { value: offset },
-              u_scene_res: {
-                value: new THREE.Vector2(sceneNode.width, sceneNode.height),
-              },
-              u_image_res: { value: new THREE.Vector2(width, height) },
-              u_input_transform: { value: inputTransform },
-              u_flipY: { value: false },
-            });
-
-      if (operator === BlendMode.OVER) {
-        renderStraightOverToMain(mergeCompositeMaterial);
-      } else {
-        resources.quad.material = mergeCompositeMaterial;
-        applyBlendMode(mergeCompositeMaterial, operator);
-        renderer.setRenderTarget(readBuffer);
-        renderer.render(resources.scene, resources.camera);
+      const renderedMerge = renderMergeNodeToMain({
+        renderer,
+        scene: resources.scene,
+        camera: resources.camera,
+        quad: resources.quad,
+        getMaterial,
+        node: baseNode,
+        nodes,
+        frame,
+        readBuffer,
+        renderNodeOutputTexture,
+        clearReadBuffer: () => clearRenderTargetTransparent(renderer, readBuffer),
+        renderStraightOverToMain,
+      });
+      if (isPromiseLike(renderedMerge)) {
+        throw new Error('Viewport merge rendering must remain synchronous.');
       }
     } else if (isStackAdjustmentType(baseNode.type) && !isStackedAdjustmentNode(baseNode)) {
-      const adjMode = getRenderMode(baseNode, effectRegistry);
+      const adjMode = getRenderMode(baseNode, nodeRegistry);
+      const explicitPipeTexture = getExplicitPipeTexture(baseNode);
+      const adjustmentInputTexture = explicitPipeTexture ?? readBuffer.texture;
+      const reformatTargetSize =
+        adjMode === 'shader' || adjMode === 'warp' ? getReformatTargetSize(baseNode) : null;
+      const outputSceneSize = reformatTargetSize ?? currentSceneSize;
+      ensureTargetForSceneSize(writeBuffer, outputSceneSize);
+      const rendered = renderAdjustmentNodeToTarget({
+        renderer,
+        scene: resources.scene,
+        camera: resources.camera,
+        quad: resources.quad,
+        getMaterial,
+        nodeRegistry,
+        renderContext,
+        node: baseNode,
+        inputTexture: adjustmentInputTexture,
+        outputTarget: writeBuffer,
+        width: currentSceneSize.width,
+        height: currentSceneSize.height,
+        blurRadiusScale: 1,
+        renderTargetOptions,
+        sceneColorSpace: sceneNode.colorSpace,
+        fallbackSourceNode: previousMediaNode,
+        getInputTextureForNode: (nodeId, targetFrame) => {
+          const sourceNode = nodes.find((l) => l.id === nodeId);
+          if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
+            return getMediaTexture(sourceNode as MediaNode, targetFrame);
+          }
+          return undefined;
+        },
+        getPaintTextures: (node) => getPaintTextures?.(node.id),
+        getRotoMaskTexture,
+        getRotoAddMaskTexture,
+        getRotoSubMaskTexture,
+        getRotoAlphaMode,
+      });
 
-      if (adjMode === 'shader' || adjMode === 'warp') {
-        const uniforms = withDiffuseUniform(
-          getEffectUniforms(baseNode, renderContext, effectRegistry),
-          readBuffer.texture,
-        );
-        // Resolve generic input port connections
-        const inputUniforms = resolveInputUniforms(
-          baseNode,
-          effectRegistry,
-          frame,
-          (nodeId, targetFrame) => {
-            const sourceNode = nodes.find((l) => l.id === nodeId);
-            if (sourceNode && isMediaNodeWithRegistry(sourceNode, effectRegistry)) {
-              return getMediaTexture(sourceNode as MediaNode, targetFrame);
-            }
-            return undefined;
-          },
-          previousMediaNode,
-        );
-        Object.assign(uniforms, inputUniforms);
-        const shader = getEffectShader(baseNode, effectRegistry);
-        if (shader) {
-          const material = getMaterial(baseNode.id, shader, uniforms);
-          resources.quad.material = material;
-          renderer.setRenderTarget(writeBuffer);
-          renderer.render(resources.scene, resources.camera);
-          swapMainBuffers();
-        }
-      } else if (adjMode === 'paint') {
-        const paintTextures = getPaintTextures?.(baseNode.id);
-        if (paintTextures) {
-          const material = getMaterial(`${baseNode.id}_paint`, PAINT_OVER_SHADER, {
-            u_tDiffuse: { value: readBuffer.texture },
-            u_tPaint: { value: paintTextures.color },
-            u_tPaintAlpha: { value: paintTextures.alpha },
-            u_input_transform: { value: getPaintInputTransform(sceneNode.colorSpace) },
-          });
-          resources.quad.material = material;
-          renderer.setRenderTarget(writeBuffer);
-          renderer.render(resources.scene, resources.camera);
-          swapMainBuffers();
-        }
-      } else if (adjMode === 'multipass') {
-        const shaders = getMultipassShaders(baseNode, effectRegistry);
-        if (shaders) {
-          const blurUniforms = getEffectUniforms(baseNode, renderContext, effectRegistry);
-          const radius = getNumericUniformValue(blurUniforms, 'u_radius', 0);
-          const hMaterial = getMaterial(`${baseNode.id}_h`, shaders.horizontal, {
-            u_tDiffuse: { value: readBuffer.texture },
-            u_radius: { value: radius },
-            u_resolution_x: { value: sceneNode.width },
-          });
-          resources.quad.material = hMaterial;
-          renderer.setRenderTarget(auxBuffer);
-          renderer.render(resources.scene, resources.camera);
-          const vMaterial = getMaterial(`${baseNode.id}_v`, shaders.vertical, {
-            u_tDiffuse: { value: auxBuffer.texture },
-            u_radius: { value: radius },
-            u_resolution_y: { value: sceneNode.height },
-          });
-          resources.quad.material = vMaterial;
-          renderer.setRenderTarget(writeBuffer);
-          renderer.render(resources.scene, resources.camera);
-          swapMainBuffers();
-        }
-      } else if (adjMode === 'mask') {
-        const maskTexture = getRotoMaskTexture?.(baseNode.id);
-        if (maskTexture) {
-          const material = getMaterial(baseNode.id, ROTO_SHADER, {
-            u_tDiffuse: { value: readBuffer.texture },
-            u_tMask: { value: maskTexture },
-          });
-          resources.quad.material = material;
-          renderer.setRenderTarget(writeBuffer);
-          renderer.render(resources.scene, resources.camera);
-          swapMainBuffers();
+      if (isPromiseLike(rendered)) {
+        throw new Error('Viewport adjustment rendering must remain synchronous.');
+      }
+
+      if (rendered) {
+        swapMainBuffers();
+        if (reformatTargetSize) {
+          setCurrentSceneSize(reformatTargetSize);
         }
       }
     }
@@ -1984,7 +3480,12 @@ export const renderViewportFrameWithSharedPipeline = (
 
   const viewerChannelIndex = VIEWER_CHANNELS.indexOf(viewerSettings.channels);
   const alphaOverlayActive = viewerSettings.alphaOverlay && viewerSettings.channels !== 'A';
-  const viewerMaterial = getMaterial('viewer', VIEWER_SHADER, {
+  const ocioTransform = getOcioDisplayViewTransform(
+    sceneNode.colorSpace,
+    viewerSettings,
+    colorManagement,
+  );
+  const viewerMaterial = getMaterial('viewer', buildOcioViewerShader(ocioTransform), {
     u_tDiffuse: { value: readBuffer.texture },
     u_gain: { value: viewerSettings.gain },
     u_gamma: { value: viewerSettings.gamma },
@@ -1998,6 +3499,7 @@ export const renderViewportFrameWithSharedPipeline = (
     u_alphaOverlayColor: { value: new THREE.Color(...alphaOverlayStyle.color) },
     u_alphaOverlayOpacity: { value: alphaOverlayStyle.opacity },
     u_alphaOverlayBgDarken: { value: alphaOverlayStyle.bgDarken },
+    ...createOcioUniforms(ocioTransform, resources.ocioTextures!),
   });
   resources.quad.material = viewerMaterial;
   clearRenderTargetTransparent(renderer, null);

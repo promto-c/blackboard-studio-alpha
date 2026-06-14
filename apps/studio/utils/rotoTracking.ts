@@ -19,32 +19,30 @@ import {
   moveRotoPathsToLayer,
 } from '@/utils/rotoHierarchy';
 
-export type RotoTrackingShapeTarget = {
+type RotoTrackingShapeTarget = {
   kind: 'shape';
   pathId: string;
 };
 
-export type ResolvedRotoTrackingLayerTarget = {
+type ResolvedRotoTrackingLayerTarget = {
   kind: 'layer';
   layerId: string;
 };
 
-export type PendingRotoTrackingLayerTarget = {
+type PendingRotoTrackingLayerTarget = {
   kind: 'layer';
   createLayer: true;
   parentLayerId: string | null;
   layerName: string;
 };
 
-export type RotoTrackingLayerTarget =
-  | ResolvedRotoTrackingLayerTarget
-  | PendingRotoTrackingLayerTarget;
+type RotoTrackingLayerTarget = ResolvedRotoTrackingLayerTarget | PendingRotoTrackingLayerTarget;
 
 export type ResolvedRotoTrackingTarget = RotoTrackingShapeTarget | ResolvedRotoTrackingLayerTarget;
 
 export type RotoTrackingTarget = RotoTrackingShapeTarget | RotoTrackingLayerTarget;
 
-export interface RotoTrackingSelectionScope {
+interface RotoTrackingSelectionScope {
   sourcePathIds: string[];
   availableTargets: RotoTrackingTarget['kind'][];
   defaultTarget: RotoTrackingTarget | null;
@@ -429,16 +427,6 @@ export const resolveRotoTrackingTransformDataFromMatrix = (
     matrix,
   };
 };
-
-export const resolveRotoTrackingTransformData = (
-  transform: RotoTrackingTransform | undefined,
-  frame: number,
-): { x: number; y: number; scale: number; rotation: number } | null =>
-  transform
-    ? resolveRotoTrackingTransformDataFromMatrix(
-        resolveRotoTrackingMatrix4(transform.matrix, frame),
-      )
-    : null;
 
 export const reduceRotoTrackingMatrix4ToComponents = (
   matrix: number[][],

@@ -1,8 +1,19 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import type { Pan, SceneNode } from '@blackboard/types';
+import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
+import { useViewportLayoutInsets } from './useViewportLayoutInsets';
+import { calculatePivotedViewportPan, calculateViewportFitTarget } from './viewportFit';
+
+const MIN_VIEWPORT_ZOOM = 0.02;
+const MAX_VIEWPORT_ZOOM = 16;
+const WHEEL_ZOOM_FACTOR = 1.1;
+const VIEWPORT_ANIMATION_SMOOTHING = 0.2;
+const VIEWPORT_ZOOM_EPSILON = 0.001;
+const VIEWPORT_PAN_EPSILON = 0.01;
 
 interface UseViewportGesturesParams {
   sceneNode: SceneNode | undefined;
+  enableGestures?: boolean;
   zoom: number;
   pan: Pan;
   targetZoom: number;
@@ -39,6 +50,7 @@ interface UseViewportGesturesResult {
 
 export function useViewportGestures({
   sceneNode,
+  enableGestures = true,
   zoom,
   pan,
   targetZoom,
@@ -66,6 +78,8 @@ export function useViewportGestures({
   const panRef = useRef(pan);
   const targetZoomRef = useRef(targetZoom);
   const targetPanRef = useRef(targetPan);
+  const previousFitTargetRef = useRef<{ zoom: number; pan: Pan } | null>(null);
+  const prefersReducedMotion = usePrefersReducedMotion();
 
   useLayoutEffect(() => {
     sceneNodeRef.current = sceneNode;
@@ -80,7 +94,11 @@ export function useViewportGestures({
     const panXDiff = targetPan.x - pan.x;
     const panYDiff = targetPan.y - pan.y;
 
-    if (Math.abs(zoomDiff) < 0.001 && Math.abs(panXDiff) < 0.01 && Math.abs(panYDiff) < 0.01) {
+    if (
+      Math.abs(zoomDiff) < VIEWPORT_ZOOM_EPSILON &&
+      Math.abs(panXDiff) < VIEWPORT_PAN_EPSILON &&
+      Math.abs(panYDiff) < VIEWPORT_PAN_EPSILON
+    ) {
       if (animationFrameRef.current) {
         if (zoom !== targetZoom || pan.x !== targetPan.x || pan.y !== targetPan.y) {
           setZoom(targetZoom);
@@ -92,11 +110,10 @@ export function useViewportGestures({
       return;
     }
 
-    const smoothing = 0.2;
-    const nextZoom = zoom + zoomDiff * smoothing;
+    const nextZoom = zoom + zoomDiff * VIEWPORT_ANIMATION_SMOOTHING;
     const nextPan = {
-      x: pan.x + panXDiff * smoothing,
-      y: pan.y + panYDiff * smoothing,
+      x: pan.x + panXDiff * VIEWPORT_ANIMATION_SMOOTHING,
+      y: pan.y + panYDiff * VIEWPORT_ANIMATION_SMOOTHING,
     };
 
     setZoom(nextZoom);
@@ -107,6 +124,16 @@ export function useViewportGestures({
 
   useEffect(() => {
     const isAnimating = zoom !== targetZoom || pan.x !== targetPan.x || pan.y !== targetPan.y;
+    if (isAnimating && prefersReducedMotion) {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      setZoom(targetZoom);
+      setPan(targetPan);
+      return;
+    }
+
     if (isAnimating && !animationFrameRef.current) {
       animationFrameRef.current = requestAnimationFrame(animate);
     }
@@ -117,7 +144,7 @@ export function useViewportGestures({
         animationFrameRef.current = null;
       }
     };
-  }, [zoom, pan, targetZoom, targetPan, animate]);
+  }, [zoom, pan, targetZoom, targetPan, prefersReducedMotion, animate, setPan, setZoom]);
 
   // --- Pivoted pan calculation ---
   const calculatePivotedPan = useCallback(
@@ -125,48 +152,46 @@ export function useViewportGestures({
       if (!viewportRef.current || !sceneNode) return oldPan;
       const rect = viewportRef.current.getBoundingClientRect();
 
-      const pivotX = pivotClient.x - rect.left,
-        pivotY = pivotClient.y - rect.top;
-      const canvasCenterX = rect.width / 2 + oldPan.x,
-        canvasCenterY = rect.height / 2 - oldPan.y;
-      const pivotFromCenterX = pivotX - canvasCenterX,
-        pivotFromCenterY = pivotY - canvasCenterY;
-      const worldX = pivotFromCenterX / oldZoom,
-        worldY = pivotFromCenterY / oldZoom;
-      const newCanvasCenterX = pivotX - worldX * newZoom,
-        newCanvasCenterY = pivotY - worldY * newZoom;
-      const newPanX = newCanvasCenterX - rect.width / 2,
-        newPanY = -(newCanvasCenterY - rect.height / 2);
-      return { x: newPanX, y: newPanY };
+      return calculatePivotedViewportPan({
+        viewportSize: { width: rect.width, height: rect.height },
+        pivot: { x: pivotClient.x - rect.left, y: pivotClient.y - rect.top },
+        oldZoom,
+        newZoom,
+        oldPan,
+      });
     },
-    [sceneNode],
+    [sceneNode, viewportRef],
   );
 
   // --- Fit to view ---
-  const panelWidth = useMemo(() => {
-    if (!viewportRef.current) return 0;
-    return parseFloat(getComputedStyle(viewportRef.current).getPropertyValue('--panel-width')) || 0;
-  }, [viewportSize]);
+  const viewportInsets = useViewportLayoutInsets(viewportRef);
+  const panelWidth = viewportInsets.left;
 
-  const fitZoom = useMemo(() => {
-    if (!sceneNode || !viewportSize.width || !viewportSize.height) return 1;
-    const availableWidth = viewportSize.width - panelWidth;
-    return Math.min(availableWidth / sceneNode.width, viewportSize.height / sceneNode.height) * 0.9;
-  }, [sceneNode, viewportSize, panelWidth]);
+  const fitTarget = useMemo(
+    () =>
+      calculateViewportFitTarget({
+        viewportSize,
+        sceneSize: sceneNode
+          ? { width: sceneNode.width, height: sceneNode.height }
+          : { width: 0, height: 0 },
+        insets: viewportInsets,
+      }),
+    [sceneNode, viewportInsets, viewportSize],
+  );
+  const fitZoom = fitTarget.zoom;
 
   const isFit = useMemo(() => {
-    const targetPanX = panelWidth / 2;
     return (
       Math.abs(targetZoom - fitZoom) < 0.001 &&
-      Math.abs(targetPan.x - targetPanX) < 0.01 &&
-      Math.abs(targetPan.y) < 0.01
+      Math.abs(targetPan.x - fitTarget.pan.x) < 0.01 &&
+      Math.abs(targetPan.y - fitTarget.pan.y) < 0.01
     );
-  }, [targetZoom, targetPan, fitZoom, panelWidth]);
+  }, [targetZoom, targetPan, fitZoom, fitTarget.pan]);
 
   const fitToView = useCallback(() => {
     if (!sceneNode || !viewportSize.width) return;
-    setAnimationTarget({ zoom: fitZoom, pan: { x: panelWidth / 2, y: 0 } });
-  }, [sceneNode, viewportSize, setAnimationTarget, fitZoom, panelWidth]);
+    setAnimationTarget({ zoom: fitZoom, pan: fitTarget.pan });
+  }, [sceneNode, viewportSize, setAnimationTarget, fitZoom, fitTarget.pan]);
 
   // Auto-fit on initial project load
   const hasInitializedView = useRef(false);
@@ -179,6 +204,28 @@ export function useViewportGestures({
       hasInitializedView.current = true;
     }
   }, [sceneNode, viewportSize, fitToView]);
+
+  useEffect(() => {
+    const previousFitTarget = previousFitTargetRef.current;
+    previousFitTargetRef.current = fitTarget;
+
+    if (!previousFitTarget || !sceneNode || !viewportSize.width || !hasInitializedView.current) {
+      return;
+    }
+
+    const fitTargetChanged =
+      Math.abs(fitZoom - previousFitTarget.zoom) >= 0.001 ||
+      Math.abs(fitTarget.pan.x - previousFitTarget.pan.x) >= 0.01 ||
+      Math.abs(fitTarget.pan.y - previousFitTarget.pan.y) >= 0.01;
+    const wasFit =
+      Math.abs(targetZoom - previousFitTarget.zoom) < 0.001 &&
+      Math.abs(targetPan.x - previousFitTarget.pan.x) < 0.01 &&
+      Math.abs(targetPan.y - previousFitTarget.pan.y) < 0.01;
+
+    if (fitTargetChanged && wasFit) {
+      setAnimationTarget({ zoom: fitZoom, pan: fitTarget.pan });
+    }
+  }, [fitTarget, fitZoom, sceneNode, setAnimationTarget, targetPan, targetZoom, viewportSize]);
 
   // --- Touch (pinch-to-zoom) ---
   const gestureStateRef = useRef<{
@@ -194,16 +241,18 @@ export function useViewportGestures({
     if (!element) return;
 
     const handleWheel = (e: WheelEvent) => {
+      if (!enableGestures) return;
       e.preventDefault();
 
       if (!sceneNodeRef.current) return;
 
       const currentTargetZoom = targetZoomRef.current;
       const currentTargetPan = targetPanRef.current;
-      const zoomFactor = 1.1;
       const nextTargetZoom =
-        e.deltaY < 0 ? currentTargetZoom * zoomFactor : currentTargetZoom / zoomFactor;
-      const clampedZoom = Math.max(0.02, Math.min(16, nextTargetZoom));
+        e.deltaY < 0
+          ? currentTargetZoom * WHEEL_ZOOM_FACTOR
+          : currentTargetZoom / WHEEL_ZOOM_FACTOR;
+      const clampedZoom = Math.max(MIN_VIEWPORT_ZOOM, Math.min(MAX_VIEWPORT_ZOOM, nextTargetZoom));
       const nextTargetPan = calculatePivotedPan(
         { x: e.clientX, y: e.clientY },
         currentTargetZoom,
@@ -217,6 +266,7 @@ export function useViewportGestures({
     };
 
     const handleTouchStart = (e: TouchEvent) => {
+      if (!enableGestures) return;
       if (!sceneNodeRef.current || e.touches.length !== 2) return;
 
       e.preventDefault();
@@ -255,6 +305,7 @@ export function useViewportGestures({
     };
 
     const handleTouchMove = (e: TouchEvent) => {
+      if (!enableGestures) return;
       const gesture = gestureStateRef.current;
       if (!gesture || !sceneNodeRef.current) return;
 
@@ -270,7 +321,7 @@ export function useViewportGestures({
 
         const zoomRatio = dist / gesture.initialDist;
         const nextZoom = gesture.startZoom * zoomRatio;
-        const clampedZoom = Math.max(0.02, Math.min(16, nextZoom));
+        const clampedZoom = Math.max(MIN_VIEWPORT_ZOOM, Math.min(MAX_VIEWPORT_ZOOM, nextZoom));
         const panFromZoom = calculatePivotedPan(
           gesture.initialMidpoint,
           gesture.startZoom,
@@ -316,11 +367,12 @@ export function useViewportGestures({
       element.removeEventListener('touchend', handleTouchEnd);
       element.removeEventListener('touchcancel', handleTouchCancel);
     };
-  }, [viewportRef, calculatePivotedPan, setAnimationTarget, setPan, setZoom]);
+  }, [viewportRef, calculatePivotedPan, enableGestures, setAnimationTarget, setPan, setZoom]);
 
   // --- Middle-mouse panning ---
   const startPan = useCallback(
     (e: React.MouseEvent<HTMLDivElement>): boolean => {
+      if (!enableGestures) return false;
       if (e.button !== 1 || !sceneNode) return false;
       e.preventDefault();
 
@@ -342,7 +394,7 @@ export function useViewportGestures({
       };
       return true;
     },
-    [sceneNode, zoom, targetZoom, pan, targetPan, setZoom, setPan],
+    [enableGestures, sceneNode, zoom, targetZoom, pan, targetPan, setZoom, setPan],
   );
 
   useEffect(() => {

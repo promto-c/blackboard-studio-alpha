@@ -4,18 +4,25 @@ import {
   type RenderPipelineOptions as _RenderPipelineOptions,
   type ViewportPipelineOptions as _ViewportPipelineOptions,
 } from '@blackboard/renderer';
-import { NodeType, type AnyNode, type PaintNode } from '@blackboard/types';
+import {
+  NodeType,
+  RotoAlphaMode,
+  type AnyNode,
+  type PaintNode,
+  type RotoNode,
+} from '@blackboard/types';
 import {
   buildPaintAlphaCompositeDataUrl,
   buildPaintCompositeDataUrl,
-} from '@/effects/paint/paintRaster';
-import { withSharedPaintSnapshotRenderer } from '@/effects/paint/paintSnapshotRenderer';
-import { getPaintTextureCommittedState } from '@/effects/paint/paintTextureKeys';
+} from '@/nodes/builtin/paint/paintRaster';
+import { withSharedPaintSnapshotRenderer } from '@/nodes/builtin/paint/paintSnapshotRenderer';
+import { getPaintTextureCommittedState } from '@/nodes/builtin/paint/paintTextureKeys';
 import { getCanvasStorageColorTypeForBitDepth } from '@/utils/canvasColorType';
-import { effectRegistry } from '@/effects/effectRegistry';
+import { nodeRegistry } from '@/nodes/registry';
 import { getAsset } from '@/state/assetStorage';
 import { createExrTexture } from '@/utils/exr';
 import { getBlobName, isExrFileLike } from '@/utils/mediaFiles';
+import { ocioManager } from '@/utils/ocio';
 import { createRotoMaskTextureBundle } from '@/utils/rotoMaskTexture';
 
 export type {
@@ -27,9 +34,9 @@ export type {
 // Omit injected fields so existing consumers don't need to change
 export type RenderPipelineOptions = Omit<
   _RenderPipelineOptions,
-  'effectRegistry' | 'getAsset' | 'loadAssetTexture'
+  'nodeRegistry' | 'getAsset' | 'loadAssetTexture'
 >;
-export type ViewportPipelineOptions = Omit<_ViewportPipelineOptions, 'effectRegistry'>;
+export type ViewportPipelineOptions = Omit<_ViewportPipelineOptions, 'nodeRegistry'>;
 
 interface RuntimePaintComposite {
   paintComposite: string;
@@ -88,9 +95,10 @@ const getRuntimePaintComposite = async (
             width,
             height,
             finalColorSpace,
+            colorManagement: ocioManager.getRendererColorManagement(),
             textureCacheMode: 'persistent',
             renderer,
-            effectRegistry,
+            nodeRegistry,
             getAsset,
             loadAssetTexture: loadStudioAssetTexture,
           });
@@ -190,13 +198,28 @@ export const renderWithSharedPipeline = async (options: RenderPipelineOptions) =
   );
   const rotoMasks = createRotoMaskTextureBundle(nodes, options.sceneNode, frame);
 
+  const rotoAlphaModeMap = new Map<string, number>();
+  nodes.forEach((n) => {
+    if (n.type === NodeType.ROTO) {
+      const mode = (n as RotoNode).alphaMode;
+      rotoAlphaModeMap.set(
+        n.id,
+        mode === RotoAlphaMode.REPLACE ? 1 : mode === RotoAlphaMode.ADD ? 2 : 0,
+      );
+    }
+  });
+
   try {
     const result = await _renderWithSharedPipeline({
       ...options,
+      colorManagement: options.colorManagement ?? ocioManager.getRendererColorManagement(),
       nodes,
-      effectRegistry,
+      nodeRegistry,
       getAsset,
       getRotoMaskTexture: (nodeId) => rotoMasks.textures.get(nodeId),
+      getRotoAddMaskTexture: (nodeId) => rotoMasks.addTextures.get(nodeId),
+      getRotoSubMaskTexture: (nodeId) => rotoMasks.subTextures.get(nodeId),
+      getRotoAlphaMode: (nodeId) => rotoAlphaModeMap.get(nodeId) ?? 0,
       loadAssetTexture: loadStudioAssetTexture,
     });
     return {
@@ -213,4 +236,8 @@ export const renderWithSharedPipeline = async (options: RenderPipelineOptions) =
 };
 
 export const renderViewportFrameWithSharedPipeline = (options: ViewportPipelineOptions) =>
-  _renderViewportFrameWithSharedPipeline({ ...options, effectRegistry });
+  _renderViewportFrameWithSharedPipeline({
+    ...options,
+    colorManagement: options.colorManagement ?? ocioManager.getRendererColorManagement(),
+    nodeRegistry,
+  });

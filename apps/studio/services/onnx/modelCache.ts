@@ -3,7 +3,7 @@ import type {
   OnnxModelExternalData,
   OnnxModelVariantMetadata,
 } from '@blackboard/types';
-import { getOnnxModelRecipe, getVariantRequiredFiles, getVariantTotalSize } from './modelRegistry';
+import { GENERIC_ONNX_RECIPE, getVariantRequiredFiles, getVariantTotalSize } from './modelRegistry';
 
 const DB_NAME = 'BlackboardOnnxModels';
 const DB_VERSION = 1;
@@ -167,12 +167,10 @@ export interface DownloadProgress {
 
 export const downloadAndCacheOnnxModel = async ({
   variant,
-  recipeId,
   onProgress,
   signal,
 }: {
   variant: OnnxModelVariantMetadata;
-  recipeId: string;
   onProgress?: (progress: DownloadProgress) => void;
   signal?: AbortSignal;
 }): Promise<InstalledOnnxModel> => {
@@ -181,6 +179,10 @@ export const downloadAndCacheOnnxModel = async ({
   const fileCount = requiredFiles.length;
   const grandTotal = getVariantTotalSize(variant) ?? variant.sizeBytes ?? 0;
   let cumulativeLoaded = 0;
+  let currentFileName: string | undefined;
+  let currentFileLoaded = 0;
+  let currentFileSize: number | undefined;
+  let currentFileIndex = 0;
 
   const reportProgress = (
     overrides?: Partial<
@@ -191,7 +193,10 @@ export const downloadAndCacheOnnxModel = async ({
       loaded: cumulativeLoaded,
       total: grandTotal,
       percent: grandTotal ? Math.min(100, (cumulativeLoaded / grandTotal) * 100) : undefined,
-      fileIndex: 0,
+      currentFile: currentFileName,
+      currentFileLoaded,
+      currentFileSize,
+      fileIndex: currentFileIndex,
       fileCount,
       ...overrides,
     });
@@ -199,34 +204,40 @@ export const downloadAndCacheOnnxModel = async ({
 
   const onDelta = (bytes: number) => {
     cumulativeLoaded += bytes;
+    currentFileLoaded += bytes;
     reportProgress();
   };
 
   // Download main ONNX file
-  const mainFileName = requiredFiles[0]?.path.split('/').pop() ?? variant.filePath;
+  currentFileName = requiredFiles[0]?.path.split('/').pop() ?? variant.filePath;
+  currentFileLoaded = 0;
+  currentFileSize = variant.sizeBytes;
+  currentFileIndex = 0;
   reportProgress({
-    currentFile: mainFileName,
+    currentFile: currentFileName,
     currentFileLoaded: 0,
-    currentFileSize: variant.sizeBytes,
+    currentFileSize,
     fileIndex: 0,
   });
 
   const blob = await streamDownloadAsBlob(modelUrl, onDelta, signal);
-  const recipe = getOnnxModelRecipe(recipeId);
-  const modelId = `${recipe.id}:${variant.repoName}:${variant.filePath}`;
+  const modelId = `generic:${variant.repoName}:${variant.filePath}`;
   const cacheKey = `${modelId}:${Date.now()}`;
 
   const externalData: OnnxModelExternalData[] = [];
   if (variant.externalDataFiles?.length) {
     for (let i = 0; i < variant.externalDataFiles.length; i++) {
       const extFile = variant.externalDataFiles[i];
-      const extFileName = extFile.path.split('/').pop() ?? extFile.path;
+      currentFileName = extFile.path.split('/').pop() ?? extFile.path;
+      currentFileLoaded = 0;
+      currentFileSize = extFile.size;
+      currentFileIndex = i + 1;
       const extUrl = getExternalDownloadUrl(variant.repoName, extFile.path);
       reportProgress({
-        currentFile: extFileName,
+        currentFile: currentFileName,
         currentFileLoaded: 0,
-        currentFileSize: extFile.size,
-        fileIndex: i + 1,
+        currentFileSize,
+        fileIndex: currentFileIndex,
       });
       const extBlob = await streamDownloadAsBlob(extUrl, onDelta, signal);
       const extKey = externalDataCacheKey(cacheKey, extFile.path);
@@ -245,17 +256,16 @@ export const downloadAndCacheOnnxModel = async ({
     }
   }
 
+  const name =
+    variant.repoName
+      .split('/')
+      .pop()
+      ?.replace(/[-_](ONNX|onnx)$/, '')
+      .replace(/[-_]/g, ' ') ?? GENERIC_ONNX_RECIPE.name;
+
   const installedModel: InstalledOnnxModel = {
     id: modelId,
-    recipeId: recipe.id,
-    name:
-      recipe.id === 'generic'
-        ? (variant.repoName
-            .split('/')
-            .pop()
-            ?.replace(/[-_](ONNX|onnx)$/, '')
-            .replace(/[-_]/g, ' ') ?? recipe.name)
-        : recipe.name,
+    name,
     repoName: variant.repoName,
     variant: {
       ...variant,
@@ -263,9 +273,9 @@ export const downloadAndCacheOnnxModel = async ({
       inputShape: variant.inputShape ?? undefined,
       supportedBackends: variant.supportedBackends.length
         ? variant.supportedBackends
-        : recipe.supportedBackends,
-      preprocessing: variant.preprocessing ?? recipe.preprocessing,
-      postprocessing: variant.postprocessing ?? recipe.postprocessing,
+        : GENERIC_ONNX_RECIPE.supportedBackends,
+      preprocessing: variant.preprocessing ?? GENERIC_ONNX_RECIPE.preprocessing,
+      postprocessing: variant.postprocessing ?? GENERIC_ONNX_RECIPE.postprocessing,
     },
     cacheKey,
     installedAt: Date.now(),

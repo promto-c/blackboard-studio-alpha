@@ -1,4 +1,3 @@
-import React from 'react';
 import { isBackgroundJobActive, type BackgroundJob } from '@/state/editor/services/backgroundJobs';
 
 export const getActiveNodeJobMap = (jobs: BackgroundJob[]): Map<string, BackgroundJob> => {
@@ -15,7 +14,7 @@ export const getActiveNodeJobMap = (jobs: BackgroundJob[]): Map<string, Backgrou
 
 const clampProgress = (value: number | undefined): number => Math.min(100, Math.max(0, value ?? 0));
 
-export const NodeProgressBackground: React.FC<{ job?: BackgroundJob | null }> = ({ job }) => {
+export function NodeProgressBackground({ job }: { job?: BackgroundJob | null }) {
   if (!job) return null;
 
   const progress = clampProgress(job.progress);
@@ -30,4 +29,4 @@ export const NodeProgressBackground: React.FC<{ job?: BackgroundJob | null }> = 
       aria-hidden="true"
     />
   );
-};
+}

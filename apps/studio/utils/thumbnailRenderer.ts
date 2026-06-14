@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createStudioRenderer } from '@blackboard/renderer';
 import { AnyNode, SceneNode } from '@blackboard/types';
-import { getNodeAssetIds, nodeFlags } from '@/effects/effectHelpers';
+import { getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
 import { renderWithSharedPipeline } from '@/renderer/pipeline';
 
 const THUMBNAIL_MAX_DIMENSION = 96;
@@ -13,6 +13,13 @@ const hasRenderableSource = (node: AnyNode): boolean => {
   if (!flags.isSource) return false;
   if (!flags.isMediaNode) return true;
   return getNodeAssetIds(node).length > 0;
+};
+
+const asIsolatedThumbnailNode = (node: AnyNode): AnyNode => {
+  const { detachedFromPipe: _detachedFromPipe, ...rest } = node as AnyNode & {
+    detachedFromPipe?: boolean;
+  };
+  return rest as AnyNode;
 };
 
 // ---------------------------------------------------------------------------
@@ -85,7 +92,7 @@ export async function renderStackToDataURL(
     const { width, height, maxSceneDimension } = getThumbnailRenderSize(sceneNode);
     const blurRadiusScale = THUMBNAIL_MAX_DIMENSION / maxSceneDimension;
     const { canvas, dispose } = await renderWithSharedPipeline({
-      nodes: stack,
+      nodes: stack.map(asIsolatedThumbnailNode),
       sceneNode,
       frame,
       width,

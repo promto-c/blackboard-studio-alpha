@@ -1,41 +1,38 @@
 import { useEffect, useRef } from 'react';
 import { AnyNode, NodeType, RotoNode } from '@blackboard/types';
 
-type RotoInspectorLevel = 'node' | 'shape' | 'layer';
+export type RotoInspectorLevel = 'node' | 'shape' | 'layer';
 
 interface UseAutoSyncRotoInspectorLevelOptions {
   selectedNode?: AnyNode;
-  selectedRotoLayerIds: string[];
-  selectedRotoPathIds: string[];
+  hierarchySelections: Record<string, { layerIds: string[]; itemIds: string[] }>;
+  selectedNodeId: string | null;
   setRotoInspectorLevel: (level: RotoInspectorLevel) => void;
 }
 
 export const useAutoSyncRotoInspectorLevel = ({
   selectedNode,
-  selectedRotoLayerIds,
-  selectedRotoPathIds,
+  hierarchySelections,
+  selectedNodeId,
   setRotoInspectorLevel,
 }: UseAutoSyncRotoInspectorLevelOptions) => {
   const lastSelectionRef = useRef<{
     selectedNodeId: string | null;
-    selectedRotoLayerIdsRef: string[];
-    selectedRotoPathIdsRef: string[];
+    hierarchySelectionsRef: Record<string, { layerIds: string[]; itemIds: string[] }>;
   } | null>(null);
 
   useEffect(() => {
-    const selectedNodeId = selectedNode?.id ?? null;
+    const nodeId = selectedNode?.id ?? null;
     if (
-      lastSelectionRef.current?.selectedNodeId === selectedNodeId &&
-      lastSelectionRef.current?.selectedRotoLayerIdsRef === selectedRotoLayerIds &&
-      lastSelectionRef.current?.selectedRotoPathIdsRef === selectedRotoPathIds
+      lastSelectionRef.current?.selectedNodeId === nodeId &&
+      lastSelectionRef.current?.hierarchySelectionsRef === hierarchySelections
     ) {
       return;
     }
 
     lastSelectionRef.current = {
-      selectedNodeId,
-      selectedRotoLayerIdsRef: selectedRotoLayerIds,
-      selectedRotoPathIdsRef: selectedRotoPathIds,
+      selectedNodeId: nodeId,
+      hierarchySelectionsRef: hierarchySelections,
     };
 
     if (!selectedNode || selectedNode.type !== NodeType.ROTO) {
@@ -43,13 +40,13 @@ export const useAutoSyncRotoInspectorLevel = ({
       return;
     }
 
+    const sel = hierarchySelections[selectedNodeId ?? ''] ?? { layerIds: [], itemIds: [] };
     const rotoNode = selectedNode as RotoNode;
-    const hasSingleSelectedLayer =
-      selectedRotoLayerIds.length === 1 && selectedRotoPathIds.length === 0;
+    const hasSingleSelectedLayer = sel.layerIds.length === 1 && sel.itemIds.length === 0;
     const hasSingleSelectedPath =
-      selectedRotoLayerIds.length === 0 &&
-      selectedRotoPathIds.length === 1 &&
-      rotoNode.paths.some((path) => path.id === selectedRotoPathIds[0]);
+      sel.layerIds.length === 0 &&
+      sel.itemIds.length === 1 &&
+      rotoNode.paths.some((path) => path.id === sel.itemIds[0]);
 
     if (hasSingleSelectedLayer) {
       setRotoInspectorLevel('layer');
@@ -58,5 +55,5 @@ export const useAutoSyncRotoInspectorLevel = ({
     } else {
       setRotoInspectorLevel('node');
     }
-  }, [selectedNode, selectedRotoLayerIds, selectedRotoPathIds, setRotoInspectorLevel]);
+  }, [selectedNode, hierarchySelections, selectedNodeId, setRotoInspectorLevel]);
 };

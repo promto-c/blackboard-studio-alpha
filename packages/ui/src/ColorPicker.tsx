@@ -11,14 +11,14 @@ interface ColorPickerProps {
 
 const clampUnit = (value: number): number => Math.max(0, Math.min(1, value));
 
-const ColorPicker: React.FC<ColorPickerProps> = ({
+function ColorPicker({
   label,
   value,
   onChange,
   alpha,
   onAlphaChange,
   alphaLabel = 'A',
-}) => {
+}: ColorPickerProps) {
   const hexValue = useMemo(() => {
     const [r, g, b] = value.map((c) => Math.round(c * 255));
     return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase()}`;
@@ -81,6 +81,6 @@ const ColorPicker: React.FC<ColorPickerProps> = ({
       </div>
     </div>
   );
-};
+}
 
 export default ColorPicker;

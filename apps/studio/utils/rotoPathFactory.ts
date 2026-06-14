@@ -16,7 +16,7 @@ export const getRotoRectangleCornerPoints = (start: Point, end: Point): Point[] 
   ];
 };
 
-export const createFrameAnchoredRotoPoints = (
+const createFrameAnchoredRotoPoints = (
   points: readonly Point[],
   frame: number,
 ): RotoPath['points'] =>

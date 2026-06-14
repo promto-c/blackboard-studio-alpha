@@ -1,10 +1,10 @@
-import { ImageNode, ImageSequenceNode } from '@blackboard/types';
+import { ImageSequenceNode, MediaSourceNode } from '@blackboard/types';
 
 export type MediaBlobLike = Blob & Partial<Pick<File, 'name'>>;
 
-export const EXR_FILE_EXTENSION_REGEX = /\.exr$/i;
-export const IMAGE_FILE_EXTENSION_REGEX = /\.(avif|bmp|gif|jpe?g|png|tiff?|webp|exr)$/i;
-export const VIDEO_FILE_EXTENSION_REGEX = /\.(mp4|m4v|mov|webm|og[gv])$/i;
+const EXR_FILE_EXTENSION_REGEX = /\.exr$/i;
+const IMAGE_FILE_EXTENSION_REGEX = /\.(avif|bmp|gif|jpe?g|png|tiff?|webp|exr)$/i;
+const VIDEO_FILE_EXTENSION_REGEX = /\.(mp4|m4v|mov|webm|og[gv])$/i;
 
 const EXR_MIME_TYPES = new Set([
   'application/exr',
@@ -13,13 +13,14 @@ const EXR_MIME_TYPES = new Set([
   'image/x-exr',
 ]);
 
-export const IMAGE_IMPORT_ACCEPT = 'image/png, image/jpeg, image/webp, .exr';
+export const IMAGE_IMPORT_ACCEPT =
+  'image/png, image/jpeg, image/webp, image/x-exr, application/x-exr, image/exr, application/exr, .exr';
 export const IMPORT_MEDIA_ACCEPT = `${IMAGE_IMPORT_ACCEPT}, video/mp4, video/webm`;
 
 export const getBlobName = (blob: MediaBlobLike, nameHint?: string): string =>
   nameHint || blob.name || '';
 
-export const isExrMimeType = (mimeType: string): boolean =>
+const isExrMimeType = (mimeType: string): boolean =>
   EXR_MIME_TYPES.has(mimeType.trim().toLowerCase());
 
 export const isExrFileLike = (blob: MediaBlobLike, nameHint?: string): boolean => {
@@ -49,5 +50,5 @@ export const getMediaFileKind = (
 export const getImportedImageColorSpace = (
   blob: MediaBlobLike,
   nameHint?: string,
-): ImageNode['colorSpace'] | ImageSequenceNode['colorSpace'] =>
+): MediaSourceNode['colorSpace'] | ImageSequenceNode['colorSpace'] =>
   isExrFileLike(blob, nameHint) ? 'Linear' : 'sRGB';

@@ -1,4 +1,3 @@
-import React from 'react';
 import type { ProjectBundleReferenceGroup } from '@/state/projectTransfer';
 import * as Icons from '@blackboard/icons';
 
@@ -13,7 +12,7 @@ interface ProjectReferenceImportModalProps {
   onClose: () => void;
 }
 
-const ProjectReferenceImportModal: React.FC<ProjectReferenceImportModalProps> = ({
+function ProjectReferenceImportModal({
   isOpen,
   projectName,
   referenceGroups,
@@ -22,7 +21,7 @@ const ProjectReferenceImportModal: React.FC<ProjectReferenceImportModalProps> = 
   onSelectDirectory,
   onConfirm,
   onClose,
-}) => {
+}: ProjectReferenceImportModalProps) {
   if (!isOpen) return null;
 
   const isReady = referenceGroups.every((group) => selectedDirectoriesByGroupId.has(group.id));
@@ -136,6 +135,6 @@ const ProjectReferenceImportModal: React.FC<ProjectReferenceImportModalProps> = 
       </div>
     </div>
   );
-};
+}
 
 export default ProjectReferenceImportModal;

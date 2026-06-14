@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import FlowViewModeControls from './FlowViewModeControls';
+import { FlowViewModeControls } from './FlowViewModeControls';
 
 describe('FlowViewModeControls', () => {
   it('calls the correct handlers for list mode controls', () => {

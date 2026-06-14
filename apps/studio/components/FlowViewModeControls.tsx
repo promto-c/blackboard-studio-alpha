@@ -1,6 +1,6 @@
-import React from 'react';
 import * as Icons from '@blackboard/icons';
-import SlidingSegmentedControl, {
+import {
+  SlidingSegmentedControl,
   type SlidingSegmentedControlOption,
 } from './SlidingSegmentedControl';
 
@@ -30,13 +30,13 @@ const VIEW_MODE_OPTIONS: SlidingSegmentedControlOption<'list' | 'graph'>[] = [
   { value: 'graph', label: 'Graph', Icon: Icons.Branch, title: 'Graph View' },
 ];
 
-const FlowViewModeControls: React.FC<FlowViewModeControlsProps> = ({
+export function FlowViewModeControls({
   viewMode,
   flowListDirection,
   onSelectViewMode,
   onToggleFlowDirection,
   onAutoArrange,
-}) => {
+}: FlowViewModeControlsProps) {
   return (
     <div className={STYLES.container}>
       <SlidingSegmentedControl
@@ -76,6 +76,4 @@ const FlowViewModeControls: React.FC<FlowViewModeControlsProps> = ({
       )}
     </div>
   );
-};
-
-export default FlowViewModeControls;
+}

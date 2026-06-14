@@ -10,7 +10,7 @@ export interface PropertyFieldProps {
   contentClassName?: string;
 }
 
-const PropertyField: React.FC<PropertyFieldProps> = ({
+function PropertyField({
   label,
   description,
   actions,
@@ -18,7 +18,7 @@ const PropertyField: React.FC<PropertyFieldProps> = ({
   className,
   headerClassName,
   contentClassName,
-}) => {
+}: PropertyFieldProps) {
   const hasHeader = label !== undefined || description !== undefined || actions !== undefined;
   const descriptionTitle = typeof description === 'string' ? description : undefined;
 
@@ -57,6 +57,6 @@ const PropertyField: React.FC<PropertyFieldProps> = ({
       <div className={contentClassName}>{children}</div>
     </div>
   );
-};
+}
 
 export default PropertyField;

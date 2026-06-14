@@ -1,42 +1,48 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { createStudioRenderer } from '@blackboard/renderer';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { usePreferences, colors } from '@/state/preferencesContext';
-import { NodeType, RenderSettings, SceneNode } from '@blackboard/types';
-import {
-  CollapsibleSection,
-  Icons,
-  InspectorLogFooter,
-  SegmentedControl,
-  StyledDropdown,
-  Slider,
-  ToggleSwitch,
-} from '@/components';
+import { colors } from '@/utils/colors';
+import { usePreferences } from '@/state/preferencesContext';
+import { RenderSettings, SceneNode } from '@blackboard/types';
+import { CollapsibleSection, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
+import * as Icons from '@blackboard/icons';
+import { InspectorLogFooter, SegmentedControl, SettingRow, Slider } from '@/components';
 import { renderWithSharedPipeline, type RenderPipelineResult } from '@/renderer/pipeline';
-import { hasRenderableNodes } from '@/effects/effectHelpers';
-import {
-  isBackgroundJobActive,
-  registerBackgroundJobCancelHandler,
-} from '@/state/editor/services/backgroundJobs';
+import { hasRenderableNodes } from '@/nodes/helpers';
+import { isBackgroundJobActive } from '@/state/editor/services/backgroundJobs';
+import { registerBackgroundJobCancelHandler } from '@/state/editor/services/backgroundJobExecutor';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
 import { useNodeExecutionHandler } from '@/hooks/useNodeExecutionHandler';
-import { getDirectoryPickerSupport } from '@/utils/directoryPickerSupport';
+import { useSceneNode } from '@/hooks/useEditorNodes';
+import {
+  getDirectoryPickerSupport,
+  type WindowWithDirectoryPicker,
+} from '@/utils/directoryPickerSupport';
 import { encodePngRgba, type RgbaByteImage } from '@/utils/pngRgba';
-
-const SettingRow: React.FC<{ label: string; children: React.ReactNode }> = ({
-  label,
-  children,
-}) => (
-  <div className="grid grid-cols-[auto,minmax(0,1fr)] items-center gap-2 text-xs">
-    <label className="text-[11px] text-gray-400 whitespace-nowrap">{label}</label>
-    <div className="justify-self-end">{children}</div>
-  </div>
-);
+import { expandGroupNodesForRender } from '@/utils/groupRenderProjection';
+import { getOutputRenderNodes } from '@/utils/viewerSlots';
 
 type ExportMode = NonNullable<RenderSettings['exportMode']>;
 
 let outputRenderQueue: Promise<void> = Promise.resolve();
 const cancelledOutputRenderJobIds = new Set<string>();
+
+let sharedRenderer: THREE.WebGLRenderer | null = null;
+
+function getSharedRenderer(): THREE.WebGLRenderer {
+  if (!sharedRenderer) {
+    sharedRenderer = createStudioRenderer({
+      preserveDrawingBuffer: true,
+      alpha: true,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      premultipliedAlpha: false,
+    });
+  }
+  return sharedRenderer;
+}
 
 const enqueueOutputRender = async (task: () => Promise<void>): Promise<void> => {
   let release: (() => void) | null = null;
@@ -55,32 +61,30 @@ const enqueueOutputRender = async (task: () => Promise<void>): Promise<void> => 
   }
 };
 
-const OutputRenderButton: React.FC<{
+function OutputRenderButton({
+  disabled,
+  exportMode,
+  onRender,
+}: {
   disabled: boolean;
   exportMode: ExportMode;
   onRender: () => void;
-}> = ({ disabled, exportMode, onRender }) => (
-  <button
-    type="button"
-    onClick={onRender}
-    disabled={disabled}
-    title={exportMode === 'sequence' ? 'Render sequence' : 'Render image'}
-    className="inline-flex min-w-0 items-center justify-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:border-gray-700 disabled:bg-gray-900/70 disabled:text-gray-500"
-  >
-    <Icons.Play className="h-3.5 w-3.5" />
-    Render
-  </button>
-);
-
-type WindowWithDirectoryPicker = Window & {
-  showDirectoryPicker?: (options?: {
-    id?: string;
-    mode?: 'read' | 'readwrite';
-  }) => Promise<FileSystemDirectoryHandle>;
-};
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onRender}
+      disabled={disabled}
+      title={exportMode === 'sequence' ? 'Render sequence' : 'Render image'}
+      className="inline-flex min-w-0 items-center justify-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:border-gray-700 disabled:bg-gray-900/70 disabled:text-gray-500"
+    >
+      <Icons.Play className="h-3.5 w-3.5" />
+      Render
+    </button>
+  );
+}
 
 const DEFAULT_SEQUENCE_PADDING = 4;
-const LEGACY_DEFAULT_SEQUENCE_PATTERN = '{name}_####';
 
 const getRenderExtension = (format: RenderSettings['format']): string =>
   format === 'image/jpeg' ? 'jpg' : format.split('/')[1];
@@ -220,20 +224,6 @@ const formatOutputFilename = (
   const name = renderNameTemplate(template, renderSettings, frame, sequenceIndex);
   const basename = stripKnownImageExtension(sanitizeFilenamePart(name, 'export'));
   return `${basename}.${getRenderExtension(renderSettings.format)}`;
-};
-
-const migrateLegacySequencePattern = (pattern: string, filename: string): string => {
-  const trimmedPattern = pattern.trim();
-  const baseName = stripKnownImageExtension(filename.trim()) || 'export';
-  if (!trimmedPattern || trimmedPattern === LEGACY_DEFAULT_SEQUENCE_PATTERN) return baseName;
-
-  return trimmedPattern
-    .replace(/\{name\}/g, baseName)
-    .replace(/\{frame_raw\}/g, '{frame}')
-    .replace(/\{index_raw\}/g, '{index}')
-    .replace(/\{frame\}/g, '{frame:{padding}d}')
-    .replace(/\{index\}/g, '{index:{padding}d}')
-    .replace(/#+/g, (hashes) => `{frame:0${hashes.length}d}`);
 };
 
 const compactSequencePreview = (first: string, last: string): string => {
@@ -435,14 +425,24 @@ const encodeFinalOutputTargetPng = async (
   return encodePngRgba(image);
 };
 
-const RenderSettingsPanel: React.FC = () => {
+function RenderSettingsPanel() {
   const renderSettings = useEditorSelector((s) => s.renderSettings);
   const nodes = useEditorSelector((s) => s.nodes);
+  const flows = useEditorSelector((s) => s.flows);
+  const activeFlow = useEditorSelector((s) => {
+    const flowId = s.activeFlowId ?? s.rootFlowId;
+    return flowId ? s.flows[flowId] : null;
+  });
+  const sceneNode = useSceneNode();
   const projectId = useEditorSelector((s) => s.projectId);
   const viewerSettings = useEditorSelector((s) => s.viewerSettings);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
   const maxFrames = useEditorSelector((s) => s.maxFrames);
   const backgroundJobs = useEditorSelector((s) => s.backgroundJobs);
+  const renderNodes = useMemo(
+    () => expandGroupNodesForRender(getOutputRenderNodes(nodes, activeFlow), flows),
+    [activeFlow, flows, nodes],
+  );
   const {
     setRenderSettings,
     startBackgroundJob,
@@ -486,18 +486,6 @@ const RenderSettingsPanel: React.FC = () => {
   useEffect(() => {
     backgroundJobsRef.current = backgroundJobs;
   }, [backgroundJobs]);
-
-  useEffect(() => {
-    if (renderSettings.sequenceFilenamePattern === undefined) return;
-
-    setRenderSettings({
-      filename: migrateLegacySequencePattern(
-        renderSettings.sequenceFilenamePattern,
-        renderSettings.filename,
-      ),
-      sequenceFilenamePattern: undefined,
-    });
-  }, [renderSettings.filename, renderSettings.sequenceFilenamePattern, setRenderSettings]);
 
   const sequenceRange = useMemo(
     () => getSequenceFrameRange(renderSettings, maxFrames),
@@ -598,7 +586,7 @@ const RenderSettingsPanel: React.FC = () => {
 
   const renderFrameBlob = async (sceneNode: SceneNode, frame: number): Promise<Blob> => {
     const result = await renderWithSharedPipeline({
-      nodes: nodes,
+      nodes: renderNodes,
       sceneNode,
       frame,
       width: sceneNode.width,
@@ -609,6 +597,7 @@ const RenderSettingsPanel: React.FC = () => {
       textureCacheMode: 'none',
       preserveAlpha: renderSettings.includeAlpha,
       captureFinalOutput: renderSettings.includeAlpha && renderSettings.format === 'image/png',
+      renderer: getSharedRenderer(),
     });
 
     try {
@@ -790,7 +779,6 @@ const RenderSettingsPanel: React.FC = () => {
   };
 
   const handleExport = async () => {
-    const sceneNode = nodes.find((node) => node.type === NodeType.SCENE) as SceneNode | undefined;
     if (!sceneNode) {
       alert('Error: No scene found to determine export dimensions.');
       return;
@@ -960,7 +948,9 @@ const RenderSettingsPanel: React.FC = () => {
               <StyledDropdown
                 value={renderSettings.format}
                 options={formatOptions}
-                onChange={(value) => handleSettingChange('format', value)}
+                onChange={(value) =>
+                  handleSettingChange('format', value as RenderSettings['format'])
+                }
                 widthClass="w-44"
               />
             </SettingRow>
@@ -969,7 +959,12 @@ const RenderSettingsPanel: React.FC = () => {
               <StyledDropdown
                 value={renderSettings.outputColorSpace}
                 options={outputColorSpaceOptions}
-                onChange={(value) => handleSettingChange('outputColorSpace', value)}
+                onChange={(value) =>
+                  handleSettingChange(
+                    'outputColorSpace',
+                    value as RenderSettings['outputColorSpace'],
+                  )
+                }
                 widthClass="w-44"
               />
             </SettingRow>
@@ -1064,10 +1059,10 @@ const RenderSettingsPanel: React.FC = () => {
       </div>
     </div>
   );
-};
+}
 
-const OutputAdjustments: React.FC = () => {
+function OutputAdjustments() {
   return <RenderSettingsPanel />;
-};
+}
 
 export default OutputAdjustments;

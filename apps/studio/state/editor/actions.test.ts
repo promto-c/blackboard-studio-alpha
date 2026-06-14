@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  BlendMode,
-  ImageFitMode,
-  NodeType,
-  type AnyNode,
-  type ImageNode,
-  type SceneNode,
-} from '@blackboard/types';
+import { BlendMode, ImageFitMode, NodeType, type AnyNode, type SceneNode } from '@blackboard/types';
 import { OUTPUT_NODE_ID, ROOT_FLOW_ID } from '@/state/editor/flowModel';
 import { buildProjectInitState } from '@/state/editor/actions';
 
@@ -14,7 +7,7 @@ const createSceneNode = (): SceneNode => ({
   id: 'scene-1',
   type: NodeType.SCENE,
   name: 'Scene',
-  visible: true,
+  enabled: true,
   width: 1920,
   height: 1080,
   bitDepth: 8,
@@ -23,11 +16,12 @@ const createSceneNode = (): SceneNode => ({
   fps: 30,
 });
 
-const createImageNode = (): ImageNode => ({
+const createImageNode = (): AnyNode => ({
   id: 'image-1',
-  type: NodeType.IMAGE,
+  type: NodeType.MEDIA_SOURCE,
+  mediaKind: 'image' as const,
   name: 'Image',
-  visible: true,
+  enabled: true,
   src: 'asset-1',
   width: 1920,
   height: 1080,
@@ -47,15 +41,15 @@ describe('buildProjectInitState', () => {
   it('stores initial auto-layout positions in the new project history event', () => {
     const nodes: AnyNode[] = [createSceneNode(), createImageNode()];
 
-    const { historyEntry, persistedState, nodePositions } = buildProjectInitState({
+    const { historyEntry, persistedState } = buildProjectInitState({
       nodes,
       selectedNodeId: 'image-1',
     });
 
-    expect(Object.keys(nodePositions).sort()).toEqual(
-      ['image-1', OUTPUT_NODE_ID, 'scene-1'].sort(),
-    );
-    expect(historyEntry.state.nodePositionsByFlow?.[ROOT_FLOW_ID]).toEqual(nodePositions);
+    const nodePositions = historyEntry.state.nodePositionsByFlow?.[ROOT_FLOW_ID] ?? {};
+    expect(Object.keys(nodePositions).sort()).toEqual(['image-1', OUTPUT_NODE_ID].sort());
     expect(persistedState.nodePositionsByFlow?.[ROOT_FLOW_ID]).toEqual(nodePositions);
+    expect(persistedState.history[0]).toEqual(historyEntry);
+    expect(persistedState.historyIndex).toBe(0);
   });
 });

@@ -24,7 +24,7 @@ const createNode = (): RotoNode => ({
   id: 'roto-1',
   type: NodeType.ROTO,
   name: 'Roto',
-  visible: true,
+  enabled: true,
   invert: false,
   layers: [
     { id: 'layer-a', name: 'Layer A', visible: true, expanded: true },

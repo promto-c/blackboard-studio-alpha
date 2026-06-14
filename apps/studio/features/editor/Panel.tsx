@@ -1,37 +1,37 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { ComfyNode, ComfyWorkflow, EditorTab, NodeType } from '@blackboard/types';
-import { SplitterHandle } from '@blackboard/ui';
-import FlowViewModeControls from '@/components/FlowViewModeControls';
-import NodeItemsPanel, { getNodeItemsComponent } from '@/components/NodeItemsPanel';
-import SlidingSegmentedControl from '@/components/SlidingSegmentedControl';
-import {
-  StudioSegmentedControl,
-  StudioSegmentedControlButton,
-} from '@/components/StudioSegmentedControl';
+import { ComfyNode, ComfyWorkflow, EditorTab, GroupNode, NodeType } from '@blackboard/types';
+import { ScrollArea, SplitterHandle } from '@blackboard/ui';
+import { FlowViewModeControls } from '@/components/FlowViewModeControls';
+import { NodeItemsPanel, getNodeItemsComponent } from '@/components/NodeItemsPanel';
+import { SlidingSegmentedControl } from '@/components/SlidingSegmentedControl';
+import { SegmentedControl, SegmentedControlButton } from '@/components/SegmentedControl';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import { usePreferences } from '@/state/preferencesContext';
 import {
-  EDITOR_ITEMS_PANEL_PERCENT_DEFAULT,
-  EDITOR_ITEMS_PANEL_PERCENT_MAX,
-  EDITOR_ITEMS_PANEL_PERCENT_MIN,
-  EDITOR_SUB_PANEL_HEIGHT_DEFAULT,
-  EDITOR_SUB_PANEL_HEIGHT_MAX,
-  EDITOR_SUB_PANEL_HEIGHT_MIN,
-  EDITOR_SUB_PANEL_WIDTH_DEFAULT,
-  EDITOR_SUB_PANEL_WIDTH_MAX,
-  EDITOR_SUB_PANEL_WIDTH_MIN,
+  EditorSubPanelWidth,
+  EditorSubPanelHeight,
+  EditorItemsPanelPercent,
   clampEditorItemsPanelPercent,
   clampEditorSubPanelHeight,
   clampEditorSubPanelWidth,
 } from '@/utils/editorLayout';
-import { useAutoSyncRotoInspectorLevel } from '@/hooks/useAutoSyncRotoInspectorLevel';
+import {
+  useAutoSyncRotoInspectorLevel,
+  type RotoInspectorLevel,
+} from '@/hooks/useAutoSyncRotoInspectorLevel';
 import ToolsTab from './ToolsTab';
 import HistoryTab from './HistoryTab';
 import FlowTab, { type ActiveComfyGraph } from '@/features/nodes/FlowTab';
 import PropertiesTab from './PropertiesTab';
 import ChatsTab from './ChatsTab';
 import GalleryTab from './GalleryTab';
+import {
+  areNativeGroupPathsEqual,
+  getRecentNativeGroupBreadcrumbPath,
+  type NativeGroupPathItem,
+} from './nativeGroupBreadcrumb';
+import { getSelectedNodeIdsForGrouping } from '@/state/editor/flowModel';
 import * as Icons from '@blackboard/icons';
 
 interface PanelProps {
@@ -42,13 +42,13 @@ type DesktopSubPanelTab = EditorTab.Flow | EditorTab.Gallery | EditorTab.Chats |
 type DesktopPanelTabItem = {
   tab: DesktopSubPanelTab;
   label: string;
-  Icon: React.FC<{ className?: string }>;
+  Icon: React.ComponentType<{ className?: string }>;
 };
 
 const MAIN_FLOW_MIN_WIDTH = 260;
-const LIST_SUB_PANEL_VERTICAL_BREAKPOINT = MAIN_FLOW_MIN_WIDTH + EDITOR_SUB_PANEL_WIDTH_MIN;
+const LIST_SUB_PANEL_VERTICAL_BREAKPOINT = MAIN_FLOW_MIN_WIDTH + EditorSubPanelWidth.MIN;
 const FLOW_HEADER_CLASS =
-  'sticky top-0 z-20 flex items-center gap-2 border-b border-white/10 bg-gray-900/35 px-2 backdrop-blur-md supports-[backdrop-filter]:bg-gray-900/20';
+  'sticky top-0 z-40 flex items-center gap-2 border-b border-white/10 bg-gray-900/35 px-2 backdrop-blur-md supports-[backdrop-filter]:bg-gray-900/20';
 const FLOW_BREADCRUMB_CLASS =
   '-ml-[3px] flex min-w-0 items-center gap-0.5 rounded-md border border-white/10 bg-black/20 p-0.5';
 const FLOW_BREADCRUMB_BUTTON_CLASS =
@@ -67,11 +67,11 @@ const DESKTOP_HEADER_CONTROL_HEIGHT = 28;
 
 const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-const ProjectBranchSwitcher: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
+function ProjectBranchSwitcher({ compact = false }: { compact?: boolean }) {
   const projectId = useEditorSelector((state) => state.projectId);
   const projectBranches = useEditorSelector((state) => state.projectBranches);
   const activeProjectBranchId = useEditorSelector((state) => state.activeProjectBranchId);
-  const { createProjectBranch, switchProjectBranch } = useEditorActions();
+  const { createProjectBranch, deleteProjectBranch, switchProjectBranch } = useEditorActions();
   const activeBranch = projectBranches.find((branch) => branch.id === activeProjectBranchId);
   const [isOpen, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -134,6 +134,26 @@ const ProjectBranchSwitcher: React.FC<{ compact?: boolean }> = ({ compact = fals
     } catch (error) {
       console.error('Could not create project branch:', error);
       window.alert('Could not create branch.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteBranch = async (branchId: string, branchName: string) => {
+    if (!projectId || branchId === 'main' || isBusy) return;
+
+    const confirmed = window.confirm(`Delete branch "${branchName}"? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      await deleteProjectBranch(branchId);
+      if (branchId === activeProjectBranchId) {
+        closeMenu();
+      }
+    } catch (error) {
+      console.error('Could not delete project branch:', error);
+      window.alert('Could not delete branch.');
     } finally {
       setBusy(false);
     }
@@ -232,50 +252,82 @@ const ProjectBranchSwitcher: React.FC<{ compact?: boolean }> = ({ compact = fals
             </button>
           ) : null}
 
-          <div className="mt-1 max-h-56 overflow-y-auto py-0.5" role="listbox">
+          <ScrollArea
+            axis="y"
+            rootClassName="mt-1 max-h-56"
+            viewportClassName="max-h-56"
+            contentClassName="py-0.5"
+            role="listbox"
+          >
             {filteredBranches.map((branch) => {
               const isActive = branch.id === activeProjectBranchId;
+              const canDeleteBranch = branch.id !== 'main';
               return (
-                <button
+                <div
                   key={branch.id}
-                  type="button"
-                  onClick={() => void handleSwitchBranch(branch.id)}
-                  disabled={isBusy}
-                  className={`flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-xs transition ${
+                  className={`group/branch flex h-8 w-full min-w-0 items-center rounded-md text-xs transition ${
                     isActive
                       ? 'bg-primary-500/15 text-primary-100'
                       : 'text-gray-300 hover:bg-white/5 hover:text-white'
-                  } disabled:cursor-wait disabled:text-gray-600`}
+                  } ${isBusy ? 'cursor-wait text-gray-600' : ''}`}
                   role="option"
                   aria-selected={isActive}
                 >
-                  <Icons.Check
-                    className={`h-3.5 w-3.5 flex-shrink-0 ${isActive ? 'opacity-100' : 'opacity-0'}`}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{branch.name}</span>
-                  {branch.kind === 'agent' ? (
-                    <span className="rounded bg-primary-500/10 px-1.5 py-0.5 text-[10px] uppercase text-primary-200">
-                      agent
-                    </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleSwitchBranch(branch.id)}
+                    disabled={isBusy}
+                    className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-l-md px-2 text-left disabled:cursor-wait"
+                    title={branch.name}
+                  >
+                    <Icons.Check
+                      className={`h-3.5 w-3.5 flex-shrink-0 ${isActive ? 'opacity-100' : 'opacity-0'}`}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{branch.name}</span>
+                    {branch.kind === 'agent' ? (
+                      <span className="rounded bg-primary-500/10 px-1.5 py-0.5 text-[10px] uppercase text-primary-200">
+                        agent
+                      </span>
+                    ) : null}
+                  </button>
+                  {canDeleteBranch ? (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleDeleteBranch(branch.id, branch.name);
+                      }}
+                      disabled={isBusy}
+                      className="mr-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-gray-500 opacity-0 transition hover:bg-red-500/10 hover:text-red-200 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40 group-hover/branch:opacity-100 disabled:cursor-wait disabled:text-gray-700"
+                      title={`Delete branch ${branch.name}`}
+                      aria-label={`Delete branch ${branch.name}`}
+                    >
+                      <Icons.Trash className="h-3.5 w-3.5" />
+                    </button>
                   ) : null}
-                </button>
+                </div>
               );
             })}
 
             {filteredBranches.length === 0 && !canCreateBranch ? (
               <div className="px-2 py-2 text-xs text-gray-500">No branches found</div>
             ) : null}
-          </div>
+          </ScrollArea>
         </div>
       ) : null}
     </div>
   );
-};
+}
 
-const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
+function Panel({ isMobilePortrait }: PanelProps) {
   const activeTab = useEditorSelector((s) => s.activeTab);
   const isSubPanelVisible = useEditorSelector((s) => s.isSubPanelVisible);
   const nodes = useEditorSelector((s) => s.nodes);
+  const flows = useEditorSelector((s) => s.flows);
+  const rootFlowId = useEditorSelector((s) => s.rootFlowId);
+  const activeFlowId = useEditorSelector((s) => s.activeFlowId);
+  const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
+  const selectedNodeIds = useEditorSelector((s) => s.selectedNodeIds ?? []);
   const {
     flowListDirection,
     flowViewMode,
@@ -285,7 +337,15 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
     editorSubPanelHeight,
     editorItemsPanelPercent,
   } = usePreferences();
-  const { setActiveTab, setSubPanelVisible, closeProject, autoArrangeNodes } = useEditorActions();
+  const {
+    setActiveTab,
+    setSubPanelVisible,
+    closeProject,
+    autoArrangeNodes,
+    openFlow,
+    openGroupNode,
+    groupSelectedNodes,
+  } = useEditorActions();
   const panelContentRef = useRef<HTMLDivElement>(null);
   const propsItemsSplitRef = useRef<HTMLDivElement>(null);
   const addToolsButtonRef = useRef<HTMLButtonElement>(null);
@@ -300,11 +360,12 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
   const [itemsPanelPercent, setItemsPanelPercent] = useState(() =>
     clampEditorItemsPanelPercent(editorItemsPanelPercent),
   );
-  const [rotoInspectorLevel, setRotoInspectorLevel] = useState<'node' | 'shape'>('node');
+  const [rotoInspectorLevel, setRotoInspectorLevel] = useState<RotoInspectorLevel>('node');
   const [activeComfyGraph, setActiveComfyGraph] = useState<ActiveComfyGraph | null>(null);
-  const otherNodes = useMemo(() => nodes.filter((node) => node.type !== NodeType.SCENE), [nodes]);
-  const selectedRotoLayerIds = useEditorSelector((s) => s.selectedRotoLayerIds);
-  const selectedRotoPathIds = useEditorSelector((s) => s.selectedRotoPathIds);
+  const [nativeGroupBreadcrumbPath, setNativeGroupBreadcrumbPath] = useState<NativeGroupPathItem[]>(
+    [],
+  );
+  const hierarchySelections = useEditorSelector((s) => s.hierarchySelections);
   const selectedNode = useSelectedEditorNode();
   const activeComfyWorkflow = useMemo((): {
     node: ComfyNode;
@@ -327,10 +388,106 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
     activeComfySubgraphPath.length,
   );
   const currentComfyGraphDepth = Math.max(-1, activeComfySubgraphDepth);
+  const nativeGroupPath = useMemo(() => {
+    if (!rootFlowId || !activeFlowId || rootFlowId === activeFlowId) return [];
+
+    const visit = (
+      flowId: string,
+      path: NativeGroupPathItem[],
+      seen: Set<string>,
+    ): NativeGroupPathItem[] | null => {
+      if (flowId === activeFlowId) return path;
+      if (seen.has(flowId)) return null;
+      seen.add(flowId);
+
+      const flow = flows[flowId];
+      if (!flow) return null;
+
+      for (const node of flow.nodes) {
+        if (node.type !== NodeType.GROUP) continue;
+        const group = node as GroupNode;
+        if (!group.childFlowId) continue;
+
+        const result = visit(
+          group.childFlowId,
+          [...path, { flowId: group.childFlowId, nodeId: group.id, name: group.name }],
+          seen,
+        );
+        if (result) return result;
+      }
+
+      return null;
+    };
+
+    return visit(rootFlowId, [], new Set()) ?? [];
+  }, [activeFlowId, flows, rootFlowId]);
+  const shouldPreserveNativeGroupRecentPath = !selectedNodeId && selectedNodeIds.length === 0;
+  const activeNativeGroupBreadcrumbPath = useMemo(
+    () =>
+      getRecentNativeGroupBreadcrumbPath(
+        nativeGroupPath,
+        nativeGroupBreadcrumbPath,
+        flows,
+        rootFlowId,
+        { preserveRecentPath: shouldPreserveNativeGroupRecentPath },
+      ),
+    [
+      flows,
+      nativeGroupBreadcrumbPath,
+      nativeGroupPath,
+      rootFlowId,
+      shouldPreserveNativeGroupRecentPath,
+    ],
+  );
+  useEffect(() => {
+    setNativeGroupBreadcrumbPath((current) => {
+      const nextPath = getRecentNativeGroupBreadcrumbPath(
+        nativeGroupPath,
+        current,
+        flows,
+        rootFlowId,
+        { preserveRecentPath: shouldPreserveNativeGroupRecentPath },
+      );
+      return areNativeGroupPathsEqual(current, nextPath) ? current : nextPath;
+    });
+  }, [flows, nativeGroupPath, rootFlowId, shouldPreserveNativeGroupRecentPath]);
+  const currentNativeGroupDepth =
+    nativeGroupPath.length > 0
+      ? nativeGroupPath.length
+      : activeFlowId === rootFlowId && activeNativeGroupBreadcrumbPath.length > 0
+        ? -1
+        : 0;
+  const isNativeGroupBreadcrumbVisible = activeNativeGroupBreadcrumbPath.length > 0;
+  const openNativeGroupBreadcrumbDepth = useCallback(
+    (depth: number) => {
+      if (depth <= 0) {
+        if (rootFlowId) {
+          openFlow(rootFlowId);
+        }
+        return;
+      }
+
+      const target = activeNativeGroupBreadcrumbPath[depth - 1];
+      if (target) {
+        openFlow(target.flowId);
+      }
+    },
+    [activeNativeGroupBreadcrumbPath, openFlow, rootFlowId],
+  );
+  const isSingleSelectedNode =
+    !!selectedNode &&
+    (selectedNodeIds.length === 0 ||
+      (selectedNodeIds.length === 1 && selectedNodeIds[0] === selectedNode.id));
+  const selectedGroupNode =
+    isSingleSelectedNode && selectedNode?.type === NodeType.GROUP
+      ? (selectedNode as GroupNode)
+      : null;
+  const canGroupSelection = getSelectedNodeIdsForGrouping(nodes, selectedNodeIds).length > 0;
   const selectedComfyWorkflow = useMemo((): {
     node: ComfyNode;
     workflow: ComfyWorkflow;
   } | null => {
+    if (!isSingleSelectedNode) return null;
     if (!selectedNode || selectedNode.type !== NodeType.COMFY) return null;
     const comfyNode = selectedNode as ComfyNode;
     const workflow =
@@ -338,7 +495,7 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
       null;
     if (!workflow?.sourceGraph) return null;
     return { node: comfyNode, workflow };
-  }, [selectedNode]);
+  }, [isSingleSelectedNode, selectedNode]);
   const openSelectedComfyGraph = useCallback(() => {
     if (!selectedComfyWorkflow) return;
     setPreferences({ flowViewMode: 'graph' });
@@ -359,6 +516,30 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
     },
     [activeComfyGraph, activeComfySubgraphPath.length, setActiveComfyGraph],
   );
+  const openRootFlowBreadcrumb = useCallback(() => {
+    if (activeComfyWorkflow && activeNativeGroupBreadcrumbPath.length === 0) {
+      setActiveComfySubgraphDepth(-1);
+      return;
+    }
+
+    setActiveComfyGraph(null);
+    openNativeGroupBreadcrumbDepth(0);
+  }, [
+    activeComfyWorkflow,
+    activeNativeGroupBreadcrumbPath.length,
+    openNativeGroupBreadcrumbDepth,
+    setActiveComfyGraph,
+    setActiveComfySubgraphDepth,
+  ]);
+  const openNativeGroupBreadcrumbFromComposedPath = useCallback(
+    (depth: number) => {
+      if (activeComfyWorkflow) {
+        setActiveComfySubgraphDepth(-1);
+      }
+      openNativeGroupBreadcrumbDepth(depth);
+    },
+    [activeComfyWorkflow, openNativeGroupBreadcrumbDepth, setActiveComfySubgraphDepth],
+  );
   const resolveDesktopSubPanelTab = useCallback((tab: EditorTab): DesktopSubPanelTab => {
     if (tab === EditorTab.History) return EditorTab.History;
     if (tab === EditorTab.Chats) return EditorTab.Chats;
@@ -367,8 +548,8 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
   }, []);
   useAutoSyncRotoInspectorLevel({
     selectedNode,
-    selectedRotoLayerIds,
-    selectedRotoPathIds,
+    hierarchySelections,
+    selectedNodeId,
     setRotoInspectorLevel,
   });
   useEffect(() => {
@@ -553,31 +734,31 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
   const horizontalSubPanelMaxWidth =
     panelContentWidth > 0
       ? Math.max(
-          EDITOR_SUB_PANEL_WIDTH_MIN,
-          Math.min(EDITOR_SUB_PANEL_WIDTH_MAX, panelContentWidth - MAIN_FLOW_MIN_WIDTH),
+          EditorSubPanelWidth.MIN,
+          Math.min(EditorSubPanelWidth.MAX, panelContentWidth - MAIN_FLOW_MIN_WIDTH),
         )
-      : EDITOR_SUB_PANEL_WIDTH_MAX;
+      : EditorSubPanelWidth.MAX;
   const verticalSubPanelMaxHeight =
     panelContentHeight > 0
       ? Math.max(
-          EDITOR_SUB_PANEL_HEIGHT_MIN,
-          Math.min(EDITOR_SUB_PANEL_HEIGHT_MAX, panelContentHeight - EDITOR_SUB_PANEL_HEIGHT_MIN),
+          EditorSubPanelHeight.MIN,
+          Math.min(EditorSubPanelHeight.MAX, panelContentHeight - EditorSubPanelHeight.MIN),
         )
-      : EDITOR_SUB_PANEL_HEIGHT_MAX;
+      : EditorSubPanelHeight.MAX;
   const clampedSubPanelWidth = clampValue(
     subPanelWidth,
-    EDITOR_SUB_PANEL_WIDTH_MIN,
+    EditorSubPanelWidth.MIN,
     horizontalSubPanelMaxWidth,
   );
   const clampedSubPanelHeight = clampValue(
     subPanelHeight,
-    EDITOR_SUB_PANEL_HEIGHT_MIN,
+    EditorSubPanelHeight.MIN,
     verticalSubPanelMaxHeight,
   );
   const clampedItemsPanelPercent = clampValue(
     itemsPanelPercent,
-    EDITOR_ITEMS_PANEL_PERCENT_MIN,
-    EDITOR_ITEMS_PANEL_PERCENT_MAX,
+    EditorItemsPanelPercent.MIN,
+    EditorItemsPanelPercent.MAX,
   );
   const flowContentSizeClass =
     flowViewMode === 'graph'
@@ -700,9 +881,9 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
             label="Items"
             title="Resize properties and items"
             value={clampedItemsPanelPercent}
-            min={EDITOR_ITEMS_PANEL_PERCENT_MIN}
-            max={EDITOR_ITEMS_PANEL_PERCENT_MAX}
-            defaultValue={EDITOR_ITEMS_PANEL_PERCENT_DEFAULT}
+            min={EditorItemsPanelPercent.MIN}
+            max={EditorItemsPanelPercent.MAX}
+            defaultValue={EditorItemsPanelPercent.DEFAULT}
             measurementRef={propsItemsSplitRef}
             valueType="percent"
             direction={-1}
@@ -741,9 +922,9 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
             label={subPanelLabel}
             title="Resize side panel"
             value={clampedSubPanelWidth}
-            min={EDITOR_SUB_PANEL_WIDTH_MIN}
+            min={EditorSubPanelWidth.MIN}
             max={horizontalSubPanelMaxWidth}
-            defaultValue={EDITOR_SUB_PANEL_WIDTH_DEFAULT}
+            defaultValue={EditorSubPanelWidth.DEFAULT}
             direction={-1}
             onChange={setSubPanelWidth}
           />
@@ -810,8 +991,8 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
             </button>
             <div className="h-4 w-px bg-white/10 mx-1" />
             <ProjectBranchSwitcher compact />
-            <StudioSegmentedControl className="flex-1 gap-0.5 rounded-md border-0 bg-black/20">
-              <StudioSegmentedControlButton
+            <SegmentedControl className="flex-1 gap-0.5 rounded-md border-0 bg-black/20">
+              <SegmentedControlButton
                 onClick={() => setActiveTab(EditorTab.Tools)}
                 active={activeTab === EditorTab.Tools}
                 className="flex-1 flex items-center justify-center text-[10px]"
@@ -819,36 +1000,36 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
                 aria-label="Add tools"
               >
                 <Icons.Plus className="h-3.5 w-3.5" />
-              </StudioSegmentedControlButton>
-              <StudioSegmentedControlButton
+              </SegmentedControlButton>
+              <SegmentedControlButton
                 onClick={() => setActiveTab(EditorTab.Flow)}
                 active={activeTab === EditorTab.Flow}
                 className="flex-1 text-[10px]"
               >
                 Flow
-              </StudioSegmentedControlButton>
-              <StudioSegmentedControlButton
+              </SegmentedControlButton>
+              <SegmentedControlButton
                 onClick={() => setActiveTab(EditorTab.Chats)}
                 active={activeTab === EditorTab.Chats}
                 className="flex-1 text-[10px]"
               >
                 Chats
-              </StudioSegmentedControlButton>
-              <StudioSegmentedControlButton
+              </SegmentedControlButton>
+              <SegmentedControlButton
                 onClick={() => setActiveTab(EditorTab.Gallery)}
                 active={activeTab === EditorTab.Gallery}
                 className="flex-1 text-[10px]"
               >
                 Gallery
-              </StudioSegmentedControlButton>
-              <StudioSegmentedControlButton
+              </SegmentedControlButton>
+              <SegmentedControlButton
                 onClick={() => setActiveTab(EditorTab.History)}
                 active={activeTab === EditorTab.History}
                 className="flex-1 text-[10px]"
               >
                 History
-              </StudioSegmentedControlButton>
-            </StudioSegmentedControl>
+              </SegmentedControlButton>
+            </SegmentedControl>
           </div>
           <div className="flex-1 min-h-0 relative">
             <div key={activeTab} className="absolute inset-0 tab-content-animate flex flex-col">
@@ -883,17 +1064,21 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
           <ProjectBranchSwitcher />
           <div
             className={
-              activeComfyWorkflow
+              activeComfyWorkflow || isNativeGroupBreadcrumbVisible
                 ? `${FLOW_BREADCRUMB_CLASS} text-xs font-semibold`
                 : 'flex min-w-0 items-center gap-1 text-xs font-semibold'
             }
           >
-            {activeComfyWorkflow ? (
+            {activeComfyWorkflow || isNativeGroupBreadcrumbVisible ? (
               <button
                 type="button"
-                onClick={() => setActiveComfySubgraphDepth(-1)}
+                onClick={openRootFlowBreadcrumb}
                 className={`${FLOW_BREADCRUMB_BUTTON_CLASS} tracking-wider ${
-                  currentComfyGraphDepth === -1
+                  (
+                    activeComfyWorkflow
+                      ? currentComfyGraphDepth === -1 && currentNativeGroupDepth <= 0
+                      : currentNativeGroupDepth <= 0
+                  )
                     ? 'bg-gray-700 text-primary-100 shadow-sm hover:bg-gray-600 hover:text-white'
                     : 'text-gray-400 hover:bg-white/5 hover:text-white'
                 }`}
@@ -904,6 +1089,34 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
             ) : (
               <span className="px-1 tracking-wider text-gray-400">Flow</span>
             )}
+            {isNativeGroupBreadcrumbVisible ? (
+              <>
+                {activeNativeGroupBreadcrumbPath.map((item, index) => {
+                  const isActiveNativeGroupCrumb =
+                    (!activeComfyWorkflow || currentComfyGraphDepth < 0) &&
+                    index + 1 === currentNativeGroupDepth;
+                  return (
+                    <React.Fragment key={`${item.flowId}:${item.nodeId}`}>
+                      <span className="px-0.5 text-gray-600">/</span>
+                      <button
+                        type="button"
+                        onClick={() => openNativeGroupBreadcrumbFromComposedPath(index + 1)}
+                        className={`max-w-[8rem] truncate rounded px-1.5 py-1 transition-colors ${
+                          isActiveNativeGroupCrumb
+                            ? 'bg-gray-700 text-primary-100 shadow-sm hover:bg-gray-600 hover:text-white'
+                            : index + 1 > currentNativeGroupDepth
+                              ? 'text-gray-500 hover:bg-white/5 hover:text-white'
+                              : 'text-gray-300 hover:bg-white/5 hover:text-white'
+                        }`}
+                        title={item.name}
+                      >
+                        {item.name}
+                      </button>
+                    </React.Fragment>
+                  );
+                })}
+              </>
+            ) : null}
             {activeComfyWorkflow ? (
               <>
                 <span className="px-0.5 text-gray-600">/</span>
@@ -955,17 +1168,48 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
                 </button>
               </>
             ) : null}
+            {!activeComfyWorkflow && !selectedComfyWorkflow && selectedGroupNode ? (
+              <>
+                <span className="px-0.5 text-gray-600">/</span>
+                <button
+                  type="button"
+                  onClick={() => openGroupNode(selectedGroupNode.id)}
+                  className={`${FLOW_BREADCRUMB_BUTTON_CLASS} text-primary-100 hover:bg-white/5 hover:text-white`}
+                  title="Open group"
+                  aria-label="Open group"
+                >
+                  <Icons.FolderOpen className="h-3.5 w-3.5" />
+                  <span className="max-w-[8rem] truncate">Open group</span>
+                </button>
+              </>
+            ) : null}
+            {!activeComfyWorkflow &&
+            !selectedComfyWorkflow &&
+            !selectedGroupNode &&
+            canGroupSelection ? (
+              <>
+                <span className="px-0.5 text-gray-600">/</span>
+                <button
+                  type="button"
+                  onClick={groupSelectedNodes}
+                  className={`${FLOW_BREADCRUMB_BUTTON_CLASS} border border-dashed border-gray-500/55 bg-white/[0.02] text-gray-300 hover:border-gray-400/70 hover:bg-white/5 hover:text-white`}
+                  title="Create group from selected nodes"
+                  aria-label="Create group from selected nodes"
+                >
+                  <Icons.FolderOpen className="h-3.5 w-3.5" />
+                  <span className="max-w-[8rem] truncate">Create group</span>
+                </button>
+              </>
+            ) : null}
           </div>
           <div className="ml-auto flex items-center gap-1">
-            {otherNodes.length > 0 && (
-              <FlowViewModeControls
-                viewMode={flowViewMode}
-                flowListDirection={flowListDirection}
-                onSelectViewMode={setFlowViewMode}
-                onToggleFlowDirection={handleToggleFlowDirection}
-                onAutoArrange={autoArrangeNodes}
-              />
-            )}
+            <FlowViewModeControls
+              viewMode={flowViewMode}
+              flowListDirection={flowListDirection}
+              onSelectViewMode={setFlowViewMode}
+              onToggleFlowDirection={handleToggleFlowDirection}
+              onAutoArrange={autoArrangeNodes}
+            />
 
             <SlidingSegmentedControl
               options={DESKTOP_PANEL_TABS.map(({ tab, label, Icon }) => ({
@@ -1031,9 +1275,7 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
               }
               value={shouldStackSubPanelVertically ? clampedSubPanelHeight : clampedSubPanelWidth}
               min={
-                shouldStackSubPanelVertically
-                  ? EDITOR_SUB_PANEL_HEIGHT_MIN
-                  : EDITOR_SUB_PANEL_WIDTH_MIN
+                shouldStackSubPanelVertically ? EditorSubPanelHeight.MIN : EditorSubPanelWidth.MIN
               }
               max={
                 shouldStackSubPanelVertically
@@ -1042,8 +1284,8 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
               }
               defaultValue={
                 shouldStackSubPanelVertically
-                  ? EDITOR_SUB_PANEL_HEIGHT_DEFAULT
-                  : EDITOR_SUB_PANEL_WIDTH_DEFAULT
+                  ? EditorSubPanelHeight.DEFAULT
+                  : EditorSubPanelWidth.DEFAULT
               }
               direction={-1}
               onChange={shouldStackSubPanelVertically ? setSubPanelHeight : setSubPanelWidth}
@@ -1058,6 +1300,6 @@ const Panel: React.FC<PanelProps> = ({ isMobilePortrait }) => {
       </div>
     </aside>
   );
-};
+}
 
 export default Panel;

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import React, { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { HotkeyProvider } from './provider';
@@ -57,7 +57,7 @@ const buildContext = ({
   viewerSlot: null,
 });
 
-const Fixture: React.FC = () => {
+function Fixture() {
   const flowRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -135,7 +135,7 @@ const Fixture: React.FC = () => {
       <output data-testid="space-state">{isSpacePressed ? 'down' : 'up'}</output>
     </div>
   );
-};
+}
 
 describe('HotkeyProvider integration', () => {
   it('switches active scope by pointer and focus, and tracks pressed keys', () => {

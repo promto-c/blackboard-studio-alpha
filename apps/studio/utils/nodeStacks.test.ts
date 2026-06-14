@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-// Suppress Google GenAI import that effectRegistry pulls in transitively.
+// Suppress Google GenAI import that nodeRegistry pulls in transitively.
 vi.mock('@google/genai', () => ({
   GoogleGenAI: vi.fn(),
   Modality: {},
@@ -15,16 +15,23 @@ import { buildNodeStacks, hasPreviousStackTarget } from '@/utils/nodeStacks';
 // ---------------------------------------------------------------------------
 
 const img = (id: string): AnyNode =>
-  ({ id, type: NodeType.IMAGE, name: id, visible: true }) as AnyNode;
+  ({
+    id,
+    type: NodeType.MEDIA_SOURCE,
+    name: id,
+    enabled: true,
+    mediaKind: 'image',
+    src: '',
+  }) as AnyNode;
 
 const grade = (id: string, stacked = true): AnyNode =>
-  ({ id, type: NodeType.GRADE, name: id, visible: true, stacked }) as AnyNode;
+  ({ id, type: NodeType.GRADE, name: id, enabled: true, stacked }) as AnyNode;
 
 const blur = (id: string, stacked = true): AnyNode =>
-  ({ id, type: NodeType.BLUR, name: id, visible: true, stacked }) as AnyNode;
+  ({ id, type: NodeType.BLUR, name: id, enabled: true, stacked }) as AnyNode;
 
 const scene = (id: string): AnyNode =>
-  ({ id, type: NodeType.SCENE, name: id, visible: true }) as AnyNode;
+  ({ id, type: NodeType.SCENE, name: id, enabled: true }) as AnyNode;
 
 // ---------------------------------------------------------------------------
 // Tests

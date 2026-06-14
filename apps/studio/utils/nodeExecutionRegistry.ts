@@ -1,7 +1,15 @@
-export type NodeExecutionHandler = () => void | Promise<void>;
+type NodeExecutionSource = 'nodeAction' | 'properties' | 'viewportTool';
+
+export interface NodeExecutionContext {
+  source?: NodeExecutionSource;
+  runCount?: number;
+}
+
+export type NodeExecutionHandler = (context?: NodeExecutionContext) => void | Promise<void>;
 
 const nodeExecutionHandlers = new Map<string, NodeExecutionHandler>();
 const pendingExecutionTimers = new Map<string, number>();
+const pendingExecutionContexts = new Map<string, NodeExecutionContext | undefined>();
 const PENDING_EXECUTION_MS = 1500;
 
 const clearPendingExecution = (nodeId: string) => {
@@ -10,14 +18,15 @@ const clearPendingExecution = (nodeId: string) => {
     window.clearTimeout(timer);
   }
   pendingExecutionTimers.delete(nodeId);
+  pendingExecutionContexts.delete(nodeId);
 };
 
-export const executeRegisteredNode = (nodeId: string): boolean => {
+const executeRegisteredNode = (nodeId: string, context?: NodeExecutionContext): boolean => {
   const handler = nodeExecutionHandlers.get(nodeId);
   if (!handler) return false;
 
   try {
-    void Promise.resolve(handler()).catch((error) => {
+    void Promise.resolve(handler(context)).catch((error) => {
       console.error(`Node execution failed for ${nodeId}`, error);
     });
   } catch (error) {
@@ -27,18 +36,23 @@ export const executeRegisteredNode = (nodeId: string): boolean => {
   return true;
 };
 
-export const requestRegisteredNodeExecution = (nodeId: string): boolean => {
-  if (executeRegisteredNode(nodeId)) return true;
+export const requestRegisteredNodeExecution = (
+  nodeId: string,
+  context?: NodeExecutionContext,
+): boolean => {
+  if (executeRegisteredNode(nodeId, context)) return true;
   if (typeof window === 'undefined') return false;
 
   clearPendingExecution(nodeId);
   const timer = window.setTimeout(() => {
     pendingExecutionTimers.delete(nodeId);
+    pendingExecutionContexts.delete(nodeId);
   }, PENDING_EXECUTION_MS);
   pendingExecutionTimers.set(nodeId, timer);
+  pendingExecutionContexts.set(nodeId, context);
 
   window.requestAnimationFrame(() => {
-    if (executeRegisteredNode(nodeId)) {
+    if (executeRegisteredNode(nodeId, context)) {
       clearPendingExecution(nodeId);
     }
   });
@@ -53,9 +67,10 @@ export const registerNodeExecutionHandler = (
   nodeExecutionHandlers.set(nodeId, handler);
 
   if (pendingExecutionTimers.has(nodeId) && typeof window !== 'undefined') {
+    const context = pendingExecutionContexts.get(nodeId);
     clearPendingExecution(nodeId);
     window.setTimeout(() => {
-      executeRegisteredNode(nodeId);
+      executeRegisteredNode(nodeId, context);
     }, 0);
   }
 

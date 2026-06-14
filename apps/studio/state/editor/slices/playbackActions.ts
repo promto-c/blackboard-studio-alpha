@@ -1,10 +1,12 @@
-import type { MutableRefObject } from 'react';
-import type { SetState, GetState } from '@/state/editor/slices/types';
+import type { RefObject } from 'react';
+import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
+import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 
 export function createPlaybackActions(
   set: SetState,
   get: GetState,
-  renderLockRef: MutableRefObject<boolean>,
+  renderLockRef: RefObject<boolean>,
+  deps: { commitMutation: CommitEditorMutation<EditorState> },
 ) {
   let recentFrame: number | null = null;
 
@@ -67,8 +69,16 @@ export function createPlaybackActions(
       }
       set(() => ({ isFrameScrubbing }));
     },
-    setMaxFrames: (frames: number) => set(() => ({ maxFrames: frames })),
-    setFps: (fps: number) => set(() => ({ fps })),
+    setMaxFrames: (frames: number) =>
+      deps.commitMutation(() => ({
+        patch: { maxFrames: frames },
+        persist: 'debounced',
+      })),
+    setFps: (fps: number) =>
+      deps.commitMutation(() => ({
+        patch: { fps },
+        persist: 'debounced',
+      })),
     signalFrameRendered: () => {
       renderLockRef.current = false;
     },

@@ -2,19 +2,21 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Popover from './Popover';
 import ScrollArea from './ScrollArea';
 
-const ChevronDown: React.FC = () => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    className="h-3 w-3 shrink-0 text-gray-400"
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-    strokeWidth={2}
-    aria-hidden="true"
-  >
-    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-  </svg>
-);
+function ChevronDown() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className="h-3 w-3 shrink-0 text-gray-400"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+      aria-hidden="true"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
+  );
+}
 
 interface DropdownOption {
   value: string | number;
@@ -57,7 +59,7 @@ const getOptionSearchText = (option: DropdownOption): string =>
     .join(' ')
     .toLowerCase();
 
-const StyledDropdown: React.FC<StyledDropdownProps> = ({
+function StyledDropdown({
   value,
   options,
   onChange,
@@ -65,7 +67,7 @@ const StyledDropdown: React.FC<StyledDropdownProps> = ({
   popoverWidthClass,
   searchable,
   showSelectedBadges = true,
-}) => {
+}: StyledDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -207,6 +209,6 @@ const StyledDropdown: React.FC<StyledDropdownProps> = ({
       </Popover>
     </div>
   );
-};
+}
 
 export default StyledDropdown;

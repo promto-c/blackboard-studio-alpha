@@ -12,9 +12,8 @@
     "sourceMap": true,
     "strict": false,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["apps/studio/*"]
+      "@/*": ["./apps/studio/*"]
     }
   }
 }

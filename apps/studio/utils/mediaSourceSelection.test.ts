@@ -21,7 +21,7 @@ const SCENE_NODE: AnyNode = {
   id: 'scene',
   type: NodeType.SCENE,
   name: 'Scene',
-  visible: true,
+  enabled: true,
   width: 1920,
   height: 1080,
   bitDepth: 16,
@@ -32,9 +32,10 @@ const SCENE_NODE: AnyNode = {
 
 const IMAGE_NODE: AnyNode = {
   id: 'img-1',
-  type: NodeType.IMAGE,
+  type: NodeType.MEDIA_SOURCE,
+  mediaKind: 'image',
   name: 'Plate',
-  visible: true,
+  enabled: true,
   src: 'plate',
   width: 1920,
   height: 1080,
@@ -46,9 +47,10 @@ const IMAGE_NODE: AnyNode = {
 
 const VIDEO_NODE: AnyNode = {
   id: 'vid-1',
-  type: NodeType.VIDEO,
+  type: NodeType.MEDIA_SOURCE,
+  mediaKind: 'video',
   name: 'Alt Plate',
-  visible: true,
+  enabled: true,
   src: 'alt-plate',
   width: 1920,
   height: 1080,
@@ -63,7 +65,7 @@ const GRADE_NODE: AnyNode = {
   id: 'grade-1',
   type: NodeType.GRADE,
   name: 'Look',
-  visible: true,
+  enabled: true,
   stacked: true,
   grade: {
     brightness: 0,
@@ -78,7 +80,7 @@ const ROTO_NODE: AnyNode = {
   id: 'roto-1',
   type: NodeType.ROTO,
   name: 'Roto',
-  visible: true,
+  enabled: true,
   invert: false,
   paths: [
     {

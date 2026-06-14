@@ -1,11 +1,8 @@
 import type { RotoPath, RotoPointType } from '@blackboard/types';
 
-export const DEFAULT_ROTO_POINT_TYPE: RotoPointType = 'bspline';
+const DEFAULT_ROTO_POINT_TYPE: RotoPointType = 'bspline';
 
-export const isRotoPointType = (value: unknown): value is RotoPointType =>
-  value === 'bspline' || value === 'cardinal' || value === 'corner';
-
-export const getNormalizedRotoPointTypes = (
+const getNormalizedRotoPointTypes = (
   pointTypes: readonly RotoPointType[] | undefined,
   pointCount: number,
 ): RotoPointType[] =>
@@ -18,7 +15,7 @@ export const getRotoPointType = (
 ): RotoPointType =>
   getNormalizedRotoPointTypes(pointTypes, pointCount)[index] ?? DEFAULT_ROTO_POINT_TYPE;
 
-export const compactRotoPointTypes = (
+const compactRotoPointTypes = (
   pointTypes: readonly RotoPointType[] | undefined,
   pointCount: number,
 ): RotoPointType[] | undefined => {

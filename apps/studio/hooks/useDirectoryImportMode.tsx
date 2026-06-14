@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DirectoryImportMode } from '@blackboard/types';
 import { DirectoryImportModeModal } from '@blackboard/ui';
 import { usePreferences } from '@/state/preferencesContext';

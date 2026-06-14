@@ -27,36 +27,6 @@ export interface HuggingFaceRepoFile {
   type?: string;
 }
 
-export const DEPTH_ANYTHING_V2_RECIPE: OnnxModelRecipe = {
-  id: 'depth-anything-v2',
-  name: 'Depth Anything V2',
-  task: 'depth-estimation',
-  defaultRepoName: 'onnx-community/depth-anything-v2-small-ONNX',
-  defaultInputSize: { width: 518, height: 518 },
-  inputPortLabel: 'Image',
-  outputPortLabel: 'Depth Map',
-  preprocessing: 'Resize to square input, ImageNet normalization, NCHW float tensor.',
-  postprocessing: 'Normalize first output tensor to grayscale depth map.',
-  supportedBackends: ['webgpu', 'wasm'],
-  normalization: 'imagenet',
-};
-
-export const LAMA_RECIPE: OnnxModelRecipe = {
-  id: 'lama',
-  name: 'LaMa Inpainting',
-  task: 'inpainting',
-  defaultRepoName: 'opencv/inpainting_lama',
-  defaultInputSize: { width: 512, height: 512 },
-  inputPortLabel: 'Image + Mask',
-  outputPortLabel: 'Inpainted',
-  preprocessing: 'Resize to 512x512, scale pixel values to [0, 1].',
-  postprocessing: 'Clamp raw output values to [0, 255].',
-  supportedBackends: ['webgpu', 'wasm'],
-  normalization: 'zeroToOne',
-};
-
-export const ONNX_MODEL_RECIPES: OnnxModelRecipe[] = [DEPTH_ANYTHING_V2_RECIPE, LAMA_RECIPE];
-
 export const GENERIC_ONNX_RECIPE: OnnxModelRecipe = {
   id: 'generic',
   name: 'Generic ONNX',
@@ -70,21 +40,6 @@ export const GENERIC_ONNX_RECIPE: OnnxModelRecipe = {
   supportedBackends: ['webgpu', 'wasm'],
   normalization: 'imagenet',
 };
-
-export const resolveRecipe = (repoName: string): OnnxModelRecipe => {
-  const normalized = normalizeHuggingFaceRepoName(repoName);
-  for (const recipe of ONNX_MODEL_RECIPES) {
-    if (
-      recipe.defaultRepoName &&
-      normalizeHuggingFaceRepoName(recipe.defaultRepoName) === normalized
-    ) {
-      return recipe;
-    }
-  }
-  return GENERIC_ONNX_RECIPE;
-};
-
-export const DEFAULT_ONNX_REPO = DEPTH_ANYTHING_V2_RECIPE.defaultRepoName;
 
 export const getVariantTotalSize = (variant: OnnxModelVariantMetadata): number | undefined => {
   if (variant.sizeBytes == null) return undefined;
@@ -114,9 +69,6 @@ export const getVariantRequiredFiles = (
   }
   return files;
 };
-
-export const getOnnxModelRecipe = (recipeId?: string): OnnxModelRecipe =>
-  ONNX_MODEL_RECIPES.find((recipe) => recipe.id === recipeId) ?? GENERIC_ONNX_RECIPE;
 
 export const normalizeHuggingFaceRepoName = (value: string): string =>
   value
@@ -253,19 +205,27 @@ const getAssociatedExternalData = (
 ): { path: string; size?: number }[] => {
   const dir = getDirectoryPath(onnxPath);
   const fullFileName = onnxPath.slice(dir.length > 0 ? dir.length + 1 : 0);
+  const onnxFilesInDirectory = files.filter(
+    (file) =>
+      file.path !== onnxPath &&
+      getDirectoryPath(file.path) === dir &&
+      file.path.toLowerCase().endsWith('.onnx'),
+  );
+  const hasAmbiguousOnnxPeer = onnxFilesInDirectory.length > 0;
+
   return files.filter((f) => {
     if (f.path === onnxPath || getDirectoryPath(f.path) !== dir || !isExternalDataFile(f.path)) {
       return false;
     }
     const fName = f.path.slice(dir.length > 0 ? dir.length + 1 : 0);
-    return fName.startsWith(fullFileName);
+    return !hasAmbiguousOnnxPeer || fName.startsWith(fullFileName);
   });
 };
 
 export const resolveOnnxVariantsFromRepoFiles = ({
   repoName,
   files,
-  recipe = DEPTH_ANYTHING_V2_RECIPE,
+  recipe = GENERIC_ONNX_RECIPE,
 }: {
   repoName: string;
   files: HuggingFaceRepoFile[];
@@ -337,7 +297,7 @@ export const searchHuggingFaceOnnxModels = async (
 ): Promise<string[]> => {
   const params = new URLSearchParams({
     search: query.trim() || 'onnx',
-    library: 'onnx',
+    filter: 'onnx',
     limit: '12',
   });
   const response = await fetch(`https://huggingface.co/api/models?${params.toString()}`, {

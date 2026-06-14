@@ -4,7 +4,10 @@ import { useState } from 'react';
 import { renderHook, act } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { NodeType, type AnyNode, type RotoNode } from '@blackboard/types';
-import { useAutoSyncRotoInspectorLevel } from './useAutoSyncRotoInspectorLevel';
+import {
+  useAutoSyncRotoInspectorLevel,
+  type RotoInspectorLevel,
+} from './useAutoSyncRotoInspectorLevel';
 
 const createRotoNode = (id: string, pathIds: string[]): AnyNode =>
   ({
@@ -21,25 +24,23 @@ const createBlurNode = (id: string): AnyNode =>
     name: `Blur ${id}`,
   }) as AnyNode;
 
+type TestOptions = {
+  selectedNode?: AnyNode;
+  hierarchySelections: Record<string, { layerIds: string[]; itemIds: string[] }>;
+  selectedNodeId: string | null;
+};
+
 describe('useAutoSyncRotoInspectorLevel', () => {
   it('activates shape inspector when the roto selection changes to one path', () => {
     const rotoNode = createRotoNode('roto-1', ['shape-1', 'shape-2']);
 
     const { result, rerender } = renderHook(
-      ({
-        selectedNode,
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      }: {
-        selectedNode?: AnyNode;
-        selectedRotoLayerIds: string[];
-        selectedRotoPathIds: string[];
-      }) => {
-        const [level, setLevel] = useState<'node' | 'shape'>('node');
+      (options: TestOptions) => {
+        const [level, setLevel] = useState<RotoInspectorLevel>('node');
         useAutoSyncRotoInspectorLevel({
-          selectedNode,
-          selectedRotoLayerIds,
-          selectedRotoPathIds,
+          selectedNode: options.selectedNode,
+          hierarchySelections: options.hierarchySelections,
+          selectedNodeId: options.selectedNodeId,
           setRotoInspectorLevel: setLevel,
         });
         return { level, setLevel };
@@ -47,8 +48,8 @@ describe('useAutoSyncRotoInspectorLevel', () => {
       {
         initialProps: {
           selectedNode: rotoNode,
-          selectedRotoLayerIds: [],
-          selectedRotoPathIds: [],
+          hierarchySelections: { 'roto-1': { layerIds: [], itemIds: [] } },
+          selectedNodeId: 'roto-1',
         },
       },
     );
@@ -58,8 +59,8 @@ describe('useAutoSyncRotoInspectorLevel', () => {
     act(() => {
       rerender({
         selectedNode: rotoNode,
-        selectedRotoLayerIds: [],
-        selectedRotoPathIds: ['shape-1'],
+        hierarchySelections: { 'roto-1': { layerIds: [], itemIds: ['shape-1'] } },
+        selectedNodeId: 'roto-1',
       });
     });
 
@@ -73,20 +74,12 @@ describe('useAutoSyncRotoInspectorLevel', () => {
     } as unknown as RotoNode;
 
     const { result, rerender } = renderHook(
-      ({
-        selectedNode,
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      }: {
-        selectedNode?: AnyNode;
-        selectedRotoLayerIds: string[];
-        selectedRotoPathIds: string[];
-      }) => {
-        const [level, setLevel] = useState<'node' | 'shape' | 'layer'>('node');
+      (options: TestOptions) => {
+        const [level, setLevel] = useState<RotoInspectorLevel>('node');
         useAutoSyncRotoInspectorLevel({
-          selectedNode,
-          selectedRotoLayerIds,
-          selectedRotoPathIds,
+          selectedNode: options.selectedNode,
+          hierarchySelections: options.hierarchySelections,
+          selectedNodeId: options.selectedNodeId,
           setRotoInspectorLevel: setLevel,
         });
         return { level, setLevel };
@@ -94,8 +87,8 @@ describe('useAutoSyncRotoInspectorLevel', () => {
       {
         initialProps: {
           selectedNode: rotoNode,
-          selectedRotoLayerIds: [],
-          selectedRotoPathIds: [],
+          hierarchySelections: { 'roto-1': { layerIds: [], itemIds: [] } },
+          selectedNodeId: 'roto-1',
         },
       },
     );
@@ -105,8 +98,8 @@ describe('useAutoSyncRotoInspectorLevel', () => {
     act(() => {
       rerender({
         selectedNode: rotoNode,
-        selectedRotoLayerIds: ['layer-1'],
-        selectedRotoPathIds: [],
+        hierarchySelections: { 'roto-1': { layerIds: ['layer-1'], itemIds: [] } },
+        selectedNodeId: 'roto-1',
       });
     });
 
@@ -115,30 +108,26 @@ describe('useAutoSyncRotoInspectorLevel', () => {
 
   it('does not override a manual toggle until the selection changes again', () => {
     const rotoNode = createRotoNode('roto-1', ['shape-1', 'shape-2']);
-    const initialSelection = ['shape-1'];
-    const emptyLayerSelection: string[] = [];
+
+    // Use stable references so the hook detects no selection change
+    const shape1Selections = { 'roto-1': { layerIds: [], itemIds: ['shape-1'] as string[] } };
+    const shape2Selections = { 'roto-1': { layerIds: [], itemIds: ['shape-2'] as string[] } };
 
     const { result, rerender } = renderHook(
-      ({
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      }: {
-        selectedRotoLayerIds: string[];
-        selectedRotoPathIds: string[];
-      }) => {
-        const [level, setLevel] = useState<'node' | 'shape'>('node');
+      (options: TestOptions) => {
+        const [level, setLevel] = useState<RotoInspectorLevel>('node');
         useAutoSyncRotoInspectorLevel({
           selectedNode: rotoNode,
-          selectedRotoLayerIds,
-          selectedRotoPathIds,
+          hierarchySelections: options.hierarchySelections,
+          selectedNodeId: options.selectedNodeId,
           setRotoInspectorLevel: setLevel,
         });
         return { level, setLevel };
       },
       {
         initialProps: {
-          selectedRotoLayerIds: emptyLayerSelection,
-          selectedRotoPathIds: initialSelection,
+          hierarchySelections: shape1Selections,
+          selectedNodeId: 'roto-1',
         },
       },
     );
@@ -153,8 +142,8 @@ describe('useAutoSyncRotoInspectorLevel', () => {
 
     act(() => {
       rerender({
-        selectedRotoLayerIds: emptyLayerSelection,
-        selectedRotoPathIds: initialSelection,
+        hierarchySelections: shape1Selections,
+        selectedNodeId: 'roto-1',
       });
     });
 
@@ -162,8 +151,8 @@ describe('useAutoSyncRotoInspectorLevel', () => {
 
     act(() => {
       rerender({
-        selectedRotoLayerIds: emptyLayerSelection,
-        selectedRotoPathIds: ['shape-2'],
+        hierarchySelections: shape2Selections,
+        selectedNodeId: 'roto-1',
       });
     });
 
@@ -174,26 +163,20 @@ describe('useAutoSyncRotoInspectorLevel', () => {
     const rotoNode = createRotoNode('roto-1', ['shape-1', 'shape-2']);
 
     const { result, rerender } = renderHook(
-      ({
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      }: {
-        selectedRotoLayerIds: string[];
-        selectedRotoPathIds: string[];
-      }) => {
-        const [level, setLevel] = useState<'node' | 'shape'>('node');
+      (options: TestOptions) => {
+        const [level, setLevel] = useState<RotoInspectorLevel>('node');
         useAutoSyncRotoInspectorLevel({
           selectedNode: rotoNode,
-          selectedRotoLayerIds,
-          selectedRotoPathIds,
+          hierarchySelections: options.hierarchySelections,
+          selectedNodeId: options.selectedNodeId,
           setRotoInspectorLevel: setLevel,
         });
         return { level, setLevel };
       },
       {
         initialProps: {
-          selectedRotoLayerIds: [],
-          selectedRotoPathIds: ['shape-1'],
+          hierarchySelections: { 'roto-1': { layerIds: [], itemIds: ['shape-1'] } },
+          selectedNodeId: 'roto-1',
         },
       },
     );
@@ -205,7 +188,10 @@ describe('useAutoSyncRotoInspectorLevel', () => {
     expect(result.current.level).toBe('node');
 
     act(() => {
-      rerender({ selectedRotoLayerIds: [], selectedRotoPathIds: ['shape-1'] });
+      rerender({
+        hierarchySelections: { 'roto-1': { layerIds: [], itemIds: ['shape-1'] } },
+        selectedNodeId: 'roto-1',
+      });
     });
 
     expect(result.current.level).toBe('shape');
@@ -216,20 +202,12 @@ describe('useAutoSyncRotoInspectorLevel', () => {
     const blurNode = createBlurNode('blur-1');
 
     const { result, rerender } = renderHook(
-      ({
-        selectedNode,
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      }: {
-        selectedNode?: AnyNode;
-        selectedRotoLayerIds: string[];
-        selectedRotoPathIds: string[];
-      }) => {
-        const [level, setLevel] = useState<'node' | 'shape'>('shape');
+      (options: TestOptions) => {
+        const [level, setLevel] = useState<RotoInspectorLevel>('shape');
         useAutoSyncRotoInspectorLevel({
-          selectedNode,
-          selectedRotoLayerIds,
-          selectedRotoPathIds,
+          selectedNode: options.selectedNode,
+          hierarchySelections: options.hierarchySelections,
+          selectedNodeId: options.selectedNodeId,
           setRotoInspectorLevel: setLevel,
         });
         return level;
@@ -237,8 +215,8 @@ describe('useAutoSyncRotoInspectorLevel', () => {
       {
         initialProps: {
           selectedNode: rotoNode,
-          selectedRotoLayerIds: [],
-          selectedRotoPathIds: ['shape-1', 'shape-2'],
+          hierarchySelections: { 'roto-1': { layerIds: [], itemIds: ['shape-1', 'shape-2'] } },
+          selectedNodeId: 'roto-1',
         },
       },
     );
@@ -248,8 +226,8 @@ describe('useAutoSyncRotoInspectorLevel', () => {
     act(() => {
       rerender({
         selectedNode: blurNode,
-        selectedRotoLayerIds: [],
-        selectedRotoPathIds: ['shape-1'],
+        hierarchySelections: { blurNode: { layerIds: [], itemIds: ['shape-1'] } },
+        selectedNodeId: 'blur-1',
       });
     });
 
@@ -260,26 +238,20 @@ describe('useAutoSyncRotoInspectorLevel', () => {
     const rotoNode = createRotoNode('roto-1', ['shape-1', 'shape-2']);
 
     const { result } = renderHook(
-      ({
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      }: {
-        selectedRotoLayerIds: string[];
-        selectedRotoPathIds: string[];
-      }) => {
-        const [level, setLevel] = useState<'node' | 'shape'>('shape');
+      (options: TestOptions) => {
+        const [level, setLevel] = useState<RotoInspectorLevel>('shape');
         useAutoSyncRotoInspectorLevel({
           selectedNode: rotoNode,
-          selectedRotoLayerIds,
-          selectedRotoPathIds,
+          hierarchySelections: options.hierarchySelections,
+          selectedNodeId: options.selectedNodeId,
           setRotoInspectorLevel: setLevel,
         });
         return level;
       },
       {
         initialProps: {
-          selectedRotoLayerIds: ['layer-1'],
-          selectedRotoPathIds: ['shape-1'],
+          hierarchySelections: { 'roto-1': { layerIds: ['layer-1'], itemIds: ['shape-1'] } },
+          selectedNodeId: 'roto-1',
         },
       },
     );

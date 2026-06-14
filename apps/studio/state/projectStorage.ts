@@ -1,9 +1,9 @@
 import { getAssetSize } from '@/state/assetStorage';
 import { loadProjectState } from '@/state/persist';
-import { getNodeAssetIds } from '@/effects/effectHelpers';
+import { getNodeAssetIds } from '@/nodes/helpers';
 import { NodeType, type AnyNode, type ProjectIndexEntry } from '@blackboard/types';
 
-const STORAGE_CACHE_KEY = 'blackboard-storage-cache-v2';
+const STORAGE_CACHE_KEY = 'blackboard-studio-storage-cache';
 
 type StorageBreakdown = {
   assets: number;
@@ -16,7 +16,6 @@ type StorageBreakdown = {
 
 type ProjectStateLike = {
   flows?: Record<string, { nodes?: AnyNode[] }>;
-  history?: Array<{ state?: ProjectStateLike }>;
 };
 
 export type ProjectStorageSummary = {
@@ -175,11 +174,6 @@ const sumBytes = async (ids: Set<string>, signal?: AbortSignal): Promise<number>
 const gatherReferencedNodes = (projectState: ProjectStateLike): AnyNode[] => {
   const nodes: AnyNode[] = [];
   nodes.push(...collectNodesFromState(projectState));
-
-  (projectState.history ?? []).forEach((entry) => {
-    nodes.push(...collectNodesFromState(entry.state ?? {}));
-  });
-
   return nodes;
 };
 
@@ -252,17 +246,6 @@ const computeStorageSummary = async (
 
       if (node.type === NodeType.PAINT) {
         addIdSet(renderIds, getNodeAssetIds(node));
-        continue;
-      }
-
-      if (node.type === NodeType.IMAGE && 'aiMetadata' in node && node.aiMetadata) {
-        const aiNode = node as Extract<AnyNode, { type: typeof NodeType.IMAGE }> & {
-          aiMetadata?: { variants?: Array<{ src?: string | null }> };
-        };
-        addIdSet(renderIds, [
-          aiNode.src,
-          ...(aiNode.aiMetadata?.variants ?? []).map((variant) => variant.src ?? ''),
-        ]);
         continue;
       }
 

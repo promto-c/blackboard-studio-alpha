@@ -1,192 +1,129 @@
-import {
-  HistoryEntry,
-  NodeType,
-  AnyNode,
-  EditorTab,
-  Keyframe,
-  AnimatableNumber,
-  NodePositions,
-} from '@blackboard/types';
-import { effectRegistry } from '@/effects/effectRegistry';
-import { setKeyframeValue } from '@/effects/effectAnimation';
-import { getDefaultViewportTool, nodeFlags } from '@/effects/effectHelpers';
-import { getNodeCount } from '@/state/editor/selectors';
+import { NodeType, AnyNode, Flow, GroupNode, Keyframe, AnimatableNumber } from '@blackboard/types';
+import { nodeRegistry } from '@/nodes/registry';
+import { setKeyframeValue } from '@/nodes/animation';
+import { nodeFlags } from '@/nodes/helpers';
 import { setImmutable, getImmutable, clampKeyframeTangents } from '@blackboard/renderer';
-import { NODE_WIDTH, HORIZONTAL_GAP, VERTICAL_GAP } from '@/utils/autoLayoutGraph';
-import { buildMergeModel, isMergeNodeId, type MergeModel } from '@/utils/mergeNodes';
-import { buildNodeStacks, hasPreviousStackTarget } from '@/utils/nodeStacks';
 import {
-  isNodeStacked,
-  isStackedAdjustmentNode,
-  isStackAdjustmentType,
-} from '@/utils/nodePredicates';
-import { wouldCreateCycle, cleanDanglingNodeInputs } from '@/utils/connectionGraph';
+  buildNodeStacks,
+  hasPreviousStackTarget,
+  getStackedGroup,
+  getStackedGroupEndIndex,
+} from '@/utils/nodeStacks';
+import { isNodeStacked, isStackAdjustmentType } from '@/utils/nodePredicates';
+import { getRootFlow, updateFlowNode, OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import type { SetState, GetState, EditorState } from '@/state/editor/slices/types';
 import {
-  sanitizeActiveViewerSlot,
-  sanitizeViewerNodeId,
-  sanitizeViewerSlots,
-} from '@/utils/viewerSlots';
-import type { SetState, GetState } from '@/state/editor/slices/types';
-
-type GraphPoint = { x: number; y: number };
-
-type StackPositionTemplate = {
-  anchor: GraphPoint;
-  sourceOffset: GraphPoint;
-};
-
-const DEFAULT_MERGE_SOURCE_OFFSET: GraphPoint = {
-  x: -(NODE_WIDTH + HORIZONTAL_GAP),
-  y: -VERTICAL_GAP,
-};
-
-function getStackPositionTemplate(
-  stackId: string,
-  mergeModel: MergeModel,
-  nodePositions: NodePositions,
-): StackPositionTemplate | null {
-  const mergeInfo = mergeModel.info.get(stackId);
-  if (!mergeInfo) {
-    return null;
-  }
-
-  const basePos = nodePositions[stackId];
-
-  if (mergeInfo.isMergeSource && mergeInfo.mergeId) {
-    const mergePos = nodePositions[mergeInfo.mergeId];
-
-    if (mergePos && basePos) {
-      return {
-        anchor: mergePos,
-        sourceOffset: {
-          x: basePos.x - mergePos.x,
-          y: basePos.y - mergePos.y,
-        },
-      };
-    }
-
-    if (mergePos) {
-      return {
-        anchor: mergePos,
-        sourceOffset: DEFAULT_MERGE_SOURCE_OFFSET,
-      };
-    }
-
-    if (basePos) {
-      return {
-        anchor: {
-          x: basePos.x - DEFAULT_MERGE_SOURCE_OFFSET.x,
-          y: basePos.y - DEFAULT_MERGE_SOURCE_OFFSET.y,
-        },
-        sourceOffset: DEFAULT_MERGE_SOURCE_OFFSET,
-      };
-    }
-
-    return null;
-  }
-
-  if (!basePos) {
-    return null;
-  }
-
-  return {
-    anchor: basePos,
-    sourceOffset: DEFAULT_MERGE_SOURCE_OFFSET,
-  };
-}
-
-function applyStackPositionTemplate(
-  targetStackId: string,
-  mergeModel: MergeModel,
-  template: StackPositionTemplate,
-  nodePositions: NodePositions,
-) {
-  const mergeInfo = mergeModel.info.get(targetStackId);
-  if (!mergeInfo) {
-    return;
-  }
-
-  if (mergeInfo.isMergeSource && mergeInfo.mergeId) {
-    nodePositions[targetStackId] = {
-      x: template.anchor.x + template.sourceOffset.x,
-      y: template.anchor.y + template.sourceOffset.y,
-    };
-    nodePositions[mergeInfo.mergeId] = template.anchor;
-    return;
-  }
-
-  nodePositions[targetStackId] = template.anchor;
-}
+  buildGraphCommandState,
+  executeGraphCommand,
+  createNodeCommand,
+  insertNodeCommand,
+  extractMergeChannelsCommand,
+  connectNodeCommand,
+  disconnectNodeCommand,
+  deleteNodeCommand,
+  deleteSelectedNodesCommand,
+  groupNodesCommand,
+  createNodeClipboardPayload,
+  pasteNodesCommand,
+  createInputNode,
+  getUniqueGroupInputId,
+  buildEmptyGroupFlow,
+  type PasteNodesOptions,
+} from '@/utils/graphCommands';
+import { readNodeClipboard, writeNodeClipboard } from '@/utils/nodeClipboard';
+import type { EditorMutation, CommitEditorMutation } from '@/state/editor/commitMutation';
 
 export function createNodeActions(
   set: SetState,
   get: GetState,
   deps: {
-    pushHistory: (entry: Omit<HistoryEntry, 'id'>) => void;
-    debouncedSave: () => void;
+    commitMutation: CommitEditorMutation<EditorState>;
   },
 ) {
-  function createNode(
-    nodeType: NodeType,
-    props: Record<string, unknown> = {},
-    options?: { name?: string },
-  ): { finalNewNode: AnyNode; newNodes: AnyNode[]; name: string } | null {
-    const definition = effectRegistry.get(nodeType);
-    if (!definition) return null;
-    const { nodes: currentNodes, selectedNodeId } = get();
-    let name = options?.name ?? definition.name;
-    const existingCount = getNodeCount(currentNodes, nodeType);
-    if (!options?.name && existingCount > 0) name = `${definition.name} ${existingCount + 1}`;
-    const nodeData = definition.getInitialNodeProps?.() ?? definition.getInitialNodeProps();
-    const newNodeBase = {
-      ...nodeData,
-      ...props,
-      id: `${nodeType}_${Date.now()}`,
-      type: nodeType,
-      name,
-      visible: true,
-    };
-    const selectedIndex = selectedNodeId
-      ? currentNodes.findIndex((node) => node.id === selectedNodeId)
-      : -1;
-    const selectedNode = selectedIndex !== -1 ? currentNodes[selectedIndex] : null;
-    const finalNewNode = newNodeBase as AnyNode;
-    const newNodes = [...currentNodes];
-    if (!selectedNode || nodeFlags(selectedNode.type).isSceneLike) {
-      newNodes.push(finalNewNode);
-    } else {
-      let insertIndex = selectedIndex;
-      for (let i = selectedIndex + 1; i < currentNodes.length; i++) {
-        const nextNode = currentNodes[i];
-        if (isStackedAdjustmentNode(nextNode)) {
-          insertIndex = i;
-        } else {
-          break;
-        }
-      }
-      newNodes.splice(insertIndex + 1, 0, finalNewNode);
-    }
-    return { finalNewNode, newNodes, name };
-  }
+  const copySelectedNodesToClipboard = async (): Promise<boolean> => {
+    const payload = createNodeClipboardPayload(buildGraphCommandState(get()));
+    if (!payload) return false;
+    return writeNodeClipboard(payload);
+  };
 
-  function commitNewNode(finalNewNode: AnyNode, newNodes: AnyNode[], name: string) {
-    set(() => ({
-      nodes: newNodes,
-      selectedNodeId: finalNewNode.id,
-      activeTab: EditorTab.Flow,
-      activeViewportTool: getDefaultViewportTool(finalNewNode.type),
-    }));
-    deps.pushHistory({
-      label: `Add ${name} Node`,
-      state: { nodes: newNodes, selectedNodeId: finalNewNode.id },
+  const pasteNodesFromClipboard = async (options?: PasteNodesOptions): Promise<boolean> => {
+    const payload = await readNodeClipboard();
+    if (!payload) return false;
+
+    const result = pasteNodesCommand(buildGraphCommandState(get()), payload, options);
+    if (!result) return false;
+
+    executeGraphCommand(deps.commitMutation, result);
+    return true;
+  };
+
+  const cutSelectedNodesToClipboard = async (): Promise<boolean> => {
+    const didCopy = await copySelectedNodesToClipboard();
+    if (!didCopy) return false;
+
+    const result = deleteSelectedNodesCommand(buildGraphCommandState(get()));
+    if (!result) return false;
+
+    executeGraphCommand(deps.commitMutation, {
+      ...result,
+      historyLabel: result.historyLabel.replace(/^Delete /, 'Cut '),
     });
-  }
+    return true;
+  };
 
   return {
+    copySelectedNodesToClipboard,
+    cutSelectedNodesToClipboard,
+    pasteNodesFromClipboard,
+
     addNode: (nodeType: NodeType) => {
-      const result = createNode(nodeType);
-      if (!result) return;
-      commitNewNode(result.finalNewNode, result.newNodes, result.name);
+      if (nodeType === NodeType.EXTRACT_CHANNELS) {
+        const state = buildGraphCommandState(get());
+        const result = extractMergeChannelsCommand(state);
+        if (result) {
+          executeGraphCommand(deps.commitMutation, result);
+          return;
+        }
+      }
+
+      const createResult = createNodeCommand(
+        { nodes: get().nodes, selectedNodeId: get().selectedNodeId },
+        nodeType,
+      );
+      if (!createResult) return;
+
+      const { finalNewNode, newNodes, name } = createResult;
+
+      // Capture whether a node was selected BEFORE applying the insert,
+      // because the insert always selects the new node afterwards.
+      const hadSelection = !!get().selectedNodeId;
+
+      const fullState = buildGraphCommandState(get());
+      const insertResult = insertNodeCommand(fullState, finalNewNode, newNodes, name);
+      executeGraphCommand(deps.commitMutation, insertResult);
+
+      // Place the new node at the pending graph position (set by double-click
+      // on the canvas) when no node was selected during creation.
+      if (!hadSelection) {
+        const state = get();
+        const pendingPos = state.pendingNodePosition;
+        if (pendingPos) {
+          const positionFlowId = state.activeFlowId ?? state.rootFlowId;
+          if (positionFlowId) {
+            const prevPositions = state.nodePositionsByFlow[positionFlowId] ?? {};
+            set(() => ({
+              nodePositionsByFlow: {
+                ...state.nodePositionsByFlow,
+                [positionFlowId]: {
+                  ...prevPositions,
+                  [finalNewNode.id]: { x: pendingPos.x, y: pendingPos.y },
+                },
+              },
+              pendingNodePosition: null,
+            }));
+          }
+        }
+      }
     },
 
     addNodeWithProps: (
@@ -194,358 +131,514 @@ export function createNodeActions(
       props: Record<string, unknown>,
       options?: { name?: string },
     ) => {
-      const result = createNode(nodeType, props, options);
+      const createResult = createNodeCommand(
+        { nodes: get().nodes, selectedNodeId: get().selectedNodeId },
+        nodeType,
+        props,
+        options,
+      );
+      if (!createResult) return;
+
+      const { finalNewNode, newNodes, name } = createResult;
+
+      const fullState = buildGraphCommandState(get());
+      const insertResult = insertNodeCommand(fullState, finalNewNode, newNodes, name);
+      executeGraphCommand(deps.commitMutation, insertResult);
+    },
+
+    groupSelectedNodes: () => {
+      const state = buildGraphCommandState(get());
+      const result = groupNodesCommand(state);
       if (!result) return;
-      commitNewNode(result.finalNewNode, result.newNodes, result.name);
+      executeGraphCommand(deps.commitMutation, result);
+    },
+
+    openGroupNode: (nodeId: string) => {
+      const { flows, activeFlowId, nodePositionsByFlow = {} } = get();
+      const activeFlow = getRootFlow(flows, activeFlowId);
+      const groupNode = activeFlow?.nodes.find(
+        (node): node is GroupNode => node.id === nodeId && node.type === NodeType.GROUP,
+      );
+      if (!groupNode || !activeFlowId) return;
+
+      const childFlowId = groupNode.childFlowId ?? `flow_group_${groupNode.id}`;
+      const childFlow = flows[childFlowId] ?? buildEmptyGroupFlow(childFlowId, groupNode.name);
+      const parentFlow: Flow =
+        groupNode.childFlowId === childFlowId
+          ? activeFlow
+          : {
+              ...activeFlow,
+              nodes: activeFlow.nodes.map((node) =>
+                node.id === groupNode.id ? ({ ...groupNode, childFlowId } as GroupNode) : node,
+              ),
+            };
+      const nextFlows = {
+        ...flows,
+        [activeFlowId]: parentFlow,
+        [childFlowId]: childFlow,
+      };
+
+      set(() => ({
+        flows: nextFlows,
+        activeFlowId: childFlowId,
+        selectedNodeId: null,
+        selectedNodeIds: [],
+        nodePositionsByFlow: {
+          ...nodePositionsByFlow,
+          [childFlowId]: nodePositionsByFlow[childFlowId] ?? {},
+        },
+      }));
+    },
+
+    openFlow: (flowId: string) => {
+      const { flows } = get();
+      const flow = getRootFlow(flows, flowId);
+      if (!flow) return;
+      set(() => ({
+        activeFlowId: flow.id,
+        selectedNodeId: null,
+        selectedNodeIds: [],
+      }));
+    },
+
+    exposeGroupInput: (
+      groupNodeId: string,
+      targetNodeId: string,
+      targetPort: string,
+      label?: string,
+    ) => {
+      deps.commitMutation((state) => {
+        const activeFlow = getRootFlow(state.flows, state.activeFlowId);
+        const groupNode = activeFlow?.nodes.find(
+          (node): node is GroupNode => node.id === groupNodeId && node.type === NodeType.GROUP,
+        );
+        if (!activeFlow || !state.activeFlowId || !groupNode?.childFlowId) return { patch: {} };
+        const childFlow = state.flows[groupNode.childFlowId];
+        if (!childFlow?.nodes.some((node) => node.id === targetNodeId)) return { patch: {} };
+
+        const externalInputs = groupNode.externalInputs ?? [];
+        if (
+          externalInputs.some(
+            (input) => input.targetNodeId === targetNodeId && input.targetPort === targetPort,
+          )
+        ) {
+          return { patch: {} };
+        }
+
+        const inputId = getUniqueGroupInputId(
+          targetNodeId,
+          targetPort,
+          new Set(externalInputs.map((input) => input.id)),
+        );
+        const reusableEntryNode =
+          targetPort === 'pipe' && groupNode.inputNodeId
+            ? childFlow.nodes.find((node) => node.id === groupNode.inputNodeId)
+            : null;
+        const entryNode =
+          reusableEntryNode ??
+          createInputNode(groupNode.id, inputId, label || `${targetNodeId} ${targetPort}`);
+        const nextExternalInputs = [
+          ...externalInputs,
+          {
+            id: inputId,
+            label: label || `${targetNodeId} ${targetPort}`,
+            entryNodeId: entryNode.id,
+            targetNodeId,
+            targetPort,
+          },
+        ];
+        const nextGroupNode: GroupNode = { ...groupNode, externalInputs: nextExternalInputs };
+        const targetIndex = childFlow.nodes.findIndex((node) => node.id === targetNodeId);
+        const childNodes = [...childFlow.nodes];
+        if (reusableEntryNode) {
+          childNodes.forEach((node, index) => {
+            if (node.id === reusableEntryNode.id) {
+              childNodes[index] = {
+                ...node,
+                name: label || `${targetNodeId} ${targetPort}`,
+                externalInputId: inputId,
+              } as AnyNode;
+            }
+          });
+        } else {
+          childNodes.splice(Math.max(0, targetIndex), 0, entryNode as AnyNode);
+        }
+        const nextChildFlow: Flow = {
+          ...childFlow,
+          nodes: childNodes,
+          edges: [
+            ...childFlow.edges.filter(
+              (edge) =>
+                !(
+                  edge.sourceNodeId === entryNode.id &&
+                  edge.targetNodeId === targetNodeId &&
+                  edge.targetPort === targetPort
+                ),
+            ),
+            {
+              id: `edge_${entryNode.id}_${targetNodeId}_${targetPort}`,
+              sourceNodeId: entryNode.id,
+              sourcePort: 'output',
+              targetNodeId,
+              targetPort,
+            },
+          ],
+        };
+        const nextParentFlow: Flow = {
+          ...activeFlow,
+          nodes: activeFlow.nodes.map((node) => (node.id === groupNode.id ? nextGroupNode : node)),
+        };
+        const nextFlows = {
+          ...state.flows,
+          [state.activeFlowId]: nextParentFlow,
+          [childFlow.id]: nextChildFlow,
+        };
+
+        return {
+          patch: { flows: nextFlows },
+          history: {
+            label: 'Expose Group Input',
+            state: { flows: nextFlows, selectedNodeId: groupNode.id },
+          },
+        };
+      });
+    },
+
+    removeGroupInput: (groupNodeId: string, inputId: string) => {
+      deps.commitMutation((state) => {
+        const activeFlow = getRootFlow(state.flows, state.activeFlowId);
+        const groupNode = activeFlow?.nodes.find(
+          (node): node is GroupNode => node.id === groupNodeId && node.type === NodeType.GROUP,
+        );
+        if (!activeFlow || !state.activeFlowId || !groupNode?.childFlowId) return { patch: {} };
+        const targetInput = groupNode.externalInputs?.find((input) => input.id === inputId);
+        const childFlow = state.flows[groupNode.childFlowId];
+        if (!targetInput || !childFlow) return { patch: {} };
+
+        const nextGroupInputs = { ...(groupNode.inputs ?? {}) };
+        delete nextGroupInputs[inputId];
+        const nextExternalInputs = groupNode.externalInputs?.filter(
+          (input) => input.id !== inputId,
+        );
+        const shouldRemoveEntryNode =
+          targetInput.entryNodeId !== groupNode.inputNodeId &&
+          !(nextExternalInputs ?? []).some(
+            (input) => input.entryNodeId === targetInput.entryNodeId,
+          );
+        const nextGroupNode: GroupNode = {
+          ...groupNode,
+          externalInputs: nextExternalInputs,
+          inputs: Object.keys(nextGroupInputs).length > 0 ? nextGroupInputs : undefined,
+        };
+        const nextParentFlow: Flow = {
+          ...activeFlow,
+          nodes: activeFlow.nodes.map((node) => (node.id === groupNode.id ? nextGroupNode : node)),
+          edges: activeFlow.edges.filter(
+            (edge) => !(edge.targetNodeId === groupNode.id && edge.targetPort === inputId),
+          ),
+        };
+        const nextChildFlow: Flow = {
+          ...childFlow,
+          nodes: shouldRemoveEntryNode
+            ? childFlow.nodes.filter((node) => node.id !== targetInput.entryNodeId)
+            : childFlow.nodes,
+          edges: childFlow.edges.filter(
+            (edge) =>
+              !(
+                edge.sourceNodeId === targetInput.entryNodeId &&
+                edge.targetNodeId === targetInput.targetNodeId &&
+                edge.targetPort === targetInput.targetPort
+              ) &&
+              !(
+                shouldRemoveEntryNode &&
+                (edge.sourceNodeId === targetInput.entryNodeId ||
+                  edge.targetNodeId === targetInput.entryNodeId)
+              ),
+          ),
+        };
+        const nextFlows = {
+          ...state.flows,
+          [state.activeFlowId]: nextParentFlow,
+          [childFlow.id]: nextChildFlow,
+        };
+
+        return {
+          patch: { flows: nextFlows },
+          history: {
+            label: 'Remove Group Input',
+            state: { flows: nextFlows, selectedNodeId: groupNode.id },
+          },
+        };
+      });
     },
 
     updateNode: (nodeId: string, updates: Partial<AnyNode>, withHistory = false) => {
-      let label = 'Update Node';
-      const { nodes } = get();
-      const targetNode = nodes.find((l) => l.id === nodeId);
-      if (!targetNode) return;
+      deps.commitMutation((state) => {
+        const targetNode = state.nodes.find((l) => l.id === nodeId);
+        if (!targetNode) return { patch: {} };
 
-      const sceneNode = nodes.find((l) => nodeFlags(l.type).isSceneLike);
+        const sceneNode = state.nodes.find((l) => nodeFlags(l.type).isSceneLike);
 
-      // Delegate to effect's onNodeUpdate hook if available
-      let finalChanges: Record<string, unknown> = updates as Record<string, unknown>;
-      const hook = effectRegistry.get(targetNode.type)?.onNodeUpdate;
-      if (hook) {
-        const result = hook(targetNode, updates as Record<string, unknown>, { sceneNode });
-        finalChanges = result.changes;
-        if (result.label) label = result.label;
-      }
+        // Delegate to node's onNodeUpdate hook if available
+        let label = 'Update Node';
+        let finalChanges: Record<string, unknown> = updates as Record<string, unknown>;
+        const hook = nodeRegistry.get(targetNode.type)?.onNodeUpdate;
+        if (hook) {
+          const result = hook(targetNode, updates as Record<string, unknown>, { sceneNode });
+          finalChanges = result.changes;
+          if (result.label) label = result.label;
+        }
 
-      const newNodes = nodes.map((l) =>
-        l.id === nodeId ? ({ ...l, ...finalChanges } as AnyNode) : l,
-      );
+        const newNodes = state.nodes.map((l) =>
+          l.id === nodeId ? ({ ...l, ...finalChanges } as AnyNode) : l,
+        );
 
-      // Scene fps sync side effect
-      if ('fps' in finalChanges && nodeFlags(targetNode.type).isSceneLike) {
-        set(() => ({ fps: finalChanges.fps as number }));
-      }
+        const patch: Record<string, unknown> = { nodes: newNodes };
 
-      set(() => ({ nodes: newNodes }));
-      if (withHistory) {
-        deps.pushHistory({
-          label,
-          state: { nodes: newNodes, selectedNodeId: get().selectedNodeId },
-        });
-      } else {
-        deps.debouncedSave();
-      }
+        // Scene fps sync side effect
+        if ('fps' in finalChanges && nodeFlags(targetNode.type).isSceneLike) {
+          patch.fps = finalChanges.fps as number;
+        }
+
+        const result: EditorMutation<EditorState> = { patch };
+
+        if (withHistory) {
+          result.history = {
+            label,
+            state: { nodes: newNodes, selectedNodeId: state.selectedNodeId },
+          };
+        } else {
+          result.persist = 'debounced';
+        }
+
+        return result;
+      });
     },
 
-    toggleNodeVisibility: (nodeId: string) => {
-      const newNodes = get().nodes.map((l) =>
-        l.id === nodeId ? { ...l, visible: !l.visible } : l,
-      );
-      set(() => ({ nodes: newNodes }));
-      deps.pushHistory({
-        label: `Toggle ${newNodes.find((l) => l.id === nodeId)?.name} visibility`,
-        state: { nodes: newNodes },
+    batchUpdateNodes: (nodeIds: string[], updates: Partial<AnyNode>, withHistory = false) => {
+      deps.commitMutation((state) => {
+        const idSet = new Set(nodeIds);
+        const newNodes = state.nodes.map((l) =>
+          idSet.has(l.id) ? ({ ...l, ...updates } as AnyNode) : l,
+        );
+
+        const result: EditorMutation<EditorState> = { patch: { nodes: newNodes } };
+
+        if (withHistory) {
+          result.history = {
+            label: `Batch Update ${nodeIds.length} Nodes`,
+            state: { nodes: newNodes, selectedNodeId: state.selectedNodeId },
+          };
+        } else {
+          result.persist = 'debounced';
+        }
+
+        return result;
+      });
+    },
+
+    toggleNodeEnabled: (nodeId: string) => {
+      deps.commitMutation((state) => {
+        const newNodes = state.nodes.map((l) =>
+          l.id === nodeId ? { ...l, enabled: !l.enabled } : l,
+        );
+        return {
+          patch: { nodes: newNodes },
+          history: {
+            label: `Toggle ${newNodes.find((l) => l.id === nodeId)?.name} enabled`,
+            state: { nodes: newNodes },
+          },
+        };
+      });
+    },
+
+    setNodeEnabled: (nodeId: string, enabled: boolean) => {
+      deps.commitMutation((state) => {
+        const newNodes = state.nodes.map((l) => (l.id === nodeId ? { ...l, enabled } : l));
+        return {
+          patch: { nodes: newNodes },
+          history: {
+            label: `${enabled ? 'Enable' : 'Disable'} ${newNodes.find((l) => l.id === nodeId)?.name}`,
+            state: { nodes: newNodes },
+          },
+        };
       });
     },
 
     toggleNodeStacking: (nodeId: string) => {
-      const { nodes } = get();
-      const layerIndex = nodes.findIndex((l) => l.id === nodeId);
-      if (layerIndex === -1) return;
-      const node = nodes[layerIndex];
-      const isAdjustment = isStackAdjustmentType(node.type);
-      if (!isAdjustment) return;
-      const nextStacked = !isNodeStacked(node);
-      if (nextStacked && !hasPreviousStackTarget(nodes, nodeId)) return;
-      const newNodes = nodes.map((l) =>
-        l.id === nodeId ? ({ ...l, stacked: nextStacked } as AnyNode) : l,
-      );
-      set(() => ({ nodes: newNodes }));
-      const newNode = newNodes.find((l) => l.id === nodeId) as
-        | (AnyNode & { stacked?: boolean })
-        | undefined;
-      deps.pushHistory({
-        label: `${newNode?.stacked ? 'Stack' : 'Unstack'} ${newNode?.name}`,
-        state: { nodes: newNodes },
+      deps.commitMutation((state) => {
+        const layerIndex = state.nodes.findIndex((l) => l.id === nodeId);
+        if (layerIndex === -1) return { patch: {} };
+        const node = state.nodes[layerIndex];
+        const isAdjustment = isStackAdjustmentType(node.type);
+        if (!isAdjustment) return { patch: {} };
+        const nextStacked = !isNodeStacked(node);
+        if (nextStacked && !hasPreviousStackTarget(state.nodes, nodeId)) return { patch: {} };
+        const newNodes = state.nodes.map((l) =>
+          l.id === nodeId ? ({ ...l, stacked: nextStacked } as AnyNode) : l,
+        );
+        const newNode = newNodes.find((l) => l.id === nodeId) as
+          | (AnyNode & { stacked?: boolean })
+          | undefined;
+        return {
+          patch: { nodes: newNodes },
+          history: {
+            label: `${newNode?.stacked ? 'Stack' : 'Unstack'} ${newNode?.name}`,
+            state: { nodes: newNodes },
+          },
+        };
       });
     },
 
     stackNodeOntoStack: (nodeId: string, targetStackId: string): boolean => {
-      const { nodes, selectedNodeId, nodePositions = {} } = get();
-      const sourceIndex = nodes.findIndex((node) => node.id === nodeId);
+      const state = get();
+      const sourceIndex = state.nodes.findIndex((node) => node.id === nodeId);
       if (sourceIndex === -1 || nodeId === targetStackId) return false;
 
-      const sourceNode = nodes[sourceIndex];
+      const sourceNode = state.nodes[sourceIndex];
       if (!isStackAdjustmentType(sourceNode.type)) {
         return false;
       }
 
-      const currentStacks = buildNodeStacks(nodes);
+      const currentStacks = buildNodeStacks(state.nodes);
       const sourceStack = currentStacks.find((stack) => stack[0].id === nodeId);
       const targetStack = currentStacks.find((stack) => stack[0].id === targetStackId);
       if (!sourceStack || !targetStack || targetStack.some((node) => node.id === nodeId)) {
         return false;
       }
 
-      const newNodes = [...nodes];
-      const groupToMove = newNodes.slice(sourceIndex, sourceIndex + sourceStack.length);
-      newNodes.splice(sourceIndex, groupToMove.length);
+      let result = false;
+      deps.commitMutation(() => {
+        const nodes = [...state.nodes];
+        const groupToMove = nodes.slice(sourceIndex, sourceIndex + sourceStack.length);
+        nodes.splice(sourceIndex, groupToMove.length);
 
-      const targetIndex = newNodes.findIndex((node) => node.id === targetStackId);
-      if (targetIndex === -1) return false;
+        const targetIndex = nodes.findIndex((node) => node.id === targetStackId);
+        if (targetIndex === -1) return { patch: {} };
 
-      let insertionIndex = targetIndex;
-      for (let i = targetIndex + 1; i < newNodes.length; i++) {
-        if (!isStackedAdjustmentNode(newNodes[i])) {
-          break;
-        }
-        insertionIndex = i;
-      }
+        const insertionIndex = getStackedGroupEndIndex(nodes, targetIndex);
 
-      const stackedGroup = groupToMove.map((node, index) =>
-        index === 0 ? ({ ...node, stacked: true } as AnyNode) : node,
-      );
-      newNodes.splice(insertionIndex + 1, 0, ...stackedGroup);
+        const stackedGroup = groupToMove.map((node, index) =>
+          index === 0 ? ({ ...node, stacked: true } as AnyNode) : node,
+        );
+        nodes.splice(insertionIndex + 1, 0, ...stackedGroup);
 
-      const newStacks = buildNodeStacks(newNodes);
-      const newMergeModel = buildMergeModel(newStacks);
-      const expectedMergeIds = new Set(
-        newMergeModel.mergeNodes.map((mergeNode) => mergeNode.mergeId),
-      );
-      const updatedNodePositions = { ...nodePositions };
-
-      delete updatedNodePositions[nodeId];
-      for (const positionId of Object.keys(updatedNodePositions)) {
-        if (isMergeNodeId(positionId) && !expectedMergeIds.has(positionId)) {
-          delete updatedNodePositions[positionId];
-        }
-      }
-
-      set(() => ({
-        nodes: newNodes,
-        selectedNodeId,
-        nodePositions: updatedNodePositions,
-      }));
-      deps.pushHistory({
-        label: `Stack ${sourceNode.name}`,
-        state: {
-          nodes: newNodes,
-          selectedNodeId,
-          nodePositionsByFlow: get().nodePositionsByFlow,
-        },
+        result = true;
+        return {
+          patch: { nodes, selectedNodeId: state.selectedNodeId },
+          history: {
+            label: `Stack ${sourceNode.name}`,
+            state: {
+              nodes,
+              selectedNodeId: state.selectedNodeId,
+              nodePositionsByFlow: state.nodePositionsByFlow,
+            },
+          },
+        };
       });
 
-      return true;
+      return result;
     },
 
-    reorderNodes: (dragIndex: number, dropIndex: number) => {
-      const { nodes } = get();
-      const newNodes = [...nodes];
-      const draggedItem = newNodes[dragIndex];
-      if (!draggedItem) return;
-      const groupToMove: AnyNode[] = [draggedItem];
-      for (let i = dragIndex + 1; i < nodes.length; i++) {
-        const node = nodes[i];
-        if (isStackedAdjustmentNode(node)) {
-          groupToMove.push(node);
-        } else {
-          break;
-        }
-      }
-      newNodes.splice(dragIndex, groupToMove.length);
-      const dropNodeId = nodes[dropIndex].id;
-      let insertionIndex = newNodes.findIndex((l) => l.id === dropNodeId);
-      if (insertionIndex === -1) {
-        set(() => ({ nodes }));
-        return;
-      }
-      if (dragIndex < dropIndex) {
-        let dropStackEndIndex = insertionIndex;
-        for (let i = insertionIndex + 1; i < newNodes.length; i++) {
-          const node = newNodes[i];
-          if (isStackedAdjustmentNode(node)) {
-            dropStackEndIndex = i;
-          } else {
-            break;
-          }
-        }
-        insertionIndex = dropStackEndIndex + 1;
-      }
-      newNodes.splice(insertionIndex, 0, ...groupToMove);
+    reorderNodes: (dragIndices: number[], dropIndex: number) => {
+      deps.commitMutation((state) => {
+        const nodes = [...state.nodes];
+        if (dragIndices.length === 0) return { patch: {} };
 
-      const { nodePositions } = get();
-      const dragId = draggedItem.id;
-      const oldStacks = buildNodeStacks(nodes);
-      const newStacks = buildNodeStacks(newNodes);
-      const oldMergeModel = buildMergeModel(oldStacks);
-      const newMergeModel = buildMergeModel(newStacks);
+        const sortedAsc = [...dragIndices].sort((a, b) => a - b);
 
-      const oldStackIds = oldStacks.map((stack) => stack[0].id);
-      const oldIdx = oldStackIds.indexOf(dragId);
-      const newStackIds = newStacks.map((stack) => stack[0].id);
-      const newIdx = newStackIds.indexOf(dragId);
+        // Collect all items to move (each drag index + its stacked adjustments)
+        const allItemsToMove: AnyNode[] = [];
+        const allRemoveIndices: number[] = [];
 
-      let updatedNodePositions = nodePositions;
-      if (oldIdx !== -1 && newIdx !== -1 && oldIdx !== newIdx) {
-        const lo = Math.min(oldIdx, newIdx);
-        const hi = Math.max(oldIdx, newIdx);
-        const affectedOldIds = oldStackIds.slice(lo, hi + 1);
-        const affectedNewIds = newStackIds.slice(lo, hi + 1);
-        const mergeIdsToClear = new Set<string>();
-
-        updatedNodePositions = { ...nodePositions };
-        for (const stackId of affectedOldIds) {
-          const mergeId = oldMergeModel.info.get(stackId)?.mergeId;
-          if (mergeId) {
-            mergeIdsToClear.add(mergeId);
-          }
-        }
-        for (const stackId of affectedNewIds) {
-          const mergeId = newMergeModel.info.get(stackId)?.mergeId;
-          if (mergeId) {
-            mergeIdsToClear.add(mergeId);
+        for (const idx of sortedAsc) {
+          const item = nodes[idx];
+          if (!item) continue;
+          const group = getStackedGroup(nodes, idx);
+          allItemsToMove.push(...group);
+          for (let j = idx; j < idx + group.length; j++) {
+            allRemoveIndices.push(j);
           }
         }
 
-        for (const mergeId of mergeIdsToClear) {
-          delete updatedNodePositions[mergeId];
+        // Remove items from highest index to lowest to preserve indices
+        const newNodes = [...nodes];
+        const sortedDescIndices = [...allRemoveIndices].sort((a, b) => b - a);
+        for (const idx of sortedDescIndices) {
+          newNodes.splice(idx, 1);
         }
 
-        for (let i = 0; i < affectedNewIds.length; i++) {
-          const targetStackId = affectedNewIds[i];
-          const sourceStackId = affectedOldIds[i];
-          const template = getStackPositionTemplate(sourceStackId, oldMergeModel, nodePositions);
-
-          if (!template) {
-            continue;
-          }
-
-          applyStackPositionTemplate(targetStackId, newMergeModel, template, updatedNodePositions);
+        // Find drop position
+        const dropNodeId = nodes[dropIndex].id;
+        let insertionIndex = newNodes.findIndex((l) => l.id === dropNodeId);
+        if (insertionIndex === -1) {
+          return { patch: {} };
         }
-      }
 
-      const expectedMergeIds = new Set(
-        newMergeModel.mergeNodes.map((mergeNode) => mergeNode.mergeId),
-      );
-      for (const nodeId of Object.keys(updatedNodePositions)) {
-        if (isMergeNodeId(nodeId) && !expectedMergeIds.has(nodeId)) {
-          delete updatedNodePositions[nodeId];
+        // If dragging downward, insert after the full drop target stack
+        if (sortedAsc[0] < dropIndex) {
+          insertionIndex = getStackedGroupEndIndex(newNodes, insertionIndex) + 1;
         }
-      }
 
-      set(() => ({ nodes: newNodes, nodePositions: updatedNodePositions }));
-      deps.pushHistory({
-        label: 'Reorder Nodes',
-        state: { nodes: newNodes, nodePositions: updatedNodePositions },
+        newNodes.splice(insertionIndex, 0, ...allItemsToMove);
+
+        return {
+          patch: { nodes: newNodes },
+          history: {
+            label: 'Reorder Nodes',
+            state: { nodes: newNodes },
+          },
+        };
       });
     },
 
     deleteNode: (nodeId: string) => {
-      const { nodes, selectedNodeId, viewerSlots, viewerNodeId, activeViewerSlot } = get();
-      const layerToDeleteIndex = nodes.findIndex((l) => l.id === nodeId);
-      if (layerToDeleteIndex === -1 || nodeFlags(nodes[layerToDeleteIndex].type).isProtected)
-        return;
-
-      let deleteCount = 1;
-      for (let i = layerToDeleteIndex + 1; i < nodes.length; i++) {
-        const nextNode = nodes[i];
-        if (isStackedAdjustmentNode(nextNode)) {
-          deleteCount++;
-        } else {
-          break;
-        }
-      }
-
-      const deletedIds = new Set(
-        nodes.slice(layerToDeleteIndex, layerToDeleteIndex + deleteCount).map((l) => l.id),
-      );
-
-      const newNodes = [...nodes];
-      newNodes.splice(layerToDeleteIndex, deleteCount);
-
-      // Clean up dangling input references to deleted nodes
-      const cleanedNodes = cleanDanglingNodeInputs(newNodes, deletedIds);
-
-      // Clean up node positions for deleted nodes
-      const { nodePositions } = get();
-      const cleanedPositions = { ...nodePositions };
-      let positionsChanged = false;
-      for (const id of deletedIds) {
-        if (id in cleanedPositions) {
-          delete cleanedPositions[id];
-          positionsChanged = true;
-        }
-      }
-
-      let newSelectedNodeId = selectedNodeId;
-      if (
-        selectedNodeId === nodeId ||
-        (nodes.findIndex((l) => l.id === selectedNodeId) > layerToDeleteIndex &&
-          nodes.findIndex((l) => l.id === selectedNodeId) < layerToDeleteIndex + deleteCount)
-      ) {
-        const newIndex = Math.max(0, layerToDeleteIndex - 1);
-        newSelectedNodeId = cleanedNodes[newIndex]?.id || null;
-      }
-
-      const cleanedViewerSlots = sanitizeViewerSlots(viewerSlots, cleanedNodes);
-      const cleanedViewerNodeId = sanitizeViewerNodeId(viewerNodeId, cleanedNodes);
-      const cleanedActiveViewerSlot = sanitizeActiveViewerSlot(
-        activeViewerSlot,
-        cleanedViewerSlots,
-        cleanedViewerNodeId,
-      );
-
-      set(() => ({
-        nodes: cleanedNodes,
-        selectedNodeId: newSelectedNodeId,
-        viewerSlots: cleanedViewerSlots,
-        viewerNodeId: cleanedViewerNodeId,
-        activeViewerSlot: cleanedActiveViewerSlot,
-        ...(positionsChanged ? { nodePositions: cleanedPositions } : {}),
-      }));
-      deps.pushHistory({
-        label: 'Delete Node',
-        state: { nodes: cleanedNodes, selectedNodeId: newSelectedNodeId },
-      });
+      const state = buildGraphCommandState(get());
+      const result = deleteNodeCommand(state, nodeId);
+      executeGraphCommand(deps.commitMutation, result);
     },
 
-    connectNodeInput: (nodeId: string, portName: string, sourceNodeId: string) => {
-      const { nodes } = get();
+    deleteSelectedNodes: () => {
+      const state = buildGraphCommandState(get());
+      const result = deleteSelectedNodesCommand(state);
+      if (!result) return;
+      executeGraphCommand(deps.commitMutation, result);
+    },
 
-      // Validation
-      if (nodeId === sourceNodeId) return;
-      if (!nodes.find((l) => l.id === sourceNodeId)) return;
-      if (wouldCreateCycle(nodes, nodeId, sourceNodeId, portName)) return;
-
-      const node = nodes.find((l) => l.id === nodeId);
-      if (!node) return;
-
-      const newInputs = { ...(node.inputs || {}), [portName]: sourceNodeId };
-      const newNodes = nodes.map((l) => (l.id === nodeId ? { ...l, inputs: newInputs } : l));
-
-      set(() => ({ nodes: newNodes }));
-      deps.pushHistory({
-        label: `Connect ${portName} input`,
-        state: { nodes: newNodes, selectedNodeId: get().selectedNodeId },
-      });
+    connectNodeInput: (
+      nodeId: string,
+      portName: string,
+      sourceNodeId: string,
+      sourcePortName = 'output',
+    ) => {
+      const state = buildGraphCommandState(get());
+      const result = connectNodeCommand(state, nodeId, portName, sourceNodeId, sourcePortName);
+      if (!result) return;
+      executeGraphCommand(deps.commitMutation, result);
     },
 
     disconnectNodeInput: (nodeId: string, portName: string) => {
-      const { nodes } = get();
-      const node = nodes.find((l) => l.id === nodeId);
-      if (!node?.inputs?.[portName]) return;
+      const state = buildGraphCommandState(get());
+      const result = disconnectNodeCommand(state, nodeId, portName);
+      if (!result) return;
+      executeGraphCommand(deps.commitMutation, result);
+    },
 
-      const newInputs = { ...node.inputs };
-      delete newInputs[portName];
-      const newNodes = nodes.map((l) =>
-        l.id === nodeId
-          ? { ...l, inputs: Object.keys(newInputs).length > 0 ? newInputs : undefined }
-          : l,
-      );
+    setOutputPipeDetached: (detached: boolean) => {
+      deps.commitMutation((state) => {
+        const flowId = state.activeFlowId ?? state.rootFlowId;
+        const nextFlows = updateFlowNode(state.flows, flowId, OUTPUT_NODE_ID, {
+          detachedFromPipe: detached,
+        } as Partial<AnyNode>);
+        if (!nextFlows) return { patch: {} };
 
-      set(() => ({ nodes: newNodes }));
-      deps.pushHistory({
-        label: `Disconnect ${portName} input`,
-        state: { nodes: newNodes, selectedNodeId: get().selectedNodeId },
+        return {
+          patch: { flows: nextFlows },
+          history: {
+            label: detached ? 'Disconnect output input' : 'Reconnect output input',
+            state: { flows: nextFlows, selectedNodeId: state.selectedNodeId },
+          },
+        };
       });
     },
 
@@ -557,35 +650,39 @@ export function createNodeActions(
       frame?: number,
       forceKeyframe = false,
     ) => {
-      const { nodes, currentFrame } = get();
-      const targetFrame = frame !== undefined ? frame : currentFrame;
-      const layerIndex = nodes.findIndex((l) => l.id === nodeId);
-      if (layerIndex === -1) return;
+      deps.commitMutation((state) => {
+        const targetFrame = frame !== undefined ? frame : state.currentFrame;
+        const layerIndex = state.nodes.findIndex((l) => l.id === nodeId);
+        if (layerIndex === -1) return { patch: {} };
 
-      let newNodes = nodes;
-      const node = nodes[layerIndex];
-      const existingProp = getImmutable(node, propertyPath);
+        let newNodes = state.nodes as AnyNode[];
+        const node = state.nodes[layerIndex];
+        const existingProp = getImmutable(node, propertyPath);
 
-      if (value !== undefined && !forceKeyframe && !Array.isArray(existingProp)) {
-        if (existingProp === undefined) return;
-        const updatedNode = setImmutable(node, propertyPath, value) as AnyNode;
-        newNodes = [...nodes];
-        newNodes[layerIndex] = updatedNode;
-      } else {
-        newNodes = setKeyframeValue(nodes, nodeId, propertyPath, targetFrame, value);
-      }
+        if (value !== undefined && !forceKeyframe && !Array.isArray(existingProp)) {
+          if (existingProp === undefined) return { patch: {} };
+          const updatedNode = setImmutable(node, propertyPath, value) as AnyNode;
+          newNodes = [...state.nodes];
+          newNodes[layerIndex] = updatedNode;
+        } else {
+          newNodes = setKeyframeValue(state.nodes, nodeId, propertyPath, targetFrame, value);
+        }
 
-      set(() => ({ nodes: newNodes }));
-      if (withHistory) {
-        deps.pushHistory({
-          label: `Set Keyframe`,
-          state: {
-            nodes: newNodes,
-            selectedNodeId: get().selectedNodeId,
-            currentFrame: targetFrame,
-          },
-        });
-      }
+        const result: EditorMutation<EditorState> = { patch: { nodes: newNodes } };
+
+        if (withHistory) {
+          result.history = {
+            label: 'Set Keyframe',
+            state: {
+              nodes: newNodes,
+              selectedNodeId: state.selectedNodeId,
+              currentFrame: targetFrame,
+            },
+          };
+        }
+
+        return result;
+      });
     },
 
     updateKeyframe: (
@@ -595,73 +692,74 @@ export function createNodeActions(
       updates: Partial<Keyframe>,
       withHistory = true,
     ) => {
-      const { nodes } = get();
-      const layerIndex = nodes.findIndex((l) => l.id === nodeId);
-      if (layerIndex === -1) return;
+      deps.commitMutation((state) => {
+        const layerIndex = state.nodes.findIndex((l) => l.id === nodeId);
+        if (layerIndex === -1) return { patch: {} };
 
-      const node = nodes[layerIndex];
-      const prop = getImmutable(node, propertyPath) as AnimatableNumber;
-      if (Array.isArray(prop)) {
+        const node = state.nodes[layerIndex];
+        const prop = getImmutable(node, propertyPath) as AnimatableNumber;
+        if (!Array.isArray(prop)) return { patch: {} };
+
         const keyframes = [...prop];
         const kfIndex = keyframes.findIndex((k) => k.frame === frame);
-        if (kfIndex !== -1) {
-          const updatedKeyframe = { ...keyframes[kfIndex], ...updates };
-          keyframes[kfIndex] = updatedKeyframe;
-          if (updates.frame !== undefined) {
-            keyframes.sort((a, b) => a.frame - b.frame);
-          }
+        if (kfIndex === -1) return { patch: {} };
 
-          if (
-            updates.frame !== undefined ||
-            updates.inTangent !== undefined ||
-            updates.outTangent !== undefined
-          ) {
-            const updatedIndex = keyframes.indexOf(updatedKeyframe);
-            if (updatedIndex !== -1) {
-              keyframes[updatedIndex] = clampKeyframeTangents(keyframes, updatedIndex);
-            }
-          }
+        const updatedKeyframe = { ...keyframes[kfIndex], ...updates };
+        keyframes[kfIndex] = updatedKeyframe;
+        if (updates.frame !== undefined) {
+          keyframes.sort((a, b) => a.frame - b.frame);
+        }
 
-          const setDeep = (obj: unknown, path: string[], val: unknown): unknown => {
-            if (path.length === 0) return val;
-
-            const [head, ...tail] = path;
-            if (Array.isArray(obj)) {
-              const nextArray = [...obj];
-              const index = Number.parseInt(head, 10);
-              nextArray[index] = setDeep(obj[index], tail, val);
-              return nextArray;
-            }
-
-            const nextObject =
-              obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : {};
-            const child = nextObject[head] ?? {};
-            return {
-              ...nextObject,
-              [head]: setDeep(child, tail, val),
-            };
-          };
-
-          const pathParts = propertyPath.replace(/\[(\d+)\]/g, '.$1').split('.');
-          const newNode = setDeep(node, pathParts, keyframes) as AnyNode;
-
-          const newNodes = [...nodes];
-          newNodes[layerIndex] = newNode;
-          set(() => ({ nodes: newNodes }));
-
-          if (withHistory) {
-            const targetFrame = updates.frame ?? frame;
-            deps.pushHistory({
-              label: `Update Keyframe`,
-              state: {
-                nodes: newNodes,
-                selectedNodeId: get().selectedNodeId,
-                currentFrame: targetFrame,
-              },
-            });
+        if (
+          updates.frame !== undefined ||
+          updates.inTangent !== undefined ||
+          updates.outTangent !== undefined
+        ) {
+          const updatedIndex = keyframes.indexOf(updatedKeyframe);
+          if (updatedIndex !== -1) {
+            keyframes[updatedIndex] = clampKeyframeTangents(keyframes, updatedIndex);
           }
         }
-      }
+
+        const setDeep = (obj: unknown, path: string[], val: unknown): unknown => {
+          if (path.length === 0) return val;
+          const [head, ...tail] = path;
+          if (Array.isArray(obj)) {
+            const nextArray = [...obj];
+            const index = Number.parseInt(head, 10);
+            nextArray[index] = setDeep(obj[index], tail, val);
+            return nextArray;
+          }
+          const nextObject = obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : {};
+          const child = nextObject[head] ?? {};
+          return {
+            ...nextObject,
+            [head]: setDeep(child, tail, val),
+          };
+        };
+
+        const pathParts = propertyPath.replace(/\[(\d+)\]/g, '.$1').split('.');
+        const newNode = setDeep(node, pathParts, keyframes) as AnyNode;
+
+        const newNodes = [...state.nodes];
+        newNodes[layerIndex] = newNode;
+
+        const result: EditorMutation<EditorState> = { patch: { nodes: newNodes } };
+
+        if (withHistory) {
+          const targetFrame = updates.frame ?? frame;
+          result.history = {
+            label: 'Update Keyframe',
+            state: {
+              nodes: newNodes,
+              selectedNodeId: state.selectedNodeId,
+              currentFrame: targetFrame,
+            },
+          };
+        }
+
+        return result;
+      });
     },
   };
 }

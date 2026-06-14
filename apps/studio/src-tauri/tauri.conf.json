@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Blackboard Studio",
+  "version": "0.0.19",
+  "identifier": "com.blackboard.studio",
+  "build": {
+    "beforeDevCommand": "pnpm desktop:vite:dev",
+    "beforeBuildCommand": "pnpm desktop:vite:build",
+    "devUrl": "http://127.0.0.1:3000",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Blackboard Studio",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "visible": true,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "GraphicsAndDesign",
+    "shortDescription": "GPU-accelerated photo and video compositor.",
+    "longDescription": "Blackboard Studio is a native desktop shell for the GPU-accelerated node-based compositor.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"]
+  }
+}

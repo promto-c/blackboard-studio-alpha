@@ -1,8 +1,4 @@
-import {
-  removeCycleCreatingFlowConnections,
-  validateRootFlow,
-  type AnyNode,
-} from '@blackboard/types';
+import { validateRootFlow, type AnyNode } from '@blackboard/types';
 import { buildFlowFromNodes } from '@/state/editor/flowModel';
 
 /**
@@ -21,20 +17,22 @@ export function wouldCreateCycle(
       : node,
   );
   const candidateFlow = buildFlowFromNodes(candidateNodes);
-  const repairedFlow = removeCycleCreatingFlowConnections(candidateFlow);
 
-  return (
-    validateRootFlow(candidateFlow).some((issue) => issue.code === 'connection_cycle') &&
-    repairedFlow.relationships.length !== candidateFlow.relationships.length
-  );
+  return validateRootFlow(candidateFlow).some((issue) => issue.code === 'connection_cycle');
 }
 
 /** Returns all input connections for a node as an array. */
-export function getInputConnections(node: AnyNode): { portName: string; sourceNodeId: string }[] {
+export function getInputConnections(
+  node: AnyNode,
+): { portName: string; sourceNodeId: string; sourcePortName: string }[] {
   if (!node.inputs) return [];
   return Object.entries(node.inputs)
     .filter(([, sourceId]) => !!sourceId)
-    .map(([portName, sourceNodeId]) => ({ portName, sourceNodeId }));
+    .map(([portName, sourceNodeId]) => ({
+      portName,
+      sourceNodeId,
+      sourcePortName: node.inputSourcePorts?.[portName] ?? 'output',
+    }));
 }
 
 /** Returns all nodes that reference `nodeId` in their inputs. */
@@ -63,16 +61,23 @@ export function cleanDanglingNodeInputs(nodes: AnyNode[], deletedIds: Set<string
   const cleaned = nodes.map((node) => {
     if (!node.inputs) return node;
     const newInputs = { ...node.inputs };
+    const newInputSourcePorts = { ...(node.inputSourcePorts ?? {}) };
     let nodeChanged = false;
     for (const [port, sourceId] of Object.entries(newInputs)) {
       if (deletedIds.has(sourceId)) {
         delete newInputs[port];
+        delete newInputSourcePorts[port];
         nodeChanged = true;
       }
     }
     if (nodeChanged) {
       changed = true;
-      return { ...node, inputs: Object.keys(newInputs).length > 0 ? newInputs : undefined };
+      return {
+        ...node,
+        inputs: Object.keys(newInputs).length > 0 ? newInputs : undefined,
+        inputSourcePorts:
+          Object.keys(newInputSourcePorts).length > 0 ? newInputSourcePorts : undefined,
+      };
     }
     return node;
   });

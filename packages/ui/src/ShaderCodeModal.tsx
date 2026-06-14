@@ -8,7 +8,7 @@ interface ShaderCodeModalProps {
   onClose: () => void;
 }
 
-const ShaderCodeModal: React.FC<ShaderCodeModalProps> = ({ title, code, onClose }) => {
+function ShaderCodeModal({ title, code, onClose }: ShaderCodeModalProps) {
   return (
     <div
       className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-[fadeIn_150ms_ease-out]"
@@ -42,6 +42,6 @@ const ShaderCodeModal: React.FC<ShaderCodeModalProps> = ({ title, code, onClose 
       </div>
     </div>
   );
-};
+}
 
 export default ShaderCodeModal;

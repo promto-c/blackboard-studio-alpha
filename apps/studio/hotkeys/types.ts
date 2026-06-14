@@ -42,9 +42,11 @@ export interface HotkeyContext {
   currentFrame: number;
   maxFrames: number;
   isDrawing: boolean;
+  nodes?: readonly AnyNode[];
   selectedNode: AnyNode | null;
   selectedNodeType: string | null;
   selectedNodeId: string | null;
+  selectedNodeIds?: string[];
   selectedRotoPathIds: string[];
   selectedRotoPointRefs: RotoPointRef[];
   recentRotoPointRefs: RotoPointRef[];

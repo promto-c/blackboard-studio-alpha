@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { NodeType, type AnyNode, type TextNode } from '@blackboard/types';
 import { getValueAtFrame } from '@blackboard/renderer';
 
-interface TextTextureEntry {
+export interface TextTextureEntry {
   texture: THREE.Texture;
   width: number;
   height: number;

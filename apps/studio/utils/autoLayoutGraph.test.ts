@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BlendMode, ImageFitMode, NodeType, type AnyNode } from '@blackboard/types';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { getMergeNodeId } from '@/utils/mergeNodes';
 import { buildPipelineOrder, computeAutoLayout } from '@/utils/autoLayoutGraph';
 
 const createSceneNode = (id: string): AnyNode =>
@@ -9,7 +8,7 @@ const createSceneNode = (id: string): AnyNode =>
     id,
     type: NodeType.SCENE,
     name: 'Scene',
-    visible: true,
+    enabled: true,
     width: 1920,
     height: 1080,
     bitDepth: 8,
@@ -21,9 +20,10 @@ const createSceneNode = (id: string): AnyNode =>
 const createImageNode = (id: string): AnyNode =>
   ({
     id,
-    type: NodeType.IMAGE,
+    type: NodeType.MEDIA_SOURCE,
     name: 'Image',
-    visible: true,
+    enabled: true,
+    mediaKind: 'image',
     src: `${id}.png`,
     width: 512,
     height: 512,
@@ -61,11 +61,6 @@ describe('autoLayoutGraph output node identity', () => {
       [[firstImageNode], [secondImageNode]],
     );
 
-    expect(pipelineOrder).toEqual([
-      firstImageNode.id,
-      secondImageNode.id,
-      getMergeNodeId(secondImageNode.id),
-      OUTPUT_NODE_ID,
-    ]);
+    expect(pipelineOrder).toEqual([firstImageNode.id, secondImageNode.id, OUTPUT_NODE_ID]);
   });
 });

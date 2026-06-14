@@ -1,16 +1,11 @@
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useOcio } from '@/state/ocioContext';
 import { ViewerSettings } from '@blackboard/types';
-import {
-  CollapsibleSection,
-  Slider,
-  StyledDropdown,
-  SegmentedControl,
-  HotkeyBadge,
-} from '@/components';
+import { CollapsibleSection, StyledDropdown } from '@blackboard/ui';
+import { Slider, SegmentedControl, HotkeyBadge } from '@/components';
 
-const DisplayAdjustments: React.FC = () => {
+function DisplayAdjustments() {
   const viewerSettings = useEditorSelector((s) => s.viewerSettings);
   const { setViewerSettings } = useEditorActions();
   const ocio = useOcio();
@@ -23,13 +18,21 @@ const DisplayAdjustments: React.FC = () => {
   };
 
   const availableViews = useMemo(() => {
-    if (!ocio.isInitialized)
-      return [
-        { value: 'sRGB', label: 'sRGB' },
-        { value: 'Raw', label: 'Raw' },
-      ];
-    return ocio.views.map((view) => ({ value: view, label: view }));
-  }, [ocio]);
+    const views = ocio.getViews(viewerSettings.ocioDisplay);
+    return views.map((view) => ({
+      value: view.name,
+      label: view.name,
+      secondaryLabel: view.transform || view.colorSpace || undefined,
+    }));
+  }, [ocio, viewerSettings.ocioDisplay]);
+  const displayOptions = useMemo(
+    () =>
+      ocio.displays.map((display) => ({
+        value: display,
+        label: display,
+      })),
+    [ocio.displays],
+  );
 
   const channelOptions = (['RGB', 'R', 'G', 'B', 'A'] as const).map((ch) => ({
     value: ch,
@@ -49,11 +52,26 @@ const DisplayAdjustments: React.FC = () => {
         <CollapsibleSection title="Color Management (OCIO)" defaultOpen>
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-400">View Transform</label>
+              <label className="text-xs font-medium text-gray-400">Display</label>
+              <StyledDropdown
+                value={viewerSettings.ocioDisplay || ocio.defaultDisplay}
+                options={displayOptions}
+                onChange={(value) => {
+                  const display = String(value);
+                  setViewerSettings({
+                    ocioDisplay: display,
+                    ocioView: ocio.getDefaultView(display),
+                  });
+                }}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-400">View</label>
               <StyledDropdown
                 value={viewerSettings.ocioView}
                 options={availableViews}
                 onChange={(value) => handleSettingChange('ocioView', value as string)}
+                popoverWidthClass="w-80"
               />
             </div>
           </div>
@@ -132,6 +150,6 @@ const DisplayAdjustments: React.FC = () => {
       </CollapsibleSection>
     </div>
   );
-};
+}
 
 export default DisplayAdjustments;

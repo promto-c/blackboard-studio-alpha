@@ -27,7 +27,7 @@ const TREE_GUIDE_VERTICAL_CLASS =
 const TREE_GUIDE_HORIZONTAL_CLASS =
   'pointer-events-none absolute h-px rounded-full bg-white/[0.12]';
 
-const ItemsTreeView: React.FC<ItemsTreeViewProps> = ({
+export function ItemsTreeView({
   scrollViewportRef,
   contentRef,
   guideSegments = [],
@@ -39,7 +39,7 @@ const ItemsTreeView: React.FC<ItemsTreeViewProps> = ({
   contentClassName = 'relative',
   onBackgroundClick,
   children,
-}) => {
+}: ItemsTreeViewProps) {
   const handleClick = onBackgroundClick
     ? (event: React.MouseEvent<HTMLDivElement>) => {
         if (!(event.target as HTMLElement).closest('[data-tree-row]')) {
@@ -105,6 +105,4 @@ const ItemsTreeView: React.FC<ItemsTreeViewProps> = ({
       </div>
     </ScrollArea>
   );
-};
-
-export default ItemsTreeView;
+}

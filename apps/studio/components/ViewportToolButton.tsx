@@ -9,7 +9,7 @@ interface ViewportToolButtonProps extends React.ButtonHTMLAttributes<HTMLButtonE
   isSettingsActive?: boolean;
 }
 
-const ViewportToolButton = React.forwardRef<HTMLButtonElement, ViewportToolButtonProps>(
+export const ViewportToolButton = React.forwardRef<HTMLButtonElement, ViewportToolButtonProps>(
   (
     {
       label,
@@ -107,7 +107,7 @@ const ViewportToolButton = React.forwardRef<HTMLButtonElement, ViewportToolButto
         />
         <span
           aria-hidden="true"
-          className="absolute left-5 top-1/2 z-10 h-9 w-6 -translate-y-1/2"
+          className="absolute left-full top-1/2 z-10 h-9 w-2 -translate-y-1/2"
         />
         {actionButton}
         {settingsButton}
@@ -115,5 +115,3 @@ const ViewportToolButton = React.forwardRef<HTMLButtonElement, ViewportToolButto
     );
   },
 );
-
-export default ViewportToolButton;

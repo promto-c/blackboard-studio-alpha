@@ -128,12 +128,12 @@ const blurActiveTextEntryForPointerTarget = (target: EventTarget | null): boolea
   return true;
 };
 
-export const HotkeyProvider: React.FC<HotkeyProviderProps> = ({
+export function HotkeyProvider({
   baseBindings = [],
   baseCommands = [],
   buildContext,
   children,
-}) => {
+}: HotkeyProviderProps) {
   const keyboardStoreRef = useRef<KeyboardStore | null>(null);
   if (!keyboardStoreRef.current) {
     keyboardStoreRef.current = createKeyboardStore();
@@ -454,7 +454,7 @@ export const HotkeyProvider: React.FC<HotkeyProviderProps> = ({
   return (
     <HotkeyRegistryContext.Provider value={registryApi}>{children}</HotkeyRegistryContext.Provider>
   );
-};
+}
 
 const useHotkeyRegistry = (): HotkeyRegistryApi => {
   const registry = useContext(HotkeyRegistryContext);
@@ -502,17 +502,12 @@ export const useRegisterHotkeyCommands = (namespace: string, commands: HotkeyCom
 export function useKeyboardState<T>(selector: (snapshot: KeyboardSnapshot) => T): T {
   const registry = useHotkeyRegistry();
   const selectorRef = useRef(selector);
-  const resultRef = useRef<T>();
+
   selectorRef.current = selector;
 
-  return useSyncExternalStore(registry.keyboardStore.subscribe, () => {
-    const nextResult = selectorRef.current(registry.keyboardStore.getSnapshot());
-    if (resultRef.current !== undefined && Object.is(resultRef.current, nextResult)) {
-      return resultRef.current;
-    }
-    resultRef.current = nextResult;
-    return nextResult;
-  });
+  return useSyncExternalStore(registry.keyboardStore.subscribe, () =>
+    selectorRef.current(registry.keyboardStore.getSnapshot()),
+  );
 }
 
 export const useKeyPressed = (code: string): boolean => {

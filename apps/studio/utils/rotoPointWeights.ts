@@ -4,10 +4,10 @@ export type { RotoPointWeightMode };
 
 export const DEFAULT_ROTO_POINT_WEIGHT_MODE: RotoPointWeightMode = 'global';
 export const DEFAULT_ROTO_POINT_WEIGHT = 1;
-export const MIN_ROTO_POINT_WEIGHT = 0.25;
-export const MAX_ROTO_POINT_WEIGHT = 4;
+const MIN_ROTO_POINT_WEIGHT = 0.25;
+const MAX_ROTO_POINT_WEIGHT = 4;
 
-export const ROTO_POINT_WEIGHT_HANDLE_BASE_DISTANCE_PX = 14;
+const ROTO_POINT_WEIGHT_HANDLE_BASE_DISTANCE_PX = 14;
 export const ROTO_POINT_WEIGHT_HANDLE_STEP_PX = 10;
 export const ROTO_POINT_WEIGHT_HANDLE_RADIUS_PX = 3.5;
 
@@ -34,8 +34,6 @@ const normalizeVector = (dx: number, dy: number): Point => {
   return { x: dx / length, y: dy / length };
 };
 
-export const clampRotoPointWeight = (weight: number): number => clampUnitWeight(weight);
-
 export const getNormalizedRotoPointWeights = (
   pointWeights: readonly number[] | undefined,
   pointCount: number,
@@ -60,7 +58,7 @@ export const getNormalizedRotoPointWeightModes = (
     isRotoPointWeightMode(pointWeightModes?.[index]) ? pointWeightModes[index] : defaultMode,
   );
 
-export const getRotoPointWeightMode = (
+const getRotoPointWeightMode = (
   pointWeightModes: readonly (RotoPointWeightMode | null)[] | undefined,
   pointCount: number,
   index: number,
@@ -69,7 +67,7 @@ export const getRotoPointWeightMode = (
   getNormalizedRotoPointWeightModes(pointWeightModes, pointCount, defaultMode)[index] ??
   defaultMode;
 
-export const compactRotoPointWeightModes = (
+const compactRotoPointWeightModes = (
   pointWeightModes: readonly (RotoPointWeightMode | null)[] | undefined,
   pointCount: number,
 ): Array<RotoPointWeightMode | null> | undefined => {
@@ -79,7 +77,7 @@ export const compactRotoPointWeightModes = (
   return normalized.some((mode) => mode !== null) ? normalized : undefined;
 };
 
-export const compactRotoPointWeights = (
+const compactRotoPointWeights = (
   pointWeights: readonly number[] | undefined,
   pointCount: number,
 ): number[] | undefined => {
@@ -244,7 +242,7 @@ export const getRotoPointWeightModeForSelection = (
     : null;
 };
 
-export const getRotoPointWeightHandleDistance = (weight: number, zoom: number): number =>
+const getRotoPointWeightHandleDistance = (weight: number, zoom: number): number =>
   Math.max(
     8 / zoom,
     (ROTO_POINT_WEIGHT_HANDLE_BASE_DISTANCE_PX +

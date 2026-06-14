@@ -1,26 +1,50 @@
 import { type HistoryEntry, type RotoPointRef, type SelectedKeyframeRef } from '@blackboard/types';
 import type { SetState, GetState } from '@/state/editor/slices/types';
+import { isCheckpointEntry } from '@/state/editor/history';
 
-const MAX_HISTORY = 200;
 type HistoryActionEntry = Omit<HistoryEntry, 'id'>;
-const NAVIGATION_STATE_KEYS = [
+type RedoHistoryBackupPayload = {
+  history: HistoryEntry[];
+  historyIndex: number;
+  nextEntry: HistoryEntry;
+};
+type HistoryActionDeps = {
+  backupRedoHistory?: (payload: RedoHistoryBackupPayload) => void;
+  getUndoHistoryLimit?: () => number | null;
+};
+const isHierarchySelection = (
+  value: unknown,
+): value is { layerIds: string[]; itemIds: string[] } => {
+  if (!value || typeof value !== 'object') return false;
+  const sel = value as Record<string, unknown>;
+  return Array.isArray(sel.layerIds) && Array.isArray(sel.itemIds);
+};
+
+const cloneHierarchySelections = (
+  selections: Record<string, { layerIds: string[]; itemIds: string[] }>,
+): Record<string, { layerIds: string[]; itemIds: string[] }> => {
+  if (!selections) return {};
+  const cloned: Record<string, { layerIds: string[]; itemIds: string[] }> = {};
+  for (const [key, value] of Object.entries(selections)) {
+    const sel = value as unknown;
+    if (isHierarchySelection(sel)) {
+      cloned[key] = {
+        layerIds: [...sel.layerIds],
+        itemIds: [...sel.itemIds],
+      };
+    }
+  }
+  return cloned;
+};
+
+const NAVIGATION_STATE_KEYS: readonly (keyof HistoryEntry['state'])[] = [
   'currentFrame',
   'selectedNodeId',
-  'selectedPaintLayerIds',
-  'selectedPaintStrokeIds',
-  'selectedRotoLayerIds',
-  'selectedRotoPathIds',
+  'selectedNodeIds',
+  'hierarchySelections',
   'selectedRotoPointRefs',
   'selectedKeyframes',
-] as const satisfies readonly (keyof HistoryEntry['state'])[];
-
-const cloneStringArray = (value: unknown): string[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((item): item is string => typeof item === 'string');
-};
+] as const;
 
 const isRotoPointRef = (value: unknown): value is RotoPointRef => {
   if (!value || typeof value !== 'object') {
@@ -62,10 +86,12 @@ const cloneSelectedKeyframes = (value: unknown): SelectedKeyframeRef[] => {
 
 const cloneHistorySelectionState = (state: HistoryEntry['state']): HistoryEntry['state'] => ({
   ...state,
-  selectedPaintLayerIds: cloneStringArray(state.selectedPaintLayerIds),
-  selectedPaintStrokeIds: cloneStringArray(state.selectedPaintStrokeIds),
-  selectedRotoLayerIds: cloneStringArray(state.selectedRotoLayerIds),
-  selectedRotoPathIds: cloneStringArray(state.selectedRotoPathIds),
+  hierarchySelections: cloneHierarchySelections(
+    state.hierarchySelections as Record<string, unknown> as Record<
+      string,
+      { layerIds: string[]; itemIds: string[] }
+    >,
+  ),
   selectedRotoPointRefs: cloneRotoPointRefs(state.selectedRotoPointRefs),
   selectedKeyframes: cloneSelectedKeyframes(state.selectedKeyframes),
 });
@@ -74,6 +100,9 @@ const getNavigationState = (state: HistoryEntry['state']): HistoryEntry['state']
   cloneHistorySelectionState(
     Object.fromEntries(NAVIGATION_STATE_KEYS.map((key) => [key, state[key]])),
   );
+
+const normalizeHistoryLabel = (label: unknown): string =>
+  typeof label === 'string' && label.trim().length > 0 ? label : 'Edit';
 
 const findRestoredNodeId = (
   restoredState: HistoryEntry['state'],
@@ -110,22 +139,85 @@ const getUndoNavigationState = (
   return navigationState;
 };
 
-const isCheckpointEntry = (entry: HistoryEntry): boolean =>
-  typeof entry.checkpointLabel === 'string' && entry.checkpointLabel.trim().length > 0;
+const applyHistoryCheckpointChange = (
+  history: HistoryEntry[],
+  index: number,
+  mode: 'toggle' | 'ensure',
+): HistoryEntry[] | null => {
+  if (index < 0 || index >= history.length) return null;
+
+  const entry = history[index];
+  if (!entry) return null;
+
+  if (isCheckpointEntry(entry)) {
+    if (mode === 'ensure') {
+      return history;
+    }
+
+    const nextEntry = { ...entry };
+    delete nextEntry.checkpointLabel;
+    return history.map((historyEntry, entryIndex) =>
+      entryIndex === index ? nextEntry : historyEntry,
+    );
+  }
+
+  return history.map((historyEntry, entryIndex) =>
+    entryIndex === index
+      ? {
+          ...historyEntry,
+          checkpointLabel: historyEntry.label,
+        }
+      : historyEntry,
+  );
+};
 
 const createHistoryIdFactory = () => {
   let counter = 0;
   return (prefix: string) => `${prefix}_${Date.now()}_${counter++}`;
 };
 
-export function createHistoryActions(set: SetState, get: GetState, debouncedSave: () => void) {
+export const trimHistoryToLimit = (
+  history: HistoryEntry[],
+  historyIndex: number,
+  maxHistoryEntries: number | null | undefined,
+): { history: HistoryEntry[]; historyIndex: number } => {
+  if (maxHistoryEntries === null || maxHistoryEntries === undefined) {
+    return { history, historyIndex };
+  }
+
+  const limit = Math.max(1, Math.floor(maxHistoryEntries));
+  if (history.length <= limit) {
+    return { history, historyIndex };
+  }
+
+  const clampedIndex = Math.max(0, Math.min(historyIndex, history.length - 1));
+  const end = Math.min(history.length, Math.max(clampedIndex + 1, limit));
+  const start = Math.max(0, end - limit);
+
+  return {
+    history: history.slice(start, end),
+    historyIndex: clampedIndex - start,
+  };
+};
+
+export function createHistoryActions(
+  set: SetState,
+  get: GetState,
+  debouncedSave: () => void,
+  deps: HistoryActionDeps = {},
+) {
   let activeInteraction: { id: string; historyIndex: number | null } | null = null;
   const createHistoryId = createHistoryIdFactory();
+  const getUndoHistoryEntryLimit = () => {
+    const undoStepLimit = deps.getUndoHistoryLimit?.() ?? 200;
+    return undoStepLimit === null ? null : undoStepLimit + 1;
+  };
 
   const buildHistoryEntry = (entry: HistoryActionEntry, id: string): HistoryEntry => {
     return {
       ...entry,
       id,
+      label: normalizeHistoryLabel(entry.label),
       createdAt: entry.createdAt ?? Date.now(),
       state: cloneHistorySelectionState({
         ...getNavigationState(get()),
@@ -159,19 +251,30 @@ export function createHistoryActions(set: SetState, get: GetState, debouncedSave
           entry,
           history[activeInteraction.historyIndex]?.id ?? createHistoryId('hist'),
         );
-        set(() => ({ history: nextHistory, historyIndex: activeInteraction!.historyIndex! }));
+        const trimmed = trimHistoryToLimit(
+          nextHistory,
+          activeInteraction.historyIndex,
+          getUndoHistoryEntryLimit(),
+        );
+        activeInteraction = { ...activeInteraction, historyIndex: trimmed.historyIndex };
+        set(() => trimmed);
         debouncedSave();
         return;
       }
 
       const newEntry = buildHistoryEntry(entry, createHistoryId('hist'));
-      const newHistory = [...history.slice(0, historyIndex + 1), newEntry];
-      if (newHistory.length > MAX_HISTORY) newHistory.shift();
-      const nextHistoryIndex = newHistory.length - 1;
-      set(() => ({ history: newHistory, historyIndex: nextHistoryIndex }));
+      if (historyIndex < history.length - 1) {
+        deps.backupRedoHistory?.({ history, historyIndex, nextEntry: newEntry });
+      }
+      const next = trimHistoryToLimit(
+        [...history.slice(0, historyIndex + 1), newEntry],
+        historyIndex + 1,
+        getUndoHistoryEntryLimit(),
+      );
+      set(() => next);
 
       if (activeInteraction) {
-        activeInteraction = { ...activeInteraction, historyIndex: nextHistoryIndex };
+        activeInteraction = { ...activeInteraction, historyIndex: next.historyIndex };
       }
 
       debouncedSave();
@@ -217,24 +320,22 @@ export function createHistoryActions(set: SetState, get: GetState, debouncedSave
     toggleHistoryCheckpoint: (index: number) => {
       activeInteraction = null;
       const { history, historyIndex } = get();
-      if (index < 0 || index >= history.length) return;
-
-      const nextHistory = history.map((entry, entryIndex) => {
-        if (entryIndex !== index) return entry;
-
-        if (isCheckpointEntry(entry)) {
-          const nextEntry = { ...entry };
-          delete nextEntry.checkpointLabel;
-          return nextEntry;
-        }
-
-        return {
-          ...entry,
-          checkpointLabel: entry.label,
-        };
-      });
+      const nextHistory = applyHistoryCheckpointChange(history, index, 'toggle');
+      if (!nextHistory) return;
 
       set(() => ({ history: nextHistory, historyIndex }));
+      debouncedSave();
+    },
+
+    checkpointCurrentHistoryEntry: () => {
+      activeInteraction = null;
+      const { history, historyIndex } = get();
+      const nextHistory = applyHistoryCheckpointChange(history, historyIndex, 'ensure');
+      if (!nextHistory) return;
+
+      if (nextHistory !== history) {
+        set(() => ({ history: nextHistory, historyIndex }));
+      }
       debouncedSave();
     },
   };

@@ -3,6 +3,7 @@ import * as Icons from '@blackboard/icons';
 
 type SplitterAxis = 'x' | 'y';
 type SplitterValueType = 'px' | 'percent';
+type RailBounds = { offset: number; size: number };
 const RAIL_PROXIMITY_PX = 28;
 const RAIL_END_MARGIN_PX = 16;
 
@@ -43,7 +44,28 @@ const getEdgeVisibility = (
   return Math.min(beforeVisibility, afterVisibility);
 };
 
-const SplitterHandle: React.FC<SplitterHandleProps> = ({
+const findVisibleRailReferenceElement = (element: Element | null): HTMLElement | null => {
+  if (!(element instanceof HTMLElement)) return null;
+
+  const firstElementChild = element.firstElementChild;
+  if (firstElementChild instanceof HTMLElement) {
+    const childRect = firstElementChild.getBoundingClientRect();
+    if (childRect.width > 0 && childRect.height > 0) {
+      return firstElementChild;
+    }
+  }
+
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 ? element : null;
+};
+
+const areRailBoundsEqual = (a: RailBounds | null, b: RailBounds | null): boolean => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return Math.abs(a.offset - b.offset) < 0.5 && Math.abs(a.size - b.size) < 0.5;
+};
+
+function SplitterHandle({
   axis,
   label,
   value,
@@ -61,13 +83,15 @@ const SplitterHandle: React.FC<SplitterHandleProps> = ({
   className = '',
   hideHandleBeforeRatio = 0,
   hideHandleAfterRatio = 1,
-}) => {
+}: SplitterHandleProps) {
+  const railRootRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [proximityStrength, setProximityStrength] = useState(0);
+  const [railBounds, setRailBounds] = useState<RailBounds | null>(null);
 
   const resolvedTitle = title ?? `Resize ${label.toLowerCase()}`;
   const orientation = axis === 'x' ? 'vertical' : 'horizontal';
@@ -96,6 +120,68 @@ const SplitterHandle: React.FC<SplitterHandleProps> = ({
   }, []);
 
   useEffect(() => releasePointerListeners, [releasePointerListeners]);
+
+  const syncRailBounds = useCallback(() => {
+    const railRoot = railRootRef.current;
+    const parentElement = railRoot?.parentElement;
+    if (!railRoot || !parentElement) {
+      setRailBounds((current) => (current === null ? current : null));
+      return;
+    }
+
+    const parentRect = parentElement.getBoundingClientRect();
+    const referenceElement =
+      findVisibleRailReferenceElement(railRoot.previousElementSibling) ??
+      findVisibleRailReferenceElement(railRoot.nextElementSibling);
+
+    if (!referenceElement) {
+      setRailBounds((current) => (current === null ? current : null));
+      return;
+    }
+
+    const referenceRect = referenceElement.getBoundingClientRect();
+    const nextBounds = isVerticalRail
+      ? { offset: referenceRect.top - parentRect.top, size: referenceRect.height }
+      : { offset: referenceRect.left - parentRect.left, size: referenceRect.width };
+
+    if (nextBounds.size <= 0) {
+      setRailBounds((current) => (current === null ? current : null));
+      return;
+    }
+
+    setRailBounds((current) => (areRailBoundsEqual(current, nextBounds) ? current : nextBounds));
+  }, [isVerticalRail]);
+
+  useEffect(() => {
+    const railRoot = railRootRef.current;
+    const parentElement = railRoot?.parentElement;
+    if (!railRoot || !parentElement) return;
+
+    syncRailBounds();
+
+    const resizeObserver = new ResizeObserver(() => syncRailBounds());
+    resizeObserver.observe(parentElement);
+    resizeObserver.observe(railRoot);
+
+    const observeSibling = (element: Element | null) => {
+      if (!(element instanceof HTMLElement)) return;
+      resizeObserver.observe(element);
+      const firstElementChild = element.firstElementChild;
+      if (firstElementChild instanceof HTMLElement) {
+        resizeObserver.observe(firstElementChild);
+      }
+    };
+
+    observeSibling(railRoot.previousElementSibling);
+    observeSibling(railRoot.nextElementSibling);
+
+    window.addEventListener('resize', syncRailBounds);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', syncRailBounds);
+    };
+  }, [syncRailBounds]);
 
   const getMeasurementSize = useCallback(() => {
     const measurementElement = measurementRef?.current ?? handleRef.current?.parentElement;
@@ -313,6 +399,11 @@ const SplitterHandle: React.FC<SplitterHandleProps> = ({
     interactionStrength,
   )} ${mixChannel(255, 191, interactionStrength)} / ${0.03 + interactionStrength * 0.22})`;
   const handleMorphScale = 0.72 + handleVisibility * 0.28;
+  const railBoundsStyle: React.CSSProperties = railBounds
+    ? isVerticalRail
+      ? { top: railBounds.offset, height: railBounds.size }
+      : { left: railBounds.offset, width: railBounds.size }
+    : {};
   const lineStyle: React.CSSProperties = {
     opacity: (interactionStrength > 0 ? 0.18 + interactionStrength * 0.82 : 0) * handleVisibility,
     backgroundImage: isVerticalRail
@@ -328,9 +419,11 @@ const SplitterHandle: React.FC<SplitterHandleProps> = ({
 
   return (
     <div
+      ref={railRootRef}
       className={`relative z-20 shrink-0 overflow-visible pointer-events-none ${
         isVerticalRail ? 'h-full w-0' : 'h-0 w-full'
       } ${className}`}
+      style={railBoundsStyle}
     >
       <div
         ref={handleRef}
@@ -409,6 +502,6 @@ const SplitterHandle: React.FC<SplitterHandleProps> = ({
       </div>
     </div>
   );
-};
+}
 
 export default SplitterHandle;

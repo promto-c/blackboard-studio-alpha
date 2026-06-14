@@ -3,16 +3,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BlendMode, ImageFitMode, NodeType, type AnyNode } from '@blackboard/types';
 import { MEDIA_SOURCE_UPSTREAM } from '@/utils/mediaSourceSelection';
 
-const { getPixelDataForFrameMock, renderWithSharedPipelineMock } = vi.hoisted(() => ({
-  getPixelDataForFrameMock: vi.fn(),
-  renderWithSharedPipelineMock: vi.fn(),
+const { createPixelDataReaderMock, getPixelDataForFrameMock, renderWithSharedPipelineMock } =
+  vi.hoisted(() => ({
+    createPixelDataReaderMock: vi.fn(),
+    getPixelDataForFrameMock: vi.fn(),
+    renderWithSharedPipelineMock: vi.fn(),
+  }));
+
+vi.mock('./pixelData', () => ({
+  createPixelDataReader: createPixelDataReaderMock,
+  getPixelDataForFrame: getPixelDataForFrameMock,
 }));
 
 const originalDocument = globalThis.document;
-
-vi.mock('./pixelData', () => ({
-  getPixelDataForFrame: getPixelDataForFrameMock,
-}));
 
 vi.mock('@/renderer/pipeline', () => ({
   renderWithSharedPipeline: renderWithSharedPipelineMock,
@@ -28,7 +31,7 @@ const SCENE_NODE: AnyNode = {
   id: 'scene',
   type: NodeType.SCENE,
   name: 'Scene',
-  visible: true,
+  enabled: true,
   width: 2,
   height: 2,
   bitDepth: 16,
@@ -39,9 +42,10 @@ const SCENE_NODE: AnyNode = {
 
 const IMAGE_NODE: AnyNode = {
   id: 'img-1',
-  type: NodeType.IMAGE,
+  type: NodeType.MEDIA_SOURCE,
+  mediaKind: 'image',
   name: 'Plate',
-  visible: true,
+  enabled: true,
   src: 'plate',
   width: 2,
   height: 2,
@@ -55,7 +59,7 @@ const GRADE_NODE: AnyNode = {
   id: 'grade-1',
   type: NodeType.GRADE,
   name: 'Look',
-  visible: true,
+  enabled: true,
   stacked: true,
   grade: {
     brightness: 0,
@@ -70,12 +74,13 @@ const ROTO_NODE: AnyNode = {
   id: 'roto-1',
   type: NodeType.ROTO,
   name: 'Roto',
-  visible: true,
+  enabled: true,
   invert: false,
   paths: [],
 };
 
 afterEach(() => {
+  createPixelDataReaderMock.mockReset();
   getPixelDataForFrameMock.mockReset();
   renderWithSharedPipelineMock.mockReset();
   globalThis.document = originalDocument;
@@ -107,13 +112,15 @@ describe('sourcePixelData', () => {
       width: 1,
       height: 1,
     };
-    getPixelDataForFrameMock.mockResolvedValue(pixelData);
+    const getFramePixelData = vi.fn().mockResolvedValue(pixelData);
+    const dispose = vi.fn();
+    createPixelDataReaderMock.mockReturnValue({ getFramePixelData, dispose });
 
     const result = await getSourcePixelDataForFrame(
       {
         kind: 'media-node',
         node: IMAGE_NODE as typeof IMAGE_NODE & {
-          type: typeof NodeType.IMAGE;
+          type: typeof NodeType.MEDIA_SOURCE;
         },
       },
       12,
@@ -121,7 +128,9 @@ describe('sourcePixelData', () => {
     );
 
     expect(result).toBe(pixelData);
-    expect(getPixelDataForFrameMock).toHaveBeenCalledWith(IMAGE_NODE, 12, 24);
+    expect(createPixelDataReaderMock).toHaveBeenCalledWith(IMAGE_NODE, 24);
+    expect(getFramePixelData).toHaveBeenCalledWith(12);
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it('reads upstream render targets and flips them to match canvas pixel orientation', async () => {

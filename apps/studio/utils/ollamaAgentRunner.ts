@@ -1,11 +1,12 @@
-import type { AiChatAttachment, AiChatGradePreviewArtifact } from '@blackboard/types';
+import type { AiChatArtifact, AiChatAttachment } from '@blackboard/types';
 import {
   getAiAttachmentImagePayloads,
   getAiAttachmentTextContext,
   readErrorResponse,
   readOllamaNdjsonStream,
 } from './ai';
-import type { AiNodeToolHandler } from './aiNodeTools';
+import type { AiToolHandler } from './agentToolRegistry';
+import { publishDebugEvent } from './debugEventBus';
 
 type OllamaMessageRole = 'user' | 'assistant' | 'tool';
 
@@ -41,7 +42,7 @@ interface RunOllamaToolAgentOptions {
   contextSummary?: string;
   history?: OllamaRunnerHistoryEntry[];
   attachments?: AiChatAttachment[];
-  tools: AiNodeToolHandler[];
+  tools: AiToolHandler[];
   maxSteps?: number;
   onStreamUpdate?: (update: OllamaToolAgentStreamUpdate) => void;
   signal?: AbortSignal;
@@ -52,7 +53,7 @@ interface RunOllamaToolAgentResult {
   message: string;
   model: string;
   thinking?: string;
-  artifact?: AiChatGradePreviewArtifact | null;
+  artifact?: AiChatArtifact | null;
 }
 
 interface OllamaToolAgentStreamUpdate {
@@ -61,7 +62,7 @@ interface OllamaToolAgentStreamUpdate {
   content: string;
   thinking: string;
   isThinking?: boolean;
-  artifact?: AiChatGradePreviewArtifact | null;
+  artifact?: AiChatArtifact | null;
 }
 
 const getOllamaApiBase = (endpoint: string): string => {
@@ -207,10 +208,36 @@ export async function runOllamaToolAgent(
       ...(attachedImages.length > 0 ? { images: attachedImages } : {}),
     },
   ];
-  let latestArtifact: AiChatGradePreviewArtifact | null | undefined;
+  let latestArtifact: AiChatArtifact | null | undefined;
   let latestThinking = '';
 
   for (let step = 0; step < (options.maxSteps ?? 8); step += 1) {
+    const requestBody = {
+      model: options.model,
+      messages: messages.map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+        ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+        ...(msg.tool_name ? { tool_name: msg.tool_name } : {}),
+        ...(msg.images ? { images: `[${msg.images.length} image(s)]` } : {}),
+      })),
+      tools: options.tools.map((tool) => ({ name: tool.schema.function.name })),
+      stream: true,
+      think: options.enableThinking ?? true,
+    };
+
+    publishDebugEvent({
+      type: 'ai_request',
+      source: 'runOllamaToolAgent',
+      detail: `Ollama tool agent step ${step + 1} model=${options.model}`,
+      data: {
+        provider: 'ollama',
+        model: options.model,
+        step: step + 1,
+        body: requestBody,
+      },
+    });
+
     const response = await fetch(getOllamaChatEndpoint(options.endpoint), {
       method: 'POST',
       headers: {
@@ -227,7 +254,14 @@ export async function runOllamaToolAgent(
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama request failed: ${await readErrorResponse(response)}`);
+      const errorDetail = await readErrorResponse(response);
+      publishDebugEvent({
+        type: 'ai_response',
+        source: 'runOllamaToolAgent',
+        detail: `Ollama tool agent step ${step + 1} failed: ${errorDetail}`,
+        data: { provider: 'ollama', status: response.status, error: errorDetail, step: step + 1 },
+      });
+      throw new Error(`Ollama request failed: ${errorDetail}`);
     }
 
     let responseModel = options.model;
@@ -279,6 +313,17 @@ export async function runOllamaToolAgent(
 
     const toolCalls = assistantMessage.tool_calls ?? [];
     if (toolCalls.length === 0) {
+      publishDebugEvent({
+        type: 'ai_response',
+        source: 'runOllamaToolAgent',
+        detail: `Ollama tool agent complete after ${step + 1} step(s) model=${responseModel}`,
+        data: {
+          provider: 'ollama',
+          model: responseModel,
+          steps: step + 1,
+          hasArtifact: latestArtifact !== undefined,
+        },
+      });
       options.onStreamUpdate?.({
         stage: 'complete',
         model: responseModel,
@@ -295,25 +340,42 @@ export async function runOllamaToolAgent(
       };
     }
 
-    for (const toolCall of toolCalls) {
+    const runToolCall = async (toolCall: OllamaStreamToolCall): Promise<OllamaMessage> => {
       const toolName = toolCall.function?.name?.trim() || '';
       const handler = toolMap.get(toolName);
       const toolArgs = parseToolArguments(toolCall.function?.arguments);
 
+      publishDebugEvent({
+        type: 'tool_call',
+        source: 'runOllamaToolAgent',
+        detail: `Tool call: ${toolName}`,
+        data: {
+          tool: toolName,
+          args: toolArgs,
+          step: step + 1,
+        },
+      });
+
       if (!handler) {
-        messages.push({
-          role: 'tool',
+        const result = {
+          role: 'tool' as const,
           tool_name: toolName || 'unknown_tool',
           content: JSON.stringify({
             status: 'error',
             message: `Unknown tool "${toolName}"`,
           }),
+        };
+        publishDebugEvent({
+          type: 'tool_result',
+          source: 'runOllamaToolAgent',
+          detail: `Tool result: ${toolName} — unknown handler`,
+          data: { tool: toolName, status: 'error', message: `Unknown tool "${toolName}"` },
         });
-        continue;
+        return result;
       }
 
       try {
-        const toolResult = handler.run(toolArgs);
+        const toolResult = await handler.run(toolArgs);
         if (toolResult.artifact !== undefined) {
           latestArtifact = toolResult.artifact;
         }
@@ -325,21 +387,49 @@ export async function runOllamaToolAgent(
           isThinking: false,
           artifact: latestArtifact,
         });
-        messages.push({
+        publishDebugEvent({
+          type: 'tool_result',
+          source: 'runOllamaToolAgent',
+          detail: `Tool result: ${toolName} — success`,
+          data: {
+            tool: toolName,
+            status: 'success',
+            resultPreview: toolResult.content.slice(0, 500),
+            hasArtifact: toolResult.artifact !== undefined,
+          },
+        });
+        return {
           role: 'tool',
           tool_name: toolName,
           content: toolResult.content,
-        });
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        messages.push({
+        publishDebugEvent({
+          type: 'tool_result',
+          source: 'runOllamaToolAgent',
+          detail: `Tool result: ${toolName} — error: ${message.slice(0, 200)}`,
+          data: { tool: toolName, status: 'error', message },
+        });
+        return {
           role: 'tool',
           tool_name: toolName,
           content: JSON.stringify({
             status: 'error',
             message,
           }),
-        });
+        };
+      }
+    };
+
+    const isDelegationBatch =
+      toolCalls.length > 1 &&
+      toolCalls.every((toolCall) => toolCall.function?.name?.trim() === 'assign_subagent_task');
+    if (isDelegationBatch) {
+      messages.push(...(await Promise.all(toolCalls.map(runToolCall))));
+    } else {
+      for (const toolCall of toolCalls) {
+        messages.push(await runToolCall(toolCall));
       }
     }
   }

@@ -1,10 +1,19 @@
-import { useRef, useLayoutEffect, useEffect, type MutableRefObject } from 'react';
+import { useRef, useLayoutEffect, useEffect, type RefObject } from 'react';
 import * as THREE from 'three';
-import { NodeType, type AnyNode, type PaintNode, type SceneNode } from '@blackboard/types';
-import { getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/effects/effectHelpers';
-import { paintNodeHasVisibleContentAtFrame } from '@/effects/paint/paintRaster';
-import { getPaintTextureCommittedState } from '@/effects/paint/paintTextureKeys';
+import {
+  NodeType,
+  RotoAlphaMode,
+  type AnyNode,
+  type PaintNode,
+  type RotoNode,
+  type SceneNode,
+  type ViewerSettings,
+} from '@blackboard/types';
+import { getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
+import { paintNodeHasVisibleContentAtFrame } from '@/nodes/builtin/paint/paintRaster';
+import { getPaintTextureCommittedState } from '@/nodes/builtin/paint/paintTextureKeys';
 import { renderViewportFrameWithSharedPipeline } from '@/renderer/pipeline';
+import type { TextTextureEntry } from './useViewportTextTextures';
 
 const THUMBNAIL_CAPTURE_DELAY_MS = 1000;
 
@@ -38,10 +47,19 @@ const canvasToDataUrl = async (canvas: HTMLCanvasElement): Promise<string | null
   });
 };
 
-interface CacheEntry {
-  texture?: THREE.Texture;
+interface MediaTextureCacheEntry {
+  texture: THREE.Texture;
   video?: HTMLVideoElement;
 }
+
+interface MediaTextureCacheReader {
+  get(id: string): MediaTextureCacheEntry | undefined;
+}
+
+const isVideoFileNode = (node: AnyNode): boolean => {
+  const descriptor = getMediaDescriptor(node.type);
+  return !!(descriptor?.isVideoFile?.(node) ?? nodeFlags(node.type).isVideoFile);
+};
 
 interface ThreeStuff {
   scene: THREE.Scene;
@@ -49,24 +67,34 @@ interface ThreeStuff {
   plane: THREE.PlaneGeometry;
   materials: Map<string, THREE.ShaderMaterial>;
   renderTargets: THREE.WebGLRenderTarget[];
+  utilityTargets: Map<string, THREE.WebGLRenderTarget>;
+  ocioTextures: Map<string, THREE.Texture>;
   quad: THREE.Mesh | null;
 }
 
 interface UseViewportRenderLoopParams {
   gl: THREE.WebGLRenderer | null;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  rendererSurfaceSize: { width: number; height: number };
   nodes: AnyNode[];
   sceneNode: SceneNode | undefined;
   visualFrame: number;
-  viewerSettings: any;
+  viewerSettings: ViewerSettings;
   alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
   hasRenderableNodes: boolean;
   mediaUpdateTrigger: number;
   threeStuff: ThreeStuff;
-  textureCacheRef: MutableRefObject<Map<string, CacheEntry>>;
-  textTexturesRef: MutableRefObject<Map<string, any>>;
-  paintTexturesRef: MutableRefObject<Map<string, any>>;
-  rotoMaskTexturesRef: MutableRefObject<Map<string, any>>;
+  textureCacheRef: RefObject<MediaTextureCacheReader>;
+  textTexturesRef: RefObject<Map<string, TextTextureEntry>>;
+  paintTexturesRef: RefObject<
+    Map<string, { colorTexture: THREE.Texture; alphaTexture: THREE.Texture; committedKey: string }>
+  >;
+  rotoMaskTexturesRef: RefObject<
+    Map<
+      string,
+      { texture: THREE.Texture; addCanvasTexture?: THREE.Texture; subCanvasTexture?: THREE.Texture }
+    >
+  >;
   freezeImageWhileEditing: boolean;
   deferProjectThumbnailCapture: boolean;
   signalFrameRendered: () => void;
@@ -75,14 +103,16 @@ interface UseViewportRenderLoopParams {
 
 interface UseViewportRenderLoopResult {
   /** A ref to the final composite render target (for pixel reading). */
-  finalCompBufferRef: MutableRefObject<THREE.WebGLRenderTarget | null>;
+  finalCompBufferRef: RefObject<THREE.WebGLRenderTarget | null>;
 }
 
 const arePaintTexturesReadyForFrame = (
   nodes: AnyNode[],
   frame: number,
   sceneNode: SceneNode,
-  paintTexturesRef: MutableRefObject<Map<string, any>>,
+  paintTexturesRef: RefObject<
+    Map<string, { colorTexture: THREE.Texture; alphaTexture: THREE.Texture; committedKey: string }>
+  >,
 ): boolean => {
   const paintNodes = nodes.filter((node) => node.type === NodeType.PAINT) as PaintNode[];
 
@@ -125,6 +155,7 @@ const arePaintTexturesReadyForFrame = (
 export function useViewportRenderLoop({
   gl,
   canvasRef,
+  rendererSurfaceSize,
   nodes,
   sceneNode,
   visualFrame,
@@ -155,6 +186,8 @@ export function useViewportRenderLoop({
     sceneNode: typeof sceneNode;
     mediaUpdateTrigger: number;
     hasRenderableNodes: boolean;
+    rendererSurfaceWidth: number;
+    rendererSurfaceHeight: number;
   } | null>(null);
 
   // --- Main GPU render ---
@@ -180,6 +213,8 @@ export function useViewportRenderLoop({
       prev.sceneNode === sceneNode &&
       prev.mediaUpdateTrigger === mediaUpdateTrigger &&
       prev.hasRenderableNodes === hasRenderableNodes &&
+      prev.rendererSurfaceWidth === rendererSurfaceSize.width &&
+      prev.rendererSurfaceHeight === rendererSurfaceSize.height &&
       (prev.nodes === nodes || freezeImageWhileEditing)
     ) {
       signalFrameRendered();
@@ -198,6 +233,8 @@ export function useViewportRenderLoop({
         quad: threeStuff.quad,
         materials: threeStuff.materials,
         renderTargets: threeStuff.renderTargets,
+        utilityTargets: threeStuff.utilityTargets,
+        ocioTextures: threeStuff.ocioTextures,
       },
       nodes: nodes,
       sceneNode,
@@ -206,16 +243,25 @@ export function useViewportRenderLoop({
       alphaOverlayStyle,
       getMediaTexture: (node, frame) => {
         const desc = getMediaDescriptor(node.type);
-        const key = desc?.getMediaTextureKey?.(node as any, frame);
+        const key = desc?.getMediaTextureKey?.(node as AnyNode, frame);
         if (!key) return undefined;
 
         const entry = textureCacheRef.current.get(key);
         if (entry?.texture) return entry.texture;
 
-        const flags = nodeFlags(node.type);
-        if (flags.isVideoFile && Math.round(frame) === Math.round(visualFrame)) {
+        if (isVideoFileNode(node) && Math.round(frame) === Math.round(visualFrame)) {
           const [assetId] = getNodeAssetIds(node);
           return assetId ? textureCacheRef.current.get(assetId)?.texture : undefined;
+        }
+
+        return undefined;
+      },
+      getMediaTextureByKey: (key, assetId, isVideoLike) => {
+        const entry = textureCacheRef.current.get(key);
+        if (entry?.texture) return entry.texture;
+
+        if (isVideoLike && assetId) {
+          return textureCacheRef.current.get(assetId)?.texture;
         }
 
         return undefined;
@@ -231,6 +277,16 @@ export function useViewportRenderLoop({
           : undefined;
       },
       getRotoMaskTexture: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.texture,
+      getRotoAddMaskTexture: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.addCanvasTexture,
+      getRotoSubMaskTexture: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.subCanvasTexture,
+      getRotoAlphaMode: (nodeId) => {
+        const rotoNode = nodes.find(
+          (n): n is RotoNode => n.type === NodeType.ROTO && n.id === nodeId,
+        );
+        if (!rotoNode) return 0;
+        const mode = rotoNode.alphaMode;
+        return mode === RotoAlphaMode.REPLACE ? 1 : mode === RotoAlphaMode.ADD ? 2 : 0;
+      },
     });
 
     threeStuff.renderTargets = result.renderTargets;
@@ -243,12 +299,16 @@ export function useViewportRenderLoop({
       sceneNode,
       mediaUpdateTrigger,
       hasRenderableNodes,
+      rendererSurfaceWidth: rendererSurfaceSize.width,
+      rendererSurfaceHeight: rendererSurfaceSize.height,
     };
     signalFrameRendered();
   }, [
     gl,
     nodes,
     mediaUpdateTrigger,
+    rendererSurfaceSize.width,
+    rendererSurfaceSize.height,
     sceneNode,
     threeStuff,
     viewerSettings,
@@ -257,6 +317,11 @@ export function useViewportRenderLoop({
     visualFrame,
     freezeImageWhileEditing,
     signalFrameRendered,
+    canvasRef,
+    paintTexturesRef,
+    rotoMaskTexturesRef,
+    textTexturesRef,
+    textureCacheRef,
   ]);
 
   // Capture a project thumbnail after the viewport finishes rendering.

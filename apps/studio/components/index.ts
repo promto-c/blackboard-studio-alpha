@@ -1,59 +1,25 @@
 // central barrel for app components
-// re-export shared UI components and local helpers so code can import from '@/components'
+// re-export UI helpers and local components so code can import from '@/components'
 
-// --- shared library components ---
-import {
-  CodeBlock,
-  CollapsibleSection,
-  ColorPicker,
-  DiceIconButton,
-  GlassSurface,
-  KeyframeButton,
-  Popover,
-  PromptTextField,
-  PropertyField,
-  ResetIconButton,
-  SegmentedControl,
-  ShaderCodeModal,
-  StyledDropdown,
-  TextInputField,
-  ToggleButton,
-  ToggleSwitch,
-} from '@blackboard/ui';
-
-export {
-  CodeBlock,
-  CollapsibleSection,
-  ColorPicker,
-  DiceIconButton,
-  GlassSurface,
-  KeyframeButton,
-  Popover,
-  PromptTextField,
-  PropertyField,
-  ResetIconButton,
-  SegmentedControl,
-  ShaderCodeModal,
-  StyledDropdown,
-  TextInputField,
-  ToggleButton,
-  ToggleSwitch,
-};
-export { default as Slider, type SliderProps } from './Slider';
-
-// icons are also available via the library; keep the namespace for convenience
-export * as Icons from '@blackboard/icons';
+// app-specific re-exports
+export { Slider, type SliderProps } from './Slider';
 
 // --- app-specific components ---
-export { default as AttentionPulse } from './AttentionPulse';
-export { default as BackgroundJobsMonitor } from './BackgroundJobsMonitor';
-export { default as ConnectionBadge } from './ConnectionBadge';
-export { default as GlobalTooltipLayer } from './GlobalTooltipLayer';
-export { default as HotkeyBadge } from './HotkeyBadge';
-export { default as InspectorLogFooter, type InspectorLogFooterProps } from './InspectorLogFooter';
-export { default as ItemsHierarchyRenderer } from './ItemsHierarchyRenderer';
-export { default as ImageThumbnail } from './ImageThumbnail';
-export { default as ItemsPanelLayout } from './ItemsPanelLayout';
+export { AttentionPulse } from './AttentionPulse';
+export { BackgroundJobsMonitor } from './BackgroundJobsMonitor';
+export { ConnectionBadge } from './ConnectionBadge';
+export { GlobalTooltipLayer } from './GlobalTooltipLayer';
+export { HotkeyBadge } from './HotkeyBadge';
+export { InspectorLogFooter, type InspectorLogFooterProps } from './InspectorLogFooter';
+export {
+  InspectorBreadcrumb,
+  type InspectorBreadcrumbProps,
+  type InspectorBreadcrumbSegment,
+} from './InspectorBreadcrumb';
+export { ItemsHierarchyRenderer } from './ItemsHierarchyRenderer';
+export { AssetViewer, type AssetViewerMedia } from './AssetViewer';
+export { ImageThumbnail } from './ImageThumbnail';
+export { ItemsPanelLayout } from './ItemsPanelLayout';
 export {
   FloatingMenu,
   HEADER_SELECTION_CHIP_CLASS,
@@ -65,33 +31,41 @@ export {
   countLabel,
   type LayerOption,
 } from './ItemsPanelMenus';
-export { default as ItemsTreeView, type ItemsTreeDropIndicator } from './ItemsTreeView';
+export { ItemsTreeView, type ItemsTreeDropIndicator } from './ItemsTreeView';
 export { LayerRowShell, LeafItemRowShell } from './ItemsTreeRows';
-export { default as LiveThumbnail } from './LiveThumbnail';
-export { default as MediaSourceSelect } from './MediaSourceSelect';
+export { LiveThumbnail } from './LiveThumbnail';
+export { MarkdownNote } from './MarkdownNote';
+export { MediaSourceSelect } from './MediaSourceSelect';
+export { NativeDesktopStatusButton } from './NativeDesktopStatusButton';
+export { NodeItemsPanel, getNodeItemsComponent, type NodeItemsPanelProps } from './NodeItemsPanel';
+export { OcioColorSpaceDropdown } from './OcioColorSpaceDropdown';
+export { PwaStatusButton } from './PwaStatusButton';
+export { PwaUpdateToast } from './PwaUpdateToast';
+export { SettingsPanelFrame } from './SettingsPanelFrame';
+// SegmentedControl is the unified component supporting both options-based and children-based APIs.
+// SlidingSegmentedControl is the animated variant built on top.
 export {
-  default as NodeItemsPanel,
-  getNodeItemsComponent,
-  type NodeItemsPanelProps,
-} from './NodeItemsPanel';
-export { default as SettingsPanelFrame } from './SettingsPanelFrame';
-export {
-  default as SlidingSegmentedControl,
+  SlidingSegmentedControl,
   type SlidingSegmentedControlOption,
   type SlidingSegmentedControlProps,
 } from './SlidingSegmentedControl';
+// SegmentedControl is the unified component supporting both options-based
+// and children-based APIs. SegmentedControlButton is the sub-button for
+// children mode.
 export {
-  StudioSegmentedControl,
-  StudioSegmentedControlButton,
-  type StudioSegmentedControlButtonProps,
-  type StudioSegmentedControlProps,
-} from './StudioSegmentedControl';
-export { default as ToolButton } from './ToolButton';
-export { default as ViewerSlotBadges } from './ViewerSlotBadges';
-export { default as ViewportToolButton } from './ViewportToolButton';
+  SegmentedControl,
+  SegmentedControlButton,
+  type SegmentedControlButtonProps,
+  type SegmentedControlProps,
+  type SegmentOption,
+} from './SegmentedControl';
+export { ShaderCodeButton } from './ShaderCodeButton';
+export { SettingRow } from './SettingRow';
+export { UniformRenderer, type UniformRendererProps } from './UniformRenderer';
+export { ToolButton } from './ToolButton';
+export { ViewerSlotBadges } from './ViewerSlotBadges';
+export { ViewportToolButton } from './ViewportToolButton';
 export { ViewportToolPanel, ViewportToolPanelHeader } from './ViewportToolPanel';
-export {
-  default as FlowViewModeControls,
-  type FlowViewModeControlsProps,
-} from './FlowViewModeControls';
-export { default as InspectorStack, type InspectorStackProps } from './InspectorStack';
+export { ViewportToolsRenderer } from './ViewportToolsRenderer';
+export { FlowViewModeControls, type FlowViewModeControlsProps } from './FlowViewModeControls';
+export { InspectorStack, type InspectorStackProps } from './InspectorStack';

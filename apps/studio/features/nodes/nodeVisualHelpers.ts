@@ -1,5 +1,5 @@
 import { AnyNode, BlendMode } from '@blackboard/types';
-import { getNodeAssetIds, nodeFlags } from '@/effects/effectHelpers';
+import { getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
 
 export const getBlendModeLabel = (mode?: BlendMode): string => {
   if (!mode) return 'Over';

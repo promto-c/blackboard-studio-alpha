@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { UniformUIType } from '@blackboard/types';
-import { parseInputPortsFromGLSL, parseUniformsFromGLSL } from './glsl';
+import { parseInputPortsFromGLSL, parseUniformsFromGLSL } from '@blackboard/renderer';
 
 describe('parseUniformsFromGLSL', () => {
   it('parses toggle and segmented custom shader uniforms', () => {

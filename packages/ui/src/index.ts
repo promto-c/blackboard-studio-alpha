@@ -19,15 +19,11 @@ export {
   type ResizableScrollTextareaProps,
 } from './ResizableScrollTextarea';
 export { default as ScrollArea, type ScrollAreaAxis, type ScrollAreaProps } from './ScrollArea';
-export { default as SegmentedControl } from './SegmentedControl';
 export { default as ShaderCodeModal } from './ShaderCodeModal';
+export { Spinner, type SpinnerProps } from './Spinner';
 export { default as Slider, type SliderProps } from './Slider';
 export { default as SplitterHandle, type SplitterHandleProps } from './SplitterHandle';
 export { default as StyledDropdown } from './StyledDropdown';
 export { default as TextInputField, type TextInputFieldProps } from './TextInputField';
 export { default as ToggleButton, type ToggleButtonProps } from './ToggleButton';
 export { default as ToggleSwitch, type ToggleSwitchProps } from './ToggleSwitch';
-
-// --- Icons ---
-// icons now live in a dedicated package; re-export for convenience
-export * as Icons from '@blackboard/icons';

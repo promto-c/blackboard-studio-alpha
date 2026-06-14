@@ -14,7 +14,8 @@ const createHarness = (overrides: Partial<EditorState> = {}) => {
     state = { ...state, ...fn(state) };
   };
   const get = () => state;
-  const actions = createPlaybackActions(set, get, { current: false });
+  const commitMutation = (_input: unknown) => {};
+  const actions = createPlaybackActions(set, get, { current: false }, { commitMutation });
 
   return {
     actions,

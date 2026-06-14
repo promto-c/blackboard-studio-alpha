@@ -28,7 +28,7 @@ const sizeClasses = {
   },
 } as const;
 
-const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
+function ToggleSwitch({
   checked,
   onCheckedChange,
   label,
@@ -39,7 +39,7 @@ const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
   size = 'md',
   trackClassName,
   thumbClassName,
-}) => {
+}: ToggleSwitchProps) {
   const labelId = React.useId();
   const descriptionId = React.useId();
   const hasLabel = label !== undefined && label !== null;
@@ -124,6 +124,6 @@ const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
       {button}
     </div>
   );
-};
+}
 
 export default ToggleSwitch;

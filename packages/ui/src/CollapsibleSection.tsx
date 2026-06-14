@@ -11,7 +11,7 @@ interface CollapsibleSectionProps {
   onTitleClick?: () => void;
 }
 
-const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
+function CollapsibleSection({
   title,
   children,
   action,
@@ -19,7 +19,7 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   defaultOpen = true,
   isSelected = false,
   onTitleClick,
-}) => {
+}: CollapsibleSectionProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const handleToggle = () => {
     onTitleClick?.();
@@ -65,6 +65,6 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
       {isOpen && <div className="px-3 pb-3 pt-0.5">{children}</div>}
     </div>
   );
-};
+}
 
 export default CollapsibleSection;

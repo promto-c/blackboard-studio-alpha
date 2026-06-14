@@ -29,7 +29,7 @@ const DEFAULT_PRESETS: Preset[] = [
   { name: 'A4 Paper', width: 2480, height: 3508 },
 ];
 
-const CUSTOM_PRESETS_KEY = 'photo-editor-custom-presets-v1';
+const CUSTOM_PRESETS_KEY = 'blackboard-studio-custom-presets';
 
 type PresetCategory = 'landscape' | 'portrait' | 'square';
 
@@ -39,12 +39,17 @@ const CategoryIcons: Record<PresetCategory, React.ReactNode> = {
   square: <Icons.Square className="h-4 w-4" />,
 };
 
-const PresetButton: React.FC<{
+function PresetButton({
+  preset,
+  isSelected,
+  onClick,
+  onDelete,
+}: {
   preset: Preset;
   isSelected: boolean;
   onClick: () => void;
   onDelete?: () => void;
-}> = ({ preset, isSelected, onClick, onDelete }) => {
+}) {
   const aspectRatio = preset.width / preset.height;
 
   // Max dimension (width or height) for the thumbnail preview
@@ -97,9 +102,9 @@ const PresetButton: React.FC<{
       )}
     </button>
   );
-};
+}
 
-const NewProjectView: React.FC<NewProjectViewProps> = ({ onBack, onCreate }) => {
+function NewProjectView({ onBack, onCreate }: NewProjectViewProps) {
   const [projectName, setProjectName] = useState('Untitled Project');
   const [width, setWidth] = useState('1920');
   const [height, setHeight] = useState('1080');
@@ -332,6 +337,6 @@ const NewProjectView: React.FC<NewProjectViewProps> = ({ onBack, onCreate }) => 
       </div>
     </div>
   );
-};
+}
 
 export default NewProjectView;

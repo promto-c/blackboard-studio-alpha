@@ -1,8 +1,9 @@
-import { NodeType, type HistoryEntry, type NodePositions } from '@blackboard/types';
+import { NodeType, type NodePositions } from '@blackboard/types';
 import { getNodePositionsForFlow, setNodePositionsForFlow } from '@/state/editor/flowModel';
 import { computeAutoLayout } from '@/utils/autoLayoutGraph';
 import { buildNodeStacks } from '@/utils/nodeStacks';
-import type { SetState, GetState } from '@/state/editor/slices/types';
+import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
+import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 
 function nodePositionsEqual(a: NodePositions, b: NodePositions) {
   const aKeys = Object.keys(a);
@@ -29,12 +30,13 @@ const cloneNodePositions = (positions: NodePositions): NodePositions =>
     Object.entries(positions).map(([nodeId, position]) => [nodeId, { ...position }]),
   );
 
+const getPositionFlowId = (state: ReturnType<GetState>) => state.activeFlowId ?? state.rootFlowId;
+
 export function createNodeViewActions(
   set: SetState,
   get: GetState,
   deps: {
-    pushHistory: (entry: Omit<HistoryEntry, 'id'>) => void;
-    debouncedSave: () => void;
+    commitMutation: CommitEditorMutation<EditorState>;
   },
 ) {
   const updateActiveHistoryNodePositions = (preNodePositions: NodePositions) => {
@@ -46,7 +48,7 @@ export function createNodeViewActions(
 
       const preNodePositionsByFlow = setNodePositionsForFlow(
         state.nodePositionsByFlow,
-        state.rootFlowId,
+        getPositionFlowId(state),
         cloneNodePositions(preNodePositions),
       );
 
@@ -68,100 +70,119 @@ export function createNodeViewActions(
 
   return {
     autoArrangeNodes: (options?: { pushHistory?: boolean }) => {
-      const state = get();
-      const otherNodes = state.nodes.filter((node) => node.type !== NodeType.SCENE);
-      const nodeStacks = buildNodeStacks(otherNodes);
-      const positions = computeAutoLayout(state.nodes, nodeStacks);
+      let resultPositions: NodePositions = {};
 
-      set(() => ({
-        nodePositionsByFlow: setNodePositionsForFlow(
+      deps.commitMutation((state) => {
+        const otherNodes = state.nodes.filter((node) => node.type !== NodeType.SCENE);
+        const nodeStacks = buildNodeStacks(otherNodes);
+        const positions = computeAutoLayout(state.nodes, nodeStacks);
+        resultPositions = positions;
+
+        const nextNodePositionsByFlow = setNodePositionsForFlow(
           state.nodePositionsByFlow,
-          state.rootFlowId,
+          getPositionFlowId(state),
           positions,
-        ),
-      }));
+        );
 
-      if (options?.pushHistory === false) {
-        return positions;
-      }
-
-      const nextState = get();
-      deps.pushHistory({
-        label: 'Auto-arrange Nodes',
-        state: {
-          flows: nextState.flows,
-          selectedNodeId: nextState.selectedNodeId,
-          nodePositionsByFlow: nextState.nodePositionsByFlow,
-        },
+        return {
+          patch: { nodePositionsByFlow: nextNodePositionsByFlow },
+          ...(options?.pushHistory === false
+            ? {}
+            : {
+                history: {
+                  label: 'Auto-arrange Nodes',
+                  state: {
+                    flows: state.flows,
+                    selectedNodeId: state.selectedNodeId,
+                    nodePositionsByFlow: state.nodePositionsByFlow,
+                  },
+                },
+              }),
+        };
       });
 
-      return positions;
+      return resultPositions;
     },
 
     setNodePosition: (nodeId: string, x: number, y: number) => {
       set((state) => {
-        const nodePositions = getNodePositionsForFlow(state.nodePositionsByFlow, state.rootFlowId);
+        const positionFlowId = getPositionFlowId(state);
+        const nodePositions = getNodePositionsForFlow(state.nodePositionsByFlow, positionFlowId);
         return {
-          nodePositionsByFlow: setNodePositionsForFlow(
-            state.nodePositionsByFlow,
-            state.rootFlowId,
-            {
-              ...nodePositions,
-              [nodeId]: { x, y },
-            },
-          ),
+          nodePositionsByFlow: setNodePositionsForFlow(state.nodePositionsByFlow, positionFlowId, {
+            ...nodePositions,
+            [nodeId]: { x, y },
+          }),
         };
       });
     },
 
     commitNodePosition: (preNodePositions: NodePositions) => {
       const state = get();
-      const nodePositions = getNodePositionsForFlow(state.nodePositionsByFlow, state.rootFlowId);
+      const nodePositions = getNodePositionsForFlow(
+        state.nodePositionsByFlow,
+        getPositionFlowId(state),
+      );
 
       if (nodePositionsEqual(preNodePositions, nodePositions)) {
         return;
       }
 
+      // Update the current history entry with pre-move positions so undo
+      // restores the correct positions.
       updateActiveHistoryNodePositions(preNodePositions);
 
-      const nextState = get();
-      deps.pushHistory({
-        label: 'Move Node',
-        state: {
-          flows: nextState.flows,
-          selectedNodeId: nextState.selectedNodeId,
-          nodePositionsByFlow: nextState.nodePositionsByFlow,
+      // Push a new history entry with the current (post-move) state.
+      // No state patch needed — position changes were already applied
+      // during drag via setNodePosition / setNodePositions.
+      deps.commitMutation({
+        patch: {},
+        history: {
+          label: 'Move Node',
+          state: {
+            flows: state.flows,
+            selectedNodeId: state.selectedNodeId,
+            nodePositionsByFlow: state.nodePositionsByFlow,
+          },
         },
+        persist: 'debounced',
       });
     },
 
     setNodePositions: (positions: NodePositions, options?: { pushHistory?: boolean }) => {
-      set((state) => ({
-        nodePositionsByFlow: setNodePositionsForFlow(
+      deps.commitMutation((state) => {
+        const nextNodePositionsByFlow = setNodePositionsForFlow(
           state.nodePositionsByFlow,
-          state.rootFlowId,
+          getPositionFlowId(state),
           positions,
-        ),
-      }));
+        );
 
-      if (options?.pushHistory === false) {
-        return;
-      }
-
-      const state = get();
-      deps.pushHistory({
-        label: 'Auto-arrange Nodes',
-        state: {
-          flows: state.flows,
-          selectedNodeId: state.selectedNodeId,
-          nodePositionsByFlow: state.nodePositionsByFlow,
-        },
+        return {
+          patch: { nodePositionsByFlow: nextNodePositionsByFlow },
+          ...(options?.pushHistory === false
+            ? {}
+            : {
+                history: {
+                  label: 'Auto-arrange Nodes',
+                  state: {
+                    flows: state.flows,
+                    selectedNodeId: state.selectedNodeId,
+                    nodePositionsByFlow: state.nodePositionsByFlow,
+                  },
+                },
+              }),
+        };
       });
+    },
+
+    setPendingNodePosition: (position: { x: number; y: number } | null) => {
+      set(() => ({ pendingNodePosition: position }));
     },
 
     cleanNodePositions: (deletedIds: Set<string>) => {
       const state = get();
-      const nodePositions = getNodePositionsForFlow(state.nodePositionsByFlow, state.rootFlowId);
+      const positionFlowId = getPositionFlowId(state);
+      const nodePositions = getNodePositionsForFlow(state.nodePositionsByFlow, positionFlowId);
       const cleanedPositions = { ...nodePositions };
       let changed = false;
 
@@ -176,7 +197,7 @@ export function createNodeViewActions(
         set(() => ({
           nodePositionsByFlow: setNodePositionsForFlow(
             state.nodePositionsByFlow,
-            state.rootFlowId,
+            positionFlowId,
             cleanedPositions,
           ),
         }));

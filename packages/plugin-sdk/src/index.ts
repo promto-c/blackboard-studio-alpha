@@ -1,7 +1,7 @@
 // @blackboard/plugin-sdk — Plugin authoring API
 //
 // Plugin authors use the types and functions exported here to define
-// custom effects and register them with the Blackboard Studio host app.
+// custom nodes and register them with the Blackboard Studio host app.
 
 import React from 'react';
 import type { TransformData } from '@blackboard/types';
@@ -21,11 +21,12 @@ export type RenderMode =
   | 'mask'
   | 'warp'
   | 'merge'
+  | 'utility'
   | 'media'
   | 'text'
   | 'scene';
 
-export interface EffectRenderContext {
+export interface RenderContext {
   frame: number;
   fps: number;
   scene: { width: number; height: number };
@@ -33,12 +34,12 @@ export interface EffectRenderContext {
   flow?: unknown;
 }
 
-export type UniformsGetter = (node: unknown, context: EffectRenderContext) => ShaderUniformMap;
+export type UniformsGetter = (node: unknown, context: RenderContext) => ShaderUniformMap;
 
 /** What kind of data an input port accepts. */
 export type InputPortType = 'texture' | 'mask' | 'data';
 
-/** Declares a secondary input port on an effect (e.g. depth map, mask, displacement). */
+/** Declares a secondary input port on a node (e.g. depth map, mask, displacement). */
 export interface InputPortDescriptor {
   name: string;
   label: string;
@@ -144,10 +145,15 @@ export interface ViewportOverlayProps {
 // Media descriptor — for extensions that produce their own textures.
 // ---------------------------------------------------------------------------
 
+export interface MediaTextureCache {
+  has(id: string): boolean;
+  get(id: string): unknown;
+}
+
 export interface MediaCacheContext {
-  imageCache: Map<string, unknown>;
-  videoElements: Map<string, HTMLVideoElement>;
-  sequenceCache: Map<string, unknown>;
+  imageCache: MediaTextureCache;
+  videoElements: ReadonlyMap<string, HTMLVideoElement>;
+  sequenceCache: MediaTextureCache;
 }
 
 /**
@@ -228,25 +234,25 @@ export interface HotkeyBinding<TArgs = unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// EffectDefinition (a.k.a. NodeExtension)
+// NodeDefinition (a.k.a. NodeExtension)
 // ---------------------------------------------------------------------------
 
-export interface EffectDefinition {
+export interface NodeDefinition {
   type: string;
   name: string;
   description?: string;
-  category: 'Image' | 'Adjustment' | 'Effect';
+  category: 'Image' | 'Spatial' | 'Adjustment' | 'Effect' | 'Utility';
   renderMode: RenderMode;
 
-  IconComponent: React.FC<{ className?: string }>;
-  ToolComponent?: React.FC;
-  AdjustmentComponent: React.FC<{ node: unknown }>;
-  ViewportToolsComponent?: React.FC<{ node: unknown }>;
+  IconComponent: React.ComponentType<{ className?: string }>;
+  ToolComponent?: React.ComponentType;
+  AdjustmentComponent: React.ComponentType<{ node: unknown }>;
+  ViewportToolsComponent?: React.ComponentType<{ node: unknown }>;
 
   /** Optional SVG overlay component rendered in the viewport for this node. */
-  ViewportOverlayComponent?: React.FC<ViewportOverlayProps>;
+  ViewportOverlayComponent?: React.ComponentType<ViewportOverlayProps>;
   /** Optional side-panel component shown when this node's viewport tool is active. */
-  ViewportToolPanelComponent?: React.FC<{ node: unknown }>;
+  ViewportToolPanelComponent?: React.ComponentType<{ node: unknown }>;
 
   getInitialNodeProps: () => Record<string, unknown>;
   toolHotkeys?: { [key: string]: string };
@@ -256,7 +262,7 @@ export interface EffectDefinition {
   getUniforms?: UniformsGetter;
   getStabilizeTransform?: (node: unknown, frame: number, context?: unknown) => TransformData | null;
 
-  /** Optional secondary input ports this effect declares. */
+  /** Optional secondary input ports this node declares. */
   inputPorts?: InputPortDescriptors;
 
   /** Viewport interaction handler for mouse events. */
@@ -272,17 +278,17 @@ export interface EffectDefinition {
 }
 
 /**
- * Alias for EffectDefinition — community-facing name for the extension system.
- * Built-in effects and community extensions use the same manifest shape.
+ * Alias for NodeDefinition — community-facing name for the extension system.
+ * Built-in nodes and community extensions use the same manifest shape.
  */
-export type NodeExtension = EffectDefinition;
+export type NodeExtension = NodeDefinition;
 
 export interface ToolDefinition {
   type: string;
   name: string;
   description?: string;
-  category: 'Image' | 'Adjustment' | 'Effect';
-  ToolComponent?: React.FC;
+  category: 'Image' | 'Spatial' | 'Adjustment' | 'Effect' | 'Utility';
+  ToolComponent?: React.ComponentType;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,9 +309,9 @@ export interface ViewportToolDefinition {
   name: string;
   description?: string;
   /** Icon rendered in the viewport toolbar. */
-  IconComponent: React.FC<{ className?: string }>;
+  IconComponent: React.ComponentType<{ className?: string }>;
   /** Tool UI rendered inside the viewport when active. */
-  ToolComponent: React.FC;
+  ToolComponent: React.ComponentType;
   /** Optional hotkey bindings for this tool. */
   hotkeys?: Record<string, string>;
 }
@@ -321,9 +327,9 @@ export interface PanelDefinition {
   name: string;
   description?: string;
   /** Icon shown in the panel tab bar. */
-  IconComponent: React.FC<{ className?: string }>;
+  IconComponent: React.ComponentType<{ className?: string }>;
   /** The panel content component. */
-  PanelComponent: React.FC;
+  PanelComponent: React.ComponentType;
   /** Default panel location hint. */
   defaultPosition?: 'left' | 'right' | 'bottom';
 }
@@ -339,16 +345,8 @@ export interface PluginManifest {
   version: string;
   author?: string;
   description?: string;
-  /**
-   * Node extensions provided by this plugin.
-   * @deprecated Use `nodeExtensions` instead. Kept for backward compatibility.
-   */
-  effects: EffectDefinition[];
-  /**
-   * Node extensions provided by this plugin (preferred over `effects`).
-   * If both are specified, `nodeExtensions` takes precedence.
-   */
-  nodeExtensions?: EffectDefinition[];
+  /** Node extensions provided by this plugin. */
+  nodeExtensions: NodeDefinition[];
   /**
    * Standalone viewport tools provided by this plugin.
    * @future Not yet consumed by the host — reserved for future releases.
@@ -365,22 +363,19 @@ export interface PluginManifest {
 // Registry connection (called by the host app, not by plugins)
 // ---------------------------------------------------------------------------
 
-type EffectRegistry = Map<string, EffectDefinition>;
+type NodeRegistry = Map<string, NodeDefinition>;
 type ToolRegistry = ToolDefinition[];
 
-let _effectRegistry: EffectRegistry | null = null;
+let _nodeRegistry: NodeRegistry | null = null;
 let _toolRegistry: ToolRegistry | null = null;
 const _registeredPlugins = new Map<string, PluginManifest>();
 
 /**
  * Called once by the host app during initialisation to connect the
- * plugin-sdk to the live effect and tool registries.
+ * plugin-sdk to the live node and tool registries.
  */
-export function connectRegistries(
-  effectRegistry: EffectRegistry,
-  toolRegistry: ToolRegistry,
-): void {
-  _effectRegistry = effectRegistry;
+export function connectRegistries(nodeRegistry: NodeRegistry, toolRegistry: ToolRegistry): void {
+  _nodeRegistry = nodeRegistry;
   _toolRegistry = toolRegistry;
 }
 
@@ -389,13 +384,13 @@ export function connectRegistries(
 // ---------------------------------------------------------------------------
 
 /**
- * Register a plugin's effects into the host app.
+ * Register a plugin's node extensions into the host app.
  *
  * @throws if registries are not connected, the plugin is already registered,
- *         or an effect type conflicts with an existing registration.
+ *         or a node type conflicts with an existing registration.
  */
 export function registerPlugin(manifest: PluginManifest): void {
-  if (!_effectRegistry || !_toolRegistry) {
+  if (!_nodeRegistry || !_toolRegistry) {
     throw new Error(
       'Plugin registries not connected. The host app must call connectRegistries() before plugins can register.',
     );
@@ -404,23 +399,22 @@ export function registerPlugin(manifest: PluginManifest): void {
     throw new Error(`Plugin "${manifest.id}" is already registered.`);
   }
 
-  // Prefer nodeExtensions over deprecated effects field
-  const extensions = manifest.nodeExtensions ?? manifest.effects;
+  const extensions = manifest.nodeExtensions;
 
   // Validate no type conflicts before mutating anything
-  for (const effect of extensions) {
-    if (_effectRegistry.has(effect.type)) {
+  for (const extension of extensions) {
+    if (_nodeRegistry.has(extension.type)) {
       throw new Error(
-        `Effect type "${effect.type}" conflicts with an existing registration (plugin: "${manifest.id}").`,
+        `Node type "${extension.type}" conflicts with an existing registration (plugin: "${manifest.id}").`,
       );
     }
   }
 
   // Apply all registrations
-  for (const effect of extensions) {
-    _effectRegistry.set(effect.type, effect as any);
-    if (effect.ToolComponent) {
-      _toolRegistry.push(effect as any);
+  for (const extension of extensions) {
+    _nodeRegistry.set(extension.type, extension);
+    if (extension.ToolComponent) {
+      _toolRegistry.push(extension);
     }
   }
 
@@ -428,11 +422,11 @@ export function registerPlugin(manifest: PluginManifest): void {
 }
 
 /**
- * Unregister a previously registered plugin, removing all its effects.
+ * Unregister a previously registered plugin, removing all its node extensions.
  * No-op if the plugin was not registered.
  */
 export function unregisterPlugin(pluginId: string): void {
-  if (!_effectRegistry || !_toolRegistry) {
+  if (!_nodeRegistry || !_toolRegistry) {
     throw new Error(
       'Plugin registries not connected. The host app must call connectRegistries() before plugins can unregister.',
     );
@@ -441,12 +435,11 @@ export function unregisterPlugin(pluginId: string): void {
   const manifest = _registeredPlugins.get(pluginId);
   if (!manifest) return;
 
-  // Prefer nodeExtensions over deprecated effects field
-  const extensions = manifest.nodeExtensions ?? manifest.effects;
+  const extensions = manifest.nodeExtensions;
 
-  for (const effect of extensions) {
-    _effectRegistry.delete(effect.type);
-    const idx = _toolRegistry.findIndex((t) => t.type === effect.type);
+  for (const extension of extensions) {
+    _nodeRegistry.delete(extension.type);
+    const idx = _toolRegistry.findIndex((t) => t.type === extension.type);
     if (idx !== -1) _toolRegistry.splice(idx, 1);
   }
 

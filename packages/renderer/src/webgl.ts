@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type StudioRendererParameters = Omit<THREE.WebGLRendererParameters, 'context'> & {
+type StudioRendererParameters = Omit<THREE.WebGLRendererParameters, 'context'> & {
   pixelRatio?: number;
 };
 

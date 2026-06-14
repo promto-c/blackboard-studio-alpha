@@ -1,16 +1,16 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "experimentalDecorators": true,
     "useDefineForClassFields": false,
-    "types": ["node", "vite/client"],
+    "types": ["node", "vite/client", "react", "react-dom"],
     "allowJs": true,
     "jsx": "react-jsx",
     "paths": {
-      "@/*": ["*"]
+      "@/*": ["./*"]
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": ["tailwind.config.js", "postcss.config.js"]
 }

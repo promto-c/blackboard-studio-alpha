@@ -1,4 +1,11 @@
-export interface DirectoryPickerSupport {
+export type WindowWithDirectoryPicker = Window & {
+  showDirectoryPicker?: (options?: {
+    id?: string;
+    mode?: 'read' | 'readwrite';
+  }) => Promise<FileSystemDirectoryHandle>;
+};
+
+interface DirectoryPickerSupport {
   canUseDirectoryPicker: boolean;
   reason?: string;
 }
@@ -22,7 +29,7 @@ export const getDirectoryPickerSupport = (): DirectoryPickerSupport => {
     };
   }
 
-  if (!(window as any).showDirectoryPicker) {
+  if (!(window as WindowWithDirectoryPicker).showDirectoryPicker) {
     return {
       canUseDirectoryPicker: false,
       reason: 'Your browser does not support the File System Access folder picker API.',

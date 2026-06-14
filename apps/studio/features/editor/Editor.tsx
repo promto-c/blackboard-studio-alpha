@@ -3,12 +3,8 @@ import useDeviceLayout, { LayoutMode } from '@/hooks/useDeviceLayout';
 import { useEditorSelector } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import {
-  EDITOR_PANEL_WIDTH_DEFAULT,
-  EDITOR_PANEL_WIDTH_MAX,
-  EDITOR_PANEL_WIDTH_MIN,
-  EDITOR_TIMELINE_HEIGHT_DEFAULT,
-  EDITOR_TIMELINE_HEIGHT_MAX,
-  EDITOR_TIMELINE_HEIGHT_MIN,
+  EditorPanelWidth,
+  EditorTimelineHeight,
   clampEditorPanelWidth,
   clampEditorTimelineHeight,
 } from '@/utils/editorLayout';
@@ -18,10 +14,11 @@ import Panel from './Panel';
 import Timeline from '@/features/timeline/Timeline';
 import ViewportToolbar from '@/features/viewport/ViewportToolbar';
 import Header from './Header';
+import { VIEWPORT_BACKGROUND } from '@/utils/colors';
 
 const CORNER_HANDLE_PROXIMITY_PX = 56;
 
-const Editor: React.FC = () => {
+function Editor() {
   const maxFrames = useEditorSelector((s) => s.maxFrames);
   const layoutMode = useDeviceLayout();
   const isMobilePortrait = layoutMode === LayoutMode.MobilePortrait;
@@ -136,12 +133,12 @@ const Editor: React.FC = () => {
       const dy = moveEvent.clientY - startY;
 
       setPanelWidth(
-        Math.min(EDITOR_PANEL_WIDTH_MAX, Math.max(EDITOR_PANEL_WIDTH_MIN, startPanelWidth + dx)),
+        Math.min(EditorPanelWidth.MAX, Math.max(EditorPanelWidth.MIN, startPanelWidth + dx)),
       );
       setTimelineHeight(
         Math.min(
-          EDITOR_TIMELINE_HEIGHT_MAX,
-          Math.max(EDITOR_TIMELINE_HEIGHT_MIN, startTimelineHeight - dy),
+          EditorTimelineHeight.MAX,
+          Math.max(EditorTimelineHeight.MIN, startTimelineHeight - dy),
         ),
       );
     };
@@ -179,7 +176,8 @@ const Editor: React.FC = () => {
   return (
     <div
       ref={editorContainerRef}
-      className="relative h-screen w-screen overflow-hidden bg-gray-900 font-sans"
+      className="relative h-screen w-screen overflow-hidden font-sans"
+      style={{ backgroundColor: VIEWPORT_BACKGROUND }}
     >
       {/* Viewport as fullscreen background */}
       <div className="absolute inset-0 z-0">
@@ -204,9 +202,9 @@ const Editor: React.FC = () => {
                 label="Panel"
                 title="Resize panel"
                 value={panelWidth}
-                min={EDITOR_PANEL_WIDTH_MIN}
-                max={EDITOR_PANEL_WIDTH_MAX}
-                defaultValue={EDITOR_PANEL_WIDTH_DEFAULT}
+                min={EditorPanelWidth.MIN}
+                max={EditorPanelWidth.MAX}
+                defaultValue={EditorPanelWidth.DEFAULT}
                 onChange={setPanelWidth}
                 hideHandleAfterRatio={0.88}
               />
@@ -328,9 +326,9 @@ const Editor: React.FC = () => {
                 label="Timeline"
                 title="Resize timeline"
                 value={timelineHeight}
-                min={EDITOR_TIMELINE_HEIGHT_MIN}
-                max={EDITOR_TIMELINE_HEIGHT_MAX}
-                defaultValue={EDITOR_TIMELINE_HEIGHT_DEFAULT}
+                min={EditorTimelineHeight.MIN}
+                max={EditorTimelineHeight.MAX}
+                defaultValue={EditorTimelineHeight.DEFAULT}
                 direction={-1}
                 onChange={setTimelineHeight}
                 hideHandleBeforeRatio={0.12}
@@ -338,7 +336,7 @@ const Editor: React.FC = () => {
               <Timeline
                 height={timelineHeight}
                 setHeight={setTimelineHeight}
-                minHeight={EDITOR_TIMELINE_HEIGHT_MIN}
+                minHeight={EditorTimelineHeight.MIN}
               />
             </>
           )}
@@ -346,6 +344,6 @@ const Editor: React.FC = () => {
       </div>
     </div>
   );
-};
+}
 
 export default Editor;

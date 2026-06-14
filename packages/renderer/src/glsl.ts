@@ -1,7 +1,8 @@
 import { AnyUniform, SegmentedUniformOption, UniformUIType } from '@blackboard/types';
 import type { RendererInputPort } from './types';
 
-export const VERTEX_SHADER = `
+export const RendererShader = {
+  VERTEX: `
 in vec3 position;
 in vec2 uv;
 out vec2 v_uv;
@@ -10,9 +11,9 @@ void main() {
   v_uv = uv;
   gl_Position = vec4(position, 1.0);
 }
-`;
+`,
 
-export const TEXTURE_SHADER = `
+  TEXTURE: `
 precision highp float;
 
 in vec2 v_uv;
@@ -22,9 +23,9 @@ out vec4 fragColor;
 void main() {
   fragColor = texture(u_tDiffuse, v_uv);
 }
-`;
+`,
 
-export const TEXTURE_OPACITY_SHADER = `
+  TEXTURE_OPACITY: `
 precision highp float;
 
 in vec2 v_uv;
@@ -36,9 +37,9 @@ void main() {
   vec4 tex = texture(u_tDiffuse, v_uv);
   fragColor = vec4(tex.rgb, tex.a * u_opacity);
 }
-`;
+`,
 
-export const TRANSFORMED_TEXTURE_SHADER = `
+  TRANSFORMED_TEXTURE: `
 precision highp float;
 
 in vec2 v_uv;
@@ -53,6 +54,7 @@ uniform vec2 u_scene_res;
 uniform vec2 u_image_res;
 uniform int u_input_transform; // 0: sRGB -> Linear, 1: No-op, 2: Linear -> sRGB
 uniform bool u_flipY;
+uniform int u_source_alpha_mode; // 0: From file, 1: Opaque, 2: Transparent
 
 vec3 srgb_to_linear(vec3 color) {
   return pow(color, vec3(2.2));
@@ -82,8 +84,14 @@ void main() {
   }
 
   vec4 tex_color = vec4(0.0);
-  if (image_uv.x >= 0.0 && image_uv.x <= 1.0 && image_uv.y >= 0.0 && image_uv.y <= 1.0) {
+  bool inside_image = image_uv.x >= 0.0 && image_uv.x <= 1.0 && image_uv.y >= 0.0 && image_uv.y <= 1.0;
+  if (inside_image) {
     tex_color = texture(u_tDiffuse, image_uv);
+    if (u_source_alpha_mode == 1) {
+      tex_color.a = 1.0;
+    } else if (u_source_alpha_mode == 2) {
+      tex_color.a = 0.0;
+    }
   }
 
   if (u_input_transform == 0) {
@@ -94,9 +102,9 @@ void main() {
 
   fragColor = vec4(tex_color.rgb, tex_color.a * u_opacity);
 }
-`;
+`,
 
-export const STRAIGHT_TEXTURE_OVER_SHADER = `
+  STRAIGHT_TEXTURE_OVER: `
 precision highp float;
 
 in vec2 v_uv;
@@ -121,9 +129,9 @@ void main() {
   src.a *= u_opacity;
   fragColor = straight_over(src, dst);
 }
-`;
+`,
 
-export const STRAIGHT_TRANSFORMED_TEXTURE_OVER_SHADER = `
+  STRAIGHT_TRANSFORMED_TEXTURE_OVER: `
 precision highp float;
 
 in vec2 v_uv;
@@ -139,6 +147,7 @@ uniform vec2 u_scene_res;
 uniform vec2 u_image_res;
 uniform int u_input_transform; // 0: sRGB -> Linear, 1: No-op, 2: Linear -> sRGB
 uniform bool u_flipY;
+uniform int u_source_alpha_mode; // 0: From file, 1: Opaque, 2: Transparent
 
 vec3 srgb_to_linear(vec3 color) {
   return pow(color, vec3(2.2));
@@ -172,8 +181,14 @@ void main() {
   }
 
   vec4 src = vec4(0.0);
-  if (image_uv.x >= 0.0 && image_uv.x <= 1.0 && image_uv.y >= 0.0 && image_uv.y <= 1.0) {
+  bool inside_image = image_uv.x >= 0.0 && image_uv.x <= 1.0 && image_uv.y >= 0.0 && image_uv.y <= 1.0;
+  if (inside_image) {
     src = texture(u_tDiffuse, image_uv);
+    if (u_source_alpha_mode == 1) {
+      src.a = 1.0;
+    } else if (u_source_alpha_mode == 2) {
+      src.a = 0.0;
+    }
   }
 
   if (u_input_transform == 0) {
@@ -185,9 +200,9 @@ void main() {
   src.a *= u_opacity;
   fragColor = straight_over(src, dst);
 }
-`;
+`,
 
-export const VIEWER_SHADER = `
+  VIEWER: `
 precision highp float;
 
 in vec2 v_uv;
@@ -204,8 +219,12 @@ uniform float u_alphaOverlayOpacity;
 uniform float u_alphaOverlayBgDarken;
 out vec4 fragColor;
 
+vec3 signed_pow_viewer(vec3 color, float exponent) {
+  return sign(color) * pow(abs(color), vec3(exponent));
+}
+
 vec3 linear_to_srgb_viewer(vec3 color) {
-  return pow(color, vec3(1.0/2.2));
+  return signed_pow_viewer(color, 1.0/2.2);
 }
 
 float luminance_viewer(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -223,7 +242,7 @@ void main() {
     }
 
     // Apply post-display adjustments (gamma, saturation)
-    color = pow(color, vec3(1.0 / u_gamma));
+    color = signed_pow_viewer(color, 1.0 / max(u_gamma, 0.0001));
     float luma_val = luminance_viewer(color);
     color = mix(vec3(luma_val), color, u_saturation);
 
@@ -246,9 +265,9 @@ void main() {
     float final_alpha = (u_channel == 4 || should_ignore_alpha) ? 1.0 : tex.a;
     fragColor = vec4(clamp(color, 0.0, 1.0), final_alpha);
 }
-`;
+`,
 
-export const OCIO_VIEWER_SHADER_TEMPLATE = `
+  OCIO_VIEWER_TEMPLATE: `
 precision highp float;
 
 in vec2 v_uv;
@@ -268,6 +287,10 @@ out vec4 fragColor;
 
 float luminance_viewer(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
+vec3 signed_pow_viewer(vec3 color, float exponent) {
+  return sign(color) * pow(abs(color), vec3(exponent));
+}
+
 void main() {
     vec4 tex = texture(u_tDiffuse, v_uv);
     vec3 color = tex.rgb;
@@ -279,7 +302,7 @@ void main() {
     {{OCIO_MAIN}}
 
     // Apply post-display adjustments (gamma, saturation)
-    color = pow(color, vec3(1.0 / u_gamma));
+    color = signed_pow_viewer(color, 1.0 / max(u_gamma, 0.0001));
     float luma_val = luminance_viewer(color);
     color = mix(vec3(luma_val), color, u_saturation);
 
@@ -301,9 +324,8 @@ void main() {
     float final_alpha = (u_channel == 4 || (u_alphaOverlay && u_channel != 4)) ? 1.0 : tex.a;
     fragColor = vec4(clamp(color, 0.0, 1.0), final_alpha);
 }
-`;
-
-export const DEFAULT_CUSTOM_SHADER = `// Blackboard Studio shader example
+`,
+  DEFAULT_CUSTOM: `// Blackboard Studio shader example
 // Notes:
 // - This is a fragment shader for WebGL2 / GLSL 300 ES.
 // - Do not add a #version line; the renderer provides GLSL 300 ES mode.
@@ -344,57 +366,8 @@ void main() {
   vec3 tinted = mix(source.rgb, tintTarget, animatedMix);
   fragColor = vec4(u_invert ? 1.0 - tinted : tinted, source.a);
 }
-`;
-
-export const ROTO_SHADER = `
-precision highp float;
-
-in vec2 v_uv;
-uniform sampler2D u_tDiffuse;
-uniform sampler2D u_tMask;
-out vec4 fragColor;
-
-void main() {
-  vec4 base = texture(u_tDiffuse, v_uv);
-  float mask = texture(u_tMask, v_uv).r;
-
-  fragColor = vec4(base.rgb, base.a * mask);
-}
-`;
-
-export const PAINT_OVER_SHADER = `
-precision highp float;
-
-in vec2 v_uv;
-uniform sampler2D u_tDiffuse;
-uniform sampler2D u_tPaint;
-uniform sampler2D u_tPaintAlpha;
-uniform int u_input_transform; // 0: sRGB -> Linear, 1: No-op
-out vec4 fragColor;
-
-vec3 srgb_to_linear(vec3 color) {
-  return pow(color, vec3(2.2));
-}
-
-void main() {
-  vec4 base = texture(u_tDiffuse, v_uv);
-  vec4 paint = texture(u_tPaint, v_uv);
-  vec4 paint_alpha = texture(u_tPaintAlpha, v_uv);
-
-  if (u_input_transform == 0) {
-    paint.rgb = srgb_to_linear(paint.rgb);
-  }
-
-  float paint_rgb_alpha = clamp(paint.a, 0.0, 1.0);
-  vec3 out_rgb = (paint.rgb * paint_rgb_alpha) + (base.rgb * (1.0 - paint_rgb_alpha));
-
-  // Alpha-only paint stores the target alpha in RGB and its coverage in A.
-  float alpha_paint_target = clamp(paint_alpha.r, 0.0, 1.0);
-  float alpha_paint_mix = clamp(paint_alpha.a, 0.0, 1.0);
-  float out_alpha = (alpha_paint_target * alpha_paint_mix) + (base.a * (1.0 - alpha_paint_mix));
-  fragColor = vec4(out_rgb, out_alpha);
-}
-`;
+`,
+} as const;
 
 const PIPELINE_UNIFORM_NAMES = new Set([
   'u_tDiffuse',

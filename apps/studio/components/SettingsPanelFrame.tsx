@@ -13,7 +13,7 @@ interface SettingsPanelFrameProps {
   contentClassName?: string;
 }
 
-const SettingsPanelFrame: React.FC<SettingsPanelFrameProps> = ({
+export function SettingsPanelFrame({
   title,
   subtitle,
   sidebar,
@@ -22,7 +22,7 @@ const SettingsPanelFrame: React.FC<SettingsPanelFrameProps> = ({
   closeLabel = 'Close panel',
   uiStyle = 'glass',
   contentClassName = '',
-}) => {
+}: SettingsPanelFrameProps) {
   const isSolid = uiStyle === 'solid';
 
   return (
@@ -61,7 +61,7 @@ const SettingsPanelFrame: React.FC<SettingsPanelFrameProps> = ({
           }`}
         >
           <ScrollArea
-            containerClassName="h-full min-h-0"
+            rootClassName="h-full min-h-0"
             className="h-full min-h-0 overflow-y-auto px-2 py-2"
           >
             {sidebar}
@@ -69,7 +69,7 @@ const SettingsPanelFrame: React.FC<SettingsPanelFrameProps> = ({
         </aside>
 
         <ScrollArea
-          containerClassName="min-h-0 min-w-0"
+          rootClassName="min-h-0 min-w-0"
           className={`h-full min-h-0 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 ${contentClassName}`}
         >
           {children}
@@ -77,6 +77,4 @@ const SettingsPanelFrame: React.FC<SettingsPanelFrameProps> = ({
       </div>
     </div>
   );
-};
-
-export default SettingsPanelFrame;
+}

@@ -1,14 +1,8 @@
-import React from 'react';
-
 interface CanvasGridProps {
   zoom: number;
 }
 
-/**
- * Dot grid background for the infinite canvas.
- * Grid spacing scales with zoom to maintain a consistent visual density.
- */
-const CanvasGrid: React.FC<CanvasGridProps> = ({ zoom }) => {
+function CanvasGrid({ zoom }: CanvasGridProps) {
   const baseSize = 24;
   const size = baseSize * zoom;
 
@@ -22,6 +16,6 @@ const CanvasGrid: React.FC<CanvasGridProps> = ({ zoom }) => {
       }}
     />
   );
-};
+}
 
 export default CanvasGrid;

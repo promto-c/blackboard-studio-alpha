@@ -1,9 +1,8 @@
 import React, { useCallback, useMemo } from 'react';
-import { getAnimatableProperties } from '@/effects/effectAnimation';
-import { effectRegistry } from '@/effects/effectRegistry';
-import { nodeFlags } from '@/effects/effectHelpers';
+import { getAnimatableProperties } from '@/nodes/animation';
+import { nodeRegistry } from '@/nodes/registry';
+import { nodeFlags } from '@/nodes/helpers';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { isMergeNodeId } from '@/utils/mergeNodes';
 import isTextEntryTarget from '@/utils/isTextEntryTarget';
 import {
   clampSelectionToScope,
@@ -27,6 +26,7 @@ import { HotkeyProvider } from './provider';
 import type {
   HotkeyBinding,
   HotkeyCommand,
+  HotkeyContext,
   HotkeyExecutionContext,
   HotkeyScopeId,
   HotkeyView,
@@ -63,18 +63,14 @@ interface StudioHotkeyActionSet {
   cancelDrawingShape: () => void;
   deleteSelectedRotoPoints: () => void;
   deleteSelectedRotoShapes: () => void;
-  setSelectedPaintLayerIds: (layerIds: string[]) => void;
-  setSelectedPaintStrokeIds: (strokeIds: string[]) => void;
-  setSelectedRotoSelection: (selection: {
-    layerIds: string[];
-    pathIds: string[];
-    pointRefs?: RotoPointRef[];
-  }) => void;
+  setHierarchySelection: (nodeId: string, layerIds: string[], itemIds: string[]) => void;
+  setSelectedRotoPointRefs: (pointRefs: RotoPointRef[]) => void;
   playPause: () => void;
   playForward: () => void;
   playBackward: () => void;
   pausePlayback: () => void;
   goToRecentFrame: () => boolean;
+  checkpointCurrentHistoryEntry: () => void;
   redo: () => void;
   redoDrawingPoint: () => void;
   seekFrame: (frame: number) => void;
@@ -86,6 +82,13 @@ interface StudioHotkeyActionSet {
   undo: () => void;
   undoDrawingPoint: () => void;
   deleteNode: (nodeId: string) => void;
+  deleteSelectedNodes: () => void;
+  toggleNodeEnabled: (nodeId: string) => void;
+  setNodeEnabled: (nodeId: string, enabled: boolean) => void;
+  groupSelectedNodes: () => void;
+  copySelectedNodesToClipboard: () => Promise<boolean>;
+  cutSelectedNodesToClipboard: () => Promise<boolean>;
+  pasteNodesFromClipboard: () => Promise<boolean>;
 }
 
 const getStudioActions = (context: HotkeyExecutionContext): StudioHotkeyActionSet =>
@@ -135,16 +138,40 @@ const getSelectedViewerTargetId = (selectedNode: AnyNode | null, selectedNodeId:
     return selectedNode.id;
   }
 
-  if (!selectedNodeId) {
-    return null;
-  }
-
-  if (selectedNodeId === OUTPUT_NODE_ID || isMergeNodeId(selectedNodeId)) {
+  if (selectedNodeId === OUTPUT_NODE_ID) {
     return selectedNodeId;
   }
 
   return null;
 };
+
+const getSelectedFlowNodeIds = (context: HotkeyContext): string[] =>
+  context.selectedNodeIds && context.selectedNodeIds.length > 0
+    ? context.selectedNodeIds
+    : context.selectedNodeId
+      ? [context.selectedNodeId]
+      : [];
+
+const getContextNode = (context: HotkeyContext, nodeId: string): AnyNode | null =>
+  context.nodes?.find((candidate) => candidate.id === nodeId) ??
+  (context.selectedNode?.id === nodeId ? context.selectedNode : null);
+
+const hasSelectedDeletableFlowNode = (context: HotkeyContext): boolean =>
+  getSelectedFlowNodeIds(context).some((nodeId) => {
+    const node = getContextNode(context, nodeId);
+    return !!node && !nodeFlags(node.type).isProtected;
+  });
+
+const hasSelectedCopyableFlowNode = (context: HotkeyContext): boolean =>
+  getSelectedFlowNodeIds(context).some((nodeId) => {
+    const node = getContextNode(context, nodeId);
+    return (
+      !!node &&
+      !nodeFlags(node.type).isProtected &&
+      node.type !== NodeType.INPUT &&
+      node.type !== NodeType.OUTPUT
+    );
+  });
 
 const getActiveView = (scopeId: HotkeyScopeId): HotkeyView => {
   if (scopeId.startsWith('flow')) return 'flow';
@@ -175,6 +202,14 @@ export const createBaseCommands = (): HotkeyCommand[] => [
       const actions = getStudioActions(context);
       actions.setActiveTab(EditorTab.Tools);
       actions.setSubPanelVisible(true);
+      return true;
+    },
+  },
+  {
+    id: 'history.checkpointCurrent',
+    run: (context) => {
+      const actions = getStudioActions(context);
+      actions.checkpointCurrentHistoryEntry();
       return true;
     },
   },
@@ -375,17 +410,21 @@ export const createBaseCommands = (): HotkeyCommand[] => [
 
       if (selectedNode.type === NodeType.ROTO) {
         const rotoNode = selectedNode as RotoNode;
-        actions.setSelectedRotoSelection({
-          layerIds: rotoNode.layers.map((layer) => layer.id),
-          pathIds: rotoNode.paths.map((path) => path.id),
-        });
+        actions.setHierarchySelection(
+          context.selectedNodeId ?? '',
+          rotoNode.layers.map((layer) => layer.id),
+          rotoNode.paths.map((path) => path.id),
+        );
         return true;
       }
 
       if (selectedNode.type === NodeType.PAINT) {
         const paintNode = selectedNode as PaintNode;
-        actions.setSelectedPaintLayerIds(paintNode.layers.map((layer) => layer.id));
-        actions.setSelectedPaintStrokeIds(paintNode.strokes.map((stroke) => stroke.id));
+        actions.setHierarchySelection(
+          context.selectedNodeId ?? '',
+          paintNode.layers.map((layer) => layer.id),
+          paintNode.strokes.map((stroke) => stroke.id),
+        );
         return true;
       }
 
@@ -395,18 +434,69 @@ export const createBaseCommands = (): HotkeyCommand[] => [
   {
     id: 'flow.deleteSelectedNode',
     run: (context) => {
-      const selectedNodeId = context.selectedNodeId;
-      const selectedNode = context.selectedNode;
-      if (!selectedNodeId || !selectedNode) {
-        return false;
-      }
-
-      if (nodeFlags(selectedNode.type).isProtected) {
-        return false;
-      }
-
+      if (!hasSelectedDeletableFlowNode(context)) return false;
       const actions = getStudioActions(context);
-      actions.deleteNode(selectedNodeId);
+      actions.deleteSelectedNodes();
+      return true;
+    },
+  },
+  {
+    id: 'flow.copySelectedNodes',
+    run: (context) => {
+      if (!hasSelectedCopyableFlowNode(context)) return false;
+      const actions = getStudioActions(context);
+      void actions.copySelectedNodesToClipboard();
+      return true;
+    },
+  },
+  {
+    id: 'flow.cutSelectedNodes',
+    run: (context) => {
+      if (!hasSelectedCopyableFlowNode(context)) return false;
+      const actions = getStudioActions(context);
+      void actions.cutSelectedNodesToClipboard();
+      return true;
+    },
+  },
+  {
+    id: 'flow.pasteNodes',
+    run: (context) => {
+      if (context.activeView !== 'flow') {
+        return false;
+      }
+      const actions = getStudioActions(context);
+      void actions.pasteNodesFromClipboard();
+      return true;
+    },
+  },
+  {
+    id: 'flow.toggleNodeEnabled',
+    run: (context) => {
+      const ids =
+        context.selectedNodeIds && context.selectedNodeIds.length > 0
+          ? context.selectedNodeIds
+          : context.selectedNodeId
+            ? [context.selectedNodeId]
+            : [];
+      if (ids.length === 0) return false;
+      const actions = getStudioActions(context);
+      const primaryNode = context.selectedNode;
+      const primaryState = primaryNode?.enabled;
+      const nodes = context.nodes ?? [];
+      const allSame = ids.every((id) => nodes.find((n) => n.id === id)?.enabled === primaryState);
+      if (allSame) {
+        for (const id of ids) actions.toggleNodeEnabled(id);
+      } else if (primaryState !== undefined) {
+        for (const id of ids) actions.setNodeEnabled(id, !primaryState);
+      }
+      return true;
+    },
+  },
+  {
+    id: 'flow.groupSelectedNodes',
+    run: (context) => {
+      const actions = getStudioActions(context);
+      actions.groupSelectedNodes();
       return true;
     },
   },
@@ -442,10 +532,7 @@ export const createBaseCommands = (): HotkeyCommand[] => [
         const pathIds = Array.from(
           new Set(context.selectedRotoPointRefs.map((pointRef) => pointRef.pathId)),
         );
-        actions.setSelectedRotoSelection({
-          layerIds: [],
-          pathIds,
-        });
+        actions.setHierarchySelection(context.selectedNodeId ?? '', [], pathIds);
         return true;
       }
 
@@ -456,11 +543,12 @@ export const createBaseCommands = (): HotkeyCommand[] => [
           context.recentRotoPointRefs,
         );
         if (recentPointRefs.length > 0) {
-          actions.setSelectedRotoSelection({
-            layerIds: [],
-            pathIds: context.selectedRotoPathIds,
-            pointRefs: recentPointRefs,
-          });
+          actions.setHierarchySelection(
+            context.selectedNodeId ?? '',
+            [],
+            context.selectedRotoPathIds,
+          );
+          actions.setSelectedRotoPointRefs(recentPointRefs);
         }
         return true;
       }
@@ -473,6 +561,12 @@ export const createBaseCommands = (): HotkeyCommand[] => [
 
 export const baseBindings: HotkeyBinding[] = [
   { keys: 'Tab', command: 'editor.openToolsPanel', repeat: false },
+  {
+    keys: 'Mod+S',
+    command: 'history.checkpointCurrent',
+    repeat: false,
+    allowInTextEntry: true,
+  },
   { keys: 'Mod+Z', command: 'history.undo' },
   { keys: 'Mod+Shift+Z', command: 'history.redo' },
   {
@@ -505,7 +599,36 @@ export const baseBindings: HotkeyBinding[] = [
     keys: ['Delete', 'Backspace'],
     command: 'flow.deleteSelectedNode',
     scope: ['flow.list', 'flow.graph'],
+    when: hasSelectedDeletableFlowNode,
+  },
+  {
+    keys: 'Mod+C',
+    command: 'flow.copySelectedNodes',
+    scope: ['flow', 'flow.list', 'flow.graph'],
+    when: hasSelectedCopyableFlowNode,
+  },
+  {
+    keys: 'Mod+X',
+    command: 'flow.cutSelectedNodes',
+    scope: ['flow', 'flow.list', 'flow.graph'],
+    when: hasSelectedCopyableFlowNode,
+  },
+  {
+    keys: 'Mod+V',
+    command: 'flow.pasteNodes',
+    scope: ['flow', 'flow.list', 'flow.graph'],
+  },
+  {
+    keys: 'D',
+    command: 'flow.toggleNodeEnabled',
+    scope: ['flow', 'flow.list', 'flow.graph'],
     when: (context) => !!context.selectedNodeId && !!context.selectedNode,
+  },
+  {
+    keys: 'G',
+    command: 'flow.groupSelectedNodes',
+    scope: ['flow', 'flow.list', 'flow.graph'],
+    when: (context) => !!context.selectedNodeId,
   },
   { keys: 'Z', command: 'timeline.seekRelativeFrame', args: { delta: -1 } },
   { keys: 'X', command: 'timeline.seekRelativeFrame', args: { delta: 1 } },
@@ -543,7 +666,7 @@ export const getEffectBindingsForSelection = (selectedNode: AnyNode | null): Hot
     return [];
   }
 
-  const definition = effectRegistry.get(selectedNode.type);
+  const definition = nodeRegistry.get(selectedNode.type);
   if (!definition) {
     return [];
   }
@@ -568,10 +691,14 @@ export const getEffectBindingsForSelection = (selectedNode: AnyNode | null): Hot
   return [...explicitBindings, ...compatibilityBindings];
 };
 
-export const StudioHotkeysProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export function StudioHotkeysProvider({ children }: { children: React.ReactNode }) {
   const projectId = useEditorSelector((state) => state.projectId);
+  const nodes = useEditorSelector((state) => state.nodes);
   const selectedNodeId = useEditorSelector((state) => state.selectedNodeId);
-  const selectedRotoPathIds = useEditorSelector((state) => state.selectedRotoPathIds);
+  const selectedNodeIds = useEditorSelector((state) => state.selectedNodeIds ?? []);
+  const selectedRotoPathIds = useEditorSelector(
+    (state) => state.hierarchySelections[state.selectedNodeId ?? '']?.itemIds ?? [],
+  );
   const selectedRotoPointRefs = useEditorSelector((state) => state.selectedRotoPointRefs);
   const currentFrame = useEditorSelector((state) => state.currentFrame);
   const maxFrames = useEditorSelector((state) => state.maxFrames);
@@ -778,8 +905,10 @@ export const StudioHotkeysProvider: React.FC<{ children: React.ReactNode }> = ({
       keyboard,
       maxFrames,
       modifiers: keyboard.modifiers,
+      nodes,
       selectedNode,
       selectedNodeId,
+      selectedNodeIds,
       selectedNodeType: selectedNode?.type ?? null,
       selectedRotoPathIds,
       selectedRotoPointRefs,
@@ -802,8 +931,10 @@ export const StudioHotkeysProvider: React.FC<{ children: React.ReactNode }> = ({
       flowViewMode,
       isDrawing,
       maxFrames,
+      nodes,
       selectedNode,
       selectedNodeId,
+      selectedNodeIds,
       selectedRotoPathIds,
       selectedRotoPathKey,
       selectedRotoPointRefs,
@@ -817,4 +948,4 @@ export const StudioHotkeysProvider: React.FC<{ children: React.ReactNode }> = ({
       {children}
     </HotkeyProvider>
   );
-};
+}

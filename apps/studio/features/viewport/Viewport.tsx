@@ -1,20 +1,32 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import { PixelInspector } from '@blackboard/ui';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { usePreferences, colors } from '@/state/preferencesContext';
+import { colors } from '@/utils/colors';
+import { usePreferences } from '@/state/preferencesContext';
 import { useSceneNode, useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import ViewportControls from './ViewportControls';
+import Scene3DViewport from './Scene3DViewport';
+import ViewportModeSwitch from './ViewportModeSwitch';
+import ViewportCameraSelector, { type Scene3DViewportCameraMode } from './ViewportCameraSelector';
 import Minimap from './Minimap';
-import { NodeType, type PaintNode, type RotoNode, type WarpNode } from '@blackboard/types';
-import { getRotoPathParentLayerId } from '@/utils/rotoHierarchy';
+import {
+  NodeType,
+  type ComfyNode,
+  type PaintNode,
+  type RotoNode,
+  type Scene3DNode,
+  type SceneNode,
+} from '@blackboard/types';
 import ViewportSettingsBar from './ViewportSettingsBar';
 import * as THREE from 'three';
-import { getValueAtFrame } from '@blackboard/renderer';
 import { simplifyPath, resamplePath } from '@/utils/bspline';
-import FreehandSmoothnessControl from '@/effects/roto/FreehandSmoothnessControl';
-import WarpOverlay from '@/effects/warp/WarpOverlay';
-import RotoOverlay, { type NudgeOverlayState } from '@/effects/roto/RotoOverlay';
-import PaintOverlay from '@/effects/paint/PaintOverlay';
+import FreehandSmoothnessControl from '@/nodes/builtin/roto/FreehandSmoothnessControl';
+import { ViewportOverlayRenderer, resolveOverlayVisibility } from './overlays';
+import type { MediaCacheContext } from '@/nodes/NodeDefinition';
+import { nodeRegistry } from '@/nodes/registry';
+import { useViewportInteractions } from './useViewportInteractions';
+import { useViewportOverlayContext } from './useViewportOverlayContext';
+import { getDataWindowProjection } from './dataWindow';
 import { useViewportRenderer } from '@/hooks/viewport/useViewportRenderer';
 import { useViewportMediaCache } from '@/hooks/viewport/useViewportMediaCache';
 import { useViewportTextTextures } from '@/hooks/viewport/useViewportTextTextures';
@@ -25,7 +37,11 @@ import { useViewportGestures } from '@/hooks/viewport/useViewportGestures';
 import { useViewportRenderLoop } from '@/hooks/viewport/useViewportRenderLoop';
 import { useViewportScrubbing } from '@/hooks/viewport/useViewportScrubbing';
 import { useViewportMotionCues } from '@/hooks/viewport/useViewportMotionCues';
-import { effectRegistry } from '@/effects/effectRegistry';
+import { useViewportStabilization } from '@/hooks/viewport/useViewportStabilization';
+import {
+  useViewportPixelInspector,
+  type ViewportPixelInfo,
+} from '@/hooks/viewport/useViewportPixelInspector';
 import {
   useHotkeyScope,
   useKeyboardState,
@@ -34,36 +50,47 @@ import {
   type HotkeyBinding,
   type HotkeyCommand,
 } from '@/hotkeys';
-import { hasRenderableNodes, nodeFlags, getMediaDescriptor } from '@/effects/effectHelpers';
-import { getTransformHandleCursor } from '@/utils/rotoTransform';
-import { useWarpInteraction } from '@/effects/warp/useWarpInteraction';
+import { hasRenderableNodes, nodeFlags, getMediaDescriptor } from '@/nodes/helpers';
 import { getMediaFileKind } from '@/utils/mediaFiles';
-import { useBokehInteraction } from '@/effects/bokeh/useBokehInteraction';
-import { useRotoInteraction } from '@/effects/roto/useRotoInteraction';
-import { usePaintInteraction } from '@/effects/paint/usePaintInteraction';
-import { getViewerRenderNodes } from '@/utils/viewerSlots';
-import { useRotoItemsClipboard } from '@/effects/roto/rotoItemsClipboard';
-import { usePaintItemsClipboard } from '@/effects/paint/paintItemsClipboard';
+import { getNodeInputRenderNodes, getViewportRenderNodes } from '@/utils/viewerSlots';
+import { expandGroupNodesForRender } from '@/utils/groupRenderProjection';
+import { useRotoItemsClipboard } from '@/nodes/builtin/roto/rotoItemsClipboard';
+import { usePaintItemsClipboard } from '@/nodes/builtin/paint/paintItemsClipboard';
 import {
   createStandardClipboardHotkeyBindings,
   createStandardClipboardHotkeyCommands,
 } from '@/utils/standardClipboardHotkeys';
-import {
-  applyRotoTrackingMatrix4ToPoint,
-  formatRotoTrackingMatrix4AsCssMatrix3d,
-  invertRotoTrackingMatrix4,
-  multiplyRotoTrackingMatrix4,
-  reduceRotoTrackingMatrix4ToComponents,
-  stabilizePoint,
-} from '@/utils/rotoTracking';
+import { stabilizePoint } from '@/utils/rotoTracking';
 
 type ViewportMouseEvent = MouseEvent | React.MouseEvent<HTMLDivElement>;
 
-const Viewport: React.FC = () => {
+const formatDataWindowSize = (width: number, height: number) =>
+  `${Math.round(Math.abs(width))} x ${Math.round(Math.abs(height))}`;
+
+const dataWindowSizeChanged = (rect: {
+  width: number;
+  height: number;
+  nativeWidth: number;
+  nativeHeight: number;
+}) =>
+  Math.round(Math.abs(rect.width)) !== Math.round(Math.abs(rect.nativeWidth)) ||
+  Math.round(Math.abs(rect.height)) !== Math.round(Math.abs(rect.nativeHeight));
+
+const areScenePositionsEqual = (
+  left: { x: number; y: number } | null,
+  right: { x: number; y: number } | null,
+): boolean => {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.x === right.x && left.y === right.y;
+};
+
+function Viewport() {
   // — State: subscribe to individual slices so the component only re-renders
   //   when the specific value changes (not on every store update).
   const projectId = useEditorSelector((s) => s.projectId);
   const nodes = useEditorSelector((s) => s.nodes);
+  const flows = useEditorSelector((s) => s.flows);
   const zoom = useEditorSelector((s) => s.zoom);
   const pan = useEditorSelector((s) => s.pan);
   const targetZoom = useEditorSelector((s) => s.targetZoom);
@@ -71,10 +98,24 @@ const Viewport: React.FC = () => {
   const viewerSettings = useEditorSelector((s) => s.viewerSettings);
   const viewerNodeId = useEditorSelector((s) => s.viewerNodeId);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
-  const selectedPaintLayerIds = useEditorSelector((s) => s.selectedPaintLayerIds);
-  const selectedPaintStrokeIds = useEditorSelector((s) => s.selectedPaintStrokeIds);
-  const selectedRotoLayerIds = useEditorSelector((s) => s.selectedRotoLayerIds);
-  const selectedRotoPathIds = useEditorSelector((s) => s.selectedRotoPathIds);
+  const hierarchySelections = useEditorSelector((s) => s.hierarchySelections);
+  const selectedNodeIdHierSel = selectedNodeId ?? '';
+  const selectedPaintLayerIds = useMemo(
+    () => hierarchySelections[selectedNodeIdHierSel]?.layerIds ?? [],
+    [hierarchySelections, selectedNodeIdHierSel],
+  );
+  const selectedPaintStrokeIds = useMemo(
+    () => hierarchySelections[selectedNodeIdHierSel]?.itemIds ?? [],
+    [hierarchySelections, selectedNodeIdHierSel],
+  );
+  const selectedRotoLayerIds = useMemo(
+    () => hierarchySelections[selectedNodeIdHierSel]?.layerIds ?? [],
+    [hierarchySelections, selectedNodeIdHierSel],
+  );
+  const selectedRotoPathIds = useMemo(
+    () => hierarchySelections[selectedNodeIdHierSel]?.itemIds ?? [],
+    [hierarchySelections, selectedNodeIdHierSel],
+  );
   const selectedRotoPointRefs = useEditorSelector((s) => s.selectedRotoPointRefs);
   const isPlaying = useEditorSelector((s) => s.isPlaying);
   const playbackDirection = useEditorSelector((s) => s.playbackDirection);
@@ -101,11 +142,8 @@ const Viewport: React.FC = () => {
     setProjectThumbnail,
     updateNode,
     setActiveViewportTool,
-    setSelectedRotoPathIds,
-    setSelectedRotoSelection,
-    setSelectedPaintLayerIds,
-    setSelectedPaintStrokeIds,
-    pushHistory,
+    setHierarchySelection,
+    commitMutation,
     startDrawingShape,
     cancelDrawingShape,
     commitDrawingShape,
@@ -122,6 +160,7 @@ const Viewport: React.FC = () => {
     setFrameScrubbing,
     recaptureStabilizationReference,
   } = useEditorActions();
+  const setSelectedRotoPointRefs = useEditorActions().setSelectedRotoPointRefs;
   const {
     primaryColor,
     rotoMotionCueEnabled,
@@ -146,13 +185,85 @@ const Viewport: React.FC = () => {
     setPreferences,
   } = usePreferences();
 
-  const sceneNode = useSceneNode();
+  const projectSceneNode = useSceneNode();
   const selectedNode = useSelectedEditorNode();
-  const viewportNodes = useMemo(
-    () => getViewerRenderNodes(nodes, viewerNodeId),
-    [nodes, viewerNodeId],
+  const activeFlow = useEditorSelector((s) => {
+    const flowId = s.activeFlowId ?? s.rootFlowId;
+    return flowId ? s.flows[flowId] : null;
+  });
+  const viewportNodes = useMemo(() => {
+    return expandGroupNodesForRender(
+      getViewportRenderNodes(nodes, viewerNodeId, activeFlow),
+      flows,
+    );
+  }, [activeFlow, flows, nodes, viewerNodeId]);
+  const sceneNode = useMemo(
+    () =>
+      viewportNodes.find((node): node is SceneNode => node.type === NodeType.SCENE) ??
+      projectSceneNode,
+    [projectSceneNode, viewportNodes],
   );
-  const hasRenderableOutput = useMemo(() => hasRenderableNodes(viewportNodes), [viewportNodes]);
+  const selectedViewportNode = useMemo(
+    () =>
+      selectedNode
+        ? (viewportNodes.find((node) => node.id === selectedNode.id) ?? selectedNode)
+        : undefined,
+    [selectedNode, viewportNodes],
+  );
+  const activeScene3DNode = useMemo(
+    () =>
+      selectedViewportNode?.type === NodeType.SCENE_3D
+        ? (selectedViewportNode as Scene3DNode)
+        : null,
+    [selectedViewportNode],
+  );
+  const isScene3DMode = activeScene3DNode?.viewportMode === 'scene3d';
+  const [scene3DViewportCameraMode, setScene3DViewportCameraMode] =
+    useState<Scene3DViewportCameraMode>('sceneCamera');
+  const [cachedScene3DViewportNodeId, setCachedScene3DViewportNodeId] = useState<string | null>(
+    null,
+  );
+  const scene3DBackdropNodes = useMemo(() => {
+    if (!activeScene3DNode) return null;
+    return expandGroupNodesForRender(
+      getNodeInputRenderNodes(nodes, activeScene3DNode.id, 'backdrop', activeFlow),
+      flows,
+    );
+  }, [activeFlow, activeScene3DNode, flows, nodes]);
+  const renderNodes = scene3DBackdropNodes ?? viewportNodes;
+  const renderSceneNode = useMemo(
+    () => renderNodes.find((node): node is SceneNode => node.type === NodeType.SCENE) ?? sceneNode,
+    [renderNodes, sceneNode],
+  );
+  const isScene3DProjectionViewActive =
+    isScene3DMode && scene3DViewportCameraMode === 'sceneCamera';
+  const gestureSceneNode = isScene3DMode ? renderSceneNode : sceneNode;
+  const selectedScene3DItemId = activeScene3DNode
+    ? (hierarchySelections[activeScene3DNode.id]?.itemIds?.[0] ?? null)
+    : null;
+  const hasRenderableOutput = useMemo(() => hasRenderableNodes(renderNodes), [renderNodes]);
+  const hasScene3DBackdropOutput = Boolean(scene3DBackdropNodes && hasRenderableOutput);
+  const shouldMountScene3DViewport = Boolean(
+    renderSceneNode &&
+    activeScene3DNode &&
+    (isScene3DMode || cachedScene3DViewportNodeId === activeScene3DNode.id),
+  );
+
+  useEffect(() => {
+    if (!activeScene3DNode) {
+      setCachedScene3DViewportNodeId(null);
+      return;
+    }
+
+    if (isScene3DMode) {
+      setCachedScene3DViewportNodeId(activeScene3DNode.id);
+      return;
+    }
+
+    setCachedScene3DViewportNodeId((currentNodeId) =>
+      currentNodeId === activeScene3DNode.id ? currentNodeId : null,
+    );
+  }, [activeScene3DNode, isScene3DMode]);
 
   const alphaOverlayStyle = useMemo(() => {
     const palette = colors[primaryColor] || colors.teal;
@@ -174,6 +285,7 @@ const Viewport: React.FC = () => {
   ]);
 
   const [mouseScenePos, setMouseScenePos] = useState<{ x: number; y: number } | null>(null);
+  const mouseScenePosRef = useRef(mouseScenePos);
   const altPressed = useKeyboardState((snapshot) => snapshot.modifiers.alt);
   const shiftPressed = useKeyboardState((snapshot) => snapshot.modifiers.shift);
   const affineModifierPressed = useKeyboardState(
@@ -185,25 +297,8 @@ const Viewport: React.FC = () => {
   useHotkeyScope({ id: 'viewport', ref: viewportRef });
 
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [pixelInfo, setPixelInfo] = useState<{
-    x: number;
-    y: number;
-    color: [number, number, number, number];
-  } | null>(null);
-  const [renderVersion, setRenderVersion] = useState(0);
-  const pixelReadBuffer8Ref = useRef(new Uint8Array(4));
-  const pixelReadBuffer16Ref = useRef(new Uint16Array(4));
-  const pixelReadBuffer32Ref = useRef(new Float32Array(4));
-  const mouseScenePosRef = useRef(mouseScenePos);
-  const isPlayingRef = useRef(isPlaying);
-
-  useEffect(() => {
-    mouseScenePosRef.current = mouseScenePos;
-  }, [mouseScenePos]);
-
-  useEffect(() => {
-    isPlayingRef.current = isPlaying;
-  }, [isPlaying]);
+  const [rendererError, setRendererError] = useState<string | null>(null);
+  const refreshPixelInfoAfterRenderRef = useRef<() => void>(() => {});
 
   const handleSmoothnessChange = (newEpsilon: number) => {
     updateRotoRefinement({ epsilon: newEpsilon });
@@ -211,10 +306,12 @@ const Viewport: React.FC = () => {
 
   const handleFrameRendered = useCallback(() => {
     signalFrameRendered();
-    if (mouseScenePosRef.current && !isPlayingRef.current) {
-      setRenderVersion((version) => version + 1);
-    }
+    refreshPixelInfoAfterRenderRef.current();
   }, [signalFrameRendered]);
+
+  useEffect(() => {
+    mouseScenePosRef.current = mouseScenePos;
+  }, [mouseScenePos]);
 
   const threeStuff = useRef({
     scene: new THREE.Scene(),
@@ -222,6 +319,8 @@ const Viewport: React.FC = () => {
     plane: new THREE.PlaneGeometry(2, 2),
     materials: new Map<string, THREE.ShaderMaterial>(),
     renderTargets: [] as THREE.WebGLRenderTarget[],
+    utilityTargets: new Map<string, THREE.WebGLRenderTarget>(),
+    ocioTextures: new Map<string, THREE.Texture>(),
     quad: null as THREE.Mesh | null,
   }).current;
 
@@ -237,7 +336,7 @@ const Viewport: React.FC = () => {
   }, [threeStuff]);
 
   const { textureCacheRef, mediaUpdateTrigger, bumpMediaUpdateTrigger } = useViewportMediaCache({
-    nodes: nodes,
+    nodes: renderNodes,
     currentFrame,
     selectedNode,
     maxFrames,
@@ -247,14 +346,14 @@ const Viewport: React.FC = () => {
 
   const checkFrameReady = useCallback(
     (frame: number) => {
-      if (!viewportNodes || viewportNodes.length === 0) return true;
+      if (!renderNodes || renderNodes.length === 0) return true;
 
-      const visibleNodes = viewportNodes.filter((node) => node.visible);
+      const enabledNodes = renderNodes.filter((node) => node.enabled);
 
-      for (const node of visibleNodes) {
+      for (const node of enabledNodes) {
         const desc = getMediaDescriptor(node.type);
         if (desc) {
-          const caches = {
+          const caches: MediaCacheContext = {
             imageCache: textureCacheRef.current,
             videoElements: new Map<string, HTMLVideoElement>(
               Array.from(textureCacheRef.current.entries())
@@ -268,7 +367,7 @@ const Viewport: React.FC = () => {
       }
       return true;
     },
-    [viewportNodes, textureCacheRef],
+    [renderNodes, textureCacheRef],
   );
 
   const [visualFrame, setVisualFrame] = useState(currentFrame);
@@ -280,9 +379,22 @@ const Viewport: React.FC = () => {
   }, [currentFrame, mediaUpdateTrigger, checkFrameReady]);
 
   const isLoading = visualFrame !== currentFrame;
+  const dataWindowProjection = useMemo(
+    () => (sceneNode ? getDataWindowProjection(sceneNode, viewportNodes, visualFrame) : null),
+    [sceneNode, viewportNodes, visualFrame],
+  );
+  const dataWindowNode = selectedViewportNode ?? selectedNode;
+  const dataWindowRect =
+    dataWindowNode && nodeFlags(dataWindowNode.type).showDataWindow
+      ? (dataWindowProjection?.outputs.get(dataWindowNode.id) ?? null)
+      : null;
+  const transformInputDataWindowRect =
+    dataWindowNode && nodeFlags(dataWindowNode.type).showInputDataWindow
+      ? (dataWindowProjection?.inputs.get(dataWindowNode.id) ?? null)
+      : null;
 
   const textTexturesRef = useViewportTextTextures({
-    nodes: viewportNodes,
+    nodes: renderNodes,
     currentFrame: visualFrame,
     bumpMediaUpdate: bumpMediaUpdateTrigger,
   });
@@ -297,249 +409,37 @@ const Viewport: React.FC = () => {
     setFrameScrubbing,
   });
 
-  // --- Recapture stabilisation reference when roto selection changes ---
-  const prevRotoSelectionRef = useRef({
-    pathIds: selectedRotoPathIds,
-    layerIds: selectedRotoLayerIds,
-  });
-  useEffect(() => {
-    const prev = prevRotoSelectionRef.current;
-    prevRotoSelectionRef.current = {
-      pathIds: selectedRotoPathIds,
-      layerIds: selectedRotoLayerIds,
-    };
-
-    if (!isStabilized || !selectedNode) return;
-
-    const prevKey = [...prev.pathIds, ...prev.layerIds].sort().join(',');
-    const nextKey = [...selectedRotoPathIds, ...selectedRotoLayerIds].sort().join(',');
-    if (prevKey === nextKey) return;
-
-    const scope = stabilizationConfig.scope;
-
-    if (scope === 'parent') {
-      const rotoNode = selectedNode as RotoNode;
-
-      const resolveParentLayer = (pathIds: string[], layerIds: string[]): string | null => {
-        if (pathIds.length === 1) {
-          const path = rotoNode.paths.find((p) => p.id === pathIds[0]);
-          return path ? getRotoPathParentLayerId(rotoNode, path) : null;
-        }
-        if (layerIds.length === 1) {
-          const layer = rotoNode.layers?.find((l) => l.id === layerIds[0]);
-          return layer?.parentLayerId ?? null;
-        }
-        return null;
-      };
-
-      const prevParent = resolveParentLayer(prev.pathIds, prev.layerIds);
-      const nextParent = resolveParentLayer(selectedRotoPathIds, selectedRotoLayerIds);
-      if (prevParent !== null && nextParent !== null && prevParent === nextParent) return;
-    }
-
-    recaptureStabilizationReference();
-  }, [
-    isStabilized,
-    selectedNode,
-    selectedRotoPathIds,
-    selectedRotoLayerIds,
-    stabilizationConfig.scope,
-    recaptureStabilizationReference,
-  ]);
-
-  const stabilizationMatrix = useMemo<number[][] | null>(() => {
-    if (!isStabilized || !stabilizationReference || !selectedNode) return null;
-    const def = effectRegistry.get(selectedNode.type);
-    if (def && def.getStabilizeTransform) {
-      const currentTransform = def.getStabilizeTransform(selectedNode, visualFrame, {
-        stabilizationConfig,
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-        stabilizationReferenceFrame,
-      });
-      if (currentTransform) {
-        const buildScalarTransformMatrix = (transform: {
-          x: number;
-          y: number;
-          scale: number;
-          rotation: number;
-        }) => {
-          const scale = Number.isFinite(transform.scale) ? transform.scale : 1;
-          const rotation = Number.isFinite(transform.rotation) ? transform.rotation : 0;
-          const cos = Math.cos(rotation) * scale;
-          const sin = Math.sin(rotation) * scale;
-          return [
-            [cos, -sin, 0, transform.x],
-            [sin, cos, 0, transform.y],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-          ];
-        };
-
-        const referenceMatrix =
-          stabilizationReference.matrix ?? buildScalarTransformMatrix(stabilizationReference);
-        const currentMatrix =
-          currentTransform.matrix ?? buildScalarTransformMatrix(currentTransform);
-        const currentInverseMatrix = invertRotoTrackingMatrix4(currentMatrix);
-        if (!currentInverseMatrix) {
-          return null;
-        }
-
-        // Reduce the tracking composite difference to requested components
-        // (translation, rotation, scale, affine, perspective).
-        let result = reduceRotoTrackingMatrix4ToComponents(
-          multiplyRotoTrackingMatrix4(referenceMatrix, currentInverseMatrix),
-          stabilizationConfig,
-        );
-
-        // Handle auxiliary translation separately (full scope keyframe delta).
-        // Left-multiply so it acts in screen space (like a viewport pan)
-        // without disturbing the perspective row of the reduced matrix.
-        const refAux = stabilizationReference.auxiliaryTranslation;
-        const curAux = currentTransform.auxiliaryTranslation;
-        if (refAux || curAux) {
-          const identity = [
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-          ];
-          const refAuxMatrix = refAux ?? identity;
-          const curAuxMatrix = curAux ?? identity;
-          const curAuxInverse = invertRotoTrackingMatrix4(curAuxMatrix);
-          if (curAuxInverse) {
-            const auxDiff = multiplyRotoTrackingMatrix4(refAuxMatrix, curAuxInverse);
-            result = multiplyRotoTrackingMatrix4(auxDiff, result);
-          }
-        }
-
-        return result;
-      }
-    }
-    return null;
-  }, [
-    isStabilized,
-    stabilizationReference,
-    stabilizationReferenceFrame,
-    stabilizationConfig,
-    selectedNode,
-    visualFrame,
-    selectedRotoLayerIds,
-    selectedRotoPathIds,
-  ]);
-
-  const stabilizationInverseMatrix = useMemo(
-    () => (stabilizationMatrix ? invertRotoTrackingMatrix4(stabilizationMatrix) : null),
-    [stabilizationMatrix],
-  );
-
-  const stabilizedSceneStyle = useMemo<React.CSSProperties>(
-    () =>
-      sceneNode
-        ? {
-            position: 'absolute',
-            inset: 0,
-            transformOrigin: `${sceneNode.width / 2}px ${sceneNode.height / 2}px`,
-            transform: stabilizationMatrix
-              ? formatRotoTrackingMatrix4AsCssMatrix3d(stabilizationMatrix)
-              : undefined,
-            imageRendering: viewportInterpolation === 'nearest' ? 'pixelated' : 'auto',
-          }
-        : { display: 'none' },
-    [sceneNode, stabilizationMatrix, viewportInterpolation],
-  );
-
-  const viewportTransformRef = useRef({
-    pan,
-    zoom,
-    sceneNode,
-    stabilizationInverseMatrix,
-  });
-  useLayoutEffect(() => {
-    viewportTransformRef.current = {
+  const { stabilizationMatrix, stabilizedSceneStyle, viewportToSceneCentered } =
+    useViewportStabilization({
+      isStabilized,
+      stabilizationReference,
+      stabilizationReferenceFrame,
+      stabilizationConfig,
+      selectedNode,
+      hierarchySelections,
+      selectedNodeId,
+      sceneNode,
+      visualFrame,
+      viewportInterpolation,
       pan,
       zoom,
-      sceneNode,
-      stabilizationInverseMatrix,
-    };
-  }, [pan, zoom, sceneNode, stabilizationInverseMatrix]);
+      viewportRef,
+      recaptureStabilizationReference,
+    });
 
-  const viewportToSceneCentered = useCallback((viewportPos: { x: number; y: number }) => {
-    const {
-      pan: currentPan,
-      zoom: currentZoom,
-      sceneNode: currentSceneNode,
-      stabilizationInverseMatrix: currentStabilizationInverseMatrix,
-    } = viewportTransformRef.current;
-    if (!viewportRef.current || !currentSceneNode) return { x: 0, y: 0 };
-    const rect = viewportRef.current.getBoundingClientRect();
+  const [pixelInfo, setPixelInfo] = useState<ViewportPixelInfo | null>(null);
 
-    const scenePoint = {
-      x: (viewportPos.x - (rect.width / 2 + currentPan.x)) / currentZoom,
-      y: (viewportPos.y - (rect.height / 2 - currentPan.y)) / currentZoom,
-    };
-
-    return currentStabilizationInverseMatrix
-      ? applyRotoTrackingMatrix4ToPoint(currentStabilizationInverseMatrix, scenePoint)
-      : scenePoint;
-  }, []);
-
-  // --- Interaction hooks ---
-  const warpInteraction = useWarpInteraction({
-    selectedNode,
-    sceneNode,
-    activeViewportTool,
-    zoom,
-    visualFrame,
-    nodes,
-    selectedNodeId,
-    updateNode,
-    setActiveViewportTool,
-    pushHistory,
-  });
-
-  const bokehInteraction = useBokehInteraction({
-    selectedNode,
-    sceneNode,
-    activeViewportTool,
-    pixelInfo,
-    setKeyframe,
-  });
-
-  const paintInteraction = usePaintInteraction({
-    nodes,
-    selectedNode,
-    selectedNodeId,
-    selectedPaintLayerIds,
-    selectedPaintStrokeIds,
-    setSelectedPaintStrokeIds,
-    activeViewportTool,
-    sceneNode,
-    frame: visualFrame,
-    zoom,
-    paintBrush,
-    viewerChannels: viewerSettings.channels,
-    nudgeRadius,
-    updateNode,
-    pushHistory,
-    setPreferences,
-  });
-
-  const paintTexturesRef = useViewportPaintTextures({
-    nodes: viewportNodes,
-    currentFrame: visualFrame,
-    sceneNode,
-    livePreview: paintInteraction.livePreview,
-    bumpMediaUpdate: bumpMediaUpdateTrigger,
-  });
-
-  const rotoInteraction = useRotoInteraction({
+  // --- Unified interaction hooks ---
+  const { interaction, ctxRef } = useViewportInteractions({
     selectedNode,
     selectedNodeId,
     nodes,
+    sceneNode,
     selectedRotoLayerIds,
     selectedRotoPathIds,
     selectedRotoPointRefs,
+    selectedPaintLayerIds,
+    selectedPaintStrokeIds,
     zoom,
     visualFrame,
     activeViewportTool,
@@ -552,13 +452,18 @@ const Viewport: React.FC = () => {
     rotoRefinement,
     nudgeRadius,
     rotoPointWeightMode,
+    paintBrush,
+    viewerChannels: viewerSettings.channels,
+    pixelInfo,
+    transformInputDataWindowRect,
     viewportRef,
     viewportToSceneCentered,
     updateNode,
-    pushHistory,
-    setSelectedRotoPathIds,
-    setSelectedRotoSelection,
+    commitMutation,
     setActiveViewportTool,
+    setHierarchySelection,
+    setSelectedRotoPointRefs,
+    setKeyframe,
     startDrawingShape,
     addPointToDrawingShape,
     updateDrawingPoint,
@@ -570,16 +475,24 @@ const Viewport: React.FC = () => {
     setPreferences,
   });
 
-  const isInteractiveRotoPreviewActive =
-    selectedNode?.type === NodeType.ROTO && rotoInteraction.isEditingRotoPaths;
+  const paintLivePreview = ctxRef.current.hooks.paint.livePreview;
+  const paintTexturesRef = useViewportPaintTextures({
+    nodes: renderNodes,
+    currentFrame: visualFrame,
+    sceneNode: renderSceneNode,
+    livePreview: paintLivePreview,
+    bumpMediaUpdate: bumpMediaUpdateTrigger,
+  });
+
+  const isInteractiveRotoPreviewActive = interaction.isPreviewActive?.() ?? false;
   const freezeRotoMaskWhileEditing =
     isInteractiveRotoPreviewActive &&
     viewerSettings.channels !== 'A' &&
     !viewerSettings.alphaOverlay;
 
   const rotoMaskTexturesRef = useViewportRotoMasks({
-    nodes: viewportNodes,
-    sceneNode,
+    nodes: renderNodes,
+    sceneNode: renderSceneNode,
     currentFrame: visualFrame,
     motionBlurPreviewBackend: rotoMotionBlurPreviewBackend,
     interactiveMotionBlurPreviewEnabled: rotoMotionBlurInteractivePreviewEnabled,
@@ -593,6 +506,10 @@ const Viewport: React.FC = () => {
   const handleRendererDispose = useCallback(() => {
     threeStuff.materials.forEach((mat) => mat?.dispose());
     threeStuff.renderTargets.forEach((rt) => rt?.dispose());
+    threeStuff.utilityTargets.forEach((rt) => rt?.dispose());
+    threeStuff.ocioTextures.forEach((texture) => texture.dispose());
+    threeStuff.utilityTargets.clear();
+    threeStuff.ocioTextures.clear();
     textureCacheRef.current.clear();
     textTexturesRef.current.forEach((entry) => entry?.texture?.dispose());
     rotoMaskTexturesRef.current.forEach((entry) => {
@@ -610,13 +527,31 @@ const Viewport: React.FC = () => {
     }
   }, [rotoMaskTexturesRef, textTexturesRef, textureCacheRef, threeStuff]);
 
-  const gl = useViewportRenderer(canvasRef, viewportSize, handleRendererDispose);
+  const handleRendererError = useCallback((message: string | null) => {
+    setRendererError(message);
+  }, []);
+
+  const rendererViewportSize = useMemo(
+    () =>
+      isScene3DMode && renderSceneNode
+        ? { width: renderSceneNode.width, height: renderSceneNode.height }
+        : viewportSize,
+    [isScene3DMode, renderSceneNode, viewportSize],
+  );
+
+  const gl = useViewportRenderer(
+    canvasRef,
+    rendererViewportSize,
+    handleRendererDispose,
+    handleRendererError,
+  );
 
   const { finalCompBufferRef } = useViewportRenderLoop({
     gl,
     canvasRef,
-    nodes: viewportNodes,
-    sceneNode,
+    rendererSurfaceSize: rendererViewportSize,
+    nodes: renderNodes,
+    sceneNode: renderSceneNode,
     visualFrame,
     viewerSettings,
     alphaOverlayStyle,
@@ -628,17 +563,38 @@ const Viewport: React.FC = () => {
     paintTexturesRef,
     rotoMaskTexturesRef,
     freezeImageWhileEditing: freezeRotoMaskWhileEditing,
-    deferProjectThumbnailCapture: isFrameScrubbing || isInteractiveRotoPreviewActive,
+    deferProjectThumbnailCapture:
+      isScene3DMode || isFrameScrubbing || isInteractiveRotoPreviewActive,
     signalFrameRendered: handleFrameRendered,
     setProjectThumbnail,
   });
+
+  const {
+    clearPixelInfo,
+    setMouseScenePosRef,
+    updatePixelInfoAtScenePos,
+    refreshPixelInfoAfterRender,
+  } = useViewportPixelInspector({
+    gl,
+    finalCompBufferRef,
+    sceneNode: renderSceneNode,
+    hasRenderableOutput,
+    isLoading,
+    isPlaying,
+    mouseScenePos,
+    viewerNodeId,
+    pixelInfo,
+    setPixelInfo,
+  });
+
+  refreshPixelInfoAfterRenderRef.current = refreshPixelInfoAfterRender;
 
   const minimapPreviewRefreshToken = useMemo(
     () => ({
       alphaOverlayStyle,
       hasRenderableOutput,
       mediaUpdateTrigger,
-      nodes: viewportNodes,
+      nodes: renderNodes,
       viewerSettings,
       visualFrame,
       viewportInterpolation,
@@ -647,30 +603,15 @@ const Viewport: React.FC = () => {
       alphaOverlayStyle,
       hasRenderableOutput,
       mediaUpdateTrigger,
-      viewportNodes,
+      renderNodes,
       viewerSettings,
       visualFrame,
       viewportInterpolation,
     ],
   );
 
-  const showInteractionOverlays =
-    rotoInteraction.shouldForceOverlays ||
-    warpInteraction.shouldForceOverlays ||
-    paintInteraction.shouldForceOverlays;
+  const showInteractionOverlays = interaction.shouldForceOverlays();
   const showOverlays = viewerSettings.showOverlays || showInteractionOverlays;
-  const showRotoSelectOverlayWhenHidden =
-    !showOverlays && selectedNode?.type === NodeType.ROTO && activeViewportTool === 'select';
-  const showCursorOverlayWhenHidden =
-    !showOverlays &&
-    ((selectedNode?.type === NodeType.ROTO &&
-      (activeViewportTool === 'nudge' || rotoInteraction.isAdjustingRadius)) ||
-      (selectedNode?.type === NodeType.PAINT &&
-        (activeViewportTool === 'brush' ||
-          activeViewportTool === 'erase' ||
-          activeViewportTool === 'clone')));
-  const shouldRenderOverlaySvg =
-    showOverlays || showCursorOverlayWhenHidden || showRotoSelectOverlayWhenHidden;
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -712,7 +653,8 @@ const Viewport: React.FC = () => {
 
   // --- Gesture / zoom / pan ---
   const { panelWidth, isFit, fitToView, startPan, isMousePanning } = useViewportGestures({
-    sceneNode,
+    sceneNode: gestureSceneNode,
+    enableGestures: !isScene3DMode || isScene3DProjectionViewActive,
     zoom,
     pan,
     targetZoom,
@@ -725,37 +667,72 @@ const Viewport: React.FC = () => {
     setAnimationTarget,
   });
 
+  const toggleScene3DViewportMode = useCallback(() => {
+    if (!activeScene3DNode) return false;
+    const nextMode = activeScene3DNode.viewportMode === 'scene3d' ? 'canvas2d' : 'scene3d';
+    updateNode(activeScene3DNode.id, { viewportMode: nextMode }, false);
+    return true;
+  }, [activeScene3DNode, updateNode]);
+
   const activeViewportToolRef = useRef(activeViewportTool);
   useEffect(() => {
     const previousTool = activeViewportToolRef.current;
+    if (previousTool === activeViewportTool) return;
+
     activeViewportToolRef.current = activeViewportTool;
-    rotoInteraction.cleanupOnToolChange(previousTool);
-    warpInteraction.cleanupOnToolChange(previousTool);
-    paintInteraction.cleanupOnToolChange(previousTool);
-  });
+    interaction.cleanupOnToolChange(previousTool);
+  }, [activeViewportTool, interaction]);
 
   const runtimeCommands = useMemo<HotkeyCommand[]>(
     () => [
       {
-        id: 'viewport.commitRotoRefinement.runtime',
+        id: 'viewport.fitToView.runtime',
         run: () => {
-          if (!rotoRefinement) {
-            return false;
-          }
-          commitRotoRefinement();
+          fitToView();
           return true;
         },
       },
       {
+        id: 'viewport.toggleScene3DViewportMode.runtime',
+        title: 'Toggle 2D/3D View',
+        run: () => toggleScene3DViewportMode(),
+      },
+      {
+        id: 'viewport.commitRotoRefinement.runtime',
+        run: () => interaction.handleCommand('commitRotoRefinement'),
+      },
+      {
         id: 'viewport.deleteNudgeSelection.runtime',
-        run: () => rotoInteraction.deletePointsInNudgeArea(),
+        run: () => interaction.handleCommand('deleteNudgeSelection'),
+      },
+      {
+        id: 'viewport.deleteComfyRegion.runtime',
+        run: (context) => {
+          if (context.isTextEntry) return false;
+          return interaction.handleCommand('deleteComfyRegion');
+        },
       },
     ],
-    [commitRotoRefinement, rotoInteraction, rotoRefinement],
+    [fitToView, interaction, toggleScene3DViewportMode],
   );
 
   const runtimeBindings = useMemo<HotkeyBinding[]>(
     () => [
+      {
+        keys: 'F',
+        command: 'viewport.fitToView.runtime',
+        scope: 'viewport',
+        weight: 400,
+        repeat: false,
+      },
+      {
+        keys: 'V',
+        command: 'viewport.toggleScene3DViewportMode.runtime',
+        scope: 'viewport',
+        weight: 400,
+        repeat: false,
+        when: () => Boolean(activeScene3DNode),
+      },
       {
         keys: 'Escape',
         command: 'viewport.commitRotoRefinement.runtime',
@@ -769,41 +746,51 @@ const Viewport: React.FC = () => {
         scope: 'viewport',
         weight: 400,
       },
+      {
+        keys: ['Delete', 'Backspace'],
+        command: 'viewport.deleteComfyRegion.runtime',
+        scope: 'viewport',
+        weight: 500,
+        preventDefault: true,
+        when: (context) =>
+          context.selectedNodeType === NodeType.COMFY &&
+          Boolean((context.selectedNode as ComfyNode | null)?.viewportPromptRegions?.length),
+      },
     ],
-    [rotoRefinement],
+    [activeScene3DNode, rotoRefinement],
   );
 
-  const rotoClipboardHotkeys = useRotoItemsClipboard({
+  const rotoClipboard = useRotoItemsClipboard({
     node: selectedNode?.type === NodeType.ROTO ? (selectedNode as RotoNode) : null,
     selectedLayerIds: selectedRotoLayerIds,
     selectedPathIds: selectedRotoPathIds,
     selectedPointRefs: selectedRotoPointRefs,
     updateNode,
-    setSelectedRotoSelection,
+    onSetHierarchySelection: (layerIds, itemIds) =>
+      setHierarchySelection(selectedNodeId ?? '', layerIds, itemIds),
   });
-  const paintClipboardHotkeys = usePaintItemsClipboard({
+  const paintClipboard = usePaintItemsClipboard({
     node: selectedNode?.type === NodeType.PAINT ? (selectedNode as PaintNode) : null,
     selectedLayerIds: selectedPaintLayerIds,
     selectedStrokeIds: selectedPaintStrokeIds,
     updateNode,
-    setSelectedPaintLayerIds,
-    setSelectedPaintStrokeIds,
+    onSetHierarchySelection: (layerIds, itemIds) =>
+      setHierarchySelection(selectedNodeId ?? '', layerIds, itemIds),
   });
   const viewportClipboardHotkeys = useMemo(() => {
-    if (selectedNode?.type === NodeType.ROTO) {
-      return rotoClipboardHotkeys;
+    if (!selectedNode) {
+      return { onCopy: () => false, onCut: () => false, onPaste: () => false };
     }
-
-    if (selectedNode?.type === NodeType.PAINT) {
-      return paintClipboardHotkeys;
-    }
-
-    return {
-      onCopy: () => false,
-      onCut: () => false,
-      onPaste: () => false,
-    };
-  }, [paintClipboardHotkeys, rotoClipboardHotkeys, selectedNode?.type]);
+    const def = nodeRegistry.get(selectedNode.type);
+    const ctx = { rotoClipboard, paintClipboard };
+    return (
+      def?.getClipboardHandlers?.(selectedNode, ctx) ?? {
+        onCopy: () => false,
+        onCut: () => false,
+        onPaste: () => false,
+      }
+    );
+  }, [selectedNode, rotoClipboard, paintClipboard]);
   const runtimeClipboardCommands = useMemo(
     () => createStandardClipboardHotkeyCommands('viewport.runtime', viewportClipboardHotkeys),
     [viewportClipboardHotkeys],
@@ -832,32 +819,51 @@ const Viewport: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [rotoRefinement, commitRotoRefinement]);
 
+  const handleViewportPanMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 1 || !gestureSceneNode) return false;
+    e.preventDefault();
+
+    if (e.ctrlKey) {
+      startScrub(e.clientX);
+      return true;
+    }
+
+    return startPan(e);
+  };
+
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isScene3DMode) {
+      if (isScene3DProjectionViewActive) {
+        handleViewportPanMouseDown(e);
+      }
+      return;
+    }
+    if (isLoading) return;
+    if (rotoRefinement) return;
+
     const mousePos = getViewportMousePos(e.clientX, e.clientY);
     if (!mousePos) return;
     const scenePos = viewportToSceneCentered(mousePos);
 
-    if (isLoading) return;
-    if (rotoRefinement) return;
-
-    // Delegate to interaction hooks (return true = consumed)
-    if (paintInteraction.handleMouseDown(e, mousePos, scenePos)) return;
-    if (rotoInteraction.handleMouseDown(e, mousePos, scenePos)) return;
-    if (bokehInteraction.handleMouseDown(e, scenePos)) return;
-    if (warpInteraction.handleMouseDown(e, mousePos, scenePos)) return;
+    // Delegate to unified interaction (returns true if consumed)
+    if (
+      interaction.handleMouseDown({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        sceneX: scenePos.x,
+        sceneY: scenePos.y,
+        button: e.button,
+        ctrlKey: e.ctrlKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        nativeEvent: e.nativeEvent,
+      })
+    )
+      return;
 
     // Middle Mouse Button Logic (common viewport behaviour)
-    if (e.button === 1 && sceneNode) {
-      e.preventDefault();
-
-      if (e.ctrlKey) {
-        startScrub(e.clientX);
-        return;
-      }
-
-      startPan(e);
-      return;
-    }
+    if (handleViewportPanMouseDown(e)) return;
   };
 
   const [isDragging, setIsDragging] = useState(false);
@@ -874,131 +880,57 @@ const Viewport: React.FC = () => {
     return 'nativeEvent' in event ? event.nativeEvent : event;
   }, []);
 
-  const readPixelColor = useCallback(
-    (
-      renderTarget: THREE.WebGLRenderTarget,
-      x: number,
-      y: number,
-    ): [number, number, number, number] => {
-      if (!gl) return [0, 0, 0, 0];
-      const textureType = renderTarget.texture.type;
-
-      if (textureType === THREE.FloatType) {
-        const buffer = pixelReadBuffer32Ref.current;
-        gl.readRenderTargetPixels(renderTarget, x, y, 1, 1, buffer);
-        return [buffer[0], buffer[1], buffer[2], buffer[3]];
-      }
-
-      if (textureType === THREE.HalfFloatType) {
-        const buffer = pixelReadBuffer16Ref.current;
-        gl.readRenderTargetPixels(renderTarget, x, y, 1, 1, buffer);
-        return [
-          THREE.DataUtils.fromHalfFloat(buffer[0]),
-          THREE.DataUtils.fromHalfFloat(buffer[1]),
-          THREE.DataUtils.fromHalfFloat(buffer[2]),
-          THREE.DataUtils.fromHalfFloat(buffer[3]),
-        ];
-      }
-
-      const buffer = pixelReadBuffer8Ref.current;
-      gl.readRenderTargetPixels(renderTarget, x, y, 1, 1, buffer);
-      return [buffer[0] / 255, buffer[1] / 255, buffer[2] / 255, buffer[3] / 255];
-    },
-    [gl],
-  );
-
-  const updatePixelInfoAtScenePos = useCallback(
-    (scenePos: { x: number; y: number } | null) => {
-      if (
-        !scenePos ||
-        !gl ||
-        !viewportRef.current ||
-        !sceneNode ||
-        !finalCompBufferRef.current ||
-        !hasRenderableOutput
-      ) {
-        setPixelInfo(null);
-        return;
-      }
-
-      // Frame seeks briefly enter a loading state. Keep the inspector mounted with
-      // the last sampled value, then refresh it when the new frame renders.
-      if (isLoading) {
-        return;
-      }
-
-      const sceneX = Math.floor(scenePos.x + sceneNode.width / 2);
-      const sceneY = Math.floor(scenePos.y + sceneNode.height / 2);
-
-      if (sceneX < 0 || sceneX >= sceneNode.width || sceneY < 0 || sceneY >= sceneNode.height) {
-        setPixelInfo(null);
-        return;
-      }
-
-      const color = readPixelColor(
-        finalCompBufferRef.current,
-        sceneX,
-        sceneNode.height - 1 - sceneY,
-      );
-      setPixelInfo({
-        x: sceneX,
-        y: sceneY,
-        color,
-      });
-    },
-    [finalCompBufferRef, gl, hasRenderableOutput, isLoading, readPixelColor, sceneNode],
-  );
-
-  useEffect(() => {
-    if (isPlaying) return;
-    updatePixelInfoAtScenePos(mouseScenePos);
-  }, [isPlaying, mouseScenePos, renderVersion, updatePixelInfoAtScenePos, viewerNodeId]);
-
-  useEffect(() => {
-    if (!sceneNode || !hasRenderableOutput) {
-      setPixelInfo(null);
-    }
-  }, [hasRenderableOutput, sceneNode]);
-
   const handleMouseMove = useCallback(
     (e: ViewportMouseEvent) => {
       const nativeEvent = getNativeMouseEvent(e);
       if (lastHandledMouseEventRef.current === nativeEvent) return;
       lastHandledMouseEventRef.current = nativeEvent;
 
-      if (isScrubbing) {
-        return;
-      }
-
-      if (isMousePanning) {
-        return;
-      }
+      if (isScene3DMode) return;
+      if (isScrubbing) return;
+      if (isMousePanning) return;
 
       const mousePos = getViewportMousePos(e.clientX, e.clientY);
       if (!mousePos) return;
       const scenePos = viewportToSceneCentered(mousePos);
-      setMouseScenePos(scenePos);
+      if (!areScenePositionsEqual(mouseScenePosRef.current, scenePos)) {
+        mouseScenePosRef.current = scenePos;
+        setMouseScenePosRef(scenePos);
+        setMouseScenePos(scenePos);
+      }
 
       if (isLoading) return;
 
-      // Delegate to interaction hooks (exclusive handlers return true)
-      if (paintInteraction.handleMouseMove(e, mousePos, scenePos)) return;
-      if (rotoInteraction.handleMouseMove(e, mousePos, scenePos)) return;
-      if (warpInteraction.handleMouseMove(e, mousePos, scenePos)) return;
+      // Delegate to unified interaction (returns true if consumed)
+      if (
+        interaction.handleMouseMove({
+          clientX: e.clientX,
+          clientY: e.clientY,
+          sceneX: scenePos.x,
+          sceneY: scenePos.y,
+          button: e.button,
+          ctrlKey: e.ctrlKey,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+          metaKey: e.metaKey,
+          nativeEvent,
+        })
+      )
+        return;
 
       updatePixelInfoAtScenePos(scenePos);
     },
     [
       getNativeMouseEvent,
       getViewportMousePos,
+      isScene3DMode,
       isLoading,
       isMousePanning,
       isScrubbing,
-      paintInteraction,
-      rotoInteraction,
+      interaction,
       updatePixelInfoAtScenePos,
       viewportToSceneCentered,
-      warpInteraction,
+      setMouseScenePosRef,
     ],
   );
 
@@ -1008,35 +940,26 @@ const Viewport: React.FC = () => {
       if (lastHandledMouseEventRef.current === nativeEvent) return;
       lastHandledMouseEventRef.current = nativeEvent;
 
+      if (isScene3DMode) return;
       if (isLoading) return;
-      paintInteraction.handleMouseUp();
-      rotoInteraction.handleMouseUp(e);
-      warpInteraction.handleMouseUp();
+      interaction.handleMouseUp({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        sceneX: 0,
+        sceneY: 0,
+        button: e.button,
+        ctrlKey: e.ctrlKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        nativeEvent,
+      });
     },
-    [getNativeMouseEvent, isLoading, paintInteraction, rotoInteraction, warpInteraction],
-  );
-
-  const hasGlobalMouseCapture = Boolean(
-    warpInteraction.dragPinState ||
-    paintInteraction.isPainting ||
-    paintInteraction.isSettingCloneSource ||
-    paintInteraction.isAdjustingBrushSize ||
-    paintInteraction.nudgeDragState ||
-    paintInteraction.isAdjustingNudgeRadius ||
-    rotoInteraction.dragPointState ||
-    rotoInteraction.transformDragState ||
-    rotoInteraction.nudgeDragState ||
-    rotoInteraction.pointWeightDragState ||
-    rotoInteraction.insertedPointDragState ||
-    rotoInteraction.marqueeState ||
-    rotoInteraction.drawingState ||
-    rotoInteraction.freehandPoints ||
-    rotoInteraction.dragNewPointIndex !== null ||
-    rotoInteraction.isAdjustingRadius,
+    [getNativeMouseEvent, isScene3DMode, isLoading, interaction],
   );
 
   useEffect(() => {
-    if (!hasGlobalMouseCapture) return;
+    if (!interaction.hasGlobalMouseCapture()) return;
 
     const handleWindowMouseMove = (event: MouseEvent) => {
       handleMouseMove(event);
@@ -1051,27 +974,32 @@ const Viewport: React.FC = () => {
       window.removeEventListener('mousemove', handleWindowMouseMove);
       window.removeEventListener('mouseup', handleWindowMouseUp);
     };
-  }, [handleMouseMove, handleMouseUp, hasGlobalMouseCapture]);
+  }, [handleMouseMove, handleMouseUp, interaction]);
 
   useEffect(() => {
     if (!isScrubbing) return;
-    setPixelInfo(null);
+    clearPixelInfo();
+    mouseScenePosRef.current = null;
+    setMouseScenePosRef(null);
     setMouseScenePos(null);
-  }, [isScrubbing]);
+  }, [clearPixelInfo, isScrubbing, setMouseScenePosRef]);
 
   useEffect(() => {
     if (!isMousePanning) return;
-    setPixelInfo(null);
+    clearPixelInfo();
+    mouseScenePosRef.current = null;
+    setMouseScenePosRef(null);
     setMouseScenePos(null);
-  }, [isMousePanning]);
+  }, [clearPixelInfo, isMousePanning, setMouseScenePosRef]);
 
   const handleMouseLeave = () => {
-    if (hasGlobalMouseCapture) return;
-    setPixelInfo(null);
+    if (isScene3DMode) return;
+    if (interaction.hasGlobalMouseCapture()) return;
+    clearPixelInfo();
+    mouseScenePosRef.current = null;
+    setMouseScenePosRef(null);
     setMouseScenePos(null);
-    paintInteraction.handleMouseLeave();
-    rotoInteraction.handleMouseLeave();
-    warpInteraction.handleMouseLeave();
+    interaction.handleMouseLeave();
   };
 
   const canvasContainerStyle = useMemo<React.CSSProperties>(() => {
@@ -1086,35 +1014,15 @@ const Viewport: React.FC = () => {
     };
   }, [sceneNode, zoom, pan]);
 
-  const dataWindowRect = useMemo(() => {
-    if (!sceneNode || !selectedNode || !nodeFlags(selectedNode.type).showDataWindow) {
-      return null;
-    }
-    if (
-      !('transform' in selectedNode) ||
-      typeof selectedNode.width !== 'number' ||
-      typeof selectedNode.height !== 'number'
-    ) {
-      return null;
-    }
-    const mediaNode = selectedNode;
-    const scaleXAtFrame = getValueAtFrame(mediaNode.transform.scaleX, visualFrame);
-    const scaleYAtFrame = getValueAtFrame(mediaNode.transform.scaleY, visualFrame);
-    const xAtFrame = getValueAtFrame(mediaNode.transform.x, visualFrame);
-    const yAtFrame = getValueAtFrame(mediaNode.transform.y, visualFrame);
-    const width = mediaNode.width * scaleXAtFrame;
-    const height = mediaNode.height * scaleYAtFrame;
-    const x = sceneNode.width / 2 + xAtFrame - width / 2;
-    const y = sceneNode.height / 2 - yAtFrame - height / 2;
+  const displayWindowRect = useMemo(() => {
+    if (!sceneNode) return null;
     return {
-      x,
-      y,
-      width,
-      height,
-      nativeWidth: mediaNode.width as number,
-      nativeHeight: mediaNode.height as number,
+      x: 0,
+      y: 0,
+      width: sceneNode.width,
+      height: sceneNode.height,
     };
-  }, [selectedNode, sceneNode, visualFrame]);
+  }, [sceneNode]);
 
   /** Transform absolute scene corners through the stabilization matrix. */
   const stabilizeBboxCorners = useCallback(
@@ -1137,64 +1045,26 @@ const Viewport: React.FC = () => {
     [sceneNode, stabilizationMatrix],
   );
 
-  const cursorClass = useMemo(() => {
-    if (isLoading) return 'cursor-wait';
-    if (isScrubbing) return 'cursor-ew-resize';
-    if (rotoInteraction.transformDragState) return 'cursor-grabbing';
-    if (rotoInteraction.hoveredTransformHandle)
-      return getTransformHandleCursor(
-        rotoInteraction.hoveredTransformHandle,
-        affineModifierPressed,
-        altPressed,
-      );
-    if (paintInteraction.isAdjustingBrushSize) return 'cursor-none';
-    if (
-      rotoInteraction.nudgeDragState ||
-      warpInteraction.dragPinState ||
-      rotoInteraction.insertedPointDragState
-    )
-      return 'cursor-grabbing';
-    if (rotoInteraction.dragPointState) return 'cursor-move';
-    if (
-      rotoInteraction.isHoveringClosePoint ||
-      warpInteraction.hoveredPinId ||
-      rotoInteraction.hoveredSegment
-    )
-      return 'cursor-pointer';
-    if (
-      activeViewportTool === 'rectangle' ||
-      activeViewportTool === 'bspline' ||
-      activeViewportTool === 'freehand' ||
-      activeViewportTool === 'brush' ||
-      activeViewportTool === 'erase' ||
-      activeViewportTool === 'clone' ||
-      activeViewportTool === 'add_pin' ||
-      activeViewportTool === 'bokeh_pick'
-    )
-      return 'cursor-crosshair';
-    if (activeViewportTool === 'nudge' || rotoInteraction.isAdjustingRadius) return 'cursor-none';
-    return rotoInteraction.isRotoSelectActive ? 'cursor-default' : '';
-  }, [
-    rotoInteraction.isHoveringClosePoint,
-    activeViewportTool,
-    rotoInteraction.isRotoSelectActive,
-    rotoInteraction.dragPointState,
-    rotoInteraction.nudgeDragState,
-    rotoInteraction.isAdjustingRadius,
-    warpInteraction.dragPinState,
-    warpInteraction.hoveredPinId,
-    rotoInteraction.hoveredSegment,
-    rotoInteraction.insertedPointDragState,
-    isLoading,
-    isScrubbing,
-    rotoInteraction.transformDragState,
-    rotoInteraction.hoveredTransformHandle,
-    paintInteraction.isAdjustingBrushSize,
-    affineModifierPressed,
-  ]);
+  const cursorClass = isLoading
+    ? 'cursor-wait'
+    : isScrubbing
+      ? 'cursor-ew-resize'
+      : (interaction.getCursor() ?? '');
 
   const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
-    rotoInteraction.handleContextMenu(e);
+    if (isScene3DMode) return;
+    interaction.handleContextMenu?.({
+      clientX: e.clientX,
+      clientY: e.clientY,
+      sceneX: 0,
+      sceneY: 0,
+      button: e.button,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+      altKey: e.altKey,
+      metaKey: e.metaKey,
+      nativeEvent: e.nativeEvent,
+    });
   };
 
   const refinementSimplifiedPoints = useMemo(() => {
@@ -1228,37 +1098,68 @@ const Viewport: React.FC = () => {
     rotoMotionBlurPathVisible,
     rotoMotionTrailFrames,
     selectedNode,
-    selectedRotoPathIds,
+    hierarchySelections,
+    selectedNodeId,
     visualFrame,
     maxFrames,
     rotoPointWeightMode,
     stabilizationMatrix,
   });
 
-  const rotoNudgeOverlayState = useMemo<NudgeOverlayState>(
-    () => ({
-      activeViewportTool,
-      altPressed,
-      isAdjustingRadius: rotoInteraction.isAdjustingRadius,
-      nudgeDragState: rotoInteraction.nudgeDragState,
-      radiusAdjustCenter: rotoInteraction.radiusAdjustStartRef.current?.center ?? null,
-      radiusAdjustInitialRadius:
-        rotoInteraction.radiusAdjustStartRef.current?.initialRadius ?? null,
-      mouseScenePos,
-      nudgeRadius,
-      nudgePreviewPoints: rotoInteraction.nudgePreviewPoints,
-    }),
-    [
-      activeViewportTool,
-      altPressed,
-      mouseScenePos,
-      nudgeRadius,
-      rotoInteraction.isAdjustingRadius,
-      rotoInteraction.nudgeDragState,
-      rotoInteraction.nudgePreviewPoints,
-      rotoInteraction.radiusAdjustStartRef,
-    ],
-  );
+  const rotoInteraction = ctxRef.current.hooks.roto;
+  const paintInteraction = ctxRef.current.hooks.paint;
+  const warpInteraction = ctxRef.current.hooks.warp;
+  const spatialInteraction = ctxRef.current.hooks.spatial;
+  const comfyCropInteraction = ctxRef.current.hooks.comfyCrop;
+
+  const { overlayContext, overlayContextRef } = useViewportOverlayContext({
+    rotoInteraction,
+    paintInteraction,
+    warpInteraction,
+    spatialInteraction,
+    comfyCropInteraction,
+    altPressed,
+    affineModifierPressed,
+    mouseScenePos,
+    viewportSize,
+    transformInputDataWindowRect,
+    stabilizationMatrix,
+    isDrawing,
+    drawingRotoPath,
+    rotoRefinement,
+    refinementSimplifiedPoints,
+    activeTrackingPoints,
+    nudgeRadius,
+    rotoPointWeightMode,
+    rotoNudgeOverlayState: rotoInteraction.nudgeOverlayState,
+    paintBrush,
+    paintStrokePathsVisible,
+    paintStrokePathsMode,
+    selectedRotoLayerIds,
+    selectedRotoPathIds,
+    selectedRotoPointRefs,
+    selectedPaintLayerIds,
+    selectedPaintStrokeIds,
+    selectedViewportNode,
+    selectedNodeId,
+    setSelectedRotoPointRefs,
+    setHierarchySelection,
+    motionCueTargetPathIdSet,
+    gradientTrailsByPath,
+    speedHeatSegmentsByPath,
+    motionBlurCuePathsByPath,
+    rotoMotionCueEnabled,
+    rotoMotionCueMode,
+    activeViewportTool,
+    showOverlays,
+  });
+
+  // ── Resolve overlay visibility from registry ──
+  // Each node type declares whether the SVG container should render even
+  // when showOverlays is off (e.g., roto/paint show cursor overlays during
+  // active tools). This replaces hardcoded per-type if/else chains.
+  const overlayVisibility = resolveOverlayVisibility(selectedNode, overlayContextRef.current);
+  const shouldRenderOverlaySvg = showOverlays || overlayVisibility.forceShowSvg;
 
   return (
     <div
@@ -1305,7 +1206,25 @@ const Viewport: React.FC = () => {
           })()}
         />
       )}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+      {renderSceneNode && activeScene3DNode && shouldMountScene3DViewport && (
+        <Scene3DViewport
+          sceneNode={renderSceneNode}
+          scene3DNode={activeScene3DNode}
+          selectedItemId={selectedScene3DItemId}
+          backdropCanvas={gl?.domElement ?? canvasRef.current}
+          hasBackdropOutput={hasScene3DBackdropOutput}
+          isActive={isScene3DMode}
+          viewportZoom={zoom}
+          viewportPan={pan}
+          viewportIsFit={isFit}
+          viewportCameraMode={scene3DViewportCameraMode}
+          onViewportCameraModeChange={setScene3DViewportCameraMode}
+        />
+      )}
+      <div
+        className="absolute inset-0 overflow-hidden pointer-events-none"
+        style={{ visibility: isScene3DMode ? 'hidden' : 'visible' }}
+      >
         {viewerSettings.alphaMode === 'TRANSPARENT' && (
           <div
             className="absolute inset-0"
@@ -1330,28 +1249,69 @@ const Viewport: React.FC = () => {
               />
               {viewerSettings.showOverlays && (
                 <div className="absolute inset-0 pointer-events-none">
-                  {sceneNode.width > 150 && (
+                  {displayWindowRect && displayWindowRect.width > 150 && (
                     <div
                       className="absolute top-0 left-0 bg-cyan-900/80 text-cyan-200 text-[10px] px-1.5 py-0.5 font-mono"
                       style={{
+                        left: displayWindowRect.x,
+                        top: displayWindowRect.y,
                         transform: `translate(${-1 / zoom}px, -100%) scale(${1 / zoom})`,
                         transformOrigin: 'bottom left',
                       }}
                     >
-                      Display Window ({sceneNode.width}x{sceneNode.height})
+                      <span className="text-cyan-300">Display Window</span>{' '}
+                      <span className="text-cyan-100">
+                        {formatDataWindowSize(displayWindowRect.width, displayWindowRect.height)}
+                      </span>
                     </div>
                   )}
                   {selectedNode && dataWindowRect && dataWindowRect.width > 150 && (
                     <div
-                      className="absolute bg-amber-900/80 text-amber-200 text-[10px] px-1.5 py-0.5 font-mono"
+                      className="absolute bg-amber-950/90 text-amber-200 text-[10px] px-1.5 py-0.5 font-mono shadow-sm shadow-black/30"
                       style={{
                         left: dataWindowRect.x,
                         top: dataWindowRect.y,
                         transform: `translate(${-1 / zoom}px, -100%) scale(${1 / zoom})`,
                         transformOrigin: 'bottom left',
                       }}
+                      title={`Data Window: ${formatDataWindowSize(
+                        dataWindowRect.width,
+                        dataWindowRect.height,
+                      )}${
+                        dataWindowSizeChanged(dataWindowRect)
+                          ? `. Native before this node: ${formatDataWindowSize(
+                              dataWindowRect.nativeWidth,
+                              dataWindowRect.nativeHeight,
+                            )}`
+                          : ''
+                      }`}
                     >
-                      Data Window ({dataWindowRect.nativeWidth}x{dataWindowRect.nativeHeight})
+                      <span className="text-amber-300">Data Window</span>{' '}
+                      <span className="whitespace-nowrap text-amber-100">
+                        {formatDataWindowSize(dataWindowRect.width, dataWindowRect.height)}
+                        {dataWindowSizeChanged(dataWindowRect) && (
+                          <span className="text-amber-100/70">
+                            <svg
+                              aria-hidden="true"
+                              className="mx-1 inline-block h-2 w-3 align-[-1px]"
+                              fill="none"
+                              viewBox="0 0 14 10"
+                            >
+                              <path
+                                d="M13 5H1.5m0 0L5 1.5M1.5 5L5 8.5"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="1"
+                              />
+                            </svg>
+                            {formatDataWindowSize(
+                              dataWindowRect.nativeWidth,
+                              dataWindowRect.nativeHeight,
+                            )}
+                          </span>
+                        )}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -1375,6 +1335,24 @@ const Viewport: React.FC = () => {
                   </div>
                 </div>
               )}
+              {rendererError && (
+                <div className="absolute inset-0 flex items-center justify-center p-4">
+                  <div
+                    className="z-10 max-w-sm rounded-lg border border-amber-400/30 bg-gray-950/90 p-4 text-center shadow-xl"
+                    style={{
+                      transform: `scale(${1 / zoom})`,
+                      transformOrigin: 'center',
+                    }}
+                  >
+                    <p className="font-semibold text-amber-100">Viewport renderer unavailable</p>
+                    <p className="mt-2 text-sm leading-5 text-amber-50/75">{rendererError}</p>
+                    <p className="mt-2 text-xs leading-5 text-gray-400">
+                      Chats, project branches, and agent tools can still be used. Enable WebGL2 or
+                      hardware acceleration to render the viewport.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
             {shouldRenderOverlaySvg && (
               <svg
@@ -1382,38 +1360,16 @@ const Viewport: React.FC = () => {
                 viewBox={`0 0 ${sceneNode.width} ${sceneNode.height}`}
                 style={{ overflow: 'visible' }}
               >
-                {showOverlays && (
-                  <defs>
-                    {rotoInteraction.bsplineDrawingState?.previewSegment &&
-                      (() => {
-                        const sStart = stabilizePoint(
-                          rotoInteraction.bsplineDrawingState.previewSegment.start,
-                          stabilizationMatrix,
-                        );
-                        const sEnd = stabilizePoint(
-                          rotoInteraction.bsplineDrawingState.previewSegment.end,
-                          stabilizationMatrix,
-                        );
-                        return (
-                          <linearGradient
-                            id="roto-preview-gradient"
-                            gradientUnits="userSpaceOnUse"
-                            x1={sStart.x}
-                            y1={sStart.y}
-                            x2={sEnd.x}
-                            y2={sEnd.y}
-                          >
-                            <stop stopColor="yellow" stopOpacity="1" />
-                            <stop offset="100%" stopColor="yellow" stopOpacity="0.2" />
-                          </linearGradient>
-                        );
-                      })()}
-                  </defs>
-                )}
                 {/* Display Window border (cyan) */}
                 {viewerSettings.showOverlays &&
                   (() => {
-                    const corners = stabilizeBboxCorners(0, 0, sceneNode.width, sceneNode.height);
+                    if (!displayWindowRect) return null;
+                    const corners = stabilizeBboxCorners(
+                      displayWindowRect.x,
+                      displayWindowRect.y,
+                      displayWindowRect.width,
+                      displayWindowRect.height,
+                    );
                     if (!corners) return null;
                     const pts = corners.map((p) => `${p.x},${p.y}`).join(' ');
                     return (
@@ -1451,133 +1407,36 @@ const Viewport: React.FC = () => {
                       </>
                     );
                   })()}
+                {/* Direct SVG overlays (absolute scene coordinates, outside <g>) */}
+                {selectedNode && (
+                  <ViewportOverlayRenderer
+                    node={selectedNode}
+                    mode="svg-direct"
+                    overlayProps={{
+                      node: selectedNode,
+                      frame: visualFrame,
+                      zoom,
+                      pan,
+                      scene: { width: sceneNode.width, height: sceneNode.height },
+                      activeTool: activeViewportTool,
+                      context: overlayContext,
+                    }}
+                  />
+                )}
                 <g transform={`translate(${sceneNode.width / 2}, ${sceneNode.height / 2})`}>
-                  {showOverlays && selectedNode?.type === NodeType.WARP && (
-                    <WarpOverlay
-                      node={selectedNode as WarpNode}
-                      sceneWidth={sceneNode.width}
-                      sceneHeight={sceneNode.height}
-                      frame={visualFrame}
-                      zoom={zoom}
-                      hoveredPinId={warpInteraction.hoveredPinId}
-                      dragPinId={warpInteraction.dragPinState?.pinId ?? null}
-                      onPinHover={warpInteraction.setHoveredPinId}
-                      stabilizationMatrix={stabilizationMatrix}
-                    />
-                  )}
-                  {selectedNode?.type === NodeType.ROTO && (
-                    <RotoOverlay
-                      node={selectedNode as RotoNode}
-                      frame={visualFrame}
-                      zoom={zoom}
-                      selectedRotoPathIds={selectedRotoPathIds}
-                      selectedRotoPointRefs={selectedRotoPointRefs}
-                      setSelectedRotoPathIds={setSelectedRotoPathIds}
-                      isRotoSelectActive={rotoInteraction.isRotoSelectActive}
-                      activeViewportTool={activeViewportTool}
-                      altPressed={altPressed}
-                      nudge={rotoNudgeOverlayState}
-                      rotoTransformSelection={rotoInteraction.rotoTransformSelection}
-                      transformIsDegenerate={rotoInteraction.transformIsDegenerate}
-                      transformMoveHandleRadius={rotoInteraction.transformMoveHandleRadius}
-                      transformRotateHitRadius={rotoInteraction.transformRotateHitRadius}
-                      transformHandleSize={rotoInteraction.transformHandleSize}
-                      transformHandleHitSize={rotoInteraction.transformHandleHitSize}
-                      transformHandlePositions={rotoInteraction.transformHandlePositions}
-                      transformRotateHandlePoint={rotoInteraction.transformRotateHandlePoint}
-                      transformInteractionLabel={rotoInteraction.transformInteractionLabel}
-                      activeTransformHandle={rotoInteraction.activeTransformHandle}
-                      hoveredTransformHandle={rotoInteraction.hoveredTransformHandle}
-                      affineModifierPressed={affineModifierPressed}
-                      isMoveTransformActive={rotoInteraction.isMoveTransformActive}
-                      isMoveTransformHovered={rotoInteraction.isMoveTransformHovered}
-                      isRotateTransformActive={rotoInteraction.isRotateTransformActive}
-                      isRotateTransformHovered={rotoInteraction.isRotateTransformHovered}
-                      beginRotoTransformDrag={rotoInteraction.beginRotoTransformDrag}
-                      setHoveredTransformHandle={rotoInteraction.setHoveredTransformHandle}
-                      hoveredRotoPathId={rotoInteraction.hoveredRotoPathId}
-                      setHoveredRotoPathId={rotoInteraction.setHoveredRotoPathId}
-                      dragPointState={rotoInteraction.dragPointState}
-                      hoveredPointInfo={rotoInteraction.hoveredPointInfo}
-                      handlePointMouseDown={rotoInteraction.handlePointMouseDown}
-                      beginPointWeightDrag={rotoInteraction.beginPointWeightDrag}
-                      setSelectedPointWeightMode={rotoInteraction.setSelectedPointWeightMode}
-                      setSelectedPointType={rotoInteraction.setSelectedPointType}
-                      setHoveredPointInfo={rotoInteraction.setHoveredPointInfo}
-                      pointWeightDragState={rotoInteraction.pointWeightDragState}
-                      pointWeightControlState={rotoInteraction.pointWeightControlState}
-                      rotoPointWeightMode={rotoPointWeightMode}
-                      temporalController={rotoInteraction.temporalController}
-                      onTemporalControllerChange={rotoInteraction.setTemporalControllerValue}
-                      onTemporalControllerCommit={rotoInteraction.commitTemporalController}
-                      motionCueTargetPathIdSet={motionCueTargetPathIdSet}
-                      rotoMotionCueEnabled={rotoMotionCueEnabled}
-                      rotoMotionCueMode={rotoMotionCueMode}
-                      gradientTrailsByPath={gradientTrailsByPath}
-                      speedHeatSegmentsByPath={speedHeatSegmentsByPath}
-                      motionBlurCuePathsByPath={motionBlurCuePathsByPath}
-                      hoveredSegment={rotoInteraction.hoveredSegment}
-                      rotoRefinement={rotoRefinement}
-                      refinementSimplifiedPoints={refinementSimplifiedPoints}
-                      isDrawing={isDrawing}
-                      drawingRotoPath={drawingRotoPath}
-                      bsplineDrawingState={rotoInteraction.bsplineDrawingState}
-                      drawingState={rotoInteraction.drawingState}
-                      freehandPoints={rotoInteraction.freehandPoints}
-                      isHoveringClosePoint={rotoInteraction.isHoveringClosePoint}
-                      marqueeState={rotoInteraction.marqueeState}
-                      activeTrackingPoints={activeTrackingPoints}
-                      cursorOnly={!showOverlays}
-                      stabilizationMatrix={stabilizationMatrix}
-                    />
-                  )}
-                  {selectedNode?.type === NodeType.PAINT && (
-                    <PaintOverlay
-                      node={selectedNode as PaintNode}
-                      brushSize={paintBrush.size}
-                      zoom={zoom}
-                      activeTool={activeViewportTool}
-                      cursorScenePos={paintInteraction.cursorScenePos}
-                      strokePoints={paintInteraction.strokePoints}
-                      cloneSourcePreviewPos={paintInteraction.cloneSourcePreviewPos}
-                      isSettingCloneSource={paintInteraction.isSettingCloneSource}
-                      isAdjustingBrushSize={paintInteraction.isAdjustingBrushSize}
-                      brushAdjustCenter={
-                        paintInteraction.brushAdjustStartRef.current?.center ?? null
-                      }
-                      brushAdjustInitialSize={
-                        paintInteraction.brushAdjustStartRef.current?.initialSize ?? null
-                      }
-                      cursorOnly={!showOverlays}
-                      showStrokePaths={paintStrokePathsVisible}
-                      strokePathsMode={paintStrokePathsMode}
-                      selectedPaintLayerIds={selectedPaintLayerIds as string[]}
-                      selectedPaintStrokeIds={selectedPaintStrokeIds as string[]}
-                      onStrokeSelect={(strokeId, shiftKey) => {
-                        if (shiftKey) {
-                          const ids = selectedPaintStrokeIds as string[];
-                          setSelectedPaintStrokeIds(
-                            ids.includes(strokeId)
-                              ? ids.filter((id) => id !== strokeId)
-                              : [...ids, strokeId],
-                          );
-                        } else {
-                          setSelectedPaintStrokeIds([strokeId]);
-                        }
+                  {selectedNode && (
+                    <ViewportOverlayRenderer
+                      node={selectedNode}
+                      mode="svg"
+                      overlayProps={{
+                        node: selectedNode,
+                        frame: visualFrame,
+                        zoom,
+                        pan,
+                        scene: { width: sceneNode.width, height: sceneNode.height },
+                        activeTool: activeViewportTool,
+                        context: overlayContext,
                       }}
-                      frame={visualFrame}
-                      nudgeRadius={nudgeRadius}
-                      nudgeDragState={paintInteraction.nudgeDragState}
-                      nudgePreviewPoints={paintInteraction.nudgePreviewPoints}
-                      isAdjustingNudgeRadius={paintInteraction.isAdjustingNudgeRadius}
-                      nudgeRadiusAdjustCenter={
-                        paintInteraction.nudgeRadiusAdjustStartRef.current?.center ?? null
-                      }
-                      nudgeRadiusAdjustInitialRadius={
-                        paintInteraction.nudgeRadiusAdjustStartRef.current?.initialRadius ?? null
-                      }
-                      mouseScenePos={mouseScenePos}
-                      stabilizationMatrix={stabilizationMatrix}
                     />
                   )}
                 </g>
@@ -1590,6 +1449,21 @@ const Viewport: React.FC = () => {
           </div>
         )}
       </div>
+      {selectedNode && !isScene3DMode && (
+        <ViewportOverlayRenderer
+          node={selectedNode}
+          mode="html"
+          overlayProps={{
+            node: selectedNode,
+            frame: visualFrame,
+            zoom,
+            pan,
+            scene: { width: sceneNode.width, height: sceneNode.height },
+            activeTool: activeViewportTool,
+            context: overlayContext,
+          }}
+        />
+      )}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -1602,9 +1476,22 @@ const Viewport: React.FC = () => {
             <div className="w-4 h-4 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
           </div>
         )}
-        {hasRenderableOutput && <ViewportSettingsBar />}
-        {sceneNode && <ViewportControls visible={!isFit} onFit={fitToView} zoomValue={zoom} />}
-        {!isFit && sceneNode && hasRenderableOutput && (
+        {activeScene3DNode && (
+          <div className="pointer-events-auto absolute top-1.5 left-2 z-30 flex items-center gap-1.5">
+            <ViewportModeSwitch scene3DNode={activeScene3DNode} />
+            {isScene3DMode && (
+              <ViewportCameraSelector
+                value={scene3DViewportCameraMode}
+                onChange={setScene3DViewportCameraMode}
+              />
+            )}
+          </div>
+        )}
+        {hasRenderableOutput && !isScene3DMode && <ViewportSettingsBar />}
+        {sceneNode && !isScene3DMode && (
+          <ViewportControls visible={!isFit} onFit={fitToView} zoomValue={zoom} />
+        )}
+        {!isFit && sceneNode && hasRenderableOutput && !isScene3DMode && (
           <Minimap
             sourceCanvas={gl?.domElement ?? canvasRef.current}
             viewportSize={viewportSize}
@@ -1612,7 +1499,9 @@ const Viewport: React.FC = () => {
             previewRefreshToken={minimapPreviewRefreshToken}
           />
         )}
-        {sceneNode && <PixelInspector info={pixelInfo} bitDepth={sceneNode.bitDepth} />}
+        {sceneNode && !isScene3DMode && (
+          <PixelInspector info={pixelInfo} bitDepth={sceneNode.bitDepth} />
+        )}
       </div>
       {isDragging && (
         <div className="absolute inset-0 bg-black/50 z-20 flex items-center justify-center pointer-events-none">
@@ -1621,6 +1510,6 @@ const Viewport: React.FC = () => {
       )}
     </div>
   );
-};
+}
 
 export default Viewport;

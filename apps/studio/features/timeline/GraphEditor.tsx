@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
-import { getAnimatableProperties } from '@/effects/effectAnimation';
+import { getAnimatableProperties } from '@/nodes/animation';
 import { Keyframe } from '@blackboard/types';
 import { getSortedKeyframes, getSegmentTangents } from '@blackboard/renderer';
 
@@ -32,13 +32,7 @@ interface GraphEditorProps {
   activePropertyPath: string | null;
 }
 
-const GraphEditor: React.FC<GraphEditorProps> = ({
-  width,
-  height,
-  view,
-  setView,
-  activePropertyPath,
-}) => {
+function GraphEditor({ width, height, view, setView, activePropertyPath }: GraphEditorProps) {
   const maxFrames = useEditorSelector((s) => s.maxFrames);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
   const { updateKeyframe, setKeyframe } = useEditorActions();
@@ -464,6 +458,6 @@ const GraphEditor: React.FC<GraphEditorProps> = ({
       </svg>
     </div>
   );
-};
+}
 
 export default GraphEditor;

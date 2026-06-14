@@ -1,4 +1,3 @@
-import React from 'react';
 import { ViewerSlotAssignments } from '@blackboard/types';
 import { getViewerSlotsForNode } from '@/utils/viewerSlots';
 
@@ -8,11 +7,7 @@ interface ViewerSlotBadgesProps {
   viewerSlots: ViewerSlotAssignments;
 }
 
-const ViewerSlotBadges: React.FC<ViewerSlotBadgesProps> = ({
-  nodeId,
-  viewerNodeId,
-  viewerSlots,
-}) => {
+export function ViewerSlotBadges({ nodeId, viewerNodeId, viewerSlots }: ViewerSlotBadgesProps) {
   const slots = getViewerSlotsForNode(viewerSlots, nodeId);
   const isActiveViewerNode = viewerNodeId === nodeId;
 
@@ -35,6 +30,4 @@ const ViewerSlotBadges: React.FC<ViewerSlotBadgesProps> = ({
       ))}
     </div>
   );
-};
-
-export default ViewerSlotBadges;
+}

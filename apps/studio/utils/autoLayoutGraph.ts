@@ -1,15 +1,14 @@
-import { AnyNode, NodeType } from '@blackboard/types';
+import { AnyNode } from '@blackboard/types';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { buildMergeModel, getMergeSourceNodeId, isMergeNodeId } from '@/utils/mergeNodes';
+import { nodeFlags } from '@/nodes/helpers';
 
 export const NODE_WIDTH = 192;
-export const VERTICAL_GAP = 60;
-export const HORIZONTAL_GAP = 60;
+const VERTICAL_GAP = 30;
+const HORIZONTAL_GAP = 60;
 
 /** Approximate fixed-height cards (output, merge; scene uses the fallback only). */
 const SCENE_NODE_HEIGHT = 76;
 const OUTPUT_NODE_HEIGHT = 64;
-const MERGE_NODE_HEIGHT = 76;
 
 /** Per-node row inside a StackNodeCard: icon row + padding. */
 const STACK_ROW_HEIGHT = 44;
@@ -20,15 +19,11 @@ const STACK_CARD_PADDING = 20;
 
 /** Returns true if the node type displays a media thumbnail in the graph view. */
 function hasMediaThumbnail(node: AnyNode): boolean {
-  return (
-    node.type === NodeType.IMAGE ||
-    node.type === NodeType.VIDEO ||
-    node.type === NodeType.IMAGE_SEQUENCE
-  );
+  return !!nodeFlags(node.type).hasThumbnail;
 }
 
 /** Estimate the rendered pixel height of a stack card. */
-export function estimateStackHeight(stack: AnyNode[]): number {
+function estimateStackHeight(stack: AnyNode[]): number {
   let h = STACK_CARD_PADDING;
   for (const node of stack) {
     h += STACK_ROW_HEIGHT;
@@ -42,7 +37,6 @@ export function estimateStackHeight(stack: AnyNode[]): number {
 /** Estimate the rendered pixel height for any positioned node ID. */
 export function estimateNodeHeight(nodeId: string, stackMap: Map<string, AnyNode[]>): number {
   if (nodeId === OUTPUT_NODE_ID) return OUTPUT_NODE_HEIGHT;
-  if (isMergeNodeId(nodeId)) return MERGE_NODE_HEIGHT;
   const stack = stackMap.get(nodeId);
   if (stack) return estimateStackHeight(stack);
   // Scene or unknown — use scene height as fallback
@@ -57,11 +51,6 @@ export function buildStackMap(layerStacks: AnyNode[][]): Map<string, AnyNode[]> 
   }
   return map;
 }
-
-const DEFAULT_MERGE_SOURCE_OFFSET = {
-  x: -(NODE_WIDTH + HORIZONTAL_GAP),
-  y: 0,
-};
 
 /**
  * Compute auto-layout positions for all nodes in the node graph.
@@ -89,46 +78,19 @@ export function computeAutoLayout(
     return positions;
   }
 
-  const mergeModel = buildMergeModel(layerStacks);
-
   // Single vertical column, all centered at x=0
   const centerX = -NODE_WIDTH / 2;
   let currentY = 0;
 
-  // Track the Y of the last node placed in the main column so merge
-  // sources can be aligned beside it.
-  let lastMainY = 0;
-  let lastMainHeight = 0;
-
-  // Place stacks, handling per-source merge nodes
+  // Place each stack in a single vertical column
   for (const stack of layerStacks) {
     const baseNode = stack[0];
-    const mergeInfo = mergeModel.info.get(baseNode.id);
     const stackHeight = estimateStackHeight(stack);
-
-    if (mergeInfo?.isMergeSource && mergeInfo.mergeId) {
-      // Source node to the left, at the same Y as the previous main-pipe node.
-      positions[baseNode.id] = {
-        x: centerX + DEFAULT_MERGE_SOURCE_OFFSET.x,
-        y: lastMainY,
-      };
-      // Merge node below both, in the main column.
-      const rowBottom = lastMainY + Math.max(lastMainHeight, stackHeight);
-      const mergeY = rowBottom + VERTICAL_GAP;
-      positions[mergeInfo.mergeId] = { x: centerX, y: mergeY };
-      lastMainY = mergeY;
-      lastMainHeight = MERGE_NODE_HEIGHT;
-      currentY = mergeY + MERGE_NODE_HEIGHT + VERTICAL_GAP;
-      continue;
-    }
-
     positions[baseNode.id] = { x: centerX, y: currentY };
-    lastMainY = currentY;
-    lastMainHeight = stackHeight;
     currentY += stackHeight + VERTICAL_GAP;
   }
 
-  // Place Output
+  // Place Output at the end
   positions[OUTPUT_NODE_ID] = { x: centerX, y: currentY };
 
   return positions;
@@ -141,15 +103,9 @@ export function computeAutoLayout(
 export function buildPipelineOrder(_nodes: AnyNode[], layerStacks: AnyNode[][]): string[] {
   const ids: string[] = [];
 
-  const mergeModel = buildMergeModel(layerStacks);
   for (const stack of layerStacks) {
     const baseNode = stack[0];
     ids.push(baseNode.id);
-
-    const mergeInfo = mergeModel.info.get(baseNode.id);
-    if (mergeInfo?.isMergeSource && mergeInfo.mergeId) {
-      ids.push(mergeInfo.mergeId);
-    }
   }
 
   ids.push(OUTPUT_NODE_ID);
@@ -177,7 +133,6 @@ export function placeNewNodes(
   layerStacks: AnyNode[][],
 ): Record<string, { x: number; y: number }> {
   const positions = { ...existingPositions };
-  const mergeModel = buildMergeModel(layerStacks);
   const stackMap = buildStackMap(layerStacks);
 
   // Process missing IDs in pipeline order so earlier placements are seen by later ones
@@ -218,81 +173,6 @@ export function placeNewNodes(
     const missingHeight = estimateNodeHeight(missingId, stackMap);
     const spacing = VERTICAL_GAP;
 
-    // Newly-added merge sources sit to the left at the predecessor's Y,
-    // with the merge node below both in the main column.
-    const mergeInfo = mergeModel.info.get(missingId);
-    if (mergeInfo?.isMergeSource && mergeInfo.mergeId) {
-      const mergeId = mergeInfo.mergeId;
-
-      // Source at same Y as predecessor, offset left
-      const sourceX = (predPos?.x ?? succPos?.x ?? -NODE_WIDTH / 2) + DEFAULT_MERGE_SOURCE_OFFSET.x;
-      let sourceY: number;
-      if (predPos) {
-        sourceY = predPos.y;
-      } else if (succPos) {
-        sourceY = succPos.y - missingHeight - MERGE_NODE_HEIGHT - spacing * 2;
-      } else {
-        sourceY = 0;
-      }
-
-      positions[missingId] = { x: sourceX, y: sourceY };
-
-      // Merge below both predecessor and source
-      const mainX = predPos?.x ?? succPos?.x ?? -NODE_WIDTH / 2;
-      const rowBottom = sourceY + Math.max(predHeight, missingHeight);
-      const mergeY = rowBottom + spacing;
-      positions[mergeId] = { x: mainX, y: mergeY };
-
-      if (succPos && succId) {
-        const gap = succPos.y - (mergeY + MERGE_NODE_HEIGHT);
-        if (gap < spacing) {
-          const shift = spacing - gap;
-          for (let i = pipelineOrder.indexOf(succId); i < pipelineOrder.length; i++) {
-            const nodeId = pipelineOrder[i];
-            if (positions[nodeId]) {
-              positions[nodeId] = {
-                x: positions[nodeId].x,
-                y: positions[nodeId].y + shift,
-              };
-            }
-          }
-        }
-      }
-
-      continue;
-    }
-
-    if (isMergeNodeId(missingId)) {
-      const sourceNodeId = getMergeSourceNodeId(missingId);
-      const sourcePos = positions[sourceNodeId];
-
-      if (sourcePos) {
-        // Merge below the source in the main column
-        const sourceHeight = estimateNodeHeight(sourceNodeId, stackMap);
-        const mergeX = sourcePos.x - DEFAULT_MERGE_SOURCE_OFFSET.x;
-        const mergeY = sourcePos.y + sourceHeight + spacing;
-        positions[missingId] = { x: mergeX, y: mergeY };
-
-        if (succPos && succId) {
-          const gap = succPos.y - (mergeY + MERGE_NODE_HEIGHT);
-          if (gap < spacing) {
-            const shift = spacing - gap;
-            for (let i = pipelineOrder.indexOf(succId); i < pipelineOrder.length; i++) {
-              const nodeId = pipelineOrder[i];
-              if (positions[nodeId]) {
-                positions[nodeId] = {
-                  x: positions[nodeId].x,
-                  y: positions[nodeId].y + shift,
-                };
-              }
-            }
-          }
-        }
-
-        continue;
-      }
-    }
-
     // Determine Y: place after predecessor accounting for its height
     let y: number;
     if (predPos) {
@@ -310,7 +190,6 @@ export function placeNewNodes(
       const gap = succPos.y - (y + missingHeight);
       if (gap < spacing) {
         const shift = spacing - gap;
-        // Shift all nodes from successor onward in the pipeline
         for (let i = pipelineOrder.indexOf(succId); i < pipelineOrder.length; i++) {
           const nodeId = pipelineOrder[i];
           if (positions[nodeId]) {
@@ -325,4 +204,49 @@ export function placeNewNodes(
   }
 
   return positions;
+}
+
+export function placeNewMergeSourceBranch(
+  existingPositions: Record<string, { x: number; y: number }>,
+  selectedNodeId: string,
+  sourceNodeId: string,
+  mergeNodeId: string,
+  layerStacks: AnyNode[][],
+): Record<string, { x: number; y: number }> {
+  const selectedPosition = existingPositions[selectedNodeId];
+  if (!selectedPosition) {
+    return existingPositions;
+  }
+
+  const stackMap = buildStackMap(layerStacks);
+  const selectedHeight = estimateNodeHeight(selectedNodeId, stackMap);
+  const mergeHeight = estimateNodeHeight(mergeNodeId, stackMap);
+  const sourcePosition = {
+    x: selectedPosition.x - NODE_WIDTH - HORIZONTAL_GAP,
+    y: selectedPosition.y,
+  };
+  const mergePosition = {
+    x: selectedPosition.x,
+    y: selectedPosition.y + selectedHeight + VERTICAL_GAP,
+  };
+  const downstreamShift = mergeHeight + VERTICAL_GAP;
+
+  return Object.fromEntries(
+    Object.entries({
+      ...existingPositions,
+      [sourceNodeId]: sourcePosition,
+      [mergeNodeId]: mergePosition,
+    }).map(([nodeId, position]) => {
+      if (
+        nodeId === selectedNodeId ||
+        nodeId === sourceNodeId ||
+        nodeId === mergeNodeId ||
+        position.y < mergePosition.y
+      ) {
+        return [nodeId, position];
+      }
+
+      return [nodeId, { x: position.x, y: position.y + downstreamShift }];
+    }),
+  );
 }

@@ -369,7 +369,7 @@ export const getTransformOperationLabel = (operation: TransformOperation): strin
   }
 };
 
-export interface ApplyRotoTransformOptions {
+interface ApplyRotoTransformOptions {
   operation: TransformOperation;
   handle: TransformHandleKind;
   points: ScenePoint[];

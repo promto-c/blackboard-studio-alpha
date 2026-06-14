@@ -18,7 +18,7 @@ export interface CodeBlockProps {
 const CONTENT_PADDING_CLASS = 'px-2 py-3';
 const CODE_PRE_CLASS = `m-0 min-w-0 text-gray-100 ${CONTENT_PADDING_CLASS}`;
 
-const CodeBlock: React.FC<CodeBlockProps> = ({
+function CodeBlock({
   code,
   onChange,
   language,
@@ -29,7 +29,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
   showLineNumbers = true,
   wordWrap = false,
   spellCheck = false,
-}) => {
+}: CodeBlockProps) {
   const lineCount = React.useMemo(() => (code.match(/\n/g) || []).length + 1, [code]);
   const highlightedCode = React.useMemo(() => highlightCode(code, language), [code, language]);
   const resolvedReadOnly = readOnly ?? !onChange;
@@ -122,6 +122,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
       </ScrollArea>
     </div>
   );
-};
+}
 
 export default CodeBlock;

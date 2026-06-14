@@ -1,20 +1,25 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { ComfyNode, ComfyWorkflow, NodeType } from '@blackboard/types';
+import { ComfyNode, ComfyWorkflow, NodeType, RotoNode, Scene3DNode } from '@blackboard/types';
 import { useSceneNode, useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import useDeviceLayout, { LayoutMode } from '@/hooks/useDeviceLayout';
-import ImageImportToolButton from '@/effects/image/ImageImportToolButton';
-import ImageSequenceToolButton from '@/effects/image_sequence/ImageSequenceToolButton';
-import AiInpaintingToolButton from '@/effects/ai/AiInpaintingToolButton';
+import MediaSourceImportToolButton from '@/nodes/builtin/media_source/MediaSourceImportToolButton';
+import ImageSequenceToolButton from '@/nodes/builtin/image_sequence/ImageSequenceToolButton';
 import { usePreferences } from '@/state/preferencesContext';
-import { useAutoSyncRotoInspectorLevel } from '@/hooks/useAutoSyncRotoInspectorLevel';
+import {
+  useAutoSyncRotoInspectorLevel,
+  type RotoInspectorLevel,
+} from '@/hooks/useAutoSyncRotoInspectorLevel';
 import { useNodeInspectorState } from '@/hooks/useNodeInspectorState';
 import * as Icons from '@blackboard/icons';
-import InspectorStack from '@/components/InspectorStack';
-import NodeItemsPanel, { getNodeItemsComponent } from '@/components/NodeItemsPanel';
+import { InspectorStack } from '@/components/InspectorStack';
+import {
+  InspectorBreadcrumb,
+  type InspectorBreadcrumbSegment,
+} from '@/components/InspectorBreadcrumb';
+import { NodeItemsPanel, getNodeItemsComponent } from '@/components/NodeItemsPanel';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
 import { buildNodeStacks } from '@/utils/nodeStacks';
-import { isMergeNodeId } from '@/utils/mergeNodes';
 import { ScrollArea, SplitterHandle } from '@blackboard/ui';
 import NodeList from './NodeList';
 import NodeIcon from './NodeIcon';
@@ -25,6 +30,11 @@ import ComfyWorkflowGraphView, {
   type ComfyGraphPathItem,
 } from '@/features/nodeview/ComfyWorkflowGraphView';
 import { useHotkeyScope } from '@/hotkeys';
+import {
+  getComfyInspectorBreadcrumbItems,
+  getRotoInspectorBreadcrumbItems,
+  getScene3DInspectorBreadcrumbItems,
+} from '@/utils/inspectorBreadcrumbs';
 
 interface FlowTabProps {
   showPropertiesSection?: boolean;
@@ -49,17 +59,17 @@ const FlowTab = ({
 }: FlowTabProps) => {
   const nodes = useEditorSelector((s) => s.nodes);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
-  const selectedRotoLayerIds = useEditorSelector((s) => s.selectedRotoLayerIds);
-  const selectedRotoPathIds = useEditorSelector((s) => s.selectedRotoPathIds);
+  const selectedNodeIds = useEditorSelector((s) => s.selectedNodeIds ?? []);
+  const hierarchySelections = useEditorSelector((s) => s.hierarchySelections);
   const viewerNodeId = useEditorSelector((s) => s.viewerNodeId);
   const viewerSlots = useEditorSelector((s) => s.viewerSlots);
-  const { selectNode } = useEditorActions();
+  const { selectNode, setHierarchySelection, updateNode } = useEditorActions();
   const selectedNode = useSelectedEditorNode();
   const layoutMode = useDeviceLayout();
   const isMobilePortrait = layoutMode === LayoutMode.MobilePortrait;
   const { flowPanelHeight, setPreferences, flowListDirection, flowViewMode } = usePreferences();
   const [isPropertiesView, setIsPropertiesView] = useState(false);
-  const [rotoInspectorLevel, setRotoInspectorLevel] = useState<'node' | 'shape' | 'layer'>('node');
+  const [rotoInspectorLevel, setRotoInspectorLevel] = useState<RotoInspectorLevel>('node');
   const [localActiveComfyGraph, setLocalActiveComfyGraph] = useState<ActiveComfyGraph | null>(null);
   const isActiveComfyGraphControlled = controlledActiveComfyGraph !== undefined;
   const activeComfyGraph = isActiveComfyGraphControlled
@@ -73,7 +83,8 @@ const FlowTab = ({
   const sceneNode = useSceneNode();
   const otherNodes = useMemo(() => nodes.filter((node) => node.type !== NodeType.SCENE), [nodes]);
   const isSceneSelected = selectedNodeId === sceneNode?.id;
-  const isOutputNodeSelected = selectedNodeId === OUTPUT_NODE_ID;
+  const isOutputNodeSelected =
+    selectedNodeId === OUTPUT_NODE_ID || selectedNodeIds.includes(OUTPUT_NODE_ID);
 
   const nodeStacks = useMemo(() => buildNodeStacks(otherNodes), [otherNodes]);
 
@@ -90,12 +101,12 @@ const FlowTab = ({
     }
   }, [selectedNodeId, isMobilePortrait, sceneNode]);
 
-  const isMergeNodeSelected = isMergeNodeId(selectedNodeId);
+  const isMergeNodeSelected = selectedNode?.type === NodeType.MERGE;
   const { renderComponentForNode, selectedRotoPath, selectedStack } = useNodeInspectorState({
     nodes,
     selectedNode,
-    selectedRotoLayerIds,
-    selectedRotoPathIds,
+    hierarchySelections,
+    selectedNodeId,
     inspectorLevel: rotoInspectorLevel,
     onInspectorLevelChange: setRotoInspectorLevel,
   });
@@ -106,15 +117,160 @@ const FlowTab = ({
     : [];
   useAutoSyncRotoInspectorLevel({
     selectedNode,
-    selectedRotoLayerIds,
-    selectedRotoPathIds,
+    hierarchySelections,
+    selectedNodeId,
     setRotoInspectorLevel,
   });
+  const hierarchySelection = hierarchySelections[selectedNodeId ?? ''] ?? {
+    layerIds: [] as string[],
+    itemIds: [] as string[],
+  };
+  const selectedRotoLayerId =
+    selectedNode?.type === NodeType.ROTO && hierarchySelection.layerIds.length === 1
+      ? hierarchySelection.layerIds[0]
+      : null;
+  const selectedComfyRegionId =
+    selectedNode?.type === NodeType.COMFY &&
+    hierarchySelection.layerIds.length === 1 &&
+    hierarchySelection.itemIds.length === 0
+      ? hierarchySelection.layerIds[0]
+      : null;
+  const selectedComfyOutputId =
+    selectedNode?.type === NodeType.COMFY && hierarchySelection.itemIds.length === 1
+      ? hierarchySelection.itemIds[0]
+      : null;
+  const selectedScene3DItemId =
+    selectedNode?.type === NodeType.SCENE_3D && hierarchySelection.itemIds.length === 1
+      ? hierarchySelection.itemIds[0]
+      : null;
   useEffect(() => {
-    if (selectedNode?.type !== NodeType.ROTO || !selectedRotoPath) {
+    if (selectedNode?.type !== NodeType.ROTO || (!selectedRotoPath && !selectedRotoLayerId)) {
       setRotoInspectorLevel('node');
     }
-  }, [selectedNode, selectedRotoPath]);
+  }, [selectedNode, selectedRotoLayerId, selectedRotoPath]);
+
+  const handleComfyRootClick = useCallback(
+    (nodeId: string) => {
+      setHierarchySelection(nodeId, [], []);
+      updateNode(nodeId, { selectedViewportPromptRegionId: undefined }, false);
+    },
+    [setHierarchySelection, updateNode],
+  );
+
+  const createInspectorBreadcrumb = useCallback(
+    (node: ComfyNode | RotoNode | Scene3DNode): React.ReactNode | null => {
+      if (node.id !== selectedNodeId) return null;
+
+      if (node.type === NodeType.ROTO) {
+        const items = getRotoInspectorBreadcrumbItems({
+          node,
+          selectedLayerId: node.id === selectedNodeId ? selectedRotoLayerId : null,
+          selectedPath: node.id === selectedNodeId ? selectedRotoPath : null,
+        });
+        return (
+          <InspectorBreadcrumb
+            root={{
+              id: `${node.id}:root`,
+              label: 'Roto',
+              active: rotoInspectorLevel === 'node',
+              title: 'Show node-level Roto properties',
+              onClick: () => setRotoInspectorLevel('node'),
+            }}
+            items={items.map<InspectorBreadcrumbSegment>((item) => ({
+              id: `${item.target}:${item.id}`,
+              label: item.label,
+              active:
+                (item.target === 'layer' &&
+                  rotoInspectorLevel === 'layer' &&
+                  selectedRotoLayerId === item.id) ||
+                (item.target === 'shape' &&
+                  rotoInspectorLevel === 'shape' &&
+                  selectedRotoPath?.id === item.id),
+              title: `Show properties for ${item.label}`,
+              onClick: () => {
+                if (item.target === 'layer') {
+                  setHierarchySelection(node.id, [item.id], []);
+                  setRotoInspectorLevel('layer');
+                  return;
+                }
+                setHierarchySelection(node.id, [], [item.id]);
+                setRotoInspectorLevel('shape');
+              },
+            }))}
+          />
+        );
+      }
+
+      if (node.type === NodeType.SCENE_3D) {
+        const items = getScene3DInspectorBreadcrumbItems({
+          node,
+          selectedItemId: selectedScene3DItemId,
+        });
+        return (
+          <InspectorBreadcrumb
+            root={{
+              id: `${node.id}:root`,
+              label: node.name || 'Scene 3D',
+              active: items.length === 0,
+              title: 'Show node-level Scene 3D properties',
+              onClick: () => setHierarchySelection(node.id, [], []),
+            }}
+            items={items.map<InspectorBreadcrumbSegment>((item) => ({
+              id: `${item.target}:${item.id}`,
+              label: item.label,
+              active: true,
+              title: `Show properties for ${item.label}`,
+              onClick: () => setHierarchySelection(node.id, [], [item.id]),
+            }))}
+          />
+        );
+      }
+
+      const items = getComfyInspectorBreadcrumbItems({
+        node,
+        selectedRegionId: node.id === selectedNodeId ? selectedComfyRegionId : null,
+        selectedOutputId: node.id === selectedNodeId ? selectedComfyOutputId : null,
+      });
+      return (
+        <InspectorBreadcrumb
+          root={{
+            id: `${node.id}:root`,
+            label: node.name || 'Comfy',
+            active: items.length === 0,
+            title: 'Show node-level Comfy properties',
+            onClick: () => handleComfyRootClick(node.id),
+          }}
+          items={items.map<InspectorBreadcrumbSegment>((item) => ({
+            id: `${item.target}:${item.id}`,
+            label: item.label,
+            active: true,
+            title: `Show properties for ${item.label}`,
+            onClick: () => {
+              if (item.target === 'output') {
+                setHierarchySelection(node.id, [], [item.id]);
+              } else {
+                setHierarchySelection(node.id, [item.id], []);
+              }
+              updateNode(node.id, { selectedViewportPromptRegionId: item.id }, false);
+            },
+          }))}
+        />
+      );
+    },
+    [
+      handleComfyRootClick,
+      rotoInspectorLevel,
+      selectedComfyRegionId,
+      selectedComfyOutputId,
+      selectedScene3DItemId,
+      selectedNodeId,
+      selectedRotoLayerId,
+      selectedRotoPath,
+      setHierarchySelection,
+      setRotoInspectorLevel,
+      updateNode,
+    ],
+  );
 
   const selectedComfyWorkflow = useMemo((): {
     node: ComfyNode;
@@ -207,7 +363,7 @@ const FlowTab = ({
         isOutputSelected={isOutputNodeSelected}
         outputContent={<OutputPropertiesPanel />}
         isMergeSelected={isMergeNodeSelected && Boolean(selectedNodeId)}
-        mergeContent={selectedNodeId ? <MergePropertiesPanel mergeId={selectedNodeId} /> : null}
+        mergeContent={selectedNodeId ? <MergePropertiesPanel nodeId={selectedNodeId} /> : null}
         emptyState={
           <div className="p-3 text-center text-gray-500 text-xs h-full flex items-center justify-center">
             <p>Select a node or the Output node to adjust properties.</p>
@@ -215,13 +371,27 @@ const FlowTab = ({
         }
         wrapSingle
         renderNode={renderComponentForNode}
-        renderCardHeader={(node) =>
-          propertyStack.length > 1 ? (
-            <h4 className="px-2 pt-1 pb-0.5 text-[10px] font-semibold tracking-[0.09em] text-gray-400 uppercase truncate">
-              {node.name}
-            </h4>
-          ) : null
-        }
+        renderCardHeader={(node) => {
+          if (propertyStack.length <= 1) return null;
+          const breadcrumb =
+            node.type === NodeType.ROTO ||
+            node.type === NodeType.COMFY ||
+            node.type === NodeType.SCENE_3D
+              ? createInspectorBreadcrumb(node as RotoNode | ComfyNode | Scene3DNode)
+              : null;
+
+          return (
+            <div
+              className={`px-2 pt-1 pb-0.5 truncate ${
+                breadcrumb
+                  ? 'text-xs font-medium'
+                  : 'text-[10px] font-semibold uppercase tracking-[0.09em] text-gray-400'
+              }`}
+            >
+              {breadcrumb ?? node.name}
+            </div>
+          );
+        }}
         getCardClassName={(_node, isSelected) =>
           `glass-component min-w-0 rounded-lg border bg-gray-900/35 backdrop-blur-md supports-[backdrop-filter]:bg-gray-900/24 transition-colors ${
             isSelected
@@ -251,11 +421,17 @@ const FlowTab = ({
 
   const selectedStackIds = useMemo(() => {
     const ids = new Set<string>();
+    const selectedNodeIdSet = new Set(selectedNodeIds);
+    for (const stack of nodeStacks) {
+      if (stack.some((node) => selectedNodeIdSet.has(node.id))) {
+        stack.forEach((node) => ids.add(node.id));
+      }
+    }
     if (selectedNode && selectedNode.type !== NodeType.SCENE) {
       selectedStack.forEach((node) => ids.add(node.id));
     }
     return ids;
-  }, [selectedNode, selectedStack]);
+  }, [nodeStacks, selectedNode, selectedNodeIds, selectedStack]);
 
   // Mobile: Properties View
   if (isMobilePortrait && isPropertiesView && selectedNodeId) {
@@ -277,10 +453,7 @@ const FlowTab = ({
             </span>
           </div>
         </div>
-        <ScrollArea
-          containerClassName="flex-1 min-h-0"
-          className="h-full overflow-y-auto px-3 pb-3"
-        >
+        <ScrollArea rootClassName="flex-1 min-h-0" className="h-full overflow-y-auto px-3 pb-3">
           <div className="pt-2 space-y-2">
             {renderProperties()}
             {renderItemsPanel()}
@@ -346,9 +519,8 @@ const FlowTab = ({
         />
       ) : (
         <div className="px-4 flex  gap-2">
-          <ImageImportToolButton />
+          <MediaSourceImportToolButton />
           <ImageSequenceToolButton />
-          <AiInpaintingToolButton />
         </div>
       )}
     </div>
@@ -375,7 +547,10 @@ const FlowTab = ({
           </>
         )
       ) : (
-        <div className="text-center text-xs text-gray-500 p-4">Project is empty.</div>
+        <>
+          {layerListNode}
+          {outputNode('border-t')}
+        </>
       )}
     </div>
   );
@@ -394,7 +569,7 @@ const FlowTab = ({
           ) : viewMode === 'list' ? (
             <ScrollArea
               ref={flowListRef}
-              containerClassName="h-full min-h-0"
+              rootClassName="h-full min-h-0"
               className="h-full overflow-y-auto px-3 pb-3"
             >
               {layerListContent}
@@ -405,6 +580,7 @@ const FlowTab = ({
               nodeStacks={nodeStacks}
               selectedStackIds={selectedStackIds}
               selectedNodeId={selectedNodeId ?? null}
+              selectedNodeIds={selectedNodeIds}
               isSceneSelected={isSceneSelected}
               isOutputNodeSelected={isOutputNodeSelected}
               viewerNodeId={viewerNodeId}
@@ -453,36 +629,12 @@ const FlowTab = ({
         <div className="flex-1 flex flex-col min-h-0">
           <div className="px-3 py-1.5 flex-shrink-0 flex items-center gap-2 border-b border-white/10">
             <div className="min-w-0 flex items-center gap-1 text-xs font-medium">
-              {selectedNode?.type === NodeType.ROTO ? (
-                <>
-                  <button
-                    onClick={() => setRotoInspectorLevel('node')}
-                    className={`truncate transition-colors ${
-                      rotoInspectorLevel === 'node'
-                        ? 'text-gray-100'
-                        : 'text-gray-400 hover:text-gray-200'
-                    }`}
-                    title="Show node-level Roto properties"
-                  >
-                    Roto
-                  </button>
-                  {selectedRotoPath && (
-                    <>
-                      <span className="text-gray-600">/</span>
-                      <button
-                        onClick={() => setRotoInspectorLevel('shape')}
-                        className={`truncate transition-colors ${
-                          rotoInspectorLevel === 'shape'
-                            ? 'text-gray-100'
-                            : 'text-gray-400 hover:text-gray-200'
-                        }`}
-                        title={`Show properties for ${selectedRotoPath.name}`}
-                      >
-                        {selectedRotoPath.name}
-                      </button>
-                    </>
-                  )}
-                </>
+              {selectedNode?.type === NodeType.ROTO ||
+              selectedNode?.type === NodeType.COMFY ||
+              selectedNode?.type === NodeType.SCENE_3D ? (
+                (createInspectorBreadcrumb(selectedNode as RotoNode | ComfyNode | Scene3DNode) ?? (
+                  <span className="truncate text-gray-300">{selectedNode.name}</span>
+                ))
               ) : (
                 <span className="truncate text-gray-300">
                   {isOutputNodeSelected
@@ -498,7 +650,7 @@ const FlowTab = ({
             <span className="ml-auto text-xs font-medium text-gray-600">Properties</span>
           </div>
           <ScrollArea
-            containerClassName="flex-1 min-h-0"
+            rootClassName="flex-1 min-h-0"
             className="h-full overflow-y-auto px-3 pb-3 space-y-2"
           >
             {renderProperties()}
@@ -513,7 +665,7 @@ const FlowTab = ({
   return (
     <ScrollArea
       ref={flowRootRef}
-      containerClassName="h-full"
+      rootClassName="h-full"
       className="p-3 space-y-4 h-full overflow-y-auto"
       data-hotkey-zone="flow-view"
       onClick={() => selectNode(null)}

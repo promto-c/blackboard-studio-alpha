@@ -1,42 +1,22 @@
 import React from 'react';
 import {
-  ROTO_TRACKING_DRIFT_TOLERANCE_DEFAULT,
-  ROTO_TRACKING_DRIFT_TOLERANCE_MAX,
-  ROTO_TRACKING_DRIFT_TOLERANCE_MIN,
+  RotoTrackingDriftTolerance,
   getRecommendedCacheSizeMB,
-  usePreferences,
-  colors,
   type BackgroundPrefetchMode,
   type CacheBudgetMode,
+  type ReopenHistoryLimitPreference,
   type RotoMotionBlurPreviewBackend,
-} from '@/state/preferencesContext';
-import {
-  ColorPicker,
-  SegmentedControl,
-  SettingsPanelFrame,
-  Slider,
-  StyledDropdown,
-  ToggleSwitch,
-} from '@/components';
-import {
-  hasGeminiApiKey,
-  isOllamaAuthenticationRequiredError,
-  listOllamaModels,
-  testOpenAiConnection,
-  type OllamaModelSummary,
-} from '@/utils/ai';
-import {
-  DEFAULT_AI_TASK_ROUTES,
-  hasOpenAiApiKey,
-  type AiRouteTask,
-  type AiTaskRoutes,
-} from '@/utils/aiRouting';
-import {
-  DEFAULT_COMFY_ENDPOINT,
-  normalizeComfyEndpoint,
-  testComfyConnection,
-} from '@/services/comfy/client';
+  type UndoHistoryLimitPreference,
+} from '@/state/preferences';
+import { usePreferences } from '@/state/preferencesContext';
+import { useOcio } from '@/state/ocioContext';
+import { colors } from '@/utils/colors';
+import { useDebugLog } from '@/utils/debugLogContext';
+import { ColorPicker, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
+import { SegmentedControl, SettingsPanelFrame, Slider } from '@/components';
+import { normalizeComfyEndpoint } from '@/services/comfy/client';
 import OnnxModelsPreferences from './OnnxModelsPreferences';
+import IntegrationsPreferences from './IntegrationsPreferences';
 import * as Icons from '@blackboard/icons';
 import type {
   AiProvider,
@@ -51,11 +31,14 @@ interface PreferencesViewProps {
 
 type PreferencesSectionId =
   | 'appearance'
+  | 'colorManagement'
   | 'editing'
+  | 'recovery'
   | 'integrations'
   | 'models'
   | 'rotoMotion'
-  | 'performance';
+  | 'performance'
+  | 'debug';
 type PreferenceSectionIcon = React.ComponentType<{ className?: string }>;
 type PreferenceSectionGroup = 'app' | 'node';
 
@@ -74,10 +57,24 @@ const preferenceSections: {
     group: 'app',
   },
   {
+    id: 'colorManagement',
+    label: 'Color',
+    description: 'OpenColorIO config, displays, and working spaces',
+    icon: Icons.Eye,
+    group: 'app',
+  },
+  {
     id: 'editing',
     label: 'Editing',
     description: 'Playback defaults and editor behavior',
     icon: Icons.Brush,
+    group: 'app',
+  },
+  {
+    id: 'recovery',
+    label: 'Recovery',
+    description: 'Undo depth and project reopen history',
+    icon: Icons.RotateLoop,
     group: 'app',
   },
   {
@@ -108,6 +105,13 @@ const preferenceSections: {
     icon: Icons.Curve,
     group: 'node',
   },
+  {
+    id: 'debug',
+    label: 'Debug',
+    description: 'Developer debug tools and event log',
+    icon: Icons.CodeBracket,
+    group: 'app',
+  },
 ];
 
 const colorDisplayNames: { [key: string]: string } = {
@@ -132,13 +136,15 @@ const rgbToHex = (rgbString: string) => {
   );
 };
 
-const baseFieldClassName =
-  'block w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] outline-none transition placeholder:text-gray-500 focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20';
-
-const StatusBadge: React.FC<{
+function StatusBadge({
+  children,
+  tone = 'neutral',
+  className,
+}: {
   children: React.ReactNode;
   tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'accent';
-}> = ({ children, tone = 'neutral' }) => {
+  className?: string;
+}) {
   const toneClassName =
     tone === 'success'
       ? 'border-green-400/20 bg-green-500/10 text-green-100'
@@ -152,124 +158,76 @@ const StatusBadge: React.FC<{
 
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium tracking-wide ${toneClassName}`}
+      className={`inline-flex min-w-0 max-w-full items-center rounded-full border px-2.5 py-1 text-[11px] font-medium tracking-wide ${toneClassName} ${className ?? ''}`}
     >
-      {children}
+      <span className="min-w-0 truncate">{children}</span>
     </span>
   );
-};
+}
 
-const IntegrationTroubleshooting: React.FC<{
-  title: string;
-  steps: string[] | Array<{ label: string; description: string }>;
-}> = ({ title, steps }) => (
-  <div className="rounded-xl border border-amber-300/20 bg-amber-400/10 p-3 text-xs text-amber-50">
-    <div className="flex items-center gap-2 font-medium">
-      <Icons.ExclamationCircle className="h-4 w-4 shrink-0" />
-      <span>{title}</span>
+function OcioStatusBadges({
+  isInitialized,
+  isLoading,
+  error,
+  version,
+  workingColorSpace,
+  textureColorSpace,
+  dataColorSpace,
+}: {
+  isInitialized: boolean;
+  isLoading: boolean;
+  error: string | null;
+  version: string;
+  workingColorSpace: string;
+  textureColorSpace: string;
+  dataColorSpace: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <StatusBadge tone={isInitialized ? 'success' : error ? 'danger' : 'neutral'}>
+        {isInitialized ? `OCIO ${version}` : isLoading ? 'Loading' : 'Unavailable'}
+      </StatusBadge>
+      <StatusBadge tone="accent">{workingColorSpace}</StatusBadge>
+      <StatusBadge tone="neutral" className="max-w-[min(100%,16rem)]">
+        {textureColorSpace}
+      </StatusBadge>
+      <StatusBadge tone="neutral">{dataColorSpace}</StatusBadge>
     </div>
-    <ol className="mt-2 list-decimal space-y-1 pl-4 leading-5 text-amber-100/90">
-      {Array.isArray(steps) && steps.length > 0 && typeof steps[0] === 'string'
-        ? (steps as string[]).map((step) => <li key={step}>{step}</li>)
-        : (steps as Array<{ label: string; description: string }>).map((step) => (
-            <li key={step.label}>
-              <span className="font-medium">{step.label}</span>
-              {' — '}
-              {step.description}
-            </li>
-          ))}
-    </ol>
-  </div>
-);
+  );
+}
 
-const getOllamaModelCapabilityTags = (model: OllamaModelSummary) =>
-  (model.capabilities ?? []).filter((capability) => capability !== 'completion');
-
-const getOllamaModelDetailLabel = (model: OllamaModelSummary) =>
-  [model.details?.parameter_size, model.details?.quantization_level]
-    .filter((value): value is string => typeof value === 'string' && value.length > 0)
-    .join(' · ');
-
-const aiProviderOptions = [
-  { value: 'gemini', label: 'Gemini' },
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'ollama', label: 'Ollama' },
-];
-
-const aiRouteMeta: {
-  id: AiRouteTask;
-  title: string;
-  description: string;
-  placeholder: Record<AiProvider, string>;
-}[] = [
-  {
-    id: 'assistantChat',
-    title: 'Assistant Chat',
-    description: 'General assistant conversations and node-aware help in Chats.',
-    placeholder: {
-      gemini: DEFAULT_AI_TASK_ROUTES.assistantChat.model,
-      openai: 'gpt-5-mini',
-      ollama: 'qwen2.5-coder:7b',
-    },
-  },
-  {
-    id: 'shaderGeneration',
-    title: 'Shader Generation',
-    description: 'Shader chat and Generate Shader requests.',
-    placeholder: {
-      gemini: DEFAULT_AI_TASK_ROUTES.shaderGeneration.model,
-      openai: 'gpt-5-mini',
-      ollama: 'qwen2.5-coder:7b',
-    },
-  },
-  {
-    id: 'shaderPromptTools',
-    title: 'Shader Prompt Tools',
-    description: 'Suggest and enhance actions for shader prompt drafting.',
-    placeholder: {
-      gemini: DEFAULT_AI_TASK_ROUTES.shaderPromptTools.model,
-      openai: 'gpt-5-mini',
-      ollama: 'qwen2.5-coder:7b',
-    },
-  },
-  {
-    id: 'imagePromptTools',
-    title: 'Image Prompt Tools',
-    description: 'Suggest and enhance actions for image and Comfy prompt text.',
-    placeholder: {
-      gemini: DEFAULT_AI_TASK_ROUTES.imagePromptTools.model,
-      openai: 'gpt-5-mini',
-      ollama: 'qwen2.5-coder:7b',
-    },
-  },
-];
-
-const ToggleField: React.FC<{
-  checked: boolean;
-  onCheckedChange: (checked: boolean) => void;
-  ariaLabel: string;
-  activeLabel?: string;
-  inactiveLabel?: string;
-}> = ({
+function ToggleField({
   checked,
   onCheckedChange,
   ariaLabel,
   activeLabel = 'Enabled',
   inactiveLabel = 'Disabled',
-}) => (
-  <div className="flex items-center justify-end gap-3">
-    <StatusBadge tone={checked ? 'accent' : 'neutral'}>
-      {checked ? activeLabel : inactiveLabel}
-    </StatusBadge>
-    <ToggleSwitch checked={checked} ariaLabel={ariaLabel} onCheckedChange={onCheckedChange} />
-  </div>
-);
+}: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  ariaLabel: string;
+  activeLabel?: string;
+  inactiveLabel?: string;
+}) {
+  return (
+    <div className="flex items-center justify-end gap-3">
+      <StatusBadge tone={checked ? 'accent' : 'neutral'}>
+        {checked ? activeLabel : inactiveLabel}
+      </StatusBadge>
+      <ToggleSwitch checked={checked} ariaLabel={ariaLabel} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
 
-const AccentSwatch: React.FC<{
+function AccentSwatch({
+  colorKey,
+  isActive,
+  onSelect,
+}: {
   colorKey: string;
   isActive: boolean;
   onSelect: () => void;
-}> = ({ colorKey, isActive, onSelect }) => {
+}) {
   const colorHex = rgbToHex(colors[colorKey][500]);
 
   return (
@@ -308,64 +266,79 @@ const AccentSwatch: React.FC<{
       </span>
     </button>
   );
-};
+}
 
-const SettingsGroup: React.FC<{
+function SettingsGroup({
+  children,
+}: {
   title?: string;
   description?: string;
   icon?: PreferenceSectionIcon;
   highlights?: string[];
   children: React.ReactNode;
-}> = ({ children }) => <div className="space-y-3 bg-gray-950">{children}</div>;
+}) {
+  return <div className="space-y-3 bg-gray-950">{children}</div>;
+}
 
-const SettingsRow: React.FC<{
+function SettingsRow({
+  title,
+  description,
+  children,
+  stacked = false,
+  controlClassName,
+}: {
   title: string;
   description: string;
   children: React.ReactNode;
   stacked?: boolean;
   controlClassName?: string;
-}> = ({ title, description, children, stacked = false, controlClassName }) => (
-  <div
-    className={`rounded-xl border border-white/10 bg-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] ${
-      stacked
-        ? 'space-y-4 p-4'
-        : 'grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,24rem)] lg:items-center'
-    }`}
-  >
-    <div className="min-w-0">
-      <p className="text-sm font-medium text-white">{title}</p>
-      <p className="mt-1 text-xs leading-6 text-gray-400">{description}</p>
-    </div>
+}) {
+  return (
     <div
-      className={
+      className={`rounded-xl border border-white/10 bg-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] ${
         stacked
-          ? (controlClassName ?? '')
-          : `w-full lg:justify-self-end ${controlClassName ?? 'lg:max-w-[24rem]'}`
-      }
+          ? 'space-y-4 p-4'
+          : 'grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,24rem)] lg:items-center'
+      }`}
     >
-      {children}
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-white">{title}</p>
+        <p className="mt-1 text-xs leading-6 text-gray-400">{description}</p>
+      </div>
+      <div
+        className={
+          stacked
+            ? (controlClassName ?? '')
+            : `w-full lg:justify-self-end ${controlClassName ?? 'lg:max-w-[24rem]'}`
+        }
+      >
+        {children}
+      </div>
     </div>
-  </div>
-);
+  );
+}
 
-const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
+function PreferencesView({ onBack }: PreferencesViewProps) {
+  const ocio = useOcio();
   const {
     primaryColor,
     thumbnailMode,
     uiStyle,
     codeEditorWordWrap,
     playbackMode,
+    undoHistoryLimit,
+    reopenHistoryLimit,
+    autoCheckpointEnabled,
     backgroundPrefetchMode,
     backgroundPrefetchFrameWindow,
     cacheBudgetMode,
     maxCacheSizeMB,
     maxCachedFrames,
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
     ollamaEndpoint,
     aiTaskRoutes,
+    integrationConnections,
     comfyEndpoint,
+    ocioConfigName,
     enableToolSorting,
     rotoMotionCueEnabled,
     rotoMotionCueMode,
@@ -383,23 +356,11 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
     alphaOverlayOpacity,
     alphaOverlayBgDarken,
     viewportInterpolation,
+    debugMode,
     setPreferences,
   } = usePreferences();
+  const { entries: debugLogEntries, clearLog: clearDebugLog } = useDebugLog();
   const [activeSection, setActiveSection] = React.useState<PreferencesSectionId>('appearance');
-  const [ollamaModels, setOllamaModels] = React.useState<OllamaModelSummary[]>([]);
-  const [isLoadingOllamaModels, setIsLoadingOllamaModels] = React.useState(false);
-  const [ollamaModelsError, setOllamaModelsError] = React.useState<string | null>(null);
-  const [ollamaModelsAuthUrl, setOllamaModelsAuthUrl] = React.useState<string | null>(null);
-  const [hasLoadedOllamaModels, setHasLoadedOllamaModels] = React.useState(false);
-  const [ollamaConnectionCheck, setOllamaConnectionCheck] = React.useState(0);
-  const [comfyConnectionState, setComfyConnectionState] = React.useState<
-    'idle' | 'checking' | 'connected' | 'error'
-  >('idle');
-  const [comfyConnectionError, setComfyConnectionError] = React.useState<string | null>(null);
-  const [openAiConnectionState, setOpenAiConnectionState] = React.useState<
-    'idle' | 'checking' | 'connected' | 'error'
-  >('idle');
-  const [openAiConnectionError, setOpenAiConnectionError] = React.useState<string | null>(null);
   const recommendedCacheSizeMB = getRecommendedCacheSizeMB();
 
   const uiStyleOptions = [
@@ -410,6 +371,21 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
   const playbackOptions = [
     { value: 'realtime', label: 'Real-time' },
     { value: 'every_frame', label: 'Every frame' },
+  ];
+
+  const undoHistoryLimitOptions = [
+    { value: 50, label: '50' },
+    { value: 100, label: '100' },
+    { value: 200, label: '200' },
+    { value: 500, label: '500' },
+    { value: 'unlimited', label: 'Unlimited' },
+  ];
+
+  const reopenHistoryLimitOptions = [
+    { value: 0, label: 'Off' },
+    { value: 20, label: '20' },
+    { value: 50, label: '50' },
+    { value: 100, label: '100' },
   ];
 
   const directoryImportModeOptions = [
@@ -426,6 +402,7 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
 
   const backgroundPrefetchOptions = [
     { value: 'on_demand', label: 'On demand' },
+    { value: 'auto', label: 'Auto' },
     { value: 'forward', label: 'Forward' },
     { value: 'bidirectional', label: 'Bidirectional' },
   ];
@@ -466,54 +443,26 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
     { value: 'linear', label: 'Linear' },
   ];
 
-  const trimmedOllamaEndpoint = ollamaEndpoint.trim();
-  const trimmedComfyEndpoint = normalizeComfyEndpoint(comfyEndpoint);
-  const trimmedGeminiApiKey = geminiApiKey.trim();
-  const trimmedOpenAiApiKey = openAiApiKey.trim();
-  const studioOrigin =
-    typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-  const isGeminiConfigured = hasGeminiApiKey(geminiApiKey);
-  const isOpenAiConfigured = hasOpenAiApiKey(openAiApiKey);
-  const isOllamaConnected =
-    hasLoadedOllamaModels &&
-    !isLoadingOllamaModels &&
-    !ollamaModelsError &&
-    !!trimmedOllamaEndpoint;
-  const isOllamaAuthenticationRequired = Boolean(ollamaModelsError && ollamaModelsAuthUrl);
-  const canOpenOllamaEndpoint = Boolean(
-    ollamaModelsError && (ollamaModelsAuthUrl || trimmedOllamaEndpoint),
-  );
-  const hasSelectableOllamaModels = isOllamaConnected && ollamaModels.length > 0;
-  const ollamaModelOptions = React.useMemo(
+  const ocioConfigOptions = React.useMemo(
     () =>
-      ollamaModels.map((model) => ({
-        value: model.model,
-        label: model.model,
-        secondaryLabel: getOllamaModelDetailLabel(model) || undefined,
-        badges: getOllamaModelCapabilityTags(model),
+      ocio.builtinConfigs.map((config) => ({
+        value: `ocio://${config.name}`,
+        label: config.name,
+        secondaryLabel: config.uiName,
+        badges: config.recommended ? ['Recommended'] : [],
+        searchText: `${config.name} ${config.uiName}`,
       })),
-    [ollamaModels],
+    [ocio.builtinConfigs],
   );
+
+  const trimmedComfyEndpoint = normalizeComfyEndpoint(comfyEndpoint);
   const aiRouteCountsByProvider = React.useMemo(() => {
     const counts: Record<AiProvider, number> = { gemini: 0, openai: 0, ollama: 0 };
-    (Object.values(aiTaskRoutes) as Array<AiTaskRoutes[AiRouteTask]>).forEach((route) => {
+    Object.values(aiTaskRoutes).forEach((route) => {
       counts[route.provider] += 1;
     });
     return counts;
   }, [aiTaskRoutes]);
-  const ollamaTroubleshootingSteps = [
-    `Make sure Ollama is running and the endpoint is correct: ${trimmedOllamaEndpoint || 'the Ollama endpoint'}.`,
-    'If the browser console mentions CORS or Access-Control-Allow-Origin, allow this Studio origin in Ollama, then restart Ollama.',
-    `For a shell-launched Ollama server, use: OLLAMA_ORIGINS=${studioOrigin} ollama serve`,
-    'If Ollama is managed by a desktop app or service, set OLLAMA_ORIGINS in that service environment and restart it.',
-    'For quick local-only testing, OLLAMA_ORIGINS=* can help isolate CORS, but avoid that on shared or remote machines.',
-  ];
-  const comfyTroubleshootingSteps = [
-    `Make sure ComfyUI is running and the endpoint is correct: ${trimmedComfyEndpoint}.`,
-    'If the browser console mentions CORS or Access-Control-Allow-Origin, restart ComfyUI with CORS headers enabled.',
-    `Common ComfyUI launch flag: --enable-cors-header. Some versions accept an explicit origin: --enable-cors-header ${studioOrigin}`,
-    'If ComfyUI is remote or behind a tunnel, use a reverse proxy that adds Access-Control-Allow-Origin for the Studio origin.',
-  ];
   const activeSectionMeta =
     preferenceSections.find((section) => section.id === activeSection) ?? preferenceSections[0];
   const activeSectionHighlights: Record<PreferencesSectionId, string[]> = {
@@ -521,6 +470,15 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
       `${colorDisplayNames[primaryColor] ?? primaryColor} accent`,
       uiStyle === 'glass' ? 'Glass panels' : 'Solid panels',
       viewportInterpolation === 'nearest' ? 'Nearest sampling' : 'Linear sampling',
+    ],
+    colorManagement: [
+      ocio.isInitialized
+        ? `OCIO ${ocio.version}`
+        : ocio.isLoading
+          ? 'Loading OCIO'
+          : 'OCIO offline',
+      ocio.workingColorSpace,
+      `${ocio.displays.length} displays`,
     ],
     editing: [
       playbackMode === 'realtime' ? 'Realtime playback' : 'Every-frame playback',
@@ -535,12 +493,17 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
           ? 'Reference folders'
           : 'Copy folders',
     ],
+    recovery: [
+      undoHistoryLimit === 'unlimited'
+        ? 'Unlimited open-project undo'
+        : `${undoHistoryLimit} open-project steps`,
+      reopenHistoryLimit === 0 ? 'Reopen history off' : `${reopenHistoryLimit} steps after reopen`,
+      autoCheckpointEnabled ? 'Auto checkpoints on' : 'Manual checkpoints only',
+    ],
     integrations: [
+      `${integrationConnections.length} connection${integrationConnections.length === 1 ? '' : 's'}`,
       `${Object.keys(aiTaskRoutes).length} task routes`,
       `Gemini ${aiRouteCountsByProvider.gemini} · OpenAI ${aiRouteCountsByProvider.openai} · Ollama ${aiRouteCountsByProvider.ollama}`,
-      isGeminiConfigured || isOpenAiConfigured || trimmedOllamaEndpoint
-        ? 'Providers configured'
-        : 'Provider setup pending',
       `Comfy ${trimmedComfyEndpoint}`,
     ],
     models: ['ONNX Runtime Web', 'Hugging Face import', 'WebGPU with WASM fallback'],
@@ -549,7 +512,7 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
       rotoPointWeightMode === 'local' ? 'Default local pull' : 'Default full pull',
       rotoMotionCueEnabled ? 'Cue overlay on' : 'Cue overlay off',
       rotoTrackingBackgroundEnabled ? 'Background tracking' : 'Inline tracking',
-      `Drift stop ${rotoTrackingDriftTolerance.toFixed(1)}`,
+      `Drift stop ${rotoTrackingDriftTolerance !== null ? rotoTrackingDriftTolerance.toFixed(1) : '∞'}`,
       rotoMotionBlurInteractivePreviewEnabled
         ? `Interactive cap ${rotoMotionBlurInteractivePreviewSamples}`
         : 'Full samples while editing',
@@ -557,9 +520,11 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
     performance: [
       backgroundPrefetchMode === 'on_demand'
         ? 'On-demand prefetch'
-        : backgroundPrefetchMode === 'forward'
-          ? 'Forward prefetch'
-          : 'Bidirectional prefetch',
+        : backgroundPrefetchMode === 'auto'
+          ? 'Auto prefetch'
+          : backgroundPrefetchMode === 'forward'
+            ? 'Forward prefetch'
+            : 'Bidirectional prefetch',
       cacheBudgetMode === 'auto_memory'
         ? 'Auto RAM budget'
         : cacheBudgetMode === 'manual_memory'
@@ -571,136 +536,11 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
           ? `${maxCachedFrames} cached frames`
           : `${recommendedCacheSizeMB} MB detected`,
     ],
+    debug: [
+      debugMode ? 'Debug mode on' : 'Debug mode off',
+      `${debugLogEntries.length} log entries`,
+    ],
   };
-
-  React.useEffect(() => {
-    if (activeSection !== 'integrations') {
-      return;
-    }
-    if (!trimmedOllamaEndpoint) {
-      setOllamaModels([]);
-      setOllamaModelsError(null);
-      setOllamaModelsAuthUrl(null);
-      setIsLoadingOllamaModels(false);
-      setHasLoadedOllamaModels(false);
-      return;
-    }
-
-    const abortController = new AbortController();
-    const timeoutId = window.setTimeout(async () => {
-      setIsLoadingOllamaModels(true);
-      setOllamaModelsError(null);
-      setOllamaModelsAuthUrl(null);
-      setHasLoadedOllamaModels(false);
-
-      try {
-        const models = await listOllamaModels(trimmedOllamaEndpoint, {
-          signal: abortController.signal,
-        });
-        setOllamaModels(models);
-        setOllamaModelsAuthUrl(null);
-        setHasLoadedOllamaModels(true);
-      } catch (error) {
-        if (abortController.signal.aborted) {
-          return;
-        }
-        setOllamaModels([]);
-        if (isOllamaAuthenticationRequiredError(error)) {
-          setOllamaModelsAuthUrl(error.authUrl);
-          setOllamaModelsError(error.message);
-        } else {
-          setOllamaModelsAuthUrl(null);
-          setOllamaModelsError(error instanceof Error ? error.message : 'Failed to reach Ollama.');
-        }
-        setHasLoadedOllamaModels(true);
-      } finally {
-        if (!abortController.signal.aborted) {
-          setIsLoadingOllamaModels(false);
-        }
-      }
-    }, 300);
-
-    return () => {
-      abortController.abort();
-      window.clearTimeout(timeoutId);
-    };
-  }, [activeSection, ollamaConnectionCheck, trimmedOllamaEndpoint]);
-
-  const handleOpenOllamaAuthentication = React.useCallback(() => {
-    const url = ollamaModelsAuthUrl || trimmedOllamaEndpoint;
-    if (!url) {
-      return;
-    }
-
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }, [ollamaModelsAuthUrl, trimmedOllamaEndpoint]);
-
-  const handleRetryOllamaConnection = React.useCallback(() => {
-    setOllamaConnectionCheck((check) => check + 1);
-  }, []);
-
-  React.useEffect(() => {
-    setComfyConnectionState('idle');
-    setComfyConnectionError(null);
-  }, [trimmedComfyEndpoint]);
-
-  const handleTestComfyConnection = React.useCallback(async () => {
-    setComfyConnectionState('checking');
-    setComfyConnectionError(null);
-
-    try {
-      await testComfyConnection(trimmedComfyEndpoint);
-      setComfyConnectionState('connected');
-    } catch (error) {
-      setComfyConnectionState('error');
-      setComfyConnectionError(error instanceof Error ? error.message : 'Failed to reach ComfyUI.');
-    }
-  }, [trimmedComfyEndpoint]);
-
-  const handleTestOpenAiConnection = React.useCallback(async () => {
-    setOpenAiConnectionState('checking');
-    setOpenAiConnectionError(null);
-
-    try {
-      const model = aiTaskRoutes.assistantChat.model.trim();
-      if (!model) {
-        throw new Error('Missing OpenAI model. Set it in Preferences > Integrations.');
-      }
-      await testOpenAiConnection(openAiApiKey, openAiBaseUrl, model);
-      setOpenAiConnectionState('connected');
-    } catch (error) {
-      setOpenAiConnectionState('error');
-      setOpenAiConnectionError(error instanceof Error ? error.message : 'Failed to reach OpenAI.');
-    }
-  }, [openAiApiKey, openAiBaseUrl, aiTaskRoutes.assistantChat.model]);
-
-  const updateAiTaskRoute = React.useCallback(
-    (task: AiRouteTask, updates: Partial<AiTaskRoutes[AiRouteTask]>) => {
-      setPreferences({
-        aiTaskRoutes: {
-          ...aiTaskRoutes,
-          [task]: {
-            ...aiTaskRoutes[task],
-            ...updates,
-          },
-        },
-      });
-    },
-    [aiTaskRoutes, setPreferences],
-  );
-
-  const getOllamaRouteOptions = React.useCallback(
-    (task: AiRouteTask) => {
-      const currentModel = aiTaskRoutes[task].model.trim();
-      return [
-        ...(currentModel && !ollamaModels.some((model) => model.model === currentModel)
-          ? [{ value: currentModel, label: `${currentModel} (current)` }]
-          : []),
-        ...ollamaModelOptions,
-      ];
-    },
-    [aiTaskRoutes, ollamaModelOptions, ollamaModels],
-  );
 
   const renderSectionContent = () => {
     switch (activeSection) {
@@ -806,6 +646,67 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
             </SettingsRow>
           </SettingsGroup>
         );
+      case 'colorManagement':
+        return (
+          <SettingsGroup
+            title="Color Management"
+            description="OpenColorIO runtime and default project color pipeline."
+            icon={Icons.Eye}
+            highlights={activeSectionHighlights.colorManagement}
+          >
+            <SettingsRow
+              title="OCIO Config"
+              description="Built-in configs are loaded by the OpenColorIO 2.5 wasm runtime."
+              controlClassName="lg:max-w-[34rem]"
+            >
+              <div className="min-w-0 space-y-2">
+                <StyledDropdown
+                  value={ocioConfigName}
+                  options={
+                    ocioConfigOptions.length > 0
+                      ? ocioConfigOptions
+                      : [{ value: ocioConfigName, label: ocioConfigName }]
+                  }
+                  onChange={(value) => setPreferences({ ocioConfigName: String(value) })}
+                  popoverWidthClass="w-[34rem]"
+                  searchable
+                  showSelectedBadges={false}
+                />
+                <OcioStatusBadges
+                  isInitialized={ocio.isInitialized}
+                  isLoading={ocio.isLoading}
+                  error={ocio.error}
+                  version={ocio.version}
+                  workingColorSpace={ocio.workingColorSpace}
+                  textureColorSpace={ocio.textureColorSpace}
+                  dataColorSpace={ocio.dataColorSpace}
+                />
+                {ocio.error ? (
+                  <div className="rounded-xl border border-red-400/20 bg-red-500/10 p-3 text-xs leading-5 text-red-100">
+                    {ocio.error}
+                  </div>
+                ) : null}
+              </div>
+            </SettingsRow>
+
+            <SettingsRow
+              title="Displays"
+              description="Available display devices and view transforms from the active config."
+              stacked
+            >
+              <div className="grid gap-2 sm:grid-cols-2">
+                {ocio.displays.map((display) => (
+                  <div key={display} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <div className="truncate text-sm font-medium text-gray-100">{display}</div>
+                    <div className="mt-1 text-xs text-gray-500">
+                      {ocio.getViews(display).length} views
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </SettingsRow>
+          </SettingsGroup>
+        );
       case 'editing':
         return (
           <SettingsGroup
@@ -886,6 +787,58 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
             </SettingsRow>
           </SettingsGroup>
         );
+      case 'recovery':
+        return (
+          <SettingsGroup
+            title="Recovery"
+            description="Choose how much undo state Studio keeps in memory and how much it writes into project storage."
+            icon={Icons.RotateLoop}
+            highlights={activeSectionHighlights.recovery}
+          >
+            <SettingsRow
+              title="Undo History"
+              description="Keep temporary undo steps while the project is open."
+            >
+              <SegmentedControl
+                options={undoHistoryLimitOptions}
+                value={undoHistoryLimit}
+                onChange={(limit) =>
+                  setPreferences({
+                    undoHistoryLimit: limit as UndoHistoryLimitPreference,
+                  })
+                }
+              />
+            </SettingsRow>
+
+            <SettingsRow
+              title="Reopen History"
+              description="Save recent undo steps so they are available after reopening the project."
+            >
+              <SegmentedControl
+                options={reopenHistoryLimitOptions}
+                value={reopenHistoryLimit}
+                onChange={(limit) =>
+                  setPreferences({
+                    reopenHistoryLimit: limit as ReopenHistoryLimitPreference,
+                  })
+                }
+              />
+            </SettingsRow>
+
+            <SettingsRow
+              title="Auto Checkpoint"
+              description="Automatically pin the current history event when Studio saves a project branch snapshot."
+            >
+              <ToggleField
+                checked={autoCheckpointEnabled}
+                ariaLabel="Toggle automatic history checkpoints"
+                activeLabel="Automatic"
+                inactiveLabel="Manual only"
+                onCheckedChange={(checked) => setPreferences({ autoCheckpointEnabled: checked })}
+              />
+            </SettingsRow>
+          </SettingsGroup>
+        );
       case 'integrations':
         return (
           <SettingsGroup
@@ -894,454 +847,7 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
             icon={Icons.Link}
             highlights={activeSectionHighlights.integrations}
           >
-            <SettingsRow
-              title="AI routing"
-              description="Assign a provider and model per task. Mix Gemini, OpenAI, and Ollama under one routing system."
-              stacked
-            >
-              <div className="space-y-3">
-                {aiRouteMeta.map((routeMeta) => {
-                  const route = aiTaskRoutes[routeMeta.id];
-                  const routeOptions = getOllamaRouteOptions(routeMeta.id);
-
-                  return (
-                    <div
-                      key={routeMeta.id}
-                      className="rounded-xl border border-white/10 bg-black/20 p-3"
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-white">{routeMeta.title}</p>
-                          <p className="mt-1 text-xs leading-5 text-gray-400">
-                            {routeMeta.description}
-                          </p>
-                        </div>
-                        <StatusBadge tone="accent">{route.provider}</StatusBadge>
-                      </div>
-                      <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-medium text-gray-400">Provider</label>
-                          <SegmentedControl
-                            options={aiProviderOptions}
-                            value={route.provider}
-                            onChange={(provider) =>
-                              updateAiTaskRoute(routeMeta.id, {
-                                provider: provider as AiProvider,
-                              })
-                            }
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-medium text-gray-400">Model</label>
-                          <div className="flex min-w-0 gap-2">
-                            {route.provider === 'ollama' && hasSelectableOllamaModels ? (
-                              <StyledDropdown
-                                value={route.model}
-                                options={routeOptions}
-                                onChange={(value) =>
-                                  updateAiTaskRoute(routeMeta.id, { model: String(value) })
-                                }
-                                widthClass="min-w-0 flex-1"
-                                popoverWidthClass="w-[min(28rem,calc(100vw-2rem))]"
-                              />
-                            ) : (
-                              <input
-                                type="text"
-                                value={route.model}
-                                onChange={(event) =>
-                                  updateAiTaskRoute(routeMeta.id, { model: event.target.value })
-                                }
-                                className={`${baseFieldClassName} min-w-0 flex-1 truncate font-mono`}
-                                placeholder={routeMeta.placeholder[route.provider]}
-                                spellCheck={false}
-                              />
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => updateAiTaskRoute(routeMeta.id, { model: '' })}
-                              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-gray-400 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
-                              title="Reset model"
-                            >
-                              <Icons.RotateLoop className="h-3 w-3" />
-                              Reset
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </SettingsRow>
-
-            <SettingsRow
-              title="Gemini API key"
-              description="Used by Gemini-routed tasks when this app does not have a build-time GEMINI_API_KEY."
-              stacked
-            >
-              <div className="space-y-3">
-                <label
-                  htmlFor="preferences-gemini-api-key"
-                  className="text-xs font-medium text-gray-400"
-                >
-                  API key
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    id="preferences-gemini-api-key"
-                    type="password"
-                    value={geminiApiKey}
-                    onChange={(e) => setPreferences({ geminiApiKey: e.target.value })}
-                    className={`${baseFieldClassName} font-mono flex-1`}
-                    placeholder="AIza..."
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPreferences({ geminiApiKey: '' })}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-gray-400 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
-                    title="Reset API key"
-                  >
-                    <Icons.RotateLoop className="h-3 w-3" />
-                    Reset
-                  </button>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <StatusBadge tone={isGeminiConfigured ? 'success' : 'neutral'}>
-                    {trimmedGeminiApiKey
-                      ? 'Saved locally'
-                      : isGeminiConfigured
-                        ? 'Using build key'
-                        : 'Not configured'}
-                  </StatusBadge>
-                </div>
-              </div>
-            </SettingsRow>
-
-            <SettingsRow
-              title="OpenAI"
-              description="Credentials and base URL used by OpenAI-routed tasks."
-              stacked
-            >
-              <div className="space-y-3">
-                <label
-                  htmlFor="preferences-openai-api-key"
-                  className="text-xs font-medium text-gray-400"
-                >
-                  API key
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    id="preferences-openai-api-key"
-                    type="password"
-                    value={openAiApiKey}
-                    onChange={(e) => setPreferences({ openAiApiKey: e.target.value })}
-                    className={`${baseFieldClassName} font-mono flex-1`}
-                    placeholder="sk-... (optional for local servers)"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPreferences({ openAiApiKey: '' })}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-gray-400 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
-                    title="Reset API key"
-                  >
-                    <Icons.RotateLoop className="h-3 w-3" />
-                    Reset
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500">
-                  Required for OpenAI. Optional for local servers like Ollama, vLLM, or LM Studio.
-                </p>
-                <label
-                  htmlFor="preferences-openai-base-url"
-                  className="text-xs font-medium text-gray-400"
-                >
-                  Endpoint
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    id="preferences-openai-base-url"
-                    type="url"
-                    value={openAiBaseUrl}
-                    onChange={(e) => setPreferences({ openAiBaseUrl: e.target.value })}
-                    className={`${baseFieldClassName} font-mono flex-1`}
-                    placeholder="https://api.openai.com/v1"
-                    spellCheck={false}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPreferences({ openAiBaseUrl: '' })}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-gray-400 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
-                    title="Reset endpoint"
-                  >
-                    <Icons.RotateLoop className="h-3 w-3" />
-                    Reset
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500">
-                  Use the default OpenAI API URL or a compatible endpoint that supports the
-                  Responses API.
-                </p>
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <StatusBadge
-                    tone={
-                      openAiConnectionState === 'checking'
-                        ? 'warning'
-                        : openAiConnectionState === 'connected'
-                          ? 'success'
-                          : openAiConnectionState === 'error'
-                            ? 'danger'
-                            : trimmedOpenAiApiKey || openAiBaseUrl.trim()
-                              ? 'success'
-                              : 'neutral'
-                    }
-                  >
-                    {openAiConnectionState === 'checking'
-                      ? 'Checking...'
-                      : openAiConnectionState === 'connected'
-                        ? 'Connected'
-                        : openAiConnectionState === 'error'
-                          ? 'Connection failed'
-                          : trimmedOpenAiApiKey || openAiBaseUrl.trim()
-                            ? 'Configured'
-                            : 'Not configured'}
-                  </StatusBadge>
-                </div>
-                {openAiConnectionError ? (
-                  <p className="text-xs text-red-300">{openAiConnectionError}</p>
-                ) : null}
-                {openAiConnectionError ? (
-                  <IntegrationTroubleshooting
-                    title="Troubleshooting connection failures"
-                    steps={[
-                      {
-                        label: 'Verify base URL',
-                        description:
-                          'Confirm the base URL points to a running server (e.g., http://localhost:8000/v1).',
-                      },
-                      {
-                        label: 'Check API key (if required)',
-                        description:
-                          'Some local servers require no key; others need a bearer token. Set it above if prompted.',
-                      },
-                      {
-                        label: 'Verify model',
-                        description:
-                          'Set a valid model name in the task routes below (e.g., gpt-4o-mini or llama-3).',
-                      },
-                      {
-                        label: 'Network connectivity',
-                        description:
-                          'Ensure your network can reach the endpoint or custom base URL.',
-                      },
-                    ]}
-                  />
-                ) : null}
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleTestOpenAiConnection}
-                    disabled={openAiConnectionState === 'checking' || !openAiBaseUrl.trim()}
-                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Icons.RotateLoop className="h-3.5 w-3.5" />
-                    {openAiConnectionState === 'checking' ? 'Checking...' : 'Check connection'}
-                  </button>
-                </div>
-              </div>
-            </SettingsRow>
-
-            <SettingsRow
-              title="Ollama endpoint"
-              description="Base URL for your local Ollama server. Both the root URL and an /api URL are accepted."
-              stacked
-            >
-              <div className="space-y-3">
-                <label
-                  htmlFor="preferences-ollama-endpoint"
-                  className="text-xs font-medium text-gray-400"
-                >
-                  Endpoint
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    id="preferences-ollama-endpoint"
-                    type="url"
-                    value={ollamaEndpoint}
-                    onChange={(e) => setPreferences({ ollamaEndpoint: e.target.value })}
-                    className={baseFieldClassName}
-                    placeholder="http://localhost:11434"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPreferences({ ollamaEndpoint: '' })}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-gray-400 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
-                    title="Reset endpoint"
-                  >
-                    <Icons.RotateLoop className="h-3 w-3" />
-                    Reset
-                  </button>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <StatusBadge
-                    tone={
-                      isLoadingOllamaModels
-                        ? 'warning'
-                        : isOllamaAuthenticationRequired
-                          ? 'warning'
-                          : ollamaModelsError
-                            ? 'danger'
-                            : isOllamaConnected
-                              ? 'success'
-                              : 'neutral'
-                    }
-                  >
-                    {isLoadingOllamaModels
-                      ? 'Checking...'
-                      : isOllamaAuthenticationRequired
-                        ? 'Authentication required'
-                        : ollamaModelsError
-                          ? 'Connection failed'
-                          : isOllamaConnected
-                            ? 'Connected'
-                            : 'Idle'}
-                  </StatusBadge>
-                  {isOllamaConnected ? (
-                    <StatusBadge tone="accent">
-                      {ollamaModels.length} model{ollamaModels.length === 1 ? '' : 's'} available
-                    </StatusBadge>
-                  ) : null}
-                </div>
-                {ollamaModelsError ? (
-                  <p
-                    className={`text-xs ${
-                      isOllamaAuthenticationRequired ? 'text-amber-200' : 'text-red-300'
-                    }`}
-                  >
-                    {ollamaModelsError}
-                  </p>
-                ) : null}
-                {ollamaModelsError && !isOllamaAuthenticationRequired ? (
-                  <IntegrationTroubleshooting
-                    title="Troubleshooting connection failures"
-                    steps={ollamaTroubleshootingSteps}
-                  />
-                ) : null}
-                {canOpenOllamaEndpoint ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleOpenOllamaAuthentication}
-                      className="inline-flex items-center gap-2 rounded-lg border border-amber-300/25 bg-amber-400/10 px-3 py-2 text-xs font-medium text-amber-100 transition hover:border-amber-200/35 hover:bg-amber-400/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/30"
-                    >
-                      {isOllamaAuthenticationRequired ? (
-                        <Icons.ArrowLeftOnRectangle className="h-3.5 w-3.5" />
-                      ) : (
-                        <Icons.Link className="h-3.5 w-3.5" />
-                      )}
-                      {isOllamaAuthenticationRequired ? 'Open authentication' : 'Open endpoint'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleRetryOllamaConnection}
-                      className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
-                    >
-                      <Icons.RotateLoop className="h-3.5 w-3.5" />
-                      Check again
-                    </button>
-                  </div>
-                ) : null}
-                {isOllamaConnected && ollamaModels.length === 0 ? (
-                  <p className="text-xs text-amber-200">
-                    Ollama responded, but no local models were listed. Pull one first, then it will
-                    appear here.
-                  </p>
-                ) : null}
-              </div>
-            </SettingsRow>
-
-            <SettingsRow
-              title="ComfyUI endpoint"
-              description="Base URL for the Comfy node backend. Workflows stay on each Comfy node so graph-specific choices remain close to the render action."
-              stacked
-            >
-              <div className="space-y-3">
-                <label
-                  htmlFor="preferences-comfy-endpoint"
-                  className="text-xs font-medium text-gray-400"
-                >
-                  Endpoint
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    id="preferences-comfy-endpoint"
-                    type="url"
-                    value={comfyEndpoint}
-                    onChange={(e) => setPreferences({ comfyEndpoint: e.target.value })}
-                    className={baseFieldClassName}
-                    placeholder={DEFAULT_COMFY_ENDPOINT}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPreferences({ comfyEndpoint: '' })}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-gray-400 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
-                    title="Reset endpoint"
-                  >
-                    <Icons.RotateLoop className="h-3 w-3" />
-                    Reset
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500">
-                  Used by all Comfy nodes. If the endpoint fails only in the browser, check the
-                  troubleshooting steps below.
-                </p>
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <StatusBadge
-                    tone={
-                      comfyConnectionState === 'checking'
-                        ? 'warning'
-                        : comfyConnectionState === 'connected'
-                          ? 'success'
-                          : comfyConnectionState === 'error'
-                            ? 'danger'
-                            : 'neutral'
-                    }
-                  >
-                    {comfyConnectionState === 'checking'
-                      ? 'Checking...'
-                      : comfyConnectionState === 'connected'
-                        ? 'Connected'
-                        : comfyConnectionState === 'error'
-                          ? 'Connection failed'
-                          : 'Idle'}
-                  </StatusBadge>
-                  <StatusBadge tone="accent">{trimmedComfyEndpoint}</StatusBadge>
-                </div>
-                {comfyConnectionError ? (
-                  <p className="text-xs text-red-300">{comfyConnectionError}</p>
-                ) : null}
-                {comfyConnectionError ? (
-                  <IntegrationTroubleshooting
-                    title="Troubleshooting connection failures"
-                    steps={comfyTroubleshootingSteps}
-                  />
-                ) : null}
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleTestComfyConnection}
-                    disabled={comfyConnectionState === 'checking'}
-                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
-                  >
-                    <Icons.Link className="h-3.5 w-3.5" />
-                    Test connection
-                  </button>
-                </div>
-              </div>
-            </SettingsRow>
+            <IntegrationsPreferences />
           </SettingsGroup>
         );
       case 'models':
@@ -1386,19 +892,25 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
 
             <SettingsRow
               title="Tracking drift tolerance"
-              description="Stop roto tracking when the average optical-flow error for a frame rises above this value."
+              description="Stop roto tracking when the average optical-flow error for a frame rises above this value. Drag to the far end for unlimited tolerance."
               stacked
             >
               <Slider
                 label="Tracking Drift Tolerance"
-                value={rotoTrackingDriftTolerance}
-                min={ROTO_TRACKING_DRIFT_TOLERANCE_MIN}
-                max={ROTO_TRACKING_DRIFT_TOLERANCE_MAX}
-                step={0.5}
-                onChange={(value) => setPreferences({ rotoTrackingDriftTolerance: value })}
+                value={rotoTrackingDriftTolerance ?? RotoTrackingDriftTolerance.OVERFLOW}
+                min={RotoTrackingDriftTolerance.MIN}
+                max={RotoTrackingDriftTolerance.MAX}
+                step={RotoTrackingDriftTolerance.STEP}
+                overflowLabel="∞"
+                onChange={(value) =>
+                  setPreferences({
+                    rotoTrackingDriftTolerance:
+                      value >= RotoTrackingDriftTolerance.OVERFLOW ? null : value,
+                  })
+                }
                 onReset={() =>
                   setPreferences({
-                    rotoTrackingDriftTolerance: ROTO_TRACKING_DRIFT_TOLERANCE_DEFAULT,
+                    rotoTrackingDriftTolerance: RotoTrackingDriftTolerance.DEFAULT,
                   })
                 }
                 displayFormatter={(value) => value.toFixed(1)}
@@ -1529,6 +1041,79 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
             </div>
           </SettingsGroup>
         );
+      case 'debug':
+        return (
+          <SettingsGroup
+            title="Debug"
+            description="Developer tools for inspecting agent behavior and application events."
+            icon={Icons.CodeBracket}
+            highlights={activeSectionHighlights.debug}
+          >
+            <SettingsRow
+              title="Debug mode"
+              description="Enables additional debug information in the chats view and other panels."
+            >
+              <ToggleField
+                checked={debugMode}
+                ariaLabel="Toggle debug mode"
+                activeLabel="Enabled"
+                inactiveLabel="Disabled"
+                onCheckedChange={(checked) => setPreferences({ debugMode: checked })}
+              />
+            </SettingsRow>
+
+            <SettingsRow
+              title="Event log"
+              description="Recent debug events captured in memory. Disabled when debug mode is off."
+              stacked
+            >
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-gray-400">
+                    {debugLogEntries.length} event{debugLogEntries.length === 1 ? '' : 's'} logged
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearDebugLog}
+                    className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] text-gray-300 transition hover:bg-white/[0.08]"
+                  >
+                    Clear log
+                  </button>
+                </div>
+                <div className="max-h-72 overflow-y-auto rounded-lg border border-white/10 bg-black/20 p-2 font-mono text-[10px] leading-5">
+                  {debugLogEntries.length === 0 ? (
+                    <span className="text-gray-500">No events logged yet.</span>
+                  ) : (
+                    [...debugLogEntries].reverse().map((entry) => (
+                      <div key={entry.id} className="flex min-w-0 gap-2 py-0.5">
+                        <span className="shrink-0 text-gray-500">
+                          {new Date(entry.timestamp).toLocaleTimeString()}
+                        </span>
+                        <span
+                          className={`shrink-0 w-14 ${
+                            entry.type === 'error'
+                              ? 'text-red-300'
+                              : entry.type === 'tool_call'
+                                ? 'text-cyan-300'
+                                : entry.type === 'tool_result'
+                                  ? 'text-green-300'
+                                  : 'text-gray-400'
+                          }`}
+                        >
+                          {entry.type}
+                        </span>
+                        <span className="shrink-0 text-gray-500">{entry.source}</span>
+                        <span className="min-w-0 flex-1 truncate text-gray-200">
+                          {entry.detail}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </SettingsRow>
+          </SettingsGroup>
+        );
       case 'performance':
       default:
         return (
@@ -1540,7 +1125,7 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
           >
             <SettingsRow
               title="Background prefetch"
-              description="On demand only loads the current frame. Forward fills ahead of the playhead. Bidirectional keeps context on both sides while scrubbing."
+              description="Auto follows the current scrub or playback direction. On demand only loads the current frame. Forward fills ahead. Bidirectional keeps context on both sides."
             >
               <SegmentedControl
                 options={backgroundPrefetchOptions}
@@ -1562,7 +1147,7 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
             >
               <SettingsRow
                 title="Prefetch window"
-                description="Maximum number of adjacent frames to queue in the background for image sequences."
+                description="Maximum number of adjacent frames to queue in the background."
                 stacked
               >
                 <Slider
@@ -1582,9 +1167,11 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
                     })
                   }
                   displayFormatter={(value) =>
-                    backgroundPrefetchMode === 'bidirectional'
-                      ? `±${Math.round(value)}f`
-                      : `${Math.round(value)}f`
+                    backgroundPrefetchMode === 'auto'
+                      ? `Auto ${Math.round(value)}f`
+                      : backgroundPrefetchMode === 'bidirectional'
+                        ? `±${Math.round(value)}f`
+                        : `${Math.round(value)}f`
                   }
                 />
               </SettingsRow>
@@ -1729,6 +1316,6 @@ const PreferencesView: React.FC<PreferencesViewProps> = ({ onBack }) => {
       </SettingsPanelFrame>
     </div>
   );
-};
+}
 
 export default PreferencesView;

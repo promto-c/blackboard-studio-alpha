@@ -1,8 +1,18 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { effectRegistry } from '@/effects/effectRegistry';
+
+vi.mock('@/pwa/pwaLifecycle', () => ({
+  getPwaSnapshot: () => ({ isStandalone: false, isNewInstall: false }),
+  subscribeToPwa: () => () => {},
+  registerPwa: () => {},
+  requestPwaInstall: async () => 'dismissed' as const,
+  checkForPwaUpdate: async () => {},
+  applyPwaUpdate: () => {},
+}));
+
+import { nodeRegistry } from '@/nodes/registry';
 import { NodeType, type AnyNode, type RotoNode } from '@blackboard/types';
-import type { EffectDefinition } from '@/effects/EffectDefinition';
+import type { NodeDefinition } from '@/nodes/NodeDefinition';
 import {
   createBaseCommands,
   getEffectBindingsForSelection,
@@ -10,7 +20,7 @@ import {
   shouldPreventBrowserZoomGesture,
   shouldPreventNativeDragOrSelection,
 } from './studioHotkeys';
-import { getInitialState } from '@blackboard/state';
+import { getInitialState } from '@/state/editor/initialState';
 import { compileHotkeyBinding, resolveHotkeyBinding } from './resolver';
 import type { HotkeyContext, HotkeyExecutionContext } from './types';
 
@@ -76,12 +86,12 @@ describe('studio hotkey effect bindings', () => {
     expect(getEffectBindingsForSelection(null)).toEqual([]);
   });
 
-  it('adapts legacy toolHotkeys to viewport tool commands', () => {
+  it('maps tool hotkeys to viewport tool commands', () => {
     const selectedNode = {
       id: 'roto-1',
       name: 'Roto',
       type: NodeType.ROTO,
-      visible: true,
+      enabled: true,
     } as AnyNode;
 
     const bindings = getEffectBindingsForSelection(selectedNode);
@@ -96,7 +106,8 @@ describe('studio hotkey effect bindings', () => {
 
   it('restores the recent roto point selection when Q is pressed again on the same shapes', () => {
     const setActiveViewportTool = vi.fn();
-    const setSelectedRotoSelection = vi.fn();
+    const setHierarchySelection = vi.fn();
+    const setSelectedRotoPointRefs = vi.fn();
     const command = createBaseCommands().find(
       (item) => item.id === 'viewport.activateOrToggleRotoSelectMode',
     );
@@ -104,7 +115,7 @@ describe('studio hotkey effect bindings', () => {
       id: 'roto-1',
       name: 'Roto',
       type: NodeType.ROTO,
-      visible: true,
+      enabled: true,
       paths: [
         {
           id: 'shape-1',
@@ -134,7 +145,8 @@ describe('studio hotkey effect bindings', () => {
         }),
         actions: {
           setActiveViewportTool,
-          setSelectedRotoSelection,
+          setHierarchySelection,
+          setSelectedRotoPointRefs,
         },
       } as HotkeyExecutionContext,
       undefined,
@@ -142,14 +154,11 @@ describe('studio hotkey effect bindings', () => {
 
     expect(result).toBe(true);
     expect(setActiveViewportTool).not.toHaveBeenCalled();
-    expect(setSelectedRotoSelection).toHaveBeenCalledWith({
-      layerIds: [],
-      pathIds: ['shape-1'],
-      pointRefs: [
-        { pathId: 'shape-1', pointIndex: 0 },
-        { pathId: 'shape-1', pointIndex: 2 },
-      ],
-    });
+    expect(setHierarchySelection).toHaveBeenCalledWith('', [], ['shape-1']);
+    expect(setSelectedRotoPointRefs).toHaveBeenCalledWith([
+      { pathId: 'shape-1', pointIndex: 0 },
+      { pathId: 'shape-1', pointIndex: 2 },
+    ]);
   });
 
   it('does not toggle from shapes to points when there is no recent point selection', () => {
@@ -169,7 +178,7 @@ describe('studio hotkey effect bindings', () => {
             id: 'roto-1',
             name: 'Roto',
             type: NodeType.ROTO,
-            visible: true,
+            enabled: true,
             paths: [
               {
                 id: 'shape-1',
@@ -200,7 +209,7 @@ describe('studio hotkey effect bindings', () => {
 
   it('toggles roto select from points back to shapes when Q is pressed again', () => {
     const setActiveViewportTool = vi.fn();
-    const setSelectedRotoSelection = vi.fn();
+    const setHierarchySelection = vi.fn();
     const command = createBaseCommands().find(
       (item) => item.id === 'viewport.activateOrToggleRotoSelectMode',
     );
@@ -215,7 +224,7 @@ describe('studio hotkey effect bindings', () => {
             id: 'roto-1',
             name: 'Roto',
             type: NodeType.ROTO,
-            visible: true,
+            enabled: true,
           } as AnyNode,
           selectedNodeType: NodeType.ROTO,
           selectedRotoPathIds: ['shape-1'],
@@ -226,7 +235,7 @@ describe('studio hotkey effect bindings', () => {
         }),
         actions: {
           setActiveViewportTool,
-          setSelectedRotoSelection,
+          setHierarchySelection,
         },
       } as HotkeyExecutionContext,
       undefined,
@@ -234,15 +243,12 @@ describe('studio hotkey effect bindings', () => {
 
     expect(result).toBe(true);
     expect(setActiveViewportTool).not.toHaveBeenCalled();
-    expect(setSelectedRotoSelection).toHaveBeenCalledWith({
-      layerIds: [],
-      pathIds: ['shape-1'],
-    });
+    expect(setHierarchySelection).toHaveBeenCalledWith('', [], ['shape-1']);
   });
 
   it('defaults explicit effect hotkeys to node-level weight 300', () => {
     const dummyType = 'test.effect.hotkeys';
-    const dummyEffect: EffectDefinition = {
+    const dummyNode: NodeDefinition = {
       type: dummyType,
       name: 'Dummy',
       category: 'Effect',
@@ -253,13 +259,13 @@ describe('studio hotkey effect bindings', () => {
       hotkeys: [{ command: 'dummy.run', keys: 'H', scope: 'viewport' }],
     };
 
-    effectRegistry.set(dummyType, dummyEffect);
+    nodeRegistry.set(dummyType, dummyNode);
     try {
       const selectedNode = {
         id: 'dummy-1',
         name: 'Dummy',
         type: dummyType,
-        visible: true,
+        enabled: true,
       } as unknown as AnyNode;
       const bindings = getEffectBindingsForSelection(selectedNode);
       expect(bindings).toContainEqual({
@@ -269,12 +275,18 @@ describe('studio hotkey effect bindings', () => {
         weight: 300,
       });
     } finally {
-      effectRegistry.delete(dummyType);
+      nodeRegistry.delete(dummyType);
     }
   });
 
   it('keeps frame stepping bindings global across active views', () => {
     const lookup = new Map(baseBindings.map((binding) => [binding.keys, binding]));
+
+    expect(lookup.get('Mod+S')).toMatchObject({
+      command: 'history.checkpointCurrent',
+      repeat: false,
+      allowInTextEntry: true,
+    });
 
     expect(lookup.get('Z')).toMatchObject({
       command: 'timeline.seekRelativeFrame',
@@ -351,7 +363,7 @@ describe('studio hotkey effect bindings', () => {
       selectedNode: {
         id: 'node-1',
         type: NodeType.ROTO,
-        visible: true,
+        enabled: true,
       } as AnyNode,
       selectedNodeType: NodeType.ROTO,
     });
@@ -365,12 +377,47 @@ describe('studio hotkey effect bindings', () => {
     expect(candidates[0].command).toBe('flow.deleteSelectedNode');
   });
 
+  it('resolves list node D/G shortcuts from the parent flow scope', () => {
+    const compiledBindings = baseBindings
+      .map((binding, index) => compileHotkeyBinding('test', binding, index + 1))
+      .filter(Boolean) as NonNullable<ReturnType<typeof compileHotkeyBinding>>[];
+
+    const selectionContext = createContext({
+      activeScopeId: 'flow',
+      activeScopePath: ['global', 'flow'],
+      activeView: 'flow',
+      flowMode: 'list',
+      selectedNodeId: 'node-1',
+      selectedNode: {
+        id: 'node-1',
+        type: NodeType.GRADE,
+        enabled: true,
+      } as AnyNode,
+      selectedNodeType: NodeType.GRADE,
+    });
+
+    expect(
+      resolveHotkeyBinding(
+        compiledBindings,
+        createEvent({ key: 'd', code: 'KeyD' }),
+        selectionContext,
+      )[0].command,
+    ).toBe('flow.toggleNodeEnabled');
+    expect(
+      resolveHotkeyBinding(
+        compiledBindings,
+        createEvent({ key: 'g', code: 'KeyG' }),
+        selectionContext,
+      )[0].command,
+    ).toBe('flow.groupSelectedNodes');
+  });
+
   it('keeps viewport alpha toggles above effect tool bindings', () => {
     const selectedNode = {
       id: 'warp-1',
       name: 'Pin Warp',
       type: NodeType.WARP,
-      visible: true,
+      enabled: true,
     } as AnyNode;
 
     const compiledBindings = [...baseBindings, ...getEffectBindingsForSelection(selectedNode)]
@@ -414,12 +461,32 @@ describe('studio hotkey effect bindings', () => {
     });
   });
 
+  it('runs Ctrl+S as a current checkpoint command', () => {
+    const checkpointCurrentHistoryEntry = vi.fn();
+    const command = createBaseCommands().find((item) => item.id === 'history.checkpointCurrent');
+
+    expect(command).toBeDefined();
+
+    const result = command!.run(
+      {
+        ...createContext(),
+        actions: {
+          checkpointCurrentHistoryEntry,
+        },
+      } as unknown as HotkeyExecutionContext,
+      undefined,
+    );
+
+    expect(result).toBe(true);
+    expect(checkpointCurrentHistoryEntry).toHaveBeenCalledOnce();
+  });
+
   it('prioritizes C for recent-frame navigation above effect tool bindings', () => {
     const selectedNode = {
       id: 'paint-1',
       name: 'Paint',
       type: NodeType.PAINT,
-      visible: true,
+      enabled: true,
     } as AnyNode;
 
     const compiledBindings = [...baseBindings, ...getEffectBindingsForSelection(selectedNode)]

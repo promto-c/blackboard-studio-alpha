@@ -65,7 +65,8 @@ interface UseViewportMotionCuesParams {
   rotoMotionBlurPathVisible: boolean;
   rotoMotionTrailFrames: number;
   selectedNode: AnyNode | undefined;
-  selectedRotoPathIds: string[];
+  hierarchySelections: Record<string, { layerIds: string[]; itemIds: string[] }>;
+  selectedNodeId: string | null;
   visualFrame: number;
   maxFrames: number;
   rotoPointWeightMode: RotoPointWeightMode;
@@ -94,7 +95,8 @@ export function useViewportMotionCues({
   rotoMotionBlurPathVisible,
   rotoMotionTrailFrames,
   selectedNode,
-  selectedRotoPathIds,
+  hierarchySelections,
+  selectedNodeId,
   visualFrame,
   maxFrames,
   rotoPointWeightMode,
@@ -108,12 +110,13 @@ export function useViewportMotionCues({
   const motionCueTargetPathIds = useMemo(() => {
     if (!rotoMotionCueEnabled || selectedNode?.type !== NodeType.ROTO) return [];
     const rotoNode = selectedNode as RotoNode;
+    const selectedRotoPathIds = hierarchySelections[selectedNodeId ?? '']?.itemIds ?? [];
     return getMotionCueTargetPathIds(
       rotoNode.paths.map((path) => path.id),
       selectedRotoPathIds,
       rotoMotionCueScope,
     );
-  }, [rotoMotionCueEnabled, selectedNode, selectedRotoPathIds, rotoMotionCueScope]);
+  }, [rotoMotionCueEnabled, selectedNode, hierarchySelections, selectedNodeId, rotoMotionCueScope]);
 
   const motionCueTargetPathIdSet = useMemo(
     () => new Set(motionCueTargetPathIds),

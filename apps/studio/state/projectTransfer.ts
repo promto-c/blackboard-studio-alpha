@@ -5,30 +5,11 @@ import {
   saveDirectoryAssetReferences,
   deleteAssets,
 } from '@/state/assetStorage';
-import { getNodeAssetIds } from '@/effects/effectHelpers';
-import type { AnyNode, EditorStateSlice, Flow, HistoryEntry } from '@blackboard/types';
+import { getNodeAssetIds } from '@/nodes/helpers';
+import type { AnyNode, Flow, PersistedProjectState } from '@blackboard/types';
 import { validateRootFlow } from '@blackboard/types';
 
-type StoredProjectState = Omit<EditorStateSlice, 'projectId'>;
-
-type LegacyExportedProjectAsset = {
-  id: string;
-  name: string;
-  type: string;
-  dataUrl: string;
-};
-
-type LegacyExportedProjectBundle = {
-  format: 'blackboard-studio-project';
-  version: 1;
-  exportedAt: string;
-  project: {
-    name: string;
-    thumbnail: string | null;
-    state: StoredProjectState;
-  };
-  assets: LegacyExportedProjectAsset[];
-};
+type StoredProjectState = PersistedProjectState;
 
 type ExportedEmbeddedProjectAsset = {
   id: string;
@@ -168,11 +149,6 @@ const collectProjectAssetIds = (state: StoredProjectState): string[] => {
 
   collectAssetIdsFromFlows(state.flows, assetIds);
 
-  (state.history || []).forEach((entry: HistoryEntry) => {
-    collectAssetIdsFromNodes(entry.state.nodes, assetIds);
-    collectAssetIdsFromFlows(entry.state.flows, assetIds);
-  });
-
   return Array.from(assetIds);
 };
 
@@ -225,39 +201,6 @@ const parseProjectBundle = (value: unknown): ParsedProjectBundle => {
 
   const state = bundle.project.state as StoredProjectState;
   assertStoredProjectState(state);
-
-  if (bundle.version === 1) {
-    const assets: ParsedProjectAsset[] = bundle.assets.flatMap((asset) => {
-      const candidate = asset as Record<string, unknown>;
-      if (
-        asset &&
-        typeof asset === 'object' &&
-        typeof candidate.id === 'string' &&
-        typeof candidate.name === 'string' &&
-        typeof candidate.type === 'string' &&
-        typeof candidate.dataUrl === 'string'
-      ) {
-        return [
-          {
-            id: candidate.id,
-            kind: 'embedded' as const,
-            name: candidate.name,
-            type: candidate.type,
-            dataUrl: candidate.dataUrl,
-          },
-        ];
-      }
-      return [];
-    });
-
-    return {
-      projectName: bundle.project.name,
-      thumbnail: typeof bundle.project.thumbnail === 'string' ? bundle.project.thumbnail : null,
-      state,
-      assets,
-      referenceGroups: [],
-    };
-  }
 
   if (bundle.version !== PROJECT_BUNDLE_VERSION) {
     throw new Error('Unsupported project file.');

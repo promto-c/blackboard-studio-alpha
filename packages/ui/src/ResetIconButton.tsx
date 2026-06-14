@@ -4,8 +4,8 @@ import IconButton, { type IconButtonProps } from './IconButton';
 
 export type ResetIconButtonProps = Omit<IconButtonProps, 'icon'>;
 
-const ResetIconButton: React.FC<ResetIconButtonProps> = ({ ...props }) => (
-  <IconButton {...props} icon={Reset} />
-);
+function ResetIconButton({ tooltip, iconClassName, ...rest }: ResetIconButtonProps) {
+  return <IconButton icon={Reset} tooltip={tooltip} iconClassName={iconClassName} {...rest} />;
+}
 
 export default ResetIconButton;

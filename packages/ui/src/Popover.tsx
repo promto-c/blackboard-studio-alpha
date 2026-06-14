@@ -13,7 +13,7 @@ interface PopoverProps {
   disableClickOutside?: boolean;
 }
 
-const Popover: React.FC<PopoverProps> = ({
+function Popover({
   trigger,
   children,
   widthClass = 'w-48',
@@ -23,7 +23,7 @@ const Popover: React.FC<PopoverProps> = ({
   isOpen,
   onOpenChange,
   disableClickOutside = false,
-}) => {
+}: PopoverProps) {
   const triggerRef = useRef<HTMLSpanElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const glowRef = useRef<HTMLDivElement>(null);
@@ -152,10 +152,10 @@ const Popover: React.FC<PopoverProps> = ({
   }, [isOpen]);
 
   return (
-    <span className="inline-flex items-center" onMouseDown={(e) => e.stopPropagation()}>
+    <span className="inline-flex items-stretch" onMouseDown={(e) => e.stopPropagation()}>
       <span
         ref={triggerRef}
-        className="inline-flex items-center"
+        className="inline-flex items-stretch"
         onClick={(e) => {
           e.stopPropagation();
           handleToggle();
@@ -184,6 +184,6 @@ const Popover: React.FC<PopoverProps> = ({
         )}
     </span>
   );
-};
+}
 
 export default Popover;

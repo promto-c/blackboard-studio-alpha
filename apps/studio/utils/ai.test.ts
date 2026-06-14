@@ -626,7 +626,7 @@ describe('runOllamaToolAgent', () => {
       id: 'grade-1',
       type: NodeType.GRADE,
       name: 'Grade',
-      visible: true,
+      enabled: true,
       grade: { brightness: 0, contrast: 1, saturation: 1, gain: 1, gamma: 1 },
     };
     let stagedPreview: {
@@ -714,7 +714,7 @@ describe('runOllamaToolAgent', () => {
       id: 'grade-1',
       type: NodeType.GRADE,
       name: 'Grade',
-      visible: true,
+      enabled: true,
       grade: { brightness: 0, contrast: 1, saturation: 1, gain: 1, gamma: 1 },
     };
 

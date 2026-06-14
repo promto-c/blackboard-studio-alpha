@@ -1,6 +1,12 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { ScrollArea } from '@blackboard/ui';
 import { useEditorActions } from '@/state/editorContext';
+import {
+  loadGalleryEntries,
+  makeProjectTag,
+  hasTag,
+  softDeleteGalleryEntries,
+} from '@blackboard/project-store';
 import { getProjectIndex } from '@/state/persist';
 import { getAsset } from '@/state/assetStorage';
 import { ProjectIndexEntry } from '@blackboard/types';
@@ -12,7 +18,10 @@ import {
   type ProjectStorageResult,
 } from '@/state/projectStorage';
 import { useDirectoryImportMode } from '@/hooks/useDirectoryImportMode';
-import { getDirectoryPickerSupport } from '@/utils/directoryPickerSupport';
+import {
+  getDirectoryPickerSupport,
+  type WindowWithDirectoryPicker,
+} from '@/utils/directoryPickerSupport';
 import { IMPORT_MEDIA_ACCEPT } from '@/utils/mediaFiles';
 import {
   PROJECT_BUNDLE_ACCEPT,
@@ -22,14 +31,10 @@ import {
 } from '@/state/projectTransfer';
 import NewProjectView from './NewProjectView';
 import PreferencesView from './PreferencesView';
+import WelcomeGalleryView from './WelcomeGalleryView';
 import ProjectReferenceImportModal from './ProjectReferenceImportModal';
+import { BackgroundJobsMonitor, NativeDesktopStatusButton, PwaStatusButton } from '@/components';
 import * as Icons from '@blackboard/icons';
-
-type WindowWithDirectoryPicker = Window & {
-  showDirectoryPicker?: (options?: {
-    mode?: 'read' | 'readwrite';
-  }) => Promise<FileSystemDirectoryHandle>;
-};
 
 type DirectoryInputProps = React.InputHTMLAttributes<HTMLInputElement> & {
   webkitdirectory?: string;
@@ -42,7 +47,7 @@ type PendingProjectImport = {
   selectedDirectoriesByGroupId: Map<string, FileSystemDirectoryHandle>;
 };
 
-const WelcomeScreen: React.FC = () => {
+function WelcomeScreen() {
   const {
     createNewProject,
     loadProject,
@@ -64,7 +69,7 @@ const WelcomeScreen: React.FC = () => {
   const [calculatingProjectIds, setCalculatingProjectIds] = useState<Set<string>>(new Set());
   const [lazyThumbnails, setLazyThumbnails] = useState<Record<string, string>>({});
   const objectUrlsRef = useRef<Set<string>>(new Set());
-  const [view, setView] = useState<'main' | 'newProject' | 'preferences'>('main');
+  const [view, setView] = useState<'main' | 'newProject' | 'preferences' | 'gallery'>('main');
   const [isImportingProject, setIsImportingProject] = useState(false);
   const [exportingProjectId, setExportingProjectId] = useState<string | null>(null);
   const [pendingProjectImport, setPendingProjectImport] = useState<PendingProjectImport | null>(
@@ -380,12 +385,24 @@ const WelcomeScreen: React.FC = () => {
     e.stopPropagation();
   };
 
-  const handleDeleteProject = (e: React.MouseEvent, projectId: string) => {
+  const handleDeleteProject = async (e: React.MouseEvent, projectId: string) => {
     e.stopPropagation();
     if (
       window.confirm('Are you sure you want to delete this project? This action cannot be undone.')
     ) {
-      deleteProject(projectId);
+      const all = await loadGalleryEntries();
+      const projectTag = makeProjectTag(projectId);
+      const projectEntries = all.filter((e) => hasTag(e.tags, projectTag) && !e.deletedAt);
+      if (projectEntries.length > 0) {
+        if (
+          window.confirm(
+            `Also move ${projectEntries.length} gallery item${projectEntries.length === 1 ? '' : 's'} from this project to the recycle bin? You can restore them later.`,
+          )
+        ) {
+          await softDeleteGalleryEntries(projectEntries.map((e) => e.id));
+        }
+      }
+      await deleteProject(projectId);
       setProjects(projects.filter((p) => p.id !== projectId));
     }
   };
@@ -402,7 +419,17 @@ const WelcomeScreen: React.FC = () => {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
-      <div className="absolute top-4 right-4">
+      <div className="absolute top-4 right-4 flex items-center gap-1">
+        <NativeDesktopStatusButton />
+        <PwaStatusButton />
+        <BackgroundJobsMonitor className="relative" />
+        <button
+          onClick={() => setView('gallery')}
+          className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-full transition-colors"
+          title="Gallery"
+        >
+          <Icons.Photo className="w-6 h-6" />
+        </button>
         <button
           onClick={() => setView('preferences')}
           className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-full transition-colors"
@@ -600,6 +627,13 @@ const WelcomeScreen: React.FC = () => {
         <div key="newProject" className="w-full animate-[fadeIn_250ms_ease-in-out]">
           <NewProjectView onBack={() => setView('main')} onCreate={handleCreateProject} />
         </div>
+      ) : view === 'gallery' ? (
+        <div
+          key="gallery"
+          className="w-full flex flex-col flex-1 min-h-0 animate-[fadeIn_250ms_ease-in-out]"
+        >
+          <WelcomeGalleryView onBack={() => setView('main')} />
+        </div>
       ) : (
         <div key="preferences" className="w-full animate-[fadeIn_250ms_ease-in-out]">
           <PreferencesView onBack={() => setView('main')} />
@@ -645,6 +679,6 @@ const WelcomeScreen: React.FC = () => {
       {importModeDialog}
     </ScrollArea>
   );
-};
+}
 
 export default WelcomeScreen;

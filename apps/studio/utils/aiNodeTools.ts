@@ -1,34 +1,9 @@
-import { AnyNode, GradeNode, NodeType } from '@blackboard/types';
+import { AiChatGradePreviewArtifact, AnyNode, GradeNode, NodeType } from '@blackboard/types';
 import { getValueAtFrame } from '@blackboard/renderer';
 import { canExecuteAiTool, type AiToolPermission } from './aiToolPermissions';
+import type { AiToolExecutionResult, AiToolHandler, AiToolSchema } from './agentToolRegistry';
 
-export interface AiToolSchema {
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: {
-      type: 'object';
-      required?: string[];
-      properties: Record<string, unknown>;
-    };
-  };
-}
-
-export interface AiToolExecutionResult {
-  content: string;
-  artifact?: {
-    type: 'grade-preview';
-    values: {
-      brightness: number;
-      contrast: number;
-      saturation: number;
-    };
-    summary?: string;
-  } | null;
-}
-
-export interface AiNodeToolContext {
+interface AiNodeToolContext {
   node: AnyNode;
   currentFrame: number;
   setGradePreview: (
@@ -51,17 +26,16 @@ export interface AiNodeToolContext {
   } | null;
 }
 
-export interface AiNodeToolDefinition {
+interface AiNodeToolDefinition {
   schema: AiToolSchema;
   permission: AiToolPermission;
-  execute: (args: Record<string, unknown>, context: AiNodeToolContext) => AiToolExecutionResult;
+  execute: (
+    args: Record<string, unknown>,
+    context: AiNodeToolContext,
+  ) => AiToolExecutionResult<AiChatGradePreviewArtifact | null>;
 }
 
-export interface AiNodeToolHandler {
-  schema: AiToolSchema;
-  permission: AiToolPermission;
-  run: (args: Record<string, unknown>) => AiToolExecutionResult;
-}
+type AiNodeToolHandler = AiToolHandler<AiChatGradePreviewArtifact | null>;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 

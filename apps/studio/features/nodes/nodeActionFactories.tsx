@@ -1,7 +1,6 @@
-import React from 'react';
 import { AnyNode } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
-import { effectRegistry } from '@/effects/effectRegistry';
+import { nodeRegistry } from '@/nodes/registry';
 import { isNodeStacked, isStackAdjustmentType } from '@/utils/nodePredicates';
 import type { NodeAction } from './NodeActionMenu';
 
@@ -47,7 +46,7 @@ export function createExecutionAction(
   node: AnyNode,
   onExecuteNode: (nodeId: string) => void,
 ): NodeAction | null {
-  const execution = effectRegistry.get(node.type)?.nodeExecution;
+  const execution = nodeRegistry.get(node.type)?.nodeExecution;
   if (!execution) return null;
 
   const canExecute = execution.canExecute ? execution.canExecute(node) : true;

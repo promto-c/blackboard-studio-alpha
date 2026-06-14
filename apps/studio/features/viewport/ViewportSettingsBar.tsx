@@ -2,12 +2,12 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import { ViewerSettings, ViewerSlot } from '@blackboard/types';
-import { Slider, Popover, HotkeyBadge } from '@/components';
+import { Popover, ScrollArea } from '@blackboard/ui';
+import { Slider, HotkeyBadge } from '@/components';
 import * as Icons from '@blackboard/icons';
 import { useOcio } from '@/state/ocioContext';
-import { nodeFlags } from '@/effects/effectHelpers';
+import { nodeFlags } from '@/nodes/helpers';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { isMergeNodeId } from '@/utils/mergeNodes';
 import { getViewerTargetLabel, VIEWER_SLOT_ORDER } from '@/utils/viewerSlots';
 
 type SettingsBarLayout = 'full' | 'comfortable' | 'compact' | 'narrow';
@@ -24,8 +24,7 @@ const menuButtonClass =
 
 const activeMenuButtonClass = 'bg-primary-500/30 text-white ring-1 ring-inset ring-primary-400/50';
 
-// --- Main Component ---
-const ViewportSettingsBar: React.FC = () => {
+function ViewportSettingsBar() {
   const nodes = useEditorSelector((s) => s.nodes);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const viewerSlots = useEditorSelector((s) => s.viewerSlots);
@@ -47,10 +46,20 @@ const ViewportSettingsBar: React.FC = () => {
   const [availableWidth, setAvailableWidth] = useState(720);
   const [topRightControlsWidth, setTopRightControlsWidth] = useState(0);
 
+  const availableDisplays = useMemo(() => {
+    if (!ocio.isInitialized) return [];
+    return ocio.displays;
+  }, [ocio]);
+
+  const selectedOcioDisplay =
+    availableDisplays.includes(viewerSettings.ocioDisplay) || !ocio.isInitialized
+      ? viewerSettings.ocioDisplay
+      : ocio.defaultDisplay;
+
   const availableViews = useMemo(() => {
     if (!ocio.isInitialized) return [];
-    return ocio.views;
-  }, [ocio]);
+    return ocio.getViews(selectedOcioDisplay).map((view) => view.name);
+  }, [ocio, selectedOcioDisplay]);
 
   useEffect(() => {
     const updateAvailableWidth = () => {
@@ -88,11 +97,34 @@ const ViewportSettingsBar: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // When available views change, if the current view is not valid, reset it.
-    if (availableViews.length > 0 && !availableViews.includes(viewerSettings.ocioView)) {
-      setViewerSettings({ ocioView: availableViews[0] });
+    if (!ocio.isInitialized) return;
+
+    const updates: Partial<ViewerSettings> = {};
+    const nextDisplay = availableDisplays.includes(viewerSettings.ocioDisplay)
+      ? viewerSettings.ocioDisplay
+      : ocio.defaultDisplay;
+    if (nextDisplay && nextDisplay !== viewerSettings.ocioDisplay) {
+      updates.ocioDisplay = nextDisplay;
     }
-  }, [availableViews, viewerSettings.ocioView, setViewerSettings]);
+
+    const nextViews = ocio.getViews(nextDisplay).map((view) => view.name);
+    const nextView = nextViews.includes(viewerSettings.ocioView)
+      ? viewerSettings.ocioView
+      : ocio.getDefaultView(nextDisplay);
+    if (nextView && nextView !== viewerSettings.ocioView) {
+      updates.ocioView = nextView;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      setViewerSettings(updates);
+    }
+  }, [
+    availableDisplays,
+    ocio,
+    setViewerSettings,
+    viewerSettings.ocioDisplay,
+    viewerSettings.ocioView,
+  ]);
 
   useEffect(() => {
     const element = glowRef.current;
@@ -170,7 +202,7 @@ const ViewportSettingsBar: React.FC = () => {
       return nodeFlags(selectedNode.type).isSceneLike ? null : selectedNode.id;
     }
 
-    if (selectedNodeId === OUTPUT_NODE_ID || isMergeNodeId(selectedNodeId)) {
+    if (selectedNodeId === OUTPUT_NODE_ID) {
       return selectedNodeId;
     }
 
@@ -351,7 +383,7 @@ const ViewportSettingsBar: React.FC = () => {
                       ? 'bg-gray-700/90 text-gray-100 ring-gray-500/70 hover:bg-gray-600/90'
                       : 'bg-gray-800/80 text-gray-500 ring-gray-700 hover:text-gray-300 hover:ring-gray-500'
                 }`}
-                title={`Slot ${slot}: ${assignedNodeName}${isActive ? ' (active)' : ''}. Hotkeys: ${slot} recalls slot; in Flow view it assigns selected target. Ctrl/Cmd+${slot} recalls only.`}
+                title={`Slot ${slot}: ${assignedNodeName}${isActive ? ' (active, click to return to output)' : ''}. Hotkeys: ${slot} toggles slot; in Flow view it assigns selected target. Ctrl/Cmd+${slot} toggles only.`}
               >
                 {slot}
               </button>
@@ -359,9 +391,10 @@ const ViewportSettingsBar: React.FC = () => {
           })}
         </div>
 
-        {/* OCIO View */}
+        {/* OCIO Display/View */}
         {showOcioInline && (
           <Popover
+            widthClass="w-80"
             isOpen={openPopoverId === 'ocioView'}
             onOpenChange={(open) => handlePopoverOpenChange('ocioView', open)}
             trigger={
@@ -369,7 +402,7 @@ const ViewportSettingsBar: React.FC = () => {
                 onClick={() => {
                   if (!isBarVisible) setIsBarVisible(true);
                 }}
-                title={`View: ${viewerSettings.ocioView}`}
+                title={`Display: ${selectedOcioDisplay} / ${viewerSettings.ocioView}`}
                 className="flex min-w-0 max-w-44 items-center gap-2 px-3 py-1 text-xs rounded-full transition-colors bg-transparent text-gray-300 hover:bg-white/10 data-[state=open]:bg-white/20 data-[state=open]:text-white"
               >
                 <Icons.ComputerDesktop className="h-4 w-4 shrink-0" />
@@ -378,19 +411,51 @@ const ViewportSettingsBar: React.FC = () => {
             }
           >
             {(close) => (
-              <div className="space-y-1">
-                {availableViews.map((view) => (
-                  <button
-                    key={view}
-                    onClick={() => {
-                      handleSettingChange('ocioView', view);
-                      close();
-                    }}
-                    className={`w-full text-left text-sm px-3 py-1.5 rounded-lg transition-all duration-150 ${viewerSettings.ocioView === view ? 'bg-primary-500/30 text-white ring-1 ring-inset ring-primary-400/50' : 'text-gray-300 hover:bg-white/10'}`}
-                  >
-                    {view}
-                  </button>
-                ))}
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                    Display
+                  </div>
+                  <ScrollArea axis="y" viewportClassName="max-h-32 pr-1">
+                    {availableDisplays.map((display) => (
+                      <button
+                        key={display}
+                        onClick={() => {
+                          setViewerSettings({
+                            ocioDisplay: display,
+                            ocioView: ocio.getDefaultView(display),
+                          });
+                        }}
+                        className={`w-full text-left text-sm px-3 py-1.5 rounded-lg transition-all duration-150 ${
+                          selectedOcioDisplay === display
+                            ? 'bg-primary-500/30 text-white ring-1 ring-inset ring-primary-400/50'
+                            : 'text-gray-300 hover:bg-white/10'
+                        }`}
+                      >
+                        {display}
+                      </button>
+                    ))}
+                  </ScrollArea>
+                </div>
+                <div className="space-y-1">
+                  <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                    View
+                  </div>
+                  <ScrollArea axis="y" viewportClassName="max-h-48 pr-1">
+                    {availableViews.map((view) => (
+                      <button
+                        key={view}
+                        onClick={() => {
+                          handleSettingChange('ocioView', view);
+                          close();
+                        }}
+                        className={`w-full text-left text-sm px-3 py-1.5 rounded-lg transition-all duration-150 ${viewerSettings.ocioView === view ? 'bg-primary-500/30 text-white ring-1 ring-inset ring-primary-400/50' : 'text-gray-300 hover:bg-white/10'}`}
+                      >
+                        {view}
+                      </button>
+                    ))}
+                  </ScrollArea>
+                </div>
               </div>
             )}
           </Popover>
@@ -558,11 +623,38 @@ const ViewportSettingsBar: React.FC = () => {
                 )}
 
                 {ocio.isInitialized && !showOcioInline && (
-                  <div className="space-y-1">
-                    <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
-                      View Transform
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                        Display
+                      </div>
+                      <ScrollArea axis="y" viewportClassName="max-h-40 pr-1">
+                        {availableDisplays.map((display) => (
+                          <button
+                            key={`more-ocio-display-${display}`}
+                            onClick={() => {
+                              setViewerSettings({
+                                ocioDisplay: display,
+                                ocioView: ocio.getDefaultView(display),
+                              });
+                            }}
+                            className={`${menuButtonClass} ${
+                              selectedOcioDisplay === display ? activeMenuButtonClass : ''
+                            }`}
+                            title={display}
+                          >
+                            <span className="min-w-0 truncate font-mono">{display}</span>
+                            {selectedOcioDisplay === display && (
+                              <Icons.Check className="h-4 w-4 shrink-0" />
+                            )}
+                          </button>
+                        ))}
+                      </ScrollArea>
                     </div>
-                    <div className="max-h-48 overflow-y-auto pr-1">
+                    <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                      View
+                    </div>
+                    <ScrollArea axis="y" viewportClassName="max-h-48 pr-1">
                       {availableViews.map((view) => (
                         <button
                           key={`more-ocio-${view}`}
@@ -581,7 +673,7 @@ const ViewportSettingsBar: React.FC = () => {
                           )}
                         </button>
                       ))}
-                    </div>
+                    </ScrollArea>
                   </div>
                 )}
 
@@ -653,6 +745,6 @@ const ViewportSettingsBar: React.FC = () => {
       </button>
     </div>
   );
-};
+}
 
 export default ViewportSettingsBar;

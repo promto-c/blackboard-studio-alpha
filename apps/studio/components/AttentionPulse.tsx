@@ -6,15 +6,17 @@ const ATTENTION_PULSE_CLASS =
 interface AttentionPulseProps extends React.HTMLAttributes<HTMLDivElement> {
   activeKey?: string | null;
   durationMs?: number;
+  className?: string;
+  children?: React.ReactNode;
 }
 
-const AttentionPulse: React.FC<AttentionPulseProps> = ({
+export function AttentionPulse({
   activeKey,
   durationMs = 1000,
   className = '',
   children,
   ...props
-}) => {
+}: AttentionPulseProps) {
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
@@ -35,6 +37,4 @@ const AttentionPulse: React.FC<AttentionPulseProps> = ({
       {children}
     </div>
   );
-};
-
-export default AttentionPulse;
+}

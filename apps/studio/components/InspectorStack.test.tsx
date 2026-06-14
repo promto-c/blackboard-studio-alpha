@@ -2,14 +2,14 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { NodeType, type AnyNode } from '@blackboard/types';
-import InspectorStack from './InspectorStack';
+import { InspectorStack } from './InspectorStack';
 
 const createNode = (id: string, name: string): AnyNode =>
   ({
     id,
     name,
     type: NodeType.BLUR,
-    visible: true,
+    enabled: true,
   }) as AnyNode;
 
 describe('InspectorStack', () => {

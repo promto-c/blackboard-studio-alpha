@@ -5,8 +5,9 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { usePointerDrag } from './usePointerDrag';
+import { TreeDragController, type TreeDragCallbacks } from './TreeDragController';
 
 type RefValue<T> = {
   current: T;
@@ -54,13 +55,6 @@ type DragState<TItem> = {
   key: string;
 };
 
-type PendingDragIntent<TRow> = {
-  pointerId: number;
-  row: TRow;
-  startClientX: number;
-  startClientY: number;
-};
-
 const DEFAULT_ROW_CONTROL_SELECTOR = '[data-tree-row-control="true"]';
 const DEFAULT_DRAG_AUTO_SCROLL_EDGE = 40;
 const DEFAULT_DRAG_AUTO_SCROLL_STEP = 18;
@@ -86,8 +80,6 @@ export const useTreeDragAndDrop = <TItem, TRow extends TreeDragRow<TItem>>({
 }: UseTreeDragAndDropOptions<TItem, TRow>) => {
   const dragStateRef = useRef<DragState<TItem> | null>(null);
   const dropTargetRef = useRef<TreeDropTarget | null>(null);
-  const pendingDragIntentRef = useRef<PendingDragIntent<TRow> | null>(null);
-  const suppressedClickRowKeyRef = useRef<string | null>(null);
   const [dragState, setDragState] = useState<DragState<TItem> | null>(null);
   const [dropTarget, setDropTarget] = useState<TreeDropTarget | null>(null);
 
@@ -304,8 +296,12 @@ export const useTreeDragAndDrop = <TItem, TRow extends TreeDragRow<TItem>>({
     ],
   );
 
-  const beginRowDrag = useCallback(
-    (row: TRow, clientY: number) => {
+  const { handleRowPointerDown, suppressedClickKeyRef } = usePointerDrag<TRow>({
+    activationDistance,
+    onDragStart: (row) => {
+      const target = eventTargetRef.current;
+      if (rowControlSelector && target && target.closest(rowControlSelector)) return false;
+
       const draggedItems = [...getDragItemsForRow(row)];
       if (draggedItems.length === 0 || !rowRefs.current.get(row.key)) return false;
 
@@ -316,30 +312,67 @@ export const useTreeDragAndDrop = <TItem, TRow extends TreeDragRow<TItem>>({
 
       dragStateRef.current = nextDragState;
       setDragState(nextDragState);
-      const nextDropTarget = getDropTargetFromClientY(clientY, draggedItems);
-      dropTargetRef.current = nextDropTarget;
-      setDropTarget(nextDropTarget);
+
+      // Start the drag controller session
+      const controller = dragControllerRef.current;
+      if (controller) {
+        controller.callbacks = dragCallbacksRef.current;
+        controller.start(draggedItems);
+      }
+
       return true;
     },
-    [getDragItemsForRow, getDropTargetFromClientY, rowRefs],
-  );
+  });
 
-  const handleRowPointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLElement>, row: TRow) => {
-      if (event.button !== 0 || !event.isPrimary) return;
+  // Drag controller (persistent class instance, no React deps)
+  const dragControllerRef = useRef<TreeDragController<TItem> | null>(null);
+  if (!dragControllerRef.current) {
+    dragControllerRef.current = new TreeDragController<TItem>();
+  }
 
-      const target = event.target instanceof Element ? event.target : null;
-      if (rowControlSelector && target?.closest(rowControlSelector)) return;
-
-      pendingDragIntentRef.current = {
-        pointerId: event.pointerId,
-        row,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-      };
-      suppressedClickRowKeyRef.current = null;
+  // Stable ref for drag callbacks (updated each render to avoid stale closures)
+  const dragCallbacksRef = useRef<TreeDragCallbacks<TItem> | null>(null);
+  dragCallbacksRef.current = {
+    onDragMove: (clientY, items) => {
+      autoScrollDragViewport(clientY);
+      const nextDropTarget = getDropTargetFromClientY(clientY, items);
+      dropTargetRef.current = nextDropTarget;
+      setDropTarget(nextDropTarget);
     },
-    [rowControlSelector],
+    onDragUp: () => {
+      const activeDropTarget = dropTargetRef.current;
+      const activeDragState = dragStateRef.current;
+      if (activeDropTarget && activeDragState) {
+        void onDrop(activeDragState.items, activeDropTarget);
+      }
+    },
+    onDragCancel: () => {
+      // No commit — just cleanup
+    },
+    onDragEnd: () => {
+      dragStateRef.current = null;
+      dropTargetRef.current = null;
+      setDragState(null);
+      setDropTarget(null);
+    },
+  };
+
+  // Cleanup: stop drag session on unmount to prevent listener leaks
+  useEffect(() => {
+    const controller = dragControllerRef.current;
+    return () => controller?.stop();
+  }, []);
+
+  // Track the event target from the last pointer down for rowControlSelector check
+  const eventTargetRef = useRef<Element | null>(null);
+
+  // Wrap handleRowPointerDown to intercept and store the event target
+  const handleRowPointerDownWithTarget = useCallback(
+    (event: React.PointerEvent<HTMLElement>, row: TRow) => {
+      eventTargetRef.current = event.target instanceof Element ? event.target : null;
+      handleRowPointerDown(event, row);
+    },
+    [handleRowPointerDown],
   );
 
   const handlePrimaryRowClick = useCallback(
@@ -348,8 +381,8 @@ export const useTreeDragAndDrop = <TItem, TRow extends TreeDragRow<TItem>>({
       rowKey: string,
       onSelect: (shiftKey: boolean, toggleKey: boolean) => void,
     ) => {
-      if (suppressedClickRowKeyRef.current === rowKey) {
-        suppressedClickRowKeyRef.current = null;
+      if (suppressedClickKeyRef.current === rowKey) {
+        suppressedClickKeyRef.current = null;
         event.preventDefault();
         event.stopPropagation();
         return;
@@ -357,99 +390,8 @@ export const useTreeDragAndDrop = <TItem, TRow extends TreeDragRow<TItem>>({
 
       onSelect(event.shiftKey, event.metaKey || event.ctrlKey);
     },
-    [],
+    [suppressedClickKeyRef],
   );
-
-  useEffect(() => {
-    const dragSession = dragState;
-    if (!dragSession) return;
-
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = 'grabbing';
-    document.body.style.userSelect = 'none';
-
-    const handlePointerMove = (event: PointerEvent) => {
-      const activeDragState = dragStateRef.current;
-      if (!activeDragState) return;
-
-      autoScrollDragViewport(event.clientY);
-      const nextDropTarget = getDropTargetFromClientY(event.clientY, activeDragState.items);
-      dropTargetRef.current = nextDropTarget;
-      setDropTarget(nextDropTarget);
-    };
-
-    const finishDrag = (commit: boolean) => {
-      const activeDropTarget = dropTargetRef.current;
-      const activeDragState = dragStateRef.current;
-
-      dragStateRef.current = null;
-      dropTargetRef.current = null;
-      setDragState(null);
-      setDropTarget(null);
-
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-
-      if (!commit || !activeDropTarget || !activeDragState) return;
-      void onDrop(activeDragState.items, activeDropTarget);
-    };
-
-    const handlePointerUp = () => finishDrag(true);
-    const handlePointerCancel = () => finishDrag(false);
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp);
-    window.addEventListener('pointercancel', handlePointerCancel);
-
-    return () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener('pointercancel', handlePointerCancel);
-    };
-  }, [autoScrollDragViewport, dragState, getDropTargetFromClientY, onDrop]);
-
-  useEffect(() => {
-    const clearPendingIntent = (pointerId?: number) => {
-      const pendingIntent = pendingDragIntentRef.current;
-      if (!pendingIntent) return;
-      if (pointerId !== undefined && pendingIntent.pointerId !== pointerId) return;
-      pendingDragIntentRef.current = null;
-    };
-
-    const handlePointerMove = (event: PointerEvent) => {
-      const pendingIntent = pendingDragIntentRef.current;
-      if (!pendingIntent || pendingIntent.pointerId !== event.pointerId || dragStateRef.current) {
-        return;
-      }
-
-      const deltaX = event.clientX - pendingIntent.startClientX;
-      const deltaY = event.clientY - pendingIntent.startClientY;
-      if (Math.hypot(deltaX, deltaY) < activationDistance) {
-        return;
-      }
-
-      pendingDragIntentRef.current = null;
-      if (beginRowDrag(pendingIntent.row, event.clientY)) {
-        suppressedClickRowKeyRef.current = pendingIntent.row.key;
-      }
-    };
-
-    const handlePointerUp = (event: PointerEvent) => clearPendingIntent(event.pointerId);
-    const handlePointerCancel = (event: PointerEvent) => clearPendingIntent(event.pointerId);
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp);
-    window.addEventListener('pointercancel', handlePointerCancel);
-
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener('pointercancel', handlePointerCancel);
-    };
-  }, [activationDistance, beginRowDrag]);
 
   const draggedItemKeySet = useMemo(
     () => new Set((dragState?.items ?? []).map((item) => getItemKey(item))),
@@ -458,7 +400,7 @@ export const useTreeDragAndDrop = <TItem, TRow extends TreeDragRow<TItem>>({
 
   return {
     dropTarget,
-    handleRowPointerDown,
+    handleRowPointerDown: handleRowPointerDownWithTarget,
     handlePrimaryRowClick,
     draggedItemKeySet,
     activeDropHighlightLayerId: dropTarget?.highlightLayerId ?? null,

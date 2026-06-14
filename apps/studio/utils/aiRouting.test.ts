@@ -37,6 +37,101 @@ describe('ai routing', () => {
     });
   });
 
+  it('resolves a route through its selected connection', () => {
+    const route = resolveAiTaskRoute('assistantChat', {
+      aiTaskRoutes: {
+        ...DEFAULT_AI_TASK_ROUTES,
+        assistantChat: {
+          provider: 'ollama',
+          connectionId: 'ollama-remote',
+          model: 'qwen2.5-coder:14b',
+        },
+      },
+      integrationConnections: [
+        {
+          id: 'ollama-local',
+          provider: 'ollama',
+          endpoint: 'http://localhost:11434',
+        },
+        {
+          id: 'ollama-remote',
+          provider: 'ollama',
+          endpoint: 'http://studio-box.local:11434',
+        },
+      ],
+      geminiApiKey: '',
+      openAiApiKey: '',
+      openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
+      ollamaEndpoint: 'http://localhost:11434',
+    });
+
+    expect(route).toEqual({
+      provider: 'ollama',
+      connectionId: 'ollama-remote',
+      model: 'qwen2.5-coder:14b',
+      ollamaEndpoint: 'http://studio-box.local:11434',
+      ollamaModel: 'qwen2.5-coder:14b',
+    });
+  });
+
+  it('allows compatible OpenAI endpoints without an API key', () => {
+    expect(
+      getAiTaskRouteError('assistantChat', {
+        aiTaskRoutes: {
+          ...DEFAULT_AI_TASK_ROUTES,
+          assistantChat: {
+            provider: 'openai',
+            connectionId: 'local-openai',
+            model: 'local-coder',
+          },
+        },
+        integrationConnections: [
+          {
+            id: 'local-openai',
+            provider: 'openai',
+            baseUrl: 'http://localhost:8000/v1',
+          },
+        ],
+        geminiApiKey: '',
+        openAiApiKey: '',
+        openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
+        ollamaEndpoint: 'http://localhost:11434',
+      }),
+    ).toBeNull();
+  });
+
+  it('blocks disabled connection models', () => {
+    const preferences = {
+      aiTaskRoutes: {
+        ...DEFAULT_AI_TASK_ROUTES,
+        assistantChat: {
+          provider: 'ollama' as const,
+          connectionId: 'ollama-local',
+          model: 'qwen2.5-coder:14b',
+        },
+      },
+      integrationConnections: [
+        {
+          id: 'ollama-local',
+          provider: 'ollama' as const,
+          endpoint: 'http://localhost:11434',
+          disabledModels: ['qwen2.5-coder:14b'],
+        },
+      ],
+      geminiApiKey: '',
+      openAiApiKey: '',
+      openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
+      ollamaEndpoint: 'http://localhost:11434',
+    };
+
+    expect(getAiTaskRouteError('assistantChat', preferences)).toBe(
+      'Enable this model in Preferences > Integrations or choose another model.',
+    );
+    expect(() => resolveAiTaskRoute('assistantChat', preferences)).toThrow(
+      'Enable this model in Preferences > Integrations or choose another model.',
+    );
+  });
+
   it('reports missing model and provider credentials clearly', () => {
     expect(
       getAiTaskRouteError('shaderGeneration', {

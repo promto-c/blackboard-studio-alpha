@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, type RefObject } from 'react';
 import { isLoopingTimelineNode } from '@/utils/nodePredicates';
 
 type PlaybackMode = 'every_frame' | 'realtime';
@@ -35,7 +35,7 @@ export function usePlayback(
   store: PlaybackStore,
   isPlaying: boolean,
   playbackMode: PlaybackMode,
-  renderLockRef: MutableRefObject<boolean>,
+  renderLockRef: RefObject<boolean>,
 ): void {
   const animationFrameRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number>(0);

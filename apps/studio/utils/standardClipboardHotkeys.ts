@@ -6,7 +6,7 @@ export interface StandardClipboardHandlers {
   onPaste?: () => boolean;
 }
 
-export type StandardClipboardAction = 'copy' | 'cut' | 'paste';
+type StandardClipboardAction = 'copy' | 'cut' | 'paste';
 
 interface StandardClipboardKeyEvent {
   key: string;
@@ -26,7 +26,7 @@ const resolveClipboardHandler = (
   return handlers.onPaste;
 };
 
-export const getStandardClipboardAction = (
+const getStandardClipboardAction = (
   event: Pick<StandardClipboardKeyEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey'>,
 ): StandardClipboardAction | null => {
   if (event.altKey || (!event.ctrlKey && !event.metaKey)) {

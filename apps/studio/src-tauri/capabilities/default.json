@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Default native desktop permissions for the main Blackboard Studio window.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

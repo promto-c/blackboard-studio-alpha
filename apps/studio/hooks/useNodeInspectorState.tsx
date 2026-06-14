@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo } from 'react';
 import { AnyNode, NodeType, RotoNode } from '@blackboard/types';
-import { effectRegistry } from '@/effects/effectRegistry';
+import { nodeRegistry } from '@/nodes/registry';
 import { isStackedAdjustmentNode } from '@/utils/nodePredicates';
 
 export type NodeInspectorLevel = 'node' | 'shape' | 'layer';
@@ -14,8 +14,8 @@ type PropertyComponentProps = {
 interface UseNodeInspectorStateOptions {
   nodes: AnyNode[];
   selectedNode: AnyNode | undefined;
-  selectedRotoLayerIds: string[];
-  selectedRotoPathIds: string[];
+  hierarchySelections: Record<string, { layerIds: string[]; itemIds: string[] }>;
+  selectedNodeId: string | null;
   inspectorLevel: NodeInspectorLevel;
   onInspectorLevelChange: (level: NodeInspectorLevel) => void;
 }
@@ -23,8 +23,8 @@ interface UseNodeInspectorStateOptions {
 export function useNodeInspectorState({
   nodes,
   selectedNode,
-  selectedRotoLayerIds,
-  selectedRotoPathIds,
+  hierarchySelections,
+  selectedNodeId,
   inspectorLevel,
   onInspectorLevelChange,
 }: UseNodeInspectorStateOptions) {
@@ -57,22 +57,16 @@ export function useNodeInspectorState({
   }, [nodes, selectedNode]);
 
   const selectedRotoPath = useMemo(() => {
-    if (
-      !selectedNode ||
-      selectedNode.type !== NodeType.ROTO ||
-      selectedRotoLayerIds.length > 0 ||
-      selectedRotoPathIds.length !== 1
-    ) {
-      return null;
-    }
-
+    if (!selectedNode || selectedNode.type !== NodeType.ROTO) return null;
+    const sel = hierarchySelections[selectedNodeId ?? ''] ?? { layerIds: [], itemIds: [] };
+    if (sel.layerIds.length > 0 || sel.itemIds.length !== 1) return null;
     const rotoNode = selectedNode as RotoNode;
-    return rotoNode.paths.find((path) => path.id === selectedRotoPathIds[0]) ?? null;
-  }, [selectedNode, selectedRotoLayerIds.length, selectedRotoPathIds]);
+    return rotoNode.paths.find((path) => path.id === sel.itemIds[0]) ?? null;
+  }, [selectedNode, selectedNodeId, hierarchySelections]);
 
   const renderComponentForNode = useCallback(
     (node: AnyNode) => {
-      const definition = effectRegistry.get(node.type);
+      const definition = nodeRegistry.get(node.type);
       if (definition) {
         const PropertyComponent =
           definition.AdjustmentComponent as React.ComponentType<PropertyComponentProps>;

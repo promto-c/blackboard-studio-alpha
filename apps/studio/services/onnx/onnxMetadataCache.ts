@@ -40,10 +40,6 @@ export function getCachedOnnxModelOutputMetadata(
   return null;
 }
 
-export function getOnnxModelMetadataError(model: InstalledOnnxModel): string | null {
-  return model.variant.metadataError ?? null;
-}
-
 export async function loadOnnxModelMetadataCached(
   model: InstalledOnnxModel,
   backend: OnnxBackend,
@@ -52,12 +48,6 @@ export async function loadOnnxModelMetadataCached(
 
   if (persisted) {
     return persisted;
-  }
-
-  const persistedError = getOnnxModelMetadataError(model);
-
-  if (persistedError) {
-    throw new Error(persistedError);
   }
 
   const metadata = await loadOnnxModelIoMetadataCached(model, backend);
@@ -72,12 +62,6 @@ export async function loadOnnxModelOutputMetadataCached(
 
   if (persisted) {
     return persisted;
-  }
-
-  const persistedError = getOnnxModelMetadataError(model);
-
-  if (persistedError) {
-    throw new Error(persistedError);
   }
 
   const metadata = await loadOnnxModelIoMetadataCached(model, backend);
@@ -169,12 +153,6 @@ export async function loadOnnxModelIoMetadataCached(
     };
   }
 
-  const persistedError = getOnnxModelMetadataError(model);
-
-  if (persistedError) {
-    throw new Error(persistedError);
-  }
-
   const key = metadataCacheKey(model, backend);
   const inFlight = ioMetadataCache.get(key);
 
@@ -201,10 +179,6 @@ export async function loadOnnxModelIoMetadataCached(
     })
     .catch((err) => {
       ioMetadataCache.delete(key);
-
-      const message = err instanceof Error ? err.message : 'Failed to load model metadata';
-      model.variant.metadataError = message;
-      updateInstalledOnnxModel(model).catch(() => {});
 
       throw err;
     });

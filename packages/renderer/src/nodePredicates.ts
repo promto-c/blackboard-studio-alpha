@@ -1,38 +1,44 @@
 import { AnyNode } from '@blackboard/types';
-import type { EffectRegistryLike } from './types';
+import type { NodeRegistryLike } from './types';
 
 const isPipelineAdjustmentRenderMode = (renderMode?: string): boolean =>
   renderMode === 'shader' ||
   renderMode === 'multipass' ||
   renderMode === 'paint' ||
-  renderMode === 'mask';
+  renderMode === 'mask' ||
+  renderMode === 'warp';
 
-export const createNodePredicates = (effectRegistry: EffectRegistryLike) => ({
+const isStackAdjustmentCategory = (category?: string): boolean =>
+  category === 'Spatial' || category === 'Adjustment' || category === 'Effect';
+
+export const createNodePredicates = (nodeRegistry: NodeRegistryLike) => ({
   isStackAdjustmentType: (type: string): boolean => {
-    const def = effectRegistry.get(type);
+    const def = nodeRegistry.get(type);
     return (
       !!def &&
       def.renderMode !== 'merge' &&
-      (def.category === 'Adjustment' || def.category === 'Effect')
+      def.renderMode !== 'utility' &&
+      isStackAdjustmentCategory(def.category)
     );
   },
 
   isExportAdjustmentType: (type: string): boolean => {
-    const def = effectRegistry.get(type);
+    const def = nodeRegistry.get(type);
     return !!def && isPipelineAdjustmentRenderMode(def.renderMode);
   },
 
   isStackedAdjustmentNode: (node: AnyNode): boolean => {
-    const def = effectRegistry.get(node.type);
+    const def = nodeRegistry.get(node.type);
     const isStackAdj =
       !!def &&
       def.renderMode !== 'merge' &&
-      (def.category === 'Adjustment' || def.category === 'Effect');
+      def.renderMode !== 'utility' &&
+      isStackAdjustmentCategory(def.category);
     return isStackAdj && 'stacked' in node && !!(node as any).stacked;
   },
 
   isStackedExportAdjustmentNode: (node: AnyNode): boolean => {
-    const def = effectRegistry.get(node.type);
+    const def = nodeRegistry.get(node.type);
     const isExportAdj = !!def && isPipelineAdjustmentRenderMode(def.renderMode);
     return isExportAdj && 'stacked' in node && !!(node as any).stacked;
   },
@@ -42,7 +48,7 @@ export const createNodePredicates = (effectRegistry: EffectRegistryLike) => ({
    * instance has `loop` set to true.
    */
   isLoopingTimelineNode: (node: AnyNode): boolean => {
-    const def = effectRegistry.get(node.type);
+    const def = nodeRegistry.get(node.type);
     if (def?.flags?.isLooping) {
       return !!(node as any).loop;
     }
@@ -53,7 +59,7 @@ export const createNodePredicates = (effectRegistry: EffectRegistryLike) => ({
    * Registry-aware check: the node type has `isMediaNode` flag.
    */
   isMediaNodeType: (type: string): boolean => {
-    const def = effectRegistry.get(type);
+    const def = nodeRegistry.get(type);
     return !!def?.flags?.isMediaNode;
   },
 });

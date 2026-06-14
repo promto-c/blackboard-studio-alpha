@@ -1,11 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  EditorTab,
-  type AiChatThread,
-  type AnyNode,
-  type QueuedAiGenerationTask,
-} from '@blackboard/types';
-import { Popover } from '@/components';
+import { EditorTab, type AiChatThread, type AnyNode } from '@blackboard/types';
+import { Popover } from '@blackboard/ui';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import {
   isBackgroundJobActive,
@@ -59,6 +54,8 @@ const typeIcon: Record<BackgroundJobType, IconComponent> = {
   tracking: Icons.Curve,
   ai: Icons.Sparkles,
   agent: Icons.LightBulb,
+  'onnx-download': Icons.ArrowDownTray,
+  'onnx-inference': Icons.Cog,
   'model-download': Icons.ArrowDownTray,
   download: Icons.ArrowDownTray,
   other: Icons.Cog,
@@ -159,35 +156,6 @@ const buildAiChatJobs = (
       isDerived: true,
     }));
 
-const buildAiQueueJobs = (
-  queue: QueuedAiGenerationTask[],
-  isGenerating: boolean,
-  nodes: AnyNode[],
-  projectId: string | null,
-): MonitorJob[] =>
-  queue.map((task, index) => {
-    const isActive = index === 0 && isGenerating;
-    return {
-      id: `ai-task:${task.taskId}`,
-      type: 'ai',
-      title: task.isTextToImage ? 'Text to image' : 'Image generation',
-      subtitle: getNodeLabel(nodes, task.nodeId) ?? (task.nodeId ? 'AI node' : undefined),
-      detail: task.prompt,
-      status: isActive ? 'running' : 'queued',
-      progress: isActive ? 35 : 0,
-      indeterminate: isActive,
-      cancellable: false,
-      startedAt: Number(task.taskId.split('_')[1]) || Date.now(),
-      updatedAt: Number(task.taskId.split('_')[1]) || Date.now(),
-      source: {
-        ...(projectId ? { projectId } : {}),
-        taskId: task.taskId,
-        nodeId: task.nodeId,
-      },
-      isDerived: true,
-    };
-  });
-
 const sortJobs = (jobs: MonitorJob[]): MonitorJob[] =>
   [...jobs].sort((a, b) => {
     const aActive = ACTIVE_STATUSES.has(a.status);
@@ -199,14 +167,20 @@ const sortJobs = (jobs: MonitorJob[]): MonitorJob[] =>
 const isJobInProject = (
   job: MonitorJob,
   projectId: string | null,
-  projectNodeIds: Set<string>,
+  _projectNodeIds: Set<string>,
 ): boolean => {
   if (!projectId) return true;
-  if (job.source?.projectId) return job.source.projectId === projectId;
+  return job.source?.projectId === projectId;
+};
 
-  // Legacy jobs created before project scoping only know their node. Keep them visible
-  // when that node exists in the currently loaded project.
-  return !!job.source?.nodeId && projectNodeIds.has(job.source.nodeId);
+const isTrackingJobInvalidated = (job: MonitorJob, projectNodeIds: Set<string>): boolean => {
+  if (job.type !== 'tracking') return false;
+  const upstreamNodeIds = job.source?.upstreamNodeIds;
+  if (!upstreamNodeIds || upstreamNodeIds.length === 0) return false;
+  // A tracking job is invalidated when one or more upstream nodes no longer exist
+  // in the pipeline. This can happen if a media node is deleted or a pipeline node
+  // is removed/replaced.
+  return upstreamNodeIds.some((nodeId) => !projectNodeIds.has(nodeId));
 };
 
 const getJobContextLabel = (job: MonitorJob): string | undefined => {
@@ -216,22 +190,23 @@ const getJobContextLabel = (job: MonitorJob): string | undefined => {
   return undefined;
 };
 
-const JobIcon: React.FC<{ type: BackgroundJobType; className?: string }> = ({
-  type,
-  className = 'h-4 w-4',
-}) => {
-  const Icon = typeIcon[type] ?? Icons.Cog;
-  return <Icon className={className} />;
+const getJobScopeLabel = (job: MonitorJob, projectId: string | null): string => {
+  if (!projectId) return 'App';
+  if (!job.source?.projectId) return 'App';
+  return job.source.projectId === projectId ? 'This project' : 'Elsewhere';
 };
 
-const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
+function JobIcon({ type, className = 'h-4 w-4' }: { type: BackgroundJobType; className?: string }) {
+  const Icon = typeIcon[type] ?? Icons.Cog;
+  return <Icon className={className} />;
+}
+
+export function BackgroundJobsMonitor({
   className = 'pointer-events-auto fixed right-16 top-4 z-[60]',
   compact = false,
-}) => {
+}: BackgroundJobsMonitorProps) {
   const explicitJobs = useEditorSelector((state) => state.backgroundJobs);
   const aiChats = useEditorSelector((state) => state.aiChats);
-  const aiGenerationQueue = useEditorSelector((state) => state.aiGenerationQueue);
-  const isAiCurrentlyGenerating = useEditorSelector((state) => state.isAiCurrentlyGenerating);
   const nodes = useEditorSelector((state) => state.nodes);
   const projectId = useEditorSelector((state) => state.projectId);
   const {
@@ -254,13 +229,8 @@ const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
   const projectNodeIds = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
 
   const allJobs = useMemo(
-    () =>
-      sortJobs([
-        ...explicitJobs,
-        ...buildAiChatJobs(aiChats, nodes, projectId),
-        ...buildAiQueueJobs(aiGenerationQueue, isAiCurrentlyGenerating, nodes, projectId),
-      ]),
-    [aiChats, aiGenerationQueue, explicitJobs, isAiCurrentlyGenerating, nodes, projectId],
+    () => sortJobs([...explicitJobs, ...buildAiChatJobs(aiChats, nodes, projectId)]),
+    [aiChats, explicitJobs, nodes, projectId],
   );
 
   const projectJobs = useMemo(
@@ -280,6 +250,12 @@ const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
   const hiddenActiveJobCount = canFilterByProject
     ? Math.max(0, allActiveJobCount - projectActiveJobCount)
     : 0;
+  const allScopeActiveCue =
+    canFilterByProject && hiddenActiveJobCount > 0
+      ? `${hiddenActiveJobCount} running elsewhere`
+      : allActiveJobCount > 0
+        ? `${allActiveJobCount} running`
+        : undefined;
 
   if (allJobs.length === 0) return null;
 
@@ -331,7 +307,14 @@ const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
         setActiveAiChat(source.chatId);
       } else if (source.nodeId) {
         setActiveTab(EditorTab.Flow);
-        selectNode(source.nodeId);
+        // Don't select the roto node for invalidated tracking jobs — the upstream
+        // pipeline may have changed, so selecting would steal focus from the node
+        // the user was editing.
+        const invalidated =
+          job.type === 'tracking' && isTrackingJobInvalidated(job, projectNodeIds);
+        if (!invalidated) {
+          selectNode(source.nodeId);
+        }
       } else if (source.projectId) {
         setActiveTab(EditorTab.Flow);
       } else {
@@ -425,14 +408,23 @@ const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
                     <button
                       type="button"
                       onClick={() => setJobScope('all')}
-                      className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold transition ${
+                      className={`relative inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold transition ${
                         jobScope === 'all'
                           ? 'border-primary-300/35 bg-primary-300/20 text-primary-50'
                           : 'border-transparent text-gray-500 hover:bg-white/[0.04] hover:text-gray-300'
                       }`}
-                      title="Show every background job"
+                      title={
+                        allScopeActiveCue
+                          ? `Show every background job. ${allScopeActiveCue}.`
+                          : 'Show every background job'
+                      }
                     >
-                      All
+                      <span>All</span>
+                      {hiddenActiveJobCount > 0 && (
+                        <span className="inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary-300/20 px-1 font-mono text-[9px] leading-none text-amber-50 shadow-[0_0_10px_rgba(252,211,77,0.18)]">
+                          {hiddenActiveJobCount}
+                        </span>
+                      )}
                     </button>
                   </div>
                 )}
@@ -481,6 +473,8 @@ const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
                 const canCancel = isActive && job.cancellable;
                 const batchSlots = getBatchSlots(job.source, job.status);
                 const contextLabel = getJobContextLabel(job);
+                const jobScopeLabel = getJobScopeLabel(job, projectId);
+                const showJobScopeCue = canFilterByProject && jobScope === 'all';
 
                 return (
                   <div
@@ -509,6 +503,30 @@ const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
                           <span className="shrink-0 rounded-full bg-black/20 px-1.5 py-0.5 text-[10px] uppercase text-current/70">
                             {statusLabel[job.status]}
                           </span>
+                          {showJobScopeCue && (
+                            <span
+                              className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${
+                                jobScopeLabel === 'Elsewhere'
+                                  ? isActive
+                                    ? 'border-amber-200/30 bg-amber-300/15 text-amber-50'
+                                    : 'border-white/10 bg-black/15 text-current/55'
+                                  : 'border-white/10 bg-black/15 text-current/55'
+                              }`}
+                              title={
+                                jobScopeLabel === 'Elsewhere'
+                                  ? 'This job belongs to another project'
+                                  : jobScopeLabel
+                              }
+                            >
+                              {jobScopeLabel}
+                            </span>
+                          )}
+                          {job.type === 'tracking' &&
+                            isTrackingJobInvalidated(job, projectNodeIds) && (
+                              <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-100">
+                                Stale
+                              </span>
+                            )}
                         </div>
                         {job.subtitle && (
                           <p className="mt-0.5 truncate text-[11px] text-current/65">
@@ -578,6 +596,4 @@ const BackgroundJobsMonitor: React.FC<BackgroundJobsMonitorProps> = ({
       </Popover>
     </div>
   );
-};
-
-export default BackgroundJobsMonitor;
+}

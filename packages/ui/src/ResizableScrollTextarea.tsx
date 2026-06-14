@@ -59,7 +59,6 @@ const ResizableScrollTextarea = React.forwardRef<HTMLTextAreaElement, ResizableS
       const textarea = textareaRef.current;
       if (!textarea) return;
 
-      textarea.style.height = 'auto';
       const nextHeight = Math.max(minHeight, textarea.scrollHeight);
       setContentHeight((current) => (Math.abs(current - nextHeight) < 1 ? current : nextHeight));
     }, [minHeight]);
@@ -72,9 +71,19 @@ const ResizableScrollTextarea = React.forwardRef<HTMLTextAreaElement, ResizableS
       setVisibleMaxHeight((current) => Math.min(maxHeight, Math.max(minHeight, current)));
     }, [maxHeight, minHeight]);
 
+    React.useEffect(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      const handler = (e: WheelEvent) => {
+        e.stopPropagation();
+      };
+      textarea.addEventListener('wheel', handler);
+      return () => textarea.removeEventListener('wheel', handler);
+    }, []);
+
     const handleChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       onChange?.(event);
-      window.requestAnimationFrame(measureContentHeight);
+      measureContentHeight();
     };
 
     const handleResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {

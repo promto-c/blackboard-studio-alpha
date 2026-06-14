@@ -6,7 +6,7 @@ interface ChannelsProps {
   className?: string;
 }
 
-export const Channels: React.FC<ChannelsProps> = ({ channel, className }) => {
+export function Channels({ channel, className }: ChannelsProps) {
   const red = '#F87171';
   const green = '#4ADE80';
   const blue = '#60A5FA';
@@ -25,4 +25,4 @@ export const Channels: React.FC<ChannelsProps> = ({ channel, className }) => {
       <circle cx="12" cy="9.5" r="5" fill={rFill} fillOpacity="0.75" />
     </svg>
   );
-};
+}

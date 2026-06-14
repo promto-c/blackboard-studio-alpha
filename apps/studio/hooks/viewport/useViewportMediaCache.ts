@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { getAsset } from '@/state/assetStorage';
-import { NodeType, type AnyNode, type ImageSequenceNode, type VideoNode } from '@blackboard/types';
+import {
+  NodeType,
+  type AnyNode,
+  type ImageSequenceNode,
+  type MediaSourceNode,
+} from '@blackboard/types';
 import { createExrTexture } from '@/utils/exr';
 import {
   type MediaBlobLike,
@@ -9,15 +14,40 @@ import {
   isExrFileLike,
   isVideoFileLike,
 } from '@/utils/mediaFiles';
+import { isNonEmptyString, getNonEmptyString } from '@/utils/guards';
 import { TextureCache } from '@/utils/textureCache';
-import { getRecommendedCacheSizeMB, usePreferences } from '@/state/preferencesContext';
-import { getInputPorts, nodeFlags, getNodeAssetIds } from '@/effects/effectHelpers';
+import { type BackgroundPrefetchMode, getRecommendedCacheSizeMB } from '@/state/preferences';
+import { usePreferences } from '@/state/preferencesContext';
+import { getInputPorts, getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
 
 interface CacheStatus {
   memoryUsed: number;
   memoryLimit: number;
   cachedFrames: boolean[];
   cachingFrames: boolean[];
+}
+
+interface VideoDecodeSession {
+  video: HTMLVideoElement;
+  objectUrl: string;
+  ready: Promise<void>;
+  queue: Promise<void>;
+  disposed: boolean;
+}
+
+interface QueuedVideoDecodeWindow {
+  src: string;
+  frames: number[];
+  promise: Promise<void>;
+  started: boolean;
+  anchorFrame: number;
+  priority: VideoFrameRequestPriority;
+}
+
+type VideoFrameRequestPriority = 'required' | 'prefetch';
+
+interface VideoFrameRequestOptions {
+  priority?: VideoFrameRequestPriority;
 }
 
 interface UseViewportMediaCacheOptions {
@@ -42,6 +72,141 @@ const isTemporalInputPort = (port: ReturnType<typeof getInputPorts>[number]): bo
   !!port.frameOffsetUniform ||
   !!port.absoluteFrameUniform;
 
+const isVideoFileNode = (node: AnyNode): boolean => {
+  const descriptor = getMediaDescriptor(node.type);
+  return !!(descriptor?.isVideoFile?.(node) ?? nodeFlags(node.type).isVideoFile);
+};
+
+const getFrameAssetIds = (node: AnyNode): string[] => {
+  const frames = (node as { frames?: unknown }).frames;
+  return Array.isArray(frames) ? frames.filter(isNonEmptyString) : [];
+};
+
+const getFrameAssetIdAt = (node: AnyNode, frame: number): string | null => {
+  const frames = getFrameAssetIds(node);
+  if (frames.length === 0) return null;
+  const index = Math.floor(frame);
+  const safeIndex = ((index % frames.length) + frames.length) % frames.length;
+  return frames[safeIndex] ?? null;
+};
+
+const getNodeSrc = (node: AnyNode): string | null => {
+  const src = (node as { src?: unknown }).src;
+  return getNonEmptyString(src) ?? null;
+};
+
+const getGeneratedOutputAssetIdsAt = (node: AnyNode, frame: number): string[] => {
+  const outputs = (node as { generatedOutputs?: unknown }).generatedOutputs;
+  if (!Array.isArray(outputs)) return [];
+
+  return outputs.flatMap((output): string[] => {
+    if (!output || typeof output !== 'object') return [];
+    const candidate = output as { src?: unknown; frames?: unknown; deletedAt?: unknown };
+    if (candidate.deletedAt) return [];
+
+    const frames = Array.isArray(candidate.frames) ? candidate.frames.filter(isNonEmptyString) : [];
+    if (frames.length > 0) {
+      const index = Math.floor(frame);
+      const safeIndex = ((index % frames.length) + frames.length) % frames.length;
+      return frames[safeIndex] ? [frames[safeIndex]] : [];
+    }
+
+    const src = getNonEmptyString(candidate.src);
+    return src ? [src] : [];
+  });
+};
+
+const getVideoFrameCacheKey = (src: string, frame: number) => `${src}:${Math.round(frame)}`;
+
+const getVideoFrameCacheSource = (key: string): string | null => {
+  const separatorIndex = key.lastIndexOf(':');
+  if (separatorIndex <= 0) return null;
+  const frameText = key.slice(separatorIndex + 1);
+  if (!/^\d+$/.test(frameText)) return null;
+  return key.slice(0, separatorIndex);
+};
+
+const getVideoFrameCacheFrame = (key: string): number | null => {
+  const separatorIndex = key.lastIndexOf(':');
+  if (separatorIndex <= 0) return null;
+  const frame = Number.parseInt(key.slice(separatorIndex + 1), 10);
+  return Number.isFinite(frame) ? frame : null;
+};
+
+const VIDEO_FRAME_WINDOW_BEFORE = 1;
+const VIDEO_FRAME_WINDOW_AFTER = 5;
+const VIDEO_STALE_FRAME_PADDING = 2;
+
+type PrefetchDirection = 1 | -1;
+
+const isVideoFrameWindowRelevant = (
+  frames: number[],
+  currentFrame: number,
+  backgroundPrefetchFrameWindow: number,
+): boolean => {
+  const latestFrame = Math.max(0, Math.round(currentFrame));
+  const staleDistance =
+    Math.max(VIDEO_FRAME_WINDOW_BEFORE, VIDEO_FRAME_WINDOW_AFTER) +
+    Math.max(backgroundPrefetchFrameWindow, 0) +
+    VIDEO_STALE_FRAME_PADDING;
+
+  return frames.some((targetFrame) => Math.abs(targetFrame - latestFrame) <= staleDistance);
+};
+
+const isFrameInsideDecodeWindow = (frames: number[], frame: number): boolean => {
+  const roundedFrame = Math.max(0, Math.round(frame));
+  return frames.some((targetFrame) => targetFrame === roundedFrame);
+};
+
+const buildVideoDecodeWindowFrames = (frame: number, hasPriorityFrame: boolean): number[] => {
+  const roundedFrame = Math.max(0, Math.round(frame));
+  const start = Math.max(0, roundedFrame - VIDEO_FRAME_WINDOW_BEFORE);
+  const end = Math.max(start, roundedFrame + VIDEO_FRAME_WINDOW_AFTER);
+  const frames: number[] = [];
+
+  if (hasPriorityFrame) {
+    frames.push(roundedFrame);
+    for (let candidate = roundedFrame + 1; candidate <= end; candidate += 1) {
+      frames.push(candidate);
+    }
+    for (let candidate = roundedFrame - 1; candidate >= start; candidate -= 1) {
+      frames.push(candidate);
+    }
+    return frames;
+  }
+
+  for (let candidate = start; candidate <= end; candidate += 1) {
+    frames.push(candidate);
+  }
+  return frames;
+};
+
+const buildBackgroundPrefetchOffsets = (
+  mode: BackgroundPrefetchMode,
+  frameWindow: number,
+  autoDirection: PrefetchDirection,
+): number[] => {
+  const offsets: number[] = [];
+  for (let step = 1; step <= frameWindow; step += 1) {
+    if (mode === 'bidirectional') {
+      offsets.push(step, -step);
+    } else if (mode === 'auto') {
+      offsets.push(step * autoDirection);
+    } else {
+      offsets.push(step);
+    }
+  }
+  return offsets;
+};
+
+const disposeVideoDecodeSession = (session: VideoDecodeSession) => {
+  session.disposed = true;
+  session.video.pause();
+  session.video.src = '';
+  session.video.load();
+  URL.revokeObjectURL(session.objectUrl);
+};
+
 export const useViewportMediaCache = ({
   nodes,
   currentFrame,
@@ -65,14 +230,30 @@ export const useViewportMediaCache = ({
   const pendingLoadsRef = useRef(new Map<string, Promise<void>>());
   const pendingVideoFrameLoadsRef = useRef(new Map<string, Promise<void>>());
   const pendingVideoFramesRef = useRef(new Set<string>());
-  const pendingVideoFrameBySrcRef = useRef(new Map<string, string>());
+  const pendingVideoFrameKeysBySrcRef = useRef(new Map<string, Set<string>>());
+  const videoDecodeSessionsRef = useRef(new Map<string, VideoDecodeSession>());
+  const queuedVideoDecodeWindowsRef = useRef(new Map<number, QueuedVideoDecodeWindow>());
+  const canceledVideoDecodeWindowIdsRef = useRef(new Set<number>());
+  const nextVideoDecodeWindowIdRef = useRef(1);
   const [mediaUpdateTrigger, setMediaUpdateTrigger] = useState(0);
+  const currentFrameRef = useRef(currentFrame);
+  const autoPrefetchDirectionRef = useRef<PrefetchDirection>(1);
 
   // Keep FPS in a ref to access it inside the cached loadAsset function without re-creating it
   const fpsRef = useRef(fps);
   useEffect(() => {
     fpsRef.current = fps;
   }, [fps]);
+
+  useEffect(() => {
+    const previousFrame = currentFrameRef.current;
+    if (currentFrame > previousFrame) {
+      autoPrefetchDirectionRef.current = 1;
+    } else if (currentFrame < previousFrame) {
+      autoPrefetchDirectionRef.current = -1;
+    }
+    currentFrameRef.current = currentFrame;
+  }, [currentFrame]);
 
   const bumpMediaUpdateTrigger = useCallback(() => {
     setMediaUpdateTrigger((value) => value + 1);
@@ -84,6 +265,15 @@ export const useViewportMediaCache = ({
     textureCacheRef.current.setFrameLimit(effectiveFrameLimit);
     bumpMediaUpdateTrigger();
   }, [bumpMediaUpdateTrigger, effectiveFrameLimit, effectiveMaxCacheSizeMB]);
+
+  const videoSrcsInProject = useMemo(() => {
+    const srcs = new Set<string>();
+    nodes.forEach((node) => {
+      if (!isVideoFileNode(node)) return;
+      getNodeAssetIds(node).forEach((id) => srcs.add(id));
+    });
+    return srcs;
+  }, [nodes]);
 
   const assetIdsInProject = useMemo(() => {
     const ids = new Set<string>();
@@ -97,11 +287,18 @@ export const useViewportMediaCache = ({
     return nodes.filter((node) => node.type === NodeType.IMAGE_SEQUENCE) as ImageSequenceNode[];
   }, [nodes]);
   const videoNodes = useMemo(() => {
-    return nodes.filter((node) => node.type === NodeType.VIDEO) as VideoNode[];
+    return nodes.filter(
+      (node) =>
+        node.type === NodeType.MEDIA_SOURCE && (node as MediaSourceNode).mediaKind === 'video',
+    ) as MediaSourceNode[];
   }, [nodes]);
   const activeTimelineCacheNode = useMemo(() => {
-    if (selectedNode?.type === NodeType.IMAGE_SEQUENCE || selectedNode?.type === NodeType.VIDEO) {
-      return selectedNode as ImageSequenceNode | VideoNode;
+    if (
+      selectedNode?.type === NodeType.IMAGE_SEQUENCE ||
+      (selectedNode?.type === NodeType.MEDIA_SOURCE &&
+        (selectedNode as MediaSourceNode).mediaKind === 'video')
+    ) {
+      return selectedNode as ImageSequenceNode | MediaSourceNode;
     }
     return sequenceNodes[0] ?? videoNodes[0];
   }, [selectedNode, sequenceNodes, videoNodes]);
@@ -112,7 +309,7 @@ export const useViewportMediaCache = ({
     return (idx + node.frames.length) % node.frames.length;
   }, []);
   const getVideoFrameKey = useCallback((src: string, frame: number) => {
-    return `${src}:${Math.round(frame)}`;
+    return getVideoFrameCacheKey(src, frame);
   }, []);
 
   const buildTimelineStatus = useCallback(
@@ -171,27 +368,110 @@ export const useViewportMediaCache = ({
     [getVideoFrameKey],
   );
 
-  const setPendingVideoFrame = useCallback(
-    (src: string, frame: number | null) => {
+  const setPendingVideoFrames = useCallback(
+    (src: string, frames: number[]) => {
       const pendingVideoFrames = pendingVideoFramesRef.current;
-      const pendingVideoFrameBySrc = pendingVideoFrameBySrcRef.current;
-      const previousKey = pendingVideoFrameBySrc.get(src);
-      const nextKey = frame === null ? null : getVideoFrameKey(src, frame);
-      if (previousKey === nextKey) return;
+      const pendingVideoFrameKeysBySrc = pendingVideoFrameKeysBySrcRef.current;
+      const previousKeys = pendingVideoFrameKeysBySrc.get(src) ?? new Set<string>();
+      const nextKeys = new Set(frames.map((frame) => getVideoFrameKey(src, frame)));
+      const didChange =
+        previousKeys.size !== nextKeys.size ||
+        Array.from(previousKeys).some((key) => !nextKeys.has(key));
+      if (!didChange) return;
 
-      if (previousKey) {
-        pendingVideoFrames.delete(previousKey);
-        pendingVideoFrameBySrc.delete(src);
-      }
+      previousKeys.forEach((key) => pendingVideoFrames.delete(key));
 
-      if (nextKey) {
-        pendingVideoFrames.add(nextKey);
-        pendingVideoFrameBySrc.set(src, nextKey);
+      if (nextKeys.size > 0) {
+        nextKeys.forEach((key) => pendingVideoFrames.add(key));
+        pendingVideoFrameKeysBySrc.set(src, nextKeys);
+      } else {
+        pendingVideoFrameKeysBySrc.delete(src);
       }
 
       bumpMediaUpdateTrigger();
     },
     [bumpMediaUpdateTrigger, getVideoFrameKey],
+  );
+
+  const refreshPendingVideoFramesForSrc = useCallback(
+    (src: string) => {
+      const frames: number[] = [];
+      pendingVideoFrameLoadsRef.current.forEach((_promise, key) => {
+        if (getVideoFrameCacheSource(key) !== src) return;
+        const frame = getVideoFrameCacheFrame(key);
+        if (frame !== null) frames.push(frame);
+      });
+      setPendingVideoFrames(src, frames);
+    },
+    [setPendingVideoFrames],
+  );
+
+  const isCurrentFrameInPendingVideoArea = useCallback(
+    (queuedWindow: QueuedVideoDecodeWindow, frame: number) => {
+      if (isFrameInsideDecodeWindow(queuedWindow.frames, frame)) return true;
+
+      const frameKey = getVideoFrameKey(queuedWindow.src, frame);
+      const pendingCurrentFrameLoad = pendingVideoFrameLoadsRef.current.get(frameKey);
+      return !!pendingCurrentFrameLoad && pendingCurrentFrameLoad === queuedWindow.promise;
+    },
+    [getVideoFrameKey],
+  );
+
+  const cancelQueuedVideoWindow = useCallback(
+    (requestId: number, queuedWindow: QueuedVideoDecodeWindow) => {
+      canceledVideoDecodeWindowIdsRef.current.add(requestId);
+      queuedVideoDecodeWindowsRef.current.delete(requestId);
+      queuedWindow.frames.forEach((frame) => {
+        const frameKey = getVideoFrameKey(queuedWindow.src, frame);
+        if (pendingVideoFrameLoadsRef.current.get(frameKey) === queuedWindow.promise) {
+          pendingVideoFrameLoadsRef.current.delete(frameKey);
+        }
+      });
+    },
+    [getVideoFrameKey],
+  );
+
+  const cancelStaleQueuedVideoWindowsForSrc = useCallback(
+    (src: string, keepFrames: number[], anchorFrame: number) => {
+      let didCancel = false;
+      queuedVideoDecodeWindowsRef.current.forEach((queuedWindow, requestId) => {
+        if (queuedWindow.src !== src || queuedWindow.started) return;
+        if (queuedWindow.frames.some((frame) => keepFrames.includes(frame))) return;
+        if (isFrameInsideDecodeWindow(queuedWindow.frames, anchorFrame)) return;
+
+        cancelQueuedVideoWindow(requestId, queuedWindow);
+        didCancel = true;
+      });
+
+      if (didCancel) {
+        refreshPendingVideoFramesForSrc(src);
+        bumpMediaUpdateTrigger();
+      }
+    },
+    [bumpMediaUpdateTrigger, cancelQueuedVideoWindow, refreshPendingVideoFramesForSrc],
+  );
+
+  const promoteQueuedVideoWindow = useCallback(
+    (src: string, promise: Promise<void>, priorityFrames: number[], anchorFrame: number) => {
+      queuedVideoDecodeWindowsRef.current.forEach((queuedWindow) => {
+        if (queuedWindow.src !== src || queuedWindow.promise !== promise || queuedWindow.started) {
+          return;
+        }
+
+        const originalFrames = new Set(queuedWindow.frames);
+        const promotedFrames = priorityFrames.filter((frame) => originalFrames.has(frame));
+        if (promotedFrames.length > 0) {
+          const nextFrames = [
+            ...promotedFrames,
+            ...queuedWindow.frames.filter((frame) => !promotedFrames.includes(frame)),
+          ];
+          queuedWindow.frames.splice(0, queuedWindow.frames.length, ...nextFrames);
+        }
+        queuedWindow.anchorFrame = anchorFrame;
+        queuedWindow.priority = 'required';
+      });
+    },
+    [],
   );
 
   const loadAsset = useCallback(
@@ -234,20 +514,14 @@ export const useViewportMediaCache = ({
             // Use NoColorSpace to ensure raw data access; color mgmt is handled in shaders
             texture.colorSpace = THREE.NoColorSpace;
 
-            const onSeeking = () => {
-              const currentFps = fpsRef.current || 30;
-              setPendingVideoFrame(src, Math.round(video.currentTime * currentFps));
-            };
             const onSeeked = () => {
               // Snapshot the current frame to cache for better performance
               captureVideoFrame(src, video);
 
-              setPendingVideoFrame(src, null);
               texture.needsUpdate = true;
               bumpMediaUpdateTrigger();
             };
 
-            video.addEventListener('seeking', onSeeking);
             video.addEventListener('seeked', onSeeked);
 
             cache.add(src, texture, video, createdUrl);
@@ -259,7 +533,6 @@ export const useViewportMediaCache = ({
             // The `onSeeked` handler will call `bumpMediaUpdateTrigger` once
             // the frame is actually decoded, so we skip the immediate bump
             // for video assets.
-            setPendingVideoFrame(src, 0);
             video.currentTime = 0;
           } else if (isExrFileLike(assetBlob, getBlobName(assetBlob))) {
             const texture = await createExrTexture(assetBlob, { cacheKey: src });
@@ -298,112 +571,252 @@ export const useViewportMediaCache = ({
       bumpMediaUpdateTrigger();
       await pendingLoad;
     },
-    [bumpMediaUpdateTrigger, captureVideoFrame, setPendingVideoFrame],
+    [bumpMediaUpdateTrigger, captureVideoFrame],
   );
 
   const requestVideoFrame = useCallback(
-    async (src: string, frame: number) => {
+    async (src: string, frame: number, options: VideoFrameRequestOptions = {}) => {
       if (!src) return;
 
-      const roundedFrame = Math.round(frame);
+      const priority = options.priority ?? 'required';
+      const roundedFrame = Math.max(0, Math.round(frame));
       const frameKey = getVideoFrameKey(src, roundedFrame);
       if (textureCacheRef.current.has(frameKey)) return;
 
+      const decodeFrames = buildVideoDecodeWindowFrames(roundedFrame, priority === 'required');
+      if (priority === 'required') {
+        cancelStaleQueuedVideoWindowsForSrc(src, decodeFrames, Math.round(currentFrameRef.current));
+      }
+
       const existingLoad = pendingVideoFrameLoadsRef.current.get(frameKey);
       if (existingLoad) {
+        if (priority === 'required') {
+          promoteQueuedVideoWindow(
+            src,
+            existingLoad,
+            decodeFrames,
+            Math.round(currentFrameRef.current),
+          );
+        }
         await existingLoad;
         return;
       }
 
+      const windowFrames: number[] = [];
+      for (const candidate of decodeFrames) {
+        const candidateKey = getVideoFrameKey(src, candidate);
+        if (textureCacheRef.current.has(candidateKey)) continue;
+        if (pendingVideoFrameLoadsRef.current.has(candidateKey)) continue;
+        windowFrames.push(candidate);
+      }
+
+      if (windowFrames.length === 0) return;
+
+      const requestId = nextVideoDecodeWindowIdRef.current;
+      nextVideoDecodeWindowIdRef.current += 1;
+
       const pendingLoad = (async () => {
-        let objectUrl: string | null = null;
-        let video: HTMLVideoElement | null = null;
-
         try {
-          setPendingVideoFrame(src, roundedFrame);
+          let session = videoDecodeSessionsRef.current.get(src);
+          if (!session || session.disposed) {
+            const blob = await getAsset(src);
+            if (!blob) return;
 
-          const blob = await getAsset(src);
-          if (!blob) return;
+            const objectUrl = URL.createObjectURL(blob);
+            const video = document.createElement('video');
+            video.src = objectUrl;
+            video.muted = true;
+            video.playsInline = true;
+            video.preload = 'auto';
+            video.crossOrigin = 'anonymous';
 
-          objectUrl = URL.createObjectURL(blob);
-          video = document.createElement('video');
-          video.src = objectUrl;
-          video.muted = true;
-          video.playsInline = true;
-          video.preload = 'auto';
-          video.crossOrigin = 'anonymous';
-
-          await new Promise<void>((resolve, reject) => {
-            video.onloadeddata = () => resolve();
-            video.onerror = () => reject(new Error('Video failed to load.'));
-            video.load();
-          });
-
-          const currentFps = fpsRef.current || 30;
-          const targetTime = Math.max(
-            0,
-            Math.min(roundedFrame / currentFps + 0.0001, video.duration || Infinity),
-          );
-          const tolerance = 0.5 / currentFps;
-
-          if (Math.abs(video.currentTime - targetTime) > tolerance) {
-            await new Promise<void>((resolve, reject) => {
-              video.onseeked = () => resolve();
-              video.onerror = () => reject(new Error('Video failed to seek.'));
-              video.currentTime = targetTime;
+            const ready = new Promise<void>((resolve, reject) => {
+              video.onloadeddata = () => resolve();
+              video.onerror = () => reject(new Error('Video failed to load.'));
+              video.load();
             });
+
+            session = {
+              video,
+              objectUrl,
+              ready,
+              queue: Promise.resolve(),
+              disposed: false,
+            };
+            videoDecodeSessionsRef.current.set(src, session);
           }
 
-          if (textureCacheRef.current.has(frameKey)) return;
+          const decodeWindow = session.queue.then(async () => {
+            if (!session || session.disposed) return;
+            if (canceledVideoDecodeWindowIdsRef.current.has(requestId)) return;
+            await session.ready;
+            if (session.disposed) return;
+            if (canceledVideoDecodeWindowIdsRef.current.has(requestId)) return;
 
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) return;
+            const isStillRelevant = isVideoFrameWindowRelevant(
+              windowFrames,
+              currentFrameRef.current,
+              backgroundPrefetchFrameWindow,
+            );
 
-          ctx.drawImage(video, 0, 0);
-          const frameTex = new THREE.CanvasTexture(canvas);
-          frameTex.colorSpace = THREE.NoColorSpace;
-          frameTex.minFilter = THREE.LinearFilter;
-          frameTex.magFilter = THREE.LinearFilter;
-          frameTex.generateMipmaps = false;
-          textureCacheRef.current.add(frameKey, frameTex, undefined, undefined, roundedFrame);
+            const queuedWindow = queuedVideoDecodeWindowsRef.current.get(requestId);
+            if (
+              priority !== 'required' &&
+              !isStillRelevant &&
+              (!queuedWindow ||
+                !isCurrentFrameInPendingVideoArea(queuedWindow, currentFrameRef.current))
+            ) {
+              return;
+            }
+            if (queuedWindow) queuedWindow.started = true;
+
+            const { video } = session;
+            const currentFps = fpsRef.current || 30;
+            const tolerance = 0.5 / currentFps;
+
+            for (const targetFrame of windowFrames) {
+              const targetKey = getVideoFrameKey(src, targetFrame);
+              if (textureCacheRef.current.has(targetKey)) continue;
+              if (session.disposed) return;
+
+              const targetTime = Math.max(
+                0,
+                Math.min(targetFrame / currentFps + 0.0001, video.duration || Infinity),
+              );
+
+              if (Math.abs(video.currentTime - targetTime) > tolerance) {
+                await new Promise<void>((resolve, reject) => {
+                  video.onseeked = () => resolve();
+                  video.onerror = () => reject(new Error('Video failed to seek.'));
+                  video.currentTime = targetTime;
+                });
+              }
+
+              if (textureCacheRef.current.has(targetKey)) continue;
+
+              const canvas = document.createElement('canvas');
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return;
+
+              ctx.drawImage(video, 0, 0);
+              const frameTex = new THREE.CanvasTexture(canvas);
+              frameTex.colorSpace = THREE.NoColorSpace;
+              frameTex.minFilter = THREE.LinearFilter;
+              frameTex.magFilter = THREE.LinearFilter;
+              frameTex.generateMipmaps = false;
+              textureCacheRef.current.add(targetKey, frameTex, undefined, undefined, targetFrame);
+              bumpMediaUpdateTrigger();
+            }
+          });
+
+          session.queue = decodeWindow.catch(() => {});
+          await decodeWindow;
         } catch (error) {
           console.error('Failed to capture temporal video frame:', src, roundedFrame, error);
         } finally {
-          setPendingVideoFrame(src, null);
-          pendingVideoFrameLoadsRef.current.delete(frameKey);
-          if (video) {
-            video.pause();
-            video.src = '';
-            video.load();
-          }
-          if (objectUrl) URL.revokeObjectURL(objectUrl);
+          queuedVideoDecodeWindowsRef.current.delete(requestId);
+          canceledVideoDecodeWindowIdsRef.current.delete(requestId);
+          windowFrames.forEach((loadedFrame) => {
+            const loadedFrameKey = getVideoFrameKey(src, loadedFrame);
+            if (pendingVideoFrameLoadsRef.current.get(loadedFrameKey) === pendingLoad) {
+              pendingVideoFrameLoadsRef.current.delete(loadedFrameKey);
+            }
+          });
+          refreshPendingVideoFramesForSrc(src);
           bumpMediaUpdateTrigger();
         }
       })();
 
-      pendingVideoFrameLoadsRef.current.set(frameKey, pendingLoad);
+      queuedVideoDecodeWindowsRef.current.set(requestId, {
+        src,
+        frames: windowFrames,
+        promise: pendingLoad,
+        started: false,
+        anchorFrame: Math.round(currentFrameRef.current),
+        priority,
+      });
+      windowFrames.forEach((loadedFrame) => {
+        pendingVideoFrameLoadsRef.current.set(getVideoFrameKey(src, loadedFrame), pendingLoad);
+      });
+      refreshPendingVideoFramesForSrc(src);
       bumpMediaUpdateTrigger();
       await pendingLoad;
     },
-    [bumpMediaUpdateTrigger, getVideoFrameKey, setPendingVideoFrame],
+    [
+      backgroundPrefetchFrameWindow,
+      bumpMediaUpdateTrigger,
+      cancelStaleQueuedVideoWindowsForSrc,
+      getVideoFrameKey,
+      isCurrentFrameInPendingVideoArea,
+      promoteQueuedVideoWindow,
+      refreshPendingVideoFramesForSrc,
+    ],
   );
 
+  // Track which nodes had a src change so we can force a mediaUpdateTrigger
+  // bump. The render loop runs in useLayoutEffect (before this effect), so
+  // when loadAsset finds the texture already in cache it returns without
+  // bumping the trigger — meaning the render loop never gets a second pass
+  // to pick up the new texture key.
+  const prevSrcMapRef = useRef(new Map<string, string>());
+
   useEffect(() => {
+    let anySrcChanged = false;
+
     nodes.forEach((node) => {
+      getGeneratedOutputAssetIdsAt(node, currentFrame).forEach((assetId) => {
+        loadAsset(assetId);
+      });
+
+      // Preload all image output assets (e.g., ONNX multi-output models)
+      // so textures are immediately available when the user switches outputs.
+      const nodeOutputs = (node as { outputs?: Array<{ kind?: string; src?: string }> }).outputs;
+      if (nodeOutputs) {
+        for (const output of nodeOutputs) {
+          if (output.kind === 'image' && output.src) {
+            loadAsset(output.src);
+          }
+        }
+      }
+
       const flags = nodeFlags(node.type);
-      if (flags.isMediaNode && !flags.isLooping) {
-        // Static media (images) — load by src
-        const src = (node as any).src;
-        if (src) loadAsset(src);
-      } else if (flags.isMediaNode && flags.isLooping && (node as any).src) {
-        // Video-like — load by src (seeking handled separately)
-        loadAsset((node as any).src);
+      const frameAssetId = getFrameAssetIdAt(node, currentFrame);
+      if (frameAssetId) {
+        loadAsset(frameAssetId);
+      } else if (flags.isMediaNode && !flags.isLooping) {
+        const src = getNodeSrc(node);
+        if (src) {
+          const prevSrc = prevSrcMapRef.current.get(node.id);
+          if (prevSrc !== src) {
+            anySrcChanged = true;
+            prevSrcMapRef.current.set(node.id, src);
+          }
+          loadAsset(src);
+        }
+      } else if (flags.isMediaNode && flags.isLooping) {
+        const src = getNodeSrc(node);
+        if (src) {
+          const prevSrc = prevSrcMapRef.current.get(node.id);
+          if (prevSrc !== src) {
+            anySrcChanged = true;
+            prevSrcMapRef.current.set(node.id, src);
+          }
+          loadAsset(src);
+        }
       }
     });
-  }, [nodes, loadAsset]);
+
+    if (anySrcChanged) {
+      bumpMediaUpdateTrigger();
+    }
+
+    const currentIds = new Set(nodes.map((n) => n.id));
+    for (const id of prevSrcMapRef.current.keys()) {
+      if (!currentIds.has(id)) prevSrcMapRef.current.delete(id);
+    }
+  }, [currentFrame, nodes, loadAsset, bumpMediaUpdateTrigger]);
 
   useEffect(() => {
     if (sequenceNodes.length === 0) return;
@@ -414,6 +827,14 @@ export const useViewportMediaCache = ({
       loadAsset(node.frames[idx], idx);
     });
   }, [sequenceNodes, currentFrame, getSequenceFrameIndex, loadAsset]);
+
+  useEffect(() => {
+    if (videoSrcsInProject.size === 0) return;
+    const frame = Math.max(0, Math.round(currentFrame));
+    videoSrcsInProject.forEach((src) => {
+      void requestVideoFrame(src, frame, { priority: 'required' });
+    });
+  }, [currentFrame, requestVideoFrame, videoSrcsInProject]);
 
   useEffect(() => {
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -442,8 +863,16 @@ export const useViewportMediaCache = ({
                   ? Math.round(relativeUniformValue)
                   : (port.frameOffset ?? 0));
 
-        if (sourceNode.type === NodeType.VIDEO) {
-          void requestVideoFrame((sourceNode as VideoNode).src, targetFrame);
+        if (isVideoFileNode(sourceNode)) {
+          const [assetId] = getNodeAssetIds(sourceNode);
+          if (assetId) void requestVideoFrame(assetId, targetFrame, { priority: 'required' });
+          return;
+        }
+
+        const sourceFrames = getFrameAssetIds(sourceNode);
+        if (sourceFrames.length > 0) {
+          const frameAssetId = getFrameAssetIdAt(sourceNode, targetFrame);
+          if (frameAssetId) loadAsset(frameAssetId);
           return;
         }
 
@@ -472,14 +901,11 @@ export const useViewportMediaCache = ({
         ? [selectedNode as ImageSequenceNode]
         : sequenceNodes;
 
-    const offsets: number[] = [];
-    for (let step = 1; step <= backgroundPrefetchFrameWindow; step += 1) {
-      if (backgroundPrefetchMode === 'forward') {
-        offsets.push(step);
-      } else {
-        offsets.push(step, -step);
-      }
-    }
+    const offsets = buildBackgroundPrefetchOffsets(
+      backgroundPrefetchMode,
+      backgroundPrefetchFrameWindow,
+      autoPrefetchDirectionRef.current,
+    );
 
     const maxCandidates =
       cacheBudgetMode === 'frame_count'
@@ -542,24 +968,138 @@ export const useViewportMediaCache = ({
   ]);
 
   useEffect(() => {
-    textureCacheRef.current.prune(assetIdsInProject);
-  }, [assetIdsInProject]);
+    if (backgroundPrefetchMode === 'on_demand') return;
+    if (backgroundPrefetchFrameWindow <= 0) return;
+    if (videoNodes.length === 0) return;
+
+    const targetNodes =
+      selectedNode?.type === NodeType.MEDIA_SOURCE &&
+      (selectedNode as MediaSourceNode).mediaKind === 'video'
+        ? [selectedNode as MediaSourceNode]
+        : videoNodes;
+
+    const offsets = buildBackgroundPrefetchOffsets(
+      backgroundPrefetchMode,
+      backgroundPrefetchFrameWindow,
+      autoPrefetchDirectionRef.current,
+    );
+
+    const maxCandidates =
+      cacheBudgetMode === 'frame_count'
+        ? Math.max(0, maxCachedFrames - targetNodes.length)
+        : Number.POSITIVE_INFINITY;
+    if (maxCandidates === 0) return;
+
+    const candidates: Array<{ src: string; frame: number }> = [];
+    const scheduled = new Set<string>();
+
+    for (const offset of offsets) {
+      for (const node of targetNodes) {
+        if (!node.src) continue;
+        const frame = Math.max(0, Math.round(currentFrame + offset));
+        const frameKey = getVideoFrameKey(node.src, frame);
+        if (scheduled.has(frameKey)) continue;
+        if (
+          textureCacheRef.current.has(frameKey) ||
+          pendingVideoFrameLoadsRef.current.has(frameKey)
+        ) {
+          continue;
+        }
+
+        scheduled.add(frameKey);
+        candidates.push({ src: node.src, frame });
+
+        if (candidates.length >= maxCandidates) break;
+      }
+
+      if (candidates.length >= maxCandidates) break;
+    }
+
+    if (candidates.length === 0) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        for (const candidate of candidates) {
+          if (cancelled) return;
+          await requestVideoFrame(candidate.src, candidate.frame, { priority: 'prefetch' });
+          if (cancelled) return;
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 0);
+          });
+        }
+      })();
+    }, 40);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    backgroundPrefetchMode,
+    backgroundPrefetchFrameWindow,
+    cacheBudgetMode,
+    currentFrame,
+    getVideoFrameKey,
+    maxCachedFrames,
+    requestVideoFrame,
+    selectedNode,
+    videoNodes,
+  ]);
 
   useEffect(() => {
-    const activeVideoSrcs = new Set(videoNodes.map((node) => node.src).filter(Boolean));
+    textureCacheRef.current.prune(assetIdsInProject, (cacheKey) => {
+      const source = getVideoFrameCacheSource(cacheKey);
+      return source !== null && videoSrcsInProject.has(source);
+    });
+  }, [assetIdsInProject, videoSrcsInProject]);
+
+  useEffect(() => {
+    const dynamicVideoSrcs = nodes
+      .filter((node) => node.type !== NodeType.MEDIA_SOURCE && isVideoFileNode(node))
+      .flatMap((node) => getNodeAssetIds(node));
+    const activeVideoSrcs = new Set([
+      ...videoNodes.map((node) => node.src).filter(Boolean),
+      ...dynamicVideoSrcs,
+    ]);
     let changed = false;
 
-    pendingVideoFrameBySrcRef.current.forEach((frameKey, src) => {
+    pendingVideoFrameKeysBySrcRef.current.forEach((frameKeys, src) => {
       if (activeVideoSrcs.has(src)) return;
-      pendingVideoFrameBySrcRef.current.delete(src);
-      pendingVideoFramesRef.current.delete(frameKey);
+      pendingVideoFrameKeysBySrcRef.current.delete(src);
+      frameKeys.forEach((frameKey) => pendingVideoFramesRef.current.delete(frameKey));
+      changed = true;
+    });
+
+    videoDecodeSessionsRef.current.forEach((session, src) => {
+      if (activeVideoSrcs.has(src)) return;
+      disposeVideoDecodeSession(session);
+      videoDecodeSessionsRef.current.delete(src);
+      changed = true;
+    });
+
+    queuedVideoDecodeWindowsRef.current.forEach((queuedWindow, requestId) => {
+      if (activeVideoSrcs.has(queuedWindow.src)) return;
+      cancelQueuedVideoWindow(requestId, queuedWindow);
       changed = true;
     });
 
     if (changed) {
       bumpMediaUpdateTrigger();
     }
-  }, [bumpMediaUpdateTrigger, videoNodes]);
+  }, [bumpMediaUpdateTrigger, cancelQueuedVideoWindow, nodes, videoNodes]);
+
+  useEffect(() => {
+    const sessions = videoDecodeSessionsRef.current;
+    const queuedWindows = queuedVideoDecodeWindowsRef.current;
+    const canceledWindows = canceledVideoDecodeWindowIdsRef.current;
+    return () => {
+      sessions.forEach(disposeVideoDecodeSession);
+      sessions.clear();
+      queuedWindows.clear();
+      canceledWindows.clear();
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -575,7 +1115,10 @@ export const useViewportMediaCache = ({
         cachingFrames = buildTimelineStatus(activeTimelineCacheNode.frames, (assetId) => {
           return pendingLoadsRef.current.has(assetId) && !cache.has(assetId);
         });
-      } else if (activeTimelineCacheNode?.type === NodeType.VIDEO) {
+      } else if (
+        activeTimelineCacheNode?.type === NodeType.MEDIA_SOURCE &&
+        (activeTimelineCacheNode as MediaSourceNode).mediaKind === 'video'
+      ) {
         const { src } = activeTimelineCacheNode;
         cachedFrames = buildVideoTimelineStatus(src, (frameKey) => cache.has(frameKey));
         cachingFrames = buildVideoTimelineStatus(src, (frameKey) => {

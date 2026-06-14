@@ -1,11 +1,11 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import PreferencesView from '@/features/projects/PreferencesView';
 import * as Icons from '@blackboard/icons';
-import BackgroundJobsMonitor from '@/components/BackgroundJobsMonitor';
+import { BackgroundJobsMonitor } from '@/components';
 
 const COMPACT_JOBS_VIEWPORT_WIDTH = 980;
 
-const Header: React.FC = () => {
+function Header() {
   const [isPreferencesOpen, setPreferencesOpen] = useState(false);
   const [isJobsCompact, setIsJobsCompact] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -141,6 +141,6 @@ const Header: React.FC = () => {
       ) : null}
     </>
   );
-};
+}
 
 export default Header;

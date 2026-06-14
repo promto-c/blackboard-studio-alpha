@@ -3,32 +3,41 @@ export const NodeKind = {
   OUTPUT: 'output',
   EFFECT: 'effect',
   GROUP: 'group',
+  INPUT: 'input',
 } as const;
 
 export type NodeKind = (typeof NodeKind)[keyof typeof NodeKind];
 
 export const NodeType = {
   SCENE: 'scene',
+  SCENE_3D: 'scene_3d',
   OUTPUT: 'output',
   GROUP: 'group',
-  IMAGE: 'image',
-  VIDEO: 'video',
+  INPUT: 'input',
+  MEDIA_SOURCE: 'media_source',
   IMAGE_SEQUENCE: 'image_sequence',
   TEXT: 'text',
   MERGE: 'merge',
+  EXTRACT_CHANNELS: 'extract_channels',
+  MERGE_CHANNELS: 'merge_channels',
   GRADE: 'grade',
   BLUR: 'blur',
+  REFORMAT: 'reformat',
+  TRANSFORM: 'transform',
+  CROP: 'crop',
   CUSTOM_SHADER: 'custom_shader',
   BOKEH_BLUR: 'bokeh_blur',
   LIQUID_GLASS: 'liquid_glass',
   PIXELATE: 'pixelate',
   LENS_DISTORTION: 'lens_distortion',
+  MATCH_MOVE: 'match_move',
   ROTO: 'roto',
   PAINT: 'paint',
   CHROMA_KEY: 'chroma_key',
   WARP: 'warp',
   COMFY: 'comfy',
   ONNX_MODEL: 'onnx_model',
+  NOTE: 'note',
 } as const;
 
 type BuiltinNodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -51,6 +60,7 @@ export enum ImageFitMode {
   FILL = 'fill',
   NONE = 'none',
   STRETCH = 'stretch',
+  CUSTOM = 'custom',
 }
 
 export type DirectoryImportMode = 'copy' | 'reference';
@@ -105,6 +115,7 @@ export interface Grade {
 export enum BlurMethod {
   GAUSSIAN = 'gaussian',
   BOX = 'box',
+  ITERATED_BOX = 'iterated_box',
 }
 
 export interface Blur {
@@ -120,32 +131,198 @@ export interface ImageTransform {
   fitMode: ImageFitMode;
 }
 
-export interface AiVariant {
-  src: string;
-  prompt: string;
-  createdAt?: number;
-  deletedAt?: number;
-  width?: number;
-  height?: number;
-  taskId?: string;
-  status?: 'queued' | 'generating' | 'error';
-  queuePosition?: number;
+export type SceneViewportMode = 'canvas2d' | 'scene3d';
+
+export type Scene3DItemType =
+  | 'output_plane'
+  | 'camera'
+  | 'light'
+  | 'box'
+  | 'model'
+  | 'splat'
+  | 'empty';
+export type Scene3DAssetKind = 'mesh' | 'splat';
+export type Scene3DMeshAssetFormat = 'glb' | 'gltf' | 'obj' | 'usdz' | 'stl' | 'ply';
+export type Scene3DSplatAssetFormat = 'ply' | 'spz' | 'splat' | 'ksplat' | 'sog' | 'rad';
+export type Scene3DAssetFormat = Scene3DMeshAssetFormat | Scene3DSplatAssetFormat;
+
+export interface Scene3DVector3 {
+  x: number;
+  y: number;
+  z: number;
 }
 
-export interface AiMetadata {
-  sourceNodeId?: string;
-  prompt: string;
-  variants: AiVariant[];
-  activeVariantIndex: number;
-  lastError?: string;
+export interface Scene3DItemTransform {
+  position: Scene3DVector3;
+  rotation: Scene3DVector3;
+  scale: Scene3DVector3;
 }
 
-export type AiChatFeature = 'assistant' | 'shader' | (string & {});
+export interface Scene3DAssetReference {
+  assetId: string;
+  fileName: string;
+  kind: Scene3DAssetKind;
+  format: Scene3DAssetFormat;
+  mimeType?: string;
+  size?: number;
+}
+
+export interface Scene3DItem {
+  id: string;
+  name: string;
+  type: Scene3DItemType;
+  visible: boolean;
+  locked?: boolean;
+  transform: Scene3DItemTransform;
+  size?: Scene3DVector3;
+  color?: string;
+  intensity?: number;
+  asset?: Scene3DAssetReference;
+}
+
+export interface Scene3DCameraSettings {
+  position: Scene3DVector3;
+  target: Scene3DVector3;
+  fov: number;
+  near: number;
+  far: number;
+}
+
+export interface Scene3DWorldSettings {
+  pixelScale: number;
+  gridEnabled: boolean;
+  gridSize: number;
+  gridDivisions: number;
+  showAxes: boolean;
+  showOutputPlane: boolean;
+}
+
+export interface Scene3DSettings {
+  bounds: Scene3DVector3;
+  camera: Scene3DCameraSettings;
+  world: Scene3DWorldSettings;
+  items: Scene3DItem[];
+}
+
+export type AiChatFeature = 'assistant' | 'shader' | 'agent' | (string & {});
 export type AiChatRole = 'user' | 'assistant';
 export type AiChatMessageStatus = 'pending' | 'complete' | 'error';
 export type AiChatAttachmentKind = 'image' | 'text' | 'file';
 export type AiChatBranchSource = 'original' | 'edit' | 'regenerate';
 export type AiProvider = 'gemini' | 'ollama' | 'openai';
+export type AiAgentSandboxMode = 'project-branch' | 'snapshot';
+export type AiAgentAmbiguityFallbackAction = 'use-recommended' | 'pause';
+export type AiAgentRunStatus =
+  | 'triaging'
+  | 'asking'
+  | 'planning'
+  | 'running'
+  | 'waiting-for-user'
+  | 'delegating'
+  | 'reviewing'
+  | 'ready'
+  | 'merged'
+  | 'applied'
+  | 'discarded'
+  | 'failed';
+export type AiAgentRunStepStatus = 'pending' | 'running' | 'complete' | 'blocked' | 'skipped';
+export type AiAgentRunStepKind = 'plan' | 'tool' | 'question' | 'delegation' | 'review' | 'handoff';
+export type AiAgentRunWorkingOwnerType = 'agent' | 'user' | 'mixed';
+export type AiAgentRunUserAccess = 'read-only' | 'review' | 'editor';
+export type AiAgentRunPlanMode = 'none' | 'implicit' | 'explicit';
+export type AiAgentRunRecommendedNextAction =
+  | 'apply'
+  | 'merge'
+  | 'cherry-pick'
+  | 'discard'
+  | 'continue'
+  | 'manual-review';
+
+export interface AiAgentQuestionChoice {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface AiAgentQuestion {
+  id: string;
+  prompt: string;
+  choices?: AiAgentQuestionChoice[];
+  freeformAllowed?: boolean;
+  required: boolean;
+  blocks: 'none' | 'planning' | 'implementation' | 'merge';
+  answeredChoiceId?: string;
+  answerText?: string;
+  answeredAt?: number;
+}
+
+export interface AiAgentReviewFinding {
+  id: string;
+  severity: 'info' | 'warning' | 'blocking';
+  title: string;
+  description?: string;
+  recommendation?: string;
+}
+
+export interface AiAgentDelegation {
+  id: string;
+  assignee: string;
+  task: string;
+  status: 'assigned' | 'complete' | 'blocked';
+  result?: string;
+}
+
+export interface AiAgentModeSettings {
+  enabled: boolean;
+  sandboxMode: AiAgentSandboxMode;
+  planMode: 'auto' | 'always';
+  reviewRender: boolean;
+  selfReview: boolean;
+  maxSubagentSpawns?: number;
+  allowNodeCreation: boolean;
+  allowInteractiveNodeEditing: boolean;
+  reusableToolSurface: 'mcp-or-app-tool';
+  ambiguity: {
+    askUser: boolean;
+    fallbackAction: AiAgentAmbiguityFallbackAction;
+    fallbackTimeoutMs?: number;
+  };
+}
+
+export interface AiAgentRunStep {
+  id: string;
+  title: string;
+  kind?: AiAgentRunStepKind;
+  status: AiAgentRunStepStatus;
+  agentGenerated?: boolean;
+  needsUserInput?: boolean;
+  toolCallIds?: string[];
+  reviewAssetIds?: string[];
+  questions?: AiAgentQuestion[];
+  reviewFindings?: AiAgentReviewFinding[];
+  delegation?: AiAgentDelegation;
+}
+
+export interface AiAgentRun {
+  id: string;
+  title: string;
+  prompt: string;
+  projectId?: string;
+  sourceChatId?: string;
+  branchId?: string;
+  settings: AiAgentModeSettings;
+  status: AiAgentRunStatus;
+  workingOwnerType?: AiAgentRunWorkingOwnerType;
+  workingOwnerId?: string;
+  userAccess?: AiAgentRunUserAccess;
+  planMode?: AiAgentRunPlanMode;
+  recommendedNextAction?: AiAgentRunRecommendedNextAction;
+  steps: AiAgentRunStep[];
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
 
 export interface AiChatAttachment {
   id: string;
@@ -196,10 +373,53 @@ export interface AiChatPromptPreviewArtifact {
   };
 }
 
+export interface AiChatAgentPlanArtifact {
+  type: 'agent-plan';
+  taskTitle: string;
+  steps: AiAgentRunStep[];
+  sandboxMode: AiAgentSandboxMode;
+  agentRunId?: string;
+  branchId?: string;
+  renderPreviewAssetId?: string;
+  summary?: string;
+  provider?: AiProvider;
+  model?: string;
+}
+
+export interface AiChatRenderPreviewArtifact {
+  type: 'render-preview';
+  dataUrl: string;
+  mimeType: 'image/png';
+  width: number;
+  height: number;
+  frame: number;
+  flowId?: FlowId;
+  branchId?: string;
+  nodeId?: NodeId;
+  nodeName?: string;
+  summary?: string;
+  capturedAt: number;
+}
+
+export type AiChatRenderPreviewImage = Omit<AiChatRenderPreviewArtifact, 'type' | 'capturedAt'>;
+
+export interface AiChatRenderComparisonArtifact {
+  type: 'render-comparison';
+  before: AiChatRenderPreviewImage;
+  after: AiChatRenderPreviewImage;
+  parentBranchId?: string;
+  branchId?: string;
+  summary?: string;
+  capturedAt: number;
+}
+
 export type AiChatArtifact =
   | AiChatShaderArtifact
   | AiChatGradePreviewArtifact
-  | AiChatPromptPreviewArtifact;
+  | AiChatPromptPreviewArtifact
+  | AiChatAgentPlanArtifact
+  | AiChatRenderPreviewArtifact
+  | AiChatRenderComparisonArtifact;
 
 export interface AiChatMessage {
   id: string;
@@ -207,6 +427,7 @@ export interface AiChatMessage {
   content: string;
   thinking?: string;
   isThinking?: boolean;
+  streamStage?: 'connecting' | 'streaming' | 'tool' | 'complete';
   createdAt: number;
   status?: AiChatMessageStatus;
   attachments?: AiChatAttachment[];
@@ -246,14 +467,20 @@ export interface AiChatThread {
 
 export type InputPortType = 'texture' | 'mask' | 'data';
 export type NodeInputs = Record<string, string>;
+export type NodeInputSourcePorts = Record<string, string>;
+export type SourceAlphaMode = 'file' | 'opaque' | 'transparent';
+export type LegacyColorSpace = 'sRGB' | 'Linear' | 'Raw';
+export type OcioColorSpaceName = LegacyColorSpace | (string & {});
+export type OcioSceneColorSpace = Exclude<OcioColorSpaceName, 'Raw'>;
 
 export interface BaseNode {
   id: NodeId;
   kind?: NodeKind;
   type: NodeType;
   name: string;
-  visible: boolean;
+  enabled: boolean;
   inputs?: NodeInputs;
+  inputSourcePorts?: NodeInputSourcePorts;
   stacked?: boolean;
   detachedFromPipe?: boolean;
 }
@@ -264,7 +491,7 @@ export interface SceneNode extends BaseNode {
   width: number;
   height: number;
   bitDepth: 8 | 16 | 32;
-  colorSpace: 'sRGB' | 'Linear';
+  colorSpace: OcioSceneColorSpace;
   maxFrames: number;
   fps: number;
 }
@@ -274,49 +501,63 @@ export interface OutputNode extends BaseNode {
   type: typeof NodeType.OUTPUT;
 }
 
+export interface GroupExternalInput {
+  id: string;
+  label: string;
+  entryNodeId: NodeId;
+  targetNodeId: NodeId;
+  targetPort: string;
+}
+
 export interface GroupNode extends BaseNode {
   kind?: typeof NodeKind.GROUP;
   type: typeof NodeType.GROUP;
   childFlowId: FlowId | null;
+  inputNodeId?: NodeId | null;
+  outputNodeId?: NodeId | null;
+  externalInputs?: GroupExternalInput[];
+}
+
+export interface InputNode extends BaseNode {
+  kind?: typeof NodeKind.INPUT;
+  type: typeof NodeType.INPUT;
+  groupNodeId?: NodeId | null;
+  externalInputId?: string | null;
 }
 
 export interface EffectNode extends BaseNode {
   kind?: typeof NodeKind.EFFECT;
 }
 
-export interface ImageNode extends EffectNode {
-  type: typeof NodeType.IMAGE;
+export interface MediaSourceNode extends EffectNode {
+  type: typeof NodeType.MEDIA_SOURCE;
   src: string;
+  sourceFileName?: string;
+  mediaKind: 'image' | 'video';
   width: number;
   height: number;
   opacity: AnimatableNumber;
   operator: BlendMode;
   transform: ImageTransform;
-  colorSpace: 'sRGB' | 'Linear' | 'Raw';
-  aiMetadata?: AiMetadata;
-}
-
-export interface VideoNode extends EffectNode {
-  type: typeof NodeType.VIDEO;
-  src: string;
-  width: number;
-  height: number;
-  opacity: AnimatableNumber;
-  operator: BlendMode;
-  transform: ImageTransform;
-  duration: number;
-  loop: boolean;
+  colorSpace?: OcioColorSpaceName;
+  sourceAlphaMode?: SourceAlphaMode;
+  useOutputSizeAsScene?: boolean;
+  duration?: number;
+  loop?: boolean;
 }
 
 export interface ImageSequenceNode extends EffectNode {
   type: typeof NodeType.IMAGE_SEQUENCE;
   frames: string[];
+  sourceFileName?: string;
   width: number;
   height: number;
   opacity: AnimatableNumber;
   operator: BlendMode;
   transform: ImageTransform;
-  colorSpace: 'sRGB' | 'Linear' | 'Raw';
+  colorSpace: OcioColorSpaceName;
+  sourceAlphaMode?: SourceAlphaMode;
+  useOutputSizeAsScene?: boolean;
   fps: number;
   startFrame: number;
   loop: boolean;
@@ -340,6 +581,20 @@ export interface MergeNode extends EffectNode {
   operator: BlendMode;
 }
 
+export interface Scene3DNode extends EffectNode {
+  type: typeof NodeType.SCENE_3D;
+  viewportMode: SceneViewportMode;
+  scene3d: Scene3DSettings;
+}
+
+export interface ExtractChannelsNode extends EffectNode {
+  type: typeof NodeType.EXTRACT_CHANNELS;
+}
+
+export interface MergeChannelsNode extends EffectNode {
+  type: typeof NodeType.MERGE_CHANNELS;
+}
+
 export interface GradeNode extends EffectNode {
   type: typeof NodeType.GRADE;
   grade: Grade;
@@ -348,6 +603,47 @@ export interface GradeNode extends EffectNode {
 export interface BlurNode extends EffectNode {
   type: typeof NodeType.BLUR;
   blur: Blur;
+}
+
+export type ReformatResizeMode = 'fill' | 'fit' | 'none' | 'stretch';
+export type SpatialResamplingFilter = 'nearest' | 'linear' | 'cubic' | 'lanczos';
+
+export interface ReformatNode extends EffectNode {
+  type: typeof NodeType.REFORMAT;
+  width: number;
+  height: number;
+  resizeMode: ReformatResizeMode;
+  resampling?: SpatialResamplingFilter;
+  sourceWidth?: number;
+  sourceHeight?: number;
+}
+
+export interface SpatialTransform {
+  translateX: AnimatableNumber;
+  translateY: AnimatableNumber;
+  scaleX: AnimatableNumber;
+  scaleY: AnimatableNumber;
+  rotation: AnimatableNumber;
+  pivotX: AnimatableNumber;
+  pivotY: AnimatableNumber;
+}
+
+export interface TransformNode extends EffectNode {
+  type: typeof NodeType.TRANSFORM;
+  transform: SpatialTransform;
+  resampling?: SpatialResamplingFilter;
+}
+
+export interface Crop {
+  left: AnimatableNumber;
+  right: AnimatableNumber;
+  top: AnimatableNumber;
+  bottom: AnimatableNumber;
+}
+
+export interface CropNode extends EffectNode {
+  type: typeof NodeType.CROP;
+  crop: Crop;
 }
 
 export enum UniformUIType {
@@ -522,11 +818,18 @@ export interface RotoMotionBlurSettings {
 
 export type RotoMotionBlurPhase = 'start' | 'centered' | 'end';
 
+export enum RotoAlphaMode {
+  MULTIPLY = 'multiply',
+  REPLACE = 'replace',
+  ADD = 'add',
+}
+
 export interface RotoNode extends EffectNode {
   type: typeof NodeType.ROTO;
   paths: RotoPath[];
   layers?: RotoLayer[];
   invert: boolean;
+  alphaMode?: RotoAlphaMode;
   motionBlur?: RotoMotionBlurSettings;
 }
 
@@ -639,6 +942,106 @@ export interface WarpNode extends EffectNode {
   strength: AnimatableNumber;
 }
 
+export type MatchMoveMode = 'track_2d' | 'planar' | 'camera_3d';
+export type MatchMoveSolveModel = 'translation' | 'similarity' | 'affine' | 'homography';
+export type MatchMoveTrackStatus = 'tracked' | 'failed' | 'manual';
+export type MatchMoveSolveStatus = 'idle' | 'running' | 'solved' | 'partial' | 'failed';
+export type MatchMoveCameraSolveStatus = 'not_started' | 'tracks_ready' | 'needs_solver';
+export type MatchMoveLensDistortionModel = 'none' | 'brown_conrady';
+
+export interface MatchMoveTrackingSettings {
+  sourceId: string;
+  startFrame: number;
+  endFrame: number;
+  maxFeatures: number;
+  minFeatureDistance: number;
+  featureQuality: number;
+  patchSize: number;
+  maxTrackError: number;
+}
+
+export interface MatchMoveSolveSettings {
+  mode: MatchMoveMode;
+  model: MatchMoveSolveModel;
+  ransacThreshold: number;
+  minTrackFrames: number;
+}
+
+export interface MatchMoveCameraSettings {
+  focalLengthMm: number;
+  sensorWidthMm: number;
+  principalPoint: Point;
+  lensDistortionModel: MatchMoveLensDistortionModel;
+  surveyScale: number;
+}
+
+export interface MatchMoveTrackSample {
+  frame: number;
+  x: number;
+  y: number;
+  error?: number;
+  status: MatchMoveTrackStatus;
+}
+
+export interface MatchMoveTrack {
+  id: string;
+  name: string;
+  color: string;
+  reference: Point;
+  samples: MatchMoveTrackSample[];
+}
+
+export interface MatchMoveSolveFrame {
+  frame: number;
+  model: MatchMoveSolveModel;
+  matrix: number[][];
+  translate: Point;
+  scale: Point;
+  rotation: number;
+  residual: number;
+  inliers: number;
+  tracked: number;
+}
+
+export interface MatchMoveCameraSolveSummary {
+  status: MatchMoveCameraSolveStatus;
+  message?: string;
+  focalLengthPx?: number;
+  trackCount: number;
+  solvedFrameCount: number;
+}
+
+export interface MatchMoveSolveResult {
+  status: MatchMoveSolveStatus;
+  message?: string;
+  solvedAt?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
+  startFrame: number;
+  endFrame: number;
+  model: MatchMoveSolveModel;
+  averageResidual?: number;
+  frames: MatchMoveSolveFrame[];
+  camera?: MatchMoveCameraSolveSummary;
+}
+
+export interface MatchMoveDisplaySettings {
+  showFeatures: boolean;
+  showTrails: boolean;
+  trailLength: number;
+  colorByError: boolean;
+}
+
+export interface MatchMoveNode extends EffectNode {
+  type: typeof NodeType.MATCH_MOVE;
+  tracking: MatchMoveTrackingSettings;
+  solve: MatchMoveSolveSettings;
+  camera: MatchMoveCameraSettings;
+  tracks: MatchMoveTrack[];
+  solveResult?: MatchMoveSolveResult;
+  display: MatchMoveDisplaySettings;
+}
+
 export interface ComfyWorkflow {
   id: string;
   name: string;
@@ -658,12 +1061,28 @@ export interface ComfyWorkflowControlOptions {
   options: Array<string | number>;
 }
 
+export type ComfyWorkflowControlValue = string | number | boolean;
+
+export interface ComfyWorkflowDynamicInputField {
+  inputName: string;
+  dottedInputName: string;
+  defaultValue?: ComfyWorkflowControlValue;
+  options?: Array<string | number>;
+}
+
+export interface ComfyWorkflowDynamicInputOption {
+  parentInputName: string;
+  optionKey: string | number;
+  fields: ComfyWorkflowDynamicInputField[];
+}
+
 export interface ComfyWorkflowInputCandidate {
   id: string;
   nodeId: string;
   nodeType: string;
   inputName: string;
   label: string;
+  promptTargets?: Array<{ nodeId: string; inputName: string }>;
 }
 
 export interface ComfyWorkflowOutputCandidate {
@@ -673,12 +1092,17 @@ export interface ComfyWorkflowOutputCandidate {
   kind: 'existing' | 'synthetic';
   outputIndex: number;
   outputName: string;
+  outputType?: string;
   label: string;
   promptLink?: [string, number];
   previewNodeId: string;
+  outputNodeInputs?: Record<string, unknown>;
+  outputNodeDynamicInputs?: ComfyWorkflowDynamicInputOption[];
+  syntheticOutputNodeType?: string;
+  syntheticOutputNodeInputs?: Record<string, unknown>;
+  syntheticOutputFormat?: 'preview' | 'exr_float';
 }
 
-export type ComfyWorkflowControlValue = string | number | boolean;
 export type ComfyWorkflowControlRunMode = 'fixed' | 'randomize' | 'increment' | 'randomRange';
 
 export interface ComfyWorkflowControl {
@@ -707,15 +1131,27 @@ export interface ComfyWorkflowControl {
 export interface GeneratedOutput {
   id: string;
   src: string;
+  mediaKind?: 'image' | 'image_sequence' | 'video';
+  colorSpace?: OcioColorSpaceName;
+  frames?: string[];
   width: number;
   height: number;
+  duration?: number;
+  fps?: number;
   createdAt: number;
   deletedAt?: number;
+  visible?: boolean;
+  stackOrder?: number;
   label?: string;
   prompt?: string;
   promptId?: string;
   workflowId?: string;
   workflowName?: string;
+  regionId?: string;
+  regionLabel?: string;
+  regionRect?: { x: number; y: number; width: number; height: number };
+  transform?: ImageTransform;
+  useOutputSizeAsScene?: boolean;
 }
 
 export interface ComfyWorkflowInputImage {
@@ -727,21 +1163,77 @@ export interface ComfyWorkflowInputImage {
   createdAt: number;
 }
 
+export type ComfyViewportBindingField =
+  | 'x'
+  | 'y'
+  | 'width'
+  | 'height'
+  | 'prompt'
+  | 'image'
+  | 'mask';
+
+export interface ComfyWorkflowFieldTarget {
+  kind: 'workflowField' | 'workflowInput';
+  nodeId?: string;
+  inputName?: string;
+  classType?: string;
+  inputCandidateId?: string;
+  label: string;
+}
+
+export interface FieldBinding {
+  id: string;
+  field: ComfyViewportBindingField;
+  target?: ComfyWorkflowFieldTarget;
+}
+
+export interface ViewportPromptRegion {
+  id: string;
+  rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  visible?: boolean;
+  expanded?: boolean;
+  stackOrder?: number;
+  prompt: string;
+  bindings: FieldBinding[];
+  promptSuggestionPages?: string[][];
+  promptSuggestionPageIndex?: number;
+  promptSuggestionsVisible?: boolean;
+}
+
+export interface ViewportPromptRegionDefaults {
+  prompt?: string;
+  bindings?: FieldBinding[];
+}
+
 export interface ComfyNode extends EffectNode {
   type: typeof NodeType.COMFY;
   workflows: ComfyWorkflow[];
   selectedWorkflowId?: string;
   workflowControls?: ComfyWorkflowControl[];
   workflowInputImages?: Record<string, ComfyWorkflowInputImage>;
+  viewportPromptRegions?: ViewportPromptRegion[];
+  viewportPromptRegionDefaults?: ViewportPromptRegionDefaults;
+  rootBindings?: FieldBinding[];
+  selectedViewportPromptRegionId?: string;
   generatedOutputs?: GeneratedOutput[];
   activeGeneratedOutputId?: string;
   src: string;
+  mediaKind?: 'image' | 'image_sequence' | 'video';
+  frames?: string[];
+  duration?: number;
+  fps?: number;
   width: number;
   height: number;
   opacity: AnimatableNumber;
   operator: BlendMode;
   transform: ImageTransform;
-  colorSpace: 'sRGB' | 'Linear' | 'Raw';
+  colorSpace: OcioColorSpaceName;
+  useOutputSizeAsScene?: boolean;
   lastPromptId?: string;
   lastRunAt?: number;
   lastError?: string;
@@ -765,7 +1257,7 @@ export type OnnxPrecision =
   | 'q2'
   | 'unknown';
 export type OnnxModelScale = 'small' | 'base' | 'large' | 'unknown';
-export type OnnxModelTask = 'depth-estimation' | 'inpainting' | 'generic';
+export type OnnxModelTask = 'generic';
 export type OnnxNormalization = 'imagenet' | 'zeroToOne' | 'none';
 
 export interface OnnxInputMetadata {
@@ -828,7 +1320,6 @@ export interface OnnxModelVariantMetadata {
 
 export interface InstalledOnnxModel {
   id: string;
-  recipeId: string;
   name: string;
   repoName: string;
   variant: OnnxModelVariantMetadata;
@@ -839,6 +1330,8 @@ export interface InstalledOnnxModel {
 }
 
 export type OnnxChannelMode = 'RGB' | 'R' | 'G' | 'B' | 'A' | 'Luminance';
+
+export type OnnxResultBehavior = 'static' | 'frame_sequence';
 
 export interface OnnxModelNode extends EffectNode {
   type: typeof NodeType.ONNX_MODEL;
@@ -851,28 +1344,55 @@ export interface OnnxModelNode extends EffectNode {
   inputSize: { width: number; height: number };
   task: OnnxModelTask;
   inputChannelModes?: Record<string, OnnxChannelMode>;
+  /** Per-input normalization override. Keyed by input name. */
+  inputNormalizationOverrides?: Record<string, OnnxNormalization>;
+  /** Per-output normalization override. Keyed by output name. */
+  outputNormalizationOverrides?: Record<string, OnnxNormalization>;
   inputValues?: Record<string, number | string | boolean>;
   outputs?: OnnxNodeOutput[];
   activeOutputId?: string;
+  resultBehavior?: OnnxResultBehavior;
+  frames?: string[];
+  /**
+   * Per-frame asset srcs keyed by output name.
+   * In sequence mode, stores each output's frame-specific srcs so that
+   * selecting a different output shows the correct per-frame data.
+   */
+  outputFrameSrcs?: Record<string, string[]>;
+  startFrame?: number;
   src: string;
   width: number;
   height: number;
   opacity: AnimatableNumber;
   operator: BlendMode;
   transform: ImageTransform;
-  colorSpace: 'sRGB' | 'Linear' | 'Raw';
+  colorSpace: OcioColorSpaceName;
+  useOutputSizeAsScene?: boolean;
   lastRunAt?: number;
   lastError?: string;
 }
 
+export type NoteColor = 'theme' | 'teal' | 'slate' | 'amber' | 'rose' | 'violet';
+
+export interface NoteNode extends EffectNode {
+  type: typeof NodeType.NOTE;
+  content: string;
+  color: NoteColor;
+}
+
 export type AnyEffectNode =
-  | ImageNode
-  | VideoNode
+  | MediaSourceNode
   | ImageSequenceNode
   | TextNode
   | MergeNode
+  | Scene3DNode
+  | ExtractChannelsNode
+  | MergeChannelsNode
   | GradeNode
   | BlurNode
+  | ReformatNode
+  | TransformNode
+  | CropNode
   | CustomShaderNode
   | BokehBlurNode
   | LiquidGlassNode
@@ -882,35 +1402,34 @@ export type AnyEffectNode =
   | PaintNode
   | ChromaKeyNode
   | WarpNode
+  | MatchMoveNode
   | ComfyNode
-  | OnnxModelNode;
+  | OnnxModelNode
+  | NoteNode;
 
-export type AnyNode = SceneNode | OutputNode | GroupNode | AnyEffectNode;
+export type AnyNode = SceneNode | OutputNode | GroupNode | InputNode | AnyEffectNode;
 
-export interface FlowConnection {
+export interface FlowEdge {
   id: RelationshipId;
-  kind: 'connection';
   sourceNodeId: NodeId;
-  sourcePort: 'output';
+  sourcePort: string;
   targetNodeId: NodeId;
   targetPort: string;
 }
 
-export interface FlowStackRelationship {
+export interface FlowStack {
   id: RelationshipId;
-  kind: 'stack';
-  sourceNodeId: NodeId;
-  targetNodeId: NodeId;
+  rootNodeId: NodeId;
+  nodeIds: NodeId[];
 }
-
-export type FlowRelationship = FlowConnection | FlowStackRelationship;
 
 export interface Flow {
   id: FlowId;
   name: string;
   nodes: AnyNode[];
-  nodeOrder: NodeId[];
-  relationships: FlowRelationship[];
+  edges: FlowEdge[];
+  stacks: FlowStack[];
+  outputNodeId: NodeId;
 }
 
 export interface ViewerSettings {
@@ -918,6 +1437,7 @@ export interface ViewerSettings {
   alphaOverlay: boolean;
   alphaMode: 'STRAIGHT' | 'TRANSPARENT' | 'FILL_BLACK' | 'FILL_WHITE';
   showOverlays: boolean;
+  ocioDisplay: string;
   ocioView: string;
   gain: number;
   gamma: number;
@@ -972,6 +1492,26 @@ export interface TransformData {
   auxiliaryTranslation?: number[][];
 }
 
+export type TrackingAlgorithm = 'standard_lk' | 'hybrid';
+export type TemporalTrackingMode = 'off' | 'normal' | 'strong';
+export type TemporalTrackingRepair = 'blend' | 'predict';
+
+export interface HybridTrackingConfig {
+  maxError: number;
+  outlierDistance: number;
+  searchRadius: number;
+  patchRadius: number;
+  minimumNccScore: number;
+  coherentFallback: boolean;
+}
+
+export interface TemporalTrackingConfig {
+  mode: TemporalTrackingMode;
+  smoothingWindow: number;
+  anomalyThreshold: number;
+  repair: TemporalTrackingRepair;
+}
+
 export interface TrackingConfig {
   translation: boolean;
   rotation: boolean;
@@ -979,7 +1519,11 @@ export interface TrackingConfig {
   affine: boolean;
   perspective: boolean;
   deform: boolean;
-  driftTolerance?: number;
+  tracker?: TrackingAlgorithm;
+  hybrid?: Partial<HybridTrackingConfig>;
+  temporal?: Partial<TemporalTrackingConfig>;
+  /** Set to null to disable drift checking (unlimited tolerance). */
+  driftTolerance?: number | null;
 }
 
 export interface StabilizationConfig {
@@ -993,20 +1537,6 @@ export interface StabilizationConfig {
 
 export type StabilizationScope = 'target' | 'composite' | 'parent' | 'full';
 
-export interface AiGenerationTaskInput {
-  nodeId?: string;
-  prompt: string;
-  isTextToImage?: boolean;
-  aspectRatio?: '1:1' | '16:9' | '9:16' | '4:3' | '3:4';
-  maskedImageBase64?: string;
-  outputWidth?: number;
-  outputHeight?: number;
-}
-
-export interface QueuedAiGenerationTask extends AiGenerationTaskInput {
-  taskId: string;
-}
-
 export type NodePositions = Record<string, { x: number; y: number }>;
 
 export type EditorStateSlice = Partial<{
@@ -1016,14 +1546,14 @@ export type EditorStateSlice = Partial<{
   activeFlowId: FlowId | null;
   nodes: AnyNode[];
   selectedNodeId: NodeId | null;
-  selectedPaintLayerIds: string[];
-  selectedPaintStrokeIds: string[];
-  selectedRotoLayerIds: string[];
-  selectedRotoPathIds: string[];
+  selectedNodeIds: NodeId[];
+  hierarchySelections: Record<string, { layerIds: string[]; itemIds: string[] }>;
   selectedRotoPointRefs: RotoPointRef[];
   selectedKeyframes: SelectedKeyframeRef[];
   activeTab: EditorTab;
   aiChats: AiChatThread[];
+  aiAgentRuns: AiAgentRun[];
+  activeAiAgentRunId: string | null;
   activeAiChatId: string | null;
   zoom: number;
   pan: Pan;
@@ -1043,7 +1573,6 @@ export type EditorStateSlice = Partial<{
   stabilizationReferenceFrame: number | null;
   stabilizationConfig: StabilizationConfig;
   nodePositionsByFlow: Record<FlowId, NodePositions>;
-  nodePositions: NodePositions;
 }>;
 
 export interface HistoryEntry {
@@ -1054,6 +1583,8 @@ export interface HistoryEntry {
   checkpointLabel?: string;
   consolidatedCount?: number;
 }
+
+export type PersistedProjectState = Omit<EditorStateSlice, 'projectId'>;
 
 export interface ProjectIndexEntry {
   id: string;
@@ -1072,35 +1603,22 @@ export interface FlowValidationIssue {
     | 'multiple_scene'
     | 'multiple_output'
     | 'duplicate_node_id'
-    | 'invalid_node_order'
-    | 'invalid_relationship_reference'
-    | 'invalid_stack_target'
+    | 'missing_output_node'
+    | 'invalid_edge_reference'
+    | 'invalid_stack_reference'
+    | 'invalid_stack_shape'
     | 'connection_cycle';
   message: string;
 }
 
-export const isFlowConnection = (relationship: FlowRelationship): relationship is FlowConnection =>
-  relationship.kind === 'connection';
-
-export const isFlowStackRelationship = (
-  relationship: FlowRelationship,
-): relationship is FlowStackRelationship => relationship.kind === 'stack';
-
-const hasFlowConnectionCycle = (
-  nodeIds: Iterable<NodeId>,
-  relationships: FlowRelationship[],
-): boolean => {
+const hasFlowEdgeCycle = (nodeIds: Iterable<NodeId>, edges: FlowEdge[]): boolean => {
   const adjacency = new Map<string, string[]>();
-  for (const relationship of relationships) {
-    if (!isFlowConnection(relationship)) {
-      continue;
+  for (const edge of edges) {
+    if (!adjacency.has(edge.sourceNodeId)) {
+      adjacency.set(edge.sourceNodeId, []);
     }
 
-    if (!adjacency.has(relationship.sourceNodeId)) {
-      adjacency.set(relationship.sourceNodeId, []);
-    }
-
-    adjacency.get(relationship.sourceNodeId)!.push(relationship.targetNodeId);
+    adjacency.get(edge.sourceNodeId)!.push(edge.targetNodeId);
   }
 
   const visiting = new Set<string>();
@@ -1135,90 +1653,6 @@ const hasFlowConnectionCycle = (
   return false;
 };
 
-const BUILTIN_SOURCE_NODE_TYPES = new Set<string>([
-  NodeType.IMAGE,
-  NodeType.VIDEO,
-  NodeType.IMAGE_SEQUENCE,
-  NodeType.TEXT,
-  NodeType.COMFY,
-  NodeType.ONNX_MODEL,
-]);
-
-const getBuiltinMergeSourceNodeIds = (flow: Flow): Set<string> => {
-  const nodesById = new Map(flow.nodes.map((node) => [node.id, node]));
-  const mergeSourceNodeIds = new Set<string>();
-  let sourceCount = 0;
-
-  for (const nodeId of flow.nodeOrder) {
-    const node = nodesById.get(nodeId);
-    if (!node || node.detachedFromPipe || !BUILTIN_SOURCE_NODE_TYPES.has(node.type)) {
-      continue;
-    }
-
-    if (sourceCount > 0) {
-      mergeSourceNodeIds.add(node.id);
-    }
-    sourceCount += 1;
-  }
-
-  return mergeSourceNodeIds;
-};
-
-export const removeCycleCreatingFlowConnections = (flow: Flow): Flow => {
-  const nodeIds = flow.nodes.map((node) => node.id);
-  const mergeSourceNodeIds = getBuiltinMergeSourceNodeIds(flow);
-  const baseRelationships = flow.relationships.filter(
-    (relationship) =>
-      !isFlowConnection(relationship) ||
-      (relationship.targetPort === 'pipe' &&
-        !mergeSourceNodeIds.has(relationship.sourceNodeId) &&
-        !mergeSourceNodeIds.has(relationship.targetNodeId)),
-  );
-  const explicitConnections = flow.relationships.filter(
-    (relationship): relationship is FlowConnection =>
-      isFlowConnection(relationship) && relationship.targetPort !== 'pipe',
-  );
-  const removedRelationshipIds = new Set(
-    flow.relationships
-      .filter(
-        (relationship) =>
-          isFlowConnection(relationship) &&
-          relationship.targetPort === 'pipe' &&
-          (mergeSourceNodeIds.has(relationship.sourceNodeId) ||
-            mergeSourceNodeIds.has(relationship.targetNodeId)),
-      )
-      .map((relationship) => relationship.id),
-  );
-
-  if (hasFlowConnectionCycle(nodeIds, baseRelationships)) {
-    return flow;
-  }
-
-  const keptExplicitConnections: FlowConnection[] = [];
-
-  for (const relationship of explicitConnections) {
-    const nextRelationships = [...baseRelationships, ...keptExplicitConnections, relationship];
-
-    if (hasFlowConnectionCycle(nodeIds, nextRelationships)) {
-      removedRelationshipIds.add(relationship.id);
-      continue;
-    }
-
-    keptExplicitConnections.push(relationship);
-  }
-
-  if (removedRelationshipIds.size === 0) {
-    return flow;
-  }
-
-  return {
-    ...flow,
-    relationships: flow.relationships.filter(
-      (relationship) => !removedRelationshipIds.has(relationship.id),
-    ),
-  };
-};
-
 export const validateRootFlow = (flow: Flow): FlowValidationIssue[] => {
   const issues: FlowValidationIssue[] = [];
   const nodesById = new Map<string, AnyNode>();
@@ -1235,6 +1669,13 @@ export const validateRootFlow = (flow: Flow): FlowValidationIssue[] => {
 
     nodeIds.add(node.id);
     nodesById.set(node.id, node);
+  }
+
+  if (!nodesById.has(flow.outputNodeId)) {
+    issues.push({
+      code: 'missing_output_node',
+      message: `Flow outputNodeId "${flow.outputNodeId}" does not reference a node.`,
+    });
   }
 
   const sceneNodes = flow.nodes.filter((node) => node.kind === NodeKind.SCENE);
@@ -1264,44 +1705,58 @@ export const validateRootFlow = (flow: Flow): FlowValidationIssue[] => {
     });
   }
 
-  const orderSet = new Set(flow.nodeOrder);
-  if (orderSet.size !== flow.nodeOrder.length || flow.nodeOrder.length !== flow.nodes.length) {
-    issues.push({
-      code: 'invalid_node_order',
-      message: 'Flow nodeOrder must contain each node exactly once.',
-    });
-  } else if (flow.nodes.some((node) => !orderSet.has(node.id))) {
-    issues.push({
-      code: 'invalid_node_order',
-      message: 'Flow nodeOrder does not match node ids.',
-    });
+  for (const edge of flow.edges) {
+    if (!nodesById.has(edge.sourceNodeId) || !nodesById.has(edge.targetNodeId)) {
+      issues.push({
+        code: 'invalid_edge_reference',
+        message: `Edge "${edge.id}" references missing nodes.`,
+      });
+    }
   }
 
-  for (const relationship of flow.relationships) {
-    if (!nodesById.has(relationship.sourceNodeId) || !nodesById.has(relationship.targetNodeId)) {
+  for (const stack of flow.stacks) {
+    if (
+      !nodesById.has(stack.rootNodeId) ||
+      stack.nodeIds.some((nodeId) => !nodesById.has(nodeId))
+    ) {
       issues.push({
-        code: 'invalid_relationship_reference',
-        message: `Relationship "${relationship.id}" references missing nodes.`,
+        code: 'invalid_stack_reference',
+        message: `Stack "${stack.id}" references missing nodes.`,
       });
       continue;
     }
 
-    if (isFlowStackRelationship(relationship)) {
-      const sourceNode = nodesById.get(relationship.sourceNodeId)!;
-      const targetNode = nodesById.get(relationship.targetNodeId)!;
-      if (sourceNode.kind !== NodeKind.EFFECT || targetNode.kind !== NodeKind.EFFECT) {
+    if (
+      stack.nodeIds[0] !== stack.rootNodeId ||
+      new Set(stack.nodeIds).size !== stack.nodeIds.length
+    ) {
+      issues.push({
+        code: 'invalid_stack_shape',
+        message: `Stack "${stack.id}" must start with its root node and contain unique nodes.`,
+      });
+      continue;
+    }
+
+    for (const nodeId of stack.nodeIds) {
+      const node = nodesById.get(nodeId)!;
+      if (
+        node.kind !== NodeKind.EFFECT &&
+        node.kind !== NodeKind.GROUP &&
+        node.kind !== NodeKind.INPUT
+      ) {
         issues.push({
-          code: 'invalid_stack_target',
-          message: `Stack relationship "${relationship.id}" must connect effect nodes only.`,
+          code: 'invalid_stack_shape',
+          message: `Stack "${stack.id}" must contain effect or group nodes only.`,
         });
+        break;
       }
     }
   }
 
-  if (hasFlowConnectionCycle(nodeIds, flow.relationships)) {
+  if (hasFlowEdgeCycle(nodeIds, flow.edges)) {
     issues.push({
       code: 'connection_cycle',
-      message: 'Flow connections must not contain cycles.',
+      message: 'Flow edges must not contain cycles.',
     });
   }
 

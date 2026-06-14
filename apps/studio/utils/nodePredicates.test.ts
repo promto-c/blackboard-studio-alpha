@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { NodeType, type AnyNode } from '@blackboard/types';
 
 // Mock the Google GenAI module to prevent API key errors during import of
-// effectRegistry (which transitively pulls in ai.ts via editorContext).
+// nodeRegistry (which transitively pulls in ai.ts via editorContext).
 vi.mock('@google/genai', () => ({
   GoogleGenAI: vi.fn(),
   Modality: {},
@@ -16,6 +16,8 @@ import {
   hasStackedFlag,
   isNodeStacked,
   isLoopingTimelineNode,
+  participatesInImplicitPipeline,
+  usesImplicitPipelineInput,
 } from '@/utils/nodePredicates';
 
 describe('isStackAdjustmentType', () => {
@@ -29,11 +31,29 @@ describe('isStackAdjustmentType', () => {
   });
 
   it('returns false for non-adjustment node types', () => {
-    expect(isStackAdjustmentType(NodeType.IMAGE)).toBe(false);
-    expect(isStackAdjustmentType(NodeType.VIDEO)).toBe(false);
+    expect(isStackAdjustmentType(NodeType.MEDIA_SOURCE)).toBe(false);
     expect(isStackAdjustmentType(NodeType.TEXT)).toBe(false);
     expect(isStackAdjustmentType(NodeType.MERGE)).toBe(false);
     expect(isStackAdjustmentType(NodeType.SCENE)).toBe(false);
+    expect(isStackAdjustmentType(NodeType.EXTRACT_CHANNELS)).toBe(false);
+    expect(isStackAdjustmentType(NodeType.MERGE_CHANNELS)).toBe(false);
+    expect(isStackAdjustmentType(NodeType.NOTE)).toBe(false);
+  });
+});
+
+describe('implicit pipeline predicates', () => {
+  it('keeps channel utilities out of implicit pipe topology', () => {
+    expect(usesImplicitPipelineInput(NodeType.EXTRACT_CHANNELS)).toBe(false);
+    expect(usesImplicitPipelineInput(NodeType.MERGE_CHANNELS)).toBe(false);
+    expect(participatesInImplicitPipeline(NodeType.EXTRACT_CHANNELS)).toBe(false);
+    expect(participatesInImplicitPipeline(NodeType.MERGE_CHANNELS)).toBe(false);
+    expect(usesImplicitPipelineInput(NodeType.NOTE)).toBe(false);
+    expect(participatesInImplicitPipeline(NodeType.NOTE)).toBe(false);
+  });
+
+  it('keeps normal adjustment nodes on the implicit pipeline', () => {
+    expect(usesImplicitPipelineInput(NodeType.GRADE)).toBe(true);
+    expect(participatesInImplicitPipeline(NodeType.GRADE)).toBe(true);
   });
 });
 
@@ -48,6 +68,7 @@ describe('isExportAdjustmentType', () => {
 
   it('returns false for non-export stack-only types', () => {
     expect(isExportAdjustmentType(NodeType.WARP)).toBe(false);
+    expect(isExportAdjustmentType(NodeType.NOTE)).toBe(false);
   });
 });
 
@@ -58,7 +79,7 @@ describe('isStackedExportAdjustmentNode', () => {
         id: 'roto',
         type: NodeType.ROTO,
         name: 'Roto',
-        visible: true,
+        enabled: true,
         stacked: true,
       } as AnyNode),
     ).toBe(true);
@@ -70,7 +91,7 @@ describe('isStackedExportAdjustmentNode', () => {
         id: 'roto',
         type: NodeType.ROTO,
         name: 'Roto',
-        visible: true,
+        enabled: true,
         stacked: false,
       } as AnyNode),
     ).toBe(false);
@@ -79,19 +100,26 @@ describe('isStackedExportAdjustmentNode', () => {
 
 describe('hasStackedFlag', () => {
   it('returns true when node has stacked property', () => {
-    const node = { id: '1', type: NodeType.GRADE, name: 'g', visible: true, stacked: true };
-    expect(hasStackedFlag(node as any)).toBe(true);
+    const node = { id: '1', type: NodeType.GRADE, name: 'g', enabled: true, stacked: true };
+    expect(hasStackedFlag(node as AnyNode)).toBe(true);
   });
 
   it('returns false when node has no stacked property', () => {
-    const node = { id: '1', type: NodeType.IMAGE, name: 'i', visible: true };
-    expect(hasStackedFlag(node as any)).toBe(false);
+    const node = {
+      id: '1',
+      type: NodeType.MEDIA_SOURCE,
+      name: 'i',
+      enabled: true,
+      mediaKind: 'image',
+      src: '',
+    };
+    expect(hasStackedFlag(node as AnyNode)).toBe(false);
   });
 });
 
 describe('isNodeStacked', () => {
   it('treats a missing stacked property as unstacked', () => {
-    const node = { id: '1', type: NodeType.GRADE, name: 'g', visible: true } as AnyNode;
+    const node = { id: '1', type: NodeType.GRADE, name: 'g', enabled: true } as AnyNode;
     expect(isNodeStacked(node)).toBe(false);
   });
 
@@ -100,14 +128,14 @@ describe('isNodeStacked', () => {
       id: '1',
       type: NodeType.GRADE,
       name: 'g',
-      visible: true,
+      enabled: true,
       stacked: true,
     } as AnyNode;
     const unstackedNode = {
       id: '2',
       type: NodeType.GRADE,
       name: 'g2',
-      visible: true,
+      enabled: true,
       stacked: false,
     } as AnyNode;
 
@@ -118,17 +146,40 @@ describe('isNodeStacked', () => {
 
 describe('isLoopingTimelineNode', () => {
   it('returns true for video with loop', () => {
-    const node = { id: '1', type: NodeType.VIDEO, name: 'v', visible: true, loop: true };
-    expect(isLoopingTimelineNode(node as any)).toBe(true);
+    const node = {
+      id: '1',
+      type: NodeType.MEDIA_SOURCE,
+      name: 'v',
+      enabled: true,
+      mediaKind: 'video',
+      src: '',
+      loop: true,
+    };
+    expect(isLoopingTimelineNode(node as AnyNode)).toBe(true);
   });
 
   it('returns false for video without loop', () => {
-    const node = { id: '1', type: NodeType.VIDEO, name: 'v', visible: true, loop: false };
-    expect(isLoopingTimelineNode(node as any)).toBe(false);
+    const node = {
+      id: '1',
+      type: NodeType.MEDIA_SOURCE,
+      name: 'v',
+      enabled: true,
+      mediaKind: 'video',
+      src: '',
+      loop: false,
+    };
+    expect(isLoopingTimelineNode(node as AnyNode)).toBe(false);
   });
 
   it('returns false for non-video/sequence types', () => {
-    const node = { id: '1', type: NodeType.IMAGE, name: 'i', visible: true };
-    expect(isLoopingTimelineNode(node as any)).toBe(false);
+    const node = {
+      id: '1',
+      type: NodeType.MEDIA_SOURCE,
+      name: 'i',
+      enabled: true,
+      mediaKind: 'image',
+      src: '',
+    };
+    expect(isLoopingTimelineNode(node as AnyNode)).toBe(false);
   });
 });

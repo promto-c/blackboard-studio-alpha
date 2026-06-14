@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import HotkeyBadge from './HotkeyBadge';
+import { HotkeyBadge } from './HotkeyBadge';
 import { looksLikeHotkeyCombo, splitHotkeyAlternatives } from '@/hotkeys';
 
 type TooltipSegment = { type: 'text'; value: string } | { type: 'hotkeys'; combos: string[] };
@@ -64,7 +64,7 @@ const getTooltipTarget = (node: EventTarget | null): HTMLElement | null => {
   return node.closest<HTMLElement>('[title]');
 };
 
-const GlobalTooltipLayer: React.FC = () => {
+export function GlobalTooltipLayer() {
   const tooltipRef = useRef<HTMLDivElement>(null);
   const showTimerRef = useRef<number | null>(null);
   const activeTargetRef = useRef<HTMLElement | null>(null);
@@ -327,6 +327,4 @@ const GlobalTooltipLayer: React.FC = () => {
     </div>,
     document.body,
   );
-};
-
-export default GlobalTooltipLayer;
+}

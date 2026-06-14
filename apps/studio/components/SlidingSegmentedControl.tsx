@@ -1,11 +1,11 @@
 import React from 'react';
 
-import { StudioSegmentedControl } from './StudioSegmentedControl';
+import { SegmentedControl } from './SegmentedControl';
 
 export interface SlidingSegmentedControlOption<T extends string> {
   value: T;
   label: string;
-  Icon: React.FC<{ className?: string }>;
+  Icon: React.ComponentType<{ className?: string }>;
   title?: string;
   ariaLabel?: string;
 }
@@ -32,7 +32,7 @@ const DEFAULT_PADDING = 4;
 const DEFAULT_HEIGHT = 28;
 const CONTROL_BORDER_WIDTH = 1;
 
-const SlidingSegmentedControl = <T extends string>({
+export const SlidingSegmentedControl = <T extends string>({
   options,
   value,
   onChange,
@@ -60,7 +60,7 @@ const SlidingSegmentedControl = <T extends string>({
   const controlClassName = `relative${className ? ` ${className}` : ''}`;
 
   return (
-    <StudioSegmentedControl
+    <SegmentedControl
       className={controlClassName}
       style={{ width: outerWidth, height, gap: `${gap}px` }}
     >
@@ -105,8 +105,6 @@ const SlidingSegmentedControl = <T extends string>({
           </button>
         );
       })}
-    </StudioSegmentedControl>
+    </SegmentedControl>
   );
 };
-
-export default SlidingSegmentedControl;

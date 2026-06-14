@@ -23,7 +23,7 @@ export interface NodeAction {
  * Each action can be "pinned" — pinned actions are shown as direct buttons
  * before the kebab trigger so they're always one-click accessible.
  */
-export const NodeActionMenu: React.FC<{ actions: NodeAction[] }> = ({ actions }) => {
+export function NodeActionMenu({ actions }: { actions: NodeAction[] }) {
   const { pinnedNodeActions, setPreferences } = usePreferences();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -158,4 +158,4 @@ export const NodeActionMenu: React.FC<{ actions: NodeAction[] }> = ({ actions })
         )}
     </div>
   );
-};
+}

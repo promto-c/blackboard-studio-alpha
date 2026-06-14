@@ -12,13 +12,22 @@ interface ImageBuffer {
   height: number;
 }
 
-interface TrackResult {
+export interface TrackResult {
   x: number;
   y: number;
   error: number; // Forward-Backward consistency error in pixels
 }
 
-export type OpticalFlowPyramid = ImageBuffer[];
+type OpticalFlowPyramid = ImageBuffer[];
+
+export interface HybridOpticalFlowOptions {
+  maxError?: number;
+  outlierDistance?: number;
+  searchRadius?: number;
+  patchRadius?: number;
+  minimumNccScore?: number;
+  coherentFallback?: boolean;
+}
 
 /**
  * Converts RGBA pixel data to Grayscale (Float32)
@@ -337,18 +346,167 @@ export function calculateOpticalFlowFromPyramids(
   });
 }
 
-export function calculateOpticalFlow(
-  pixelsA: Uint8ClampedArray,
-  pixelsB: Uint8ClampedArray,
-  width: number,
-  height: number,
+const getMedianValue = (values: number[]): number => {
+  const finiteValues = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (finiteValues.length === 0) return 0;
+  const middle = Math.floor(finiteValues.length / 2);
+  return finiteValues.length % 2 === 0
+    ? (finiteValues[middle - 1] + finiteValues[middle]) / 2
+    : finiteValues[middle];
+};
+
+const canSamplePatch = (image: ImageBuffer, x: number, y: number, radius: number): boolean =>
+  x - radius >= 0 && y - radius >= 0 && x + radius < image.width && y + radius < image.height;
+
+const readPatchStats = (
+  image: ImageBuffer,
+  x: number,
+  y: number,
+  radius: number,
+): { values: number[]; mean: number; variance: number } | null => {
+  if (!canSamplePatch(image, x, y, radius)) return null;
+
+  const values: number[] = [];
+  let sum = 0;
+
+  for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+    for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+      const value = image.data[(y + offsetY) * image.width + x + offsetX];
+      values.push(value);
+      sum += value;
+    }
+  }
+
+  const mean = sum / values.length;
+  const variance = values.reduce((total, value) => {
+    const centered = value - mean;
+    return total + centered * centered;
+  }, 0);
+
+  return { values, mean, variance };
+};
+
+const findTemplateMatch = (
+  prevImage: ImageBuffer,
+  currImage: ImageBuffer,
+  point: Point,
+  predictedFlow: { dx: number; dy: number },
+  options: Required<
+    Pick<HybridOpticalFlowOptions, 'searchRadius' | 'patchRadius' | 'minimumNccScore'>
+  >,
+): TrackResult | null => {
+  const sourceX = Math.round(point.x);
+  const sourceY = Math.round(point.y);
+  const sourcePatch = readPatchStats(prevImage, sourceX, sourceY, options.patchRadius);
+  if (!sourcePatch || sourcePatch.variance < 1e-6) return null;
+
+  const predictedX = Math.round(point.x + predictedFlow.dx);
+  const predictedY = Math.round(point.y + predictedFlow.dy);
+  let best: { x: number; y: number; score: number } | null = null;
+
+  for (let dy = -options.searchRadius; dy <= options.searchRadius; dy += 1) {
+    for (let dx = -options.searchRadius; dx <= options.searchRadius; dx += 1) {
+      const candidateX = predictedX + dx;
+      const candidateY = predictedY + dy;
+      const candidatePatch = readPatchStats(currImage, candidateX, candidateY, options.patchRadius);
+      if (!candidatePatch || candidatePatch.variance < 1e-6) continue;
+
+      let dot = 0;
+      for (let index = 0; index < sourcePatch.values.length; index += 1) {
+        dot +=
+          (sourcePatch.values[index] - sourcePatch.mean) *
+          (candidatePatch.values[index] - candidatePatch.mean);
+      }
+
+      const score = dot / Math.sqrt(sourcePatch.variance * candidatePatch.variance);
+      if (!best || score > best.score) {
+        best = { x: candidateX, y: candidateY, score };
+      }
+    }
+  }
+
+  if (!best || best.score < options.minimumNccScore) return null;
+
+  return {
+    x: best.x,
+    y: best.y,
+    error: Math.max(0, (1 - best.score) * 10),
+  };
+};
+
+/**
+ * Hybrid point tracking for small or low-feature roto regions.
+ *
+ * The normal path is pyramidal Lucas-Kanade. When a point fails the
+ * forward-backward check or disagrees sharply with neighboring points, this
+ * falls back to local normalized cross-correlation around the median motion.
+ * If the patch itself is textureless, the final fallback can borrow coherent
+ * median motion from the rest of the shape.
+ */
+export function calculateHybridOpticalFlowFromPyramids(
+  pyrA: OpticalFlowPyramid,
+  pyrB: OpticalFlowPyramid,
   points: Point[],
+  options: HybridOpticalFlowOptions = {},
 ): TrackResult[] {
-  return calculateOpticalFlowFromPyramids(
-    buildOpticalFlowPyramid(pixelsA, width, height),
-    buildOpticalFlowPyramid(pixelsB, width, height),
-    points,
+  const tracked = calculateOpticalFlowFromPyramids(pyrA, pyrB, points);
+  if (points.length === 0 || pyrA.length === 0 || pyrB.length === 0) return tracked;
+
+  const maxError = options.maxError ?? 15;
+  const outlierDistance = options.outlierDistance ?? 30;
+  const searchRadius = Math.max(2, Math.round(options.searchRadius ?? 18));
+  const patchRadius = Math.max(2, Math.round(options.patchRadius ?? 5));
+  const minimumNccScore = options.minimumNccScore ?? 0.62;
+  const coherentFallback = options.coherentFallback ?? true;
+
+  const flows = tracked.map((point, index) => ({
+    dx: point.x - points[index].x,
+    dy: point.y - points[index].y,
+    error: point.error,
+  }));
+  const reliableFlows = flows.filter(
+    (flow) =>
+      Number.isFinite(flow.dx) &&
+      Number.isFinite(flow.dy) &&
+      Number.isFinite(flow.error) &&
+      flow.error <= maxError,
   );
+  const medianFlow = {
+    dx: getMedianValue(reliableFlows.map((flow) => flow.dx)),
+    dy: getMedianValue(reliableFlows.map((flow) => flow.dy)),
+  };
+  const prevImage = pyrA[0];
+  const currImage = pyrB[0];
+
+  return tracked.map((point, index) => {
+    const flow = flows[index];
+    const isBadFlow =
+      !Number.isFinite(point.x) ||
+      !Number.isFinite(point.y) ||
+      !Number.isFinite(point.error) ||
+      point.error > maxError ||
+      (reliableFlows.length >= 2 &&
+        Math.hypot(flow.dx - medianFlow.dx, flow.dy - medianFlow.dy) > outlierDistance);
+
+    if (!isBadFlow) return point;
+
+    const templateMatch = findTemplateMatch(prevImage, currImage, points[index], medianFlow, {
+      searchRadius,
+      patchRadius,
+      minimumNccScore,
+    });
+    if (templateMatch) return templateMatch;
+
+    if (coherentFallback && reliableFlows.length > 0) {
+      return {
+        x: points[index].x + medianFlow.dx,
+        y: points[index].y + medianFlow.dy,
+        error: Math.min(maxError, Math.max(1, getMedianValue(reliableFlows.map((f) => f.error)))),
+      };
+    }
+
+    return point;
+  });
 }
 
 // --- Robust Solvers (RANSAC) ---
@@ -709,7 +867,7 @@ function ransac(
   return bestModel;
 }
 
-export type SolvedTransformType = 'homography' | 'affine' | 'similarity' | 'translation';
+type SolvedTransformType = 'homography' | 'affine' | 'similarity' | 'translation';
 
 export interface SolvedTransformModel {
   type: SolvedTransformType;
@@ -723,6 +881,7 @@ type TransformSolveConfig = {
   affine: boolean;
   perspective: boolean;
   deform: boolean;
+  ransacThreshold?: number;
 };
 
 const getRequestedTransformType = (
@@ -770,22 +929,23 @@ export const fitTrackedTransform = (
     }
   }
 
-  let model = ransac(referencePoints, trackedPoints, type, minPoints);
+  const threshold = config.ransacThreshold ?? 2.0;
+  let model = ransac(referencePoints, trackedPoints, type, minPoints, threshold);
 
   if (!model && type === 'homography' && referencePoints.length >= 3) {
     type = 'affine';
     minPoints = 3;
-    model = ransac(referencePoints, trackedPoints, type, minPoints);
+    model = ransac(referencePoints, trackedPoints, type, minPoints, threshold);
   }
   if (!model && type === 'affine' && referencePoints.length >= 2) {
     type = 'similarity';
     minPoints = 2;
-    model = ransac(referencePoints, trackedPoints, type, minPoints);
+    model = ransac(referencePoints, trackedPoints, type, minPoints, threshold);
   }
   if (!model && type !== 'translation') {
     type = 'translation';
     minPoints = 1;
-    model = ransac(referencePoints, trackedPoints, type, minPoints);
+    model = ransac(referencePoints, trackedPoints, type, minPoints, threshold);
   }
 
   return {

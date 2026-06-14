@@ -1,6 +1,5 @@
-import React from 'react';
 import { AnyNode } from '@blackboard/types';
-import { getInputConnections, getOutputConnections } from '@/utils/connectionGraph';
+import { getOutputConnections } from '@/utils/connectionGraph';
 import * as Icons from '@blackboard/icons';
 
 interface ConnectionBadgeProps {
@@ -10,31 +9,21 @@ interface ConnectionBadgeProps {
   onSelectNode?: (nodeId: string) => void;
 }
 
-/**
- * Shows a small link icon indicator when a node has input or output connections.
- * Hovering reveals a tooltip with connection details.
- */
-const ConnectionBadge: React.FC<ConnectionBadgeProps> = ({
+export function ConnectionBadge({
   node,
   allNodes,
   onHoverNodeIds,
   onSelectNode,
-}) => {
-  const inputs = getInputConnections(node);
-  const outputs = getOutputConnections(allNodes, node.id);
-  const totalConnections = inputs.length + outputs.length;
+}: ConnectionBadgeProps) {
+  const outputs = getOutputConnections(allNodes, node.id).filter(
+    (output) => output.portName !== 'pipe',
+  );
+  const totalConnections = outputs.length;
 
   if (totalConnections === 0) return null;
 
   const tooltipLines: string[] = [];
   const relatedNodeIds = new Set<string>();
-  for (const { portName, sourceNodeId } of inputs) {
-    const source = allNodes.find((candidate) => candidate.id === sourceNodeId);
-    if (source) {
-      relatedNodeIds.add(source.id);
-    }
-    tooltipLines.push(`${portName} \u2190 ${source?.name || 'Unknown'}`);
-  }
   for (const { node: consumer, portName } of outputs) {
     relatedNodeIds.add(consumer.id);
     tooltipLines.push(`out \u2192 ${consumer.name}.${portName}`);
@@ -79,6 +68,4 @@ const ConnectionBadge: React.FC<ConnectionBadgeProps> = ({
   }
 
   return <div {...sharedProps}>{content}</div>;
-};
-
-export default ConnectionBadge;
+}

@@ -1,5 +1,5 @@
-import { AnyNode, NodeType } from '@blackboard/types';
-import { nodeFlags } from '@/effects/effectHelpers';
+import { AnyNode, ImageSequenceNode, MediaSourceNode, NodeType } from '@blackboard/types';
+import { nodeFlags } from '@/nodes/helpers';
 
 export const MEDIA_SOURCE_UPSTREAM = '__media_source_upstream__';
 
@@ -8,15 +8,8 @@ export interface MediaSourceOption {
   label: string;
 }
 
-export type MediaSourceNode = Extract<
-  AnyNode,
-  { type: typeof NodeType.IMAGE | typeof NodeType.VIDEO | typeof NodeType.IMAGE_SEQUENCE }
->;
-
-export const isMediaSourceNode = (node: AnyNode): node is MediaSourceNode =>
-  node.type === NodeType.IMAGE ||
-  node.type === NodeType.VIDEO ||
-  node.type === NodeType.IMAGE_SEQUENCE;
+export const isMediaSourceNode = (node: AnyNode): node is MediaSourceNode | ImageSequenceNode =>
+  node.type === NodeType.MEDIA_SOURCE || node.type === NodeType.IMAGE_SEQUENCE;
 
 export const isUpstreamMediaSourceId = (sourceId: string): boolean =>
   sourceId === MEDIA_SOURCE_UPSTREAM;
@@ -34,7 +27,7 @@ export const getUpstreamSourceNodes = (nodes: AnyNode[], currentNodeId: string):
 export const getUpstreamMediaSourceNode = (
   nodes: AnyNode[],
   currentNodeId: string,
-): MediaSourceNode | null => {
+): MediaSourceNode | ImageSequenceNode | null => {
   const upstreamNodes = getUpstreamSourceNodes(nodes, currentNodeId).filter(
     (node) => !nodeFlags(node.type).isSceneLike,
   );

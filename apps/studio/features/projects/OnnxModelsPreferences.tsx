@@ -1,6 +1,6 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import * as Icons from '@blackboard/icons';
-import { useOptionalEditorActions } from '@/state/editorContext';
+import { useEditorSelector, useOptionalEditorActions } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import { useInstalledOnnxModels } from '@/state/installedOnnxModelsContext';
 
@@ -13,14 +13,12 @@ import {
   type OnnxOutputMetadata,
 } from '@blackboard/types';
 import {
-  DEFAULT_ONNX_REPO,
   fetchHuggingFaceOnnxRepoFiles,
-  getOnnxModelRecipe,
+  GENERIC_ONNX_RECIPE,
   getVariantRequiredFiles,
   getVariantTotalSize,
   normalizeHuggingFaceRepoName,
   resolveOnnxVariantsFromRepoFiles,
-  resolveRecipe,
   searchHuggingFaceOnnxModels,
   selectDefaultOnnxVariant,
 } from '@/services/onnx/modelRegistry';
@@ -32,8 +30,14 @@ import {
   updateInstalledOnnxModel,
 } from '@/services/onnx/modelCache';
 import {
+  isBackgroundJobActive,
+  type BackgroundJob,
+  type BackgroundJobInput,
+  type BackgroundJobUpdate,
+} from '@/state/editor/services/backgroundJobs';
+import type { BackgroundJobRunContext } from '@/state/editor/services/backgroundJobExecutor';
+import {
   getCachedOnnxModelInputMetadata,
-  getOnnxModelMetadataError,
   loadOnnxModelMetadata,
   loadOnnxModelMetadataCached,
   loadOnnxModelOutputMetadataCached,
@@ -41,7 +45,8 @@ import {
 import { getOnnxRuntimeCompatibility } from '@/services/onnx/onnxRuntime';
 
 type BrowseState = 'idle' | 'loading' | 'ready' | 'error';
-type DownloadState = 'idle' | 'downloading' | 'error' | 'complete';
+
+const DEFAULT_ONNX_REPO = 'onnx-community/depth-anything-v2-small';
 
 const formatBytes = (bytes?: number): string => {
   if (!bytes) return 'Unknown size';
@@ -55,10 +60,13 @@ const formatBytes = (bytes?: number): string => {
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 };
 
-const StatusBadge: React.FC<{
+function StatusBadge({
+  children,
+  tone = 'neutral',
+}: {
   children: React.ReactNode;
   tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'accent';
-}> = ({ children, tone = 'neutral' }) => {
+}) {
   const toneClassName =
     tone === 'success'
       ? 'border-green-400/20 bg-green-500/10 text-green-100'
@@ -77,38 +85,35 @@ const StatusBadge: React.FC<{
       {children}
     </span>
   );
-};
+}
 
 const baseFieldClassName =
   'block w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] outline-none transition placeholder:text-gray-500 focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20';
 
-const OnnxModelsPreferences: React.FC = () => {
+function OnnxModelsPreferences() {
   const editorActions = useOptionalEditorActions() as {
     addNodeWithProps?: (
       nodeType: string,
       props: Record<string, unknown>,
       options?: { name?: string },
     ) => void;
+    runBackgroundJob?: (
+      input: BackgroundJobInput,
+      runner: (context: BackgroundJobRunContext) => Promise<BackgroundJobUpdate | void>,
+    ) => string;
+    requestBackgroundJobCancel?: (jobId: string) => void;
   } | null;
   const { onnxRuntimeWebGpuEnabled, onnxRuntimeWasmEnabled, setPreferences } = usePreferences();
   const [repoNameDraft, setRepoNameDraft] = useState(DEFAULT_ONNX_REPO);
-  const [searchDraft, setSearchDraft] = useState('depth anything onnx');
+  const [searchDraft, setSearchDraft] = useState('depth anything');
   const [searchResults, setSearchResults] = useState<string[]>([]);
   const [variants, setVariants] = useState<OnnxModelVariantMetadata[]>([]);
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const { models: installedModels, refresh: refreshInstalledModels } = useInstalledOnnxModels();
+  const backgroundJobs = useEditorSelector((state) => state.backgroundJobs);
   const [browseState, setBrowseState] = useState<BrowseState>('idle');
-  const [downloadState, setDownloadState] = useState<DownloadState>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [downloadFile, setDownloadFile] = useState<{
-    name: string;
-    loaded: number;
-    size: number;
-    index: number;
-    count: number;
-  } | null>(null);
-  const downloadAbortRef = useRef<AbortController | null>(null);
+  const [downloadJobId, setDownloadJobId] = useState<string | null>(null);
   const [copiedValue, setCopiedValue] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
 
@@ -144,17 +149,6 @@ const OnnxModelsPreferences: React.FC = () => {
 
   const loadModelMetadata = useCallback(
     async (model: InstalledOnnxModel) => {
-      const persistedError = getOnnxModelMetadataError(model);
-      if (persistedError) {
-        setModelMeta(model.id, {
-          loading: false,
-          error: persistedError,
-          inputs: null,
-          outputs: null,
-        });
-        return;
-      }
-
       if (getCachedOnnxModelInputMetadata(model)) {
         setModelMeta(model.id, {
           loading: false,
@@ -198,6 +192,44 @@ const OnnxModelsPreferences: React.FC = () => {
   const grandTotal = selectedVariant
     ? (getVariantTotalSize(selectedVariant) ?? selectedVariant.sizeBytes ?? 0)
     : 0;
+  const activeDownloadJob = useMemo((): BackgroundJob | null => {
+    if (downloadJobId) {
+      return backgroundJobs.find((job) => job.id === downloadJobId) ?? null;
+    }
+    return (
+      backgroundJobs.find(
+        (job) =>
+          job.type === 'onnx-download' &&
+          isBackgroundJobActive(job) &&
+          (!selectedVariant || job.source?.variantId === selectedVariant.id),
+      ) ?? null
+    );
+  }, [backgroundJobs, downloadJobId, selectedVariant]);
+  const activeDownloadProgress = activeDownloadJob?.progressState;
+  const downloadProgress = activeDownloadJob?.progress ?? activeDownloadProgress?.percent ?? null;
+  const downloadLoaded =
+    activeDownloadProgress?.loaded ??
+    ((downloadProgress ?? 0) > 0 && (activeDownloadProgress?.total ?? grandTotal) > 0
+      ? Math.round(((downloadProgress ?? 0) / 100) * (activeDownloadProgress?.total ?? grandTotal))
+      : 0);
+  const downloadTotal = activeDownloadProgress?.total ?? grandTotal;
+  const downloadFile = activeDownloadProgress?.currentFile
+    ? {
+        name: activeDownloadProgress.currentFile.name,
+        loaded: activeDownloadProgress.currentFile.loaded ?? 0,
+        size: activeDownloadProgress.currentFile.size ?? 0,
+        index: activeDownloadProgress.currentFile.index ?? 0,
+        count: activeDownloadProgress.currentFile.count ?? 1,
+      }
+    : null;
+  const isDownloadActive = activeDownloadJob ? isBackgroundJobActive(activeDownloadJob) : false;
+
+  React.useEffect(() => {
+    if (!activeDownloadJob) return;
+    if (activeDownloadJob.status === 'error') {
+      setError(activeDownloadJob.error ?? activeDownloadJob.detail ?? 'Model download failed.');
+    }
+  }, [activeDownloadJob]);
 
   const browseRepo = useCallback(async (repoName: string) => {
     const normalizedRepoName = normalizeHuggingFaceRepoName(repoName);
@@ -209,11 +241,10 @@ const OnnxModelsPreferences: React.FC = () => {
 
     try {
       const files = await fetchHuggingFaceOnnxRepoFiles(normalizedRepoName);
-      const recipe = resolveRecipe(normalizedRepoName);
       const detectedVariants = resolveOnnxVariantsFromRepoFiles({
         repoName: normalizedRepoName,
         files,
-        recipe,
+        recipe: GENERIC_ONNX_RECIPE,
       });
       if (detectedVariants.length === 0) {
         throw new Error('No .onnx files were found in this repo.');
@@ -240,46 +271,8 @@ const OnnxModelsPreferences: React.FC = () => {
     }
   }, [searchDraft]);
 
-  const onDownloadProgress = useCallback((progress: DownloadProgress) => {
-    setDownloadProgress(progress.percent ?? null);
-    if (progress.currentFile) {
-      setDownloadFile({
-        name: progress.currentFile,
-        loaded: progress.currentFileLoaded ?? 0,
-        size: progress.currentFileSize ?? 0,
-        index: progress.fileIndex,
-        count: progress.fileCount,
-      });
-    }
-  }, []);
-
-  const cancelDownload = useCallback(() => {
-    downloadAbortRef.current?.abort();
-    downloadAbortRef.current = null;
-    setDownloadState('idle');
-    setDownloadProgress(null);
-    setDownloadFile(null);
-  }, []);
-
-  const downloadSelectedVariant = useCallback(async () => {
-    if (!selectedVariant) return;
-    const controller = new AbortController();
-    downloadAbortRef.current = controller;
-    setDownloadState('downloading');
-    setDownloadProgress(0);
-    setDownloadFile(null);
-    setError(null);
-
-    try {
-      const recipe = resolveRecipe(selectedVariant.repoName);
-      const model = await downloadAndCacheOnnxModel({
-        variant: selectedVariant,
-        recipeId: recipe.id,
-        onProgress: onDownloadProgress,
-        signal: controller.signal,
-      });
-      downloadAbortRef.current = null;
-
+  const refreshInstalledModelMetadata = useCallback(
+    async (model: InstalledOnnxModel) => {
       try {
         const [inputMeta, outputMeta] = await Promise.all([
           loadOnnxModelMetadata(model, effectiveBackend),
@@ -294,78 +287,129 @@ const OnnxModelsPreferences: React.FC = () => {
       } catch {
         // metadata detection is best-effort
       }
+    },
+    [effectiveBackend],
+  );
 
-      await refreshInstalledModels();
-      setDownloadState('complete');
-      setDownloadFile(null);
-      setSelectedVariantId(model.variant.id);
-    } catch (caughtError) {
-      downloadAbortRef.current = null;
-      if (caughtError instanceof DOMException && caughtError.name === 'AbortError') {
-        setDownloadState('idle');
-        setDownloadProgress(null);
-        setDownloadFile(null);
+  const startOnnxDownloadJob = useCallback(
+    (
+      variant: OnnxModelVariantMetadata,
+      options: { redownload?: boolean; selectWhenComplete?: boolean } = {},
+    ) => {
+      if (!editorActions?.runBackgroundJob) {
+        setError('Background job executor is unavailable.');
         return;
       }
-      setDownloadState('error');
-      setError(caughtError instanceof Error ? caughtError.message : 'Model download failed.');
+
+      const modelId = `generic:${variant.repoName}:${variant.filePath}`;
+      const fileName = variant.filePath.split('/').pop() ?? variant.filePath;
+      setError(null);
+
+      const jobId = editorActions.runBackgroundJob(
+        {
+          type: 'onnx-download',
+          title: `${options.redownload ? 'Redownload' : 'Download'} ${variant.label}`,
+          subtitle: variant.repoName,
+          detail: `Queued ${fileName}`,
+          status: 'queued',
+          progress: 0,
+          indeterminate: false,
+          cancellable: true,
+          source: {
+            modelId,
+            repoName: variant.repoName,
+            variantId: variant.id,
+            url: getOnnxDownloadUrl(variant),
+            filename: fileName,
+          },
+          payload: { variant },
+        },
+        async (job) => {
+          let currentFile: NonNullable<BackgroundJob['progressState']>['currentFile'] | undefined;
+          const reportProgress = (progress: DownloadProgress) => {
+            if (progress.currentFile) {
+              currentFile = {
+                name: progress.currentFile,
+                loaded: progress.currentFileLoaded ?? 0,
+                size: progress.currentFileSize,
+                index: progress.fileIndex,
+                count: progress.fileCount,
+              };
+            } else if (currentFile && progress.currentFileLoaded !== undefined) {
+              currentFile = { ...currentFile, loaded: progress.currentFileLoaded };
+            }
+
+            job.progress({
+              label: currentFile ? `Downloading ${currentFile.name}` : 'Downloading ONNX model',
+              loaded: progress.loaded,
+              total: progress.total,
+              percent: progress.percent,
+              ...(currentFile ? { currentFile } : {}),
+            });
+          };
+
+          const model = await downloadAndCacheOnnxModel({
+            variant,
+            onProgress: reportProgress,
+            signal: job.signal,
+          });
+
+          job.update({
+            detail: 'Reading model metadata',
+            progress: 98,
+            indeterminate: true,
+            source: {
+              modelId: model.id,
+              repoName: model.repoName,
+              variantId: model.variant.id,
+              url: getOnnxDownloadUrl(model.variant),
+              filename: fileName,
+            },
+          });
+          await refreshInstalledModelMetadata(model);
+          await refreshInstalledModels();
+          if (options.selectWhenComplete) {
+            setSelectedVariantId(model.variant.id);
+          }
+          return {
+            status: 'complete',
+            detail: `${model.name} installed`,
+            progress: 100,
+            source: {
+              modelId: model.id,
+              repoName: model.repoName,
+              variantId: model.variant.id,
+              url: getOnnxDownloadUrl(model.variant),
+              filename: fileName,
+            },
+          };
+        },
+      );
+      setDownloadJobId(jobId);
+    },
+    [editorActions, refreshInstalledModelMetadata, refreshInstalledModels],
+  );
+
+  const cancelDownload = useCallback(() => {
+    if (activeDownloadJob) {
+      editorActions?.requestBackgroundJobCancel?.(activeDownloadJob.id);
     }
-  }, [effectiveBackend, refreshInstalledModels, selectedVariant, onDownloadProgress]);
+  }, [activeDownloadJob, editorActions]);
+
+  const downloadSelectedVariant = useCallback(async () => {
+    if (!selectedVariant) return;
+    startOnnxDownloadJob(selectedVariant, { selectWhenComplete: true });
+  }, [selectedVariant, startOnnxDownloadJob]);
 
   const redownloadModel = useCallback(
     async (model: InstalledOnnxModel) => {
-      const controller = new AbortController();
-      downloadAbortRef.current = controller;
-      setDownloadState('downloading');
-      setDownloadProgress(0);
-      setDownloadFile(null);
-      setError(null);
-
-      try {
-        const updated = await downloadAndCacheOnnxModel({
-          variant: model.variant,
-          recipeId: model.recipeId,
-          onProgress: onDownloadProgress,
-          signal: controller.signal,
-        });
-        downloadAbortRef.current = null;
-
-        try {
-          const [inputMeta, outputMeta] = await Promise.all([
-            loadOnnxModelMetadata(updated, effectiveBackend),
-            loadOnnxModelOutputMetadataCached(updated, effectiveBackend),
-          ]);
-          if (inputMeta.length > 0) {
-            updated.variant.inputShape = inputMeta[0].dims;
-            updated.variant.inputMetadata = inputMeta;
-            updated.variant.outputMetadata = outputMeta;
-            await updateInstalledOnnxModel(updated);
-          }
-        } catch {
-          // metadata detection is best-effort
-        }
-
-        await refreshInstalledModels();
-        setDownloadState('complete');
-        setDownloadFile(null);
-      } catch (caughtError) {
-        downloadAbortRef.current = null;
-        if (caughtError instanceof DOMException && caughtError.name === 'AbortError') {
-          setDownloadState('idle');
-          setDownloadProgress(null);
-          setDownloadFile(null);
-          return;
-        }
-        setDownloadState('error');
-        setError(caughtError instanceof Error ? caughtError.message : 'Model redownload failed.');
-      }
+      startOnnxDownloadJob(model.variant, { redownload: true });
     },
-    [effectiveBackend, refreshInstalledModels, onDownloadProgress],
+    [startOnnxDownloadJob],
   );
 
   const createNodeFromModel = useCallback(
     (model: InstalledOnnxModel) => {
-      const recipe = getOnnxModelRecipe(model.recipeId);
       editorActions?.addNodeWithProps?.(
         NodeType.ONNX_MODEL,
         {
@@ -378,8 +422,8 @@ const OnnxModelsPreferences: React.FC = () => {
           inputSize:
             model.variant.inputShape?.[2] && model.variant.inputShape?.[3]
               ? { width: model.variant.inputShape[3], height: model.variant.inputShape[2] }
-              : { ...recipe.defaultInputSize },
-          task: recipe.task,
+              : { ...GENERIC_ONNX_RECIPE.defaultInputSize },
+          task: GENERIC_ONNX_RECIPE.task,
         },
         { name: `${model.name} ONNX` },
       );
@@ -484,13 +528,10 @@ const OnnxModelsPreferences: React.FC = () => {
           <div>
             <p className="text-sm font-medium text-white">Hugging Face ONNX Import</p>
             <p className="mt-1 text-xs leading-6 text-gray-400">
-              Paste a repo name or search for ONNX models. Depth Anything V2 Small is the first
-              recipe and default.
+              Paste a repo name or search for ONNX models.
             </p>
           </div>
-          <StatusBadge tone="accent">
-            {repoNameDraft ? resolveRecipe(repoNameDraft).name : 'Generic ONNX'}
-          </StatusBadge>
+          <StatusBadge tone="accent">{GENERIC_ONNX_RECIPE.name}</StatusBadge>
         </div>
 
         <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
@@ -498,7 +539,7 @@ const OnnxModelsPreferences: React.FC = () => {
             value={repoNameDraft}
             onChange={(event) => setRepoNameDraft(event.target.value)}
             className={`${baseFieldClassName} font-mono`}
-            placeholder="onnx-community/depth-anything-v2-small-ONNX"
+            placeholder={`e.g. ${DEFAULT_ONNX_REPO}`}
             spellCheck={false}
           />
           <button
@@ -629,11 +670,11 @@ const OnnxModelsPreferences: React.FC = () => {
               <button
                 type="button"
                 onClick={() => void downloadSelectedVariant()}
-                disabled={!selectedVariant || downloadState === 'downloading'}
+                disabled={!selectedVariant || isDownloadActive}
                 className="inline-flex items-center gap-2 rounded-lg border border-primary-400/30 bg-primary-500/15 px-3 py-2 text-xs font-medium text-primary-100 transition hover:bg-primary-500/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Icons.ArrowDownTray className="h-3.5 w-3.5" />
-                {downloadState === 'downloading' ? 'Downloading...' : 'Download'}
+                {isDownloadActive ? 'Downloading...' : 'Download'}
               </button>
               {selectedVariant ? (
                 <button
@@ -646,7 +687,7 @@ const OnnxModelsPreferences: React.FC = () => {
                 </button>
               ) : null}
             </div>
-            {downloadState === 'downloading' ? (
+            {isDownloadActive ? (
               <div className="mt-3 space-y-2">
                 {downloadFile ? (
                   <div className="flex items-center justify-between text-[11px]">
@@ -678,13 +719,9 @@ const OnnxModelsPreferences: React.FC = () => {
                   </button>
                 </div>
                 <p className="text-[11px] text-gray-500">
-                  {formatBytes(
-                    (downloadProgress ?? 0) > 0 && grandTotal > 0
-                      ? Math.round(((downloadProgress ?? 0) / 100) * grandTotal)
-                      : 0,
-                  )}
+                  {formatBytes(downloadLoaded)}
                   {' / '}
-                  {formatBytes(grandTotal)}
+                  {formatBytes(downloadTotal)}
                   {' — '}
                   {downloadFile ? formatBytes(downloadFile.loaded) : 0}
                   {' of '}
@@ -949,7 +986,7 @@ const OnnxModelsPreferences: React.FC = () => {
                           e.stopPropagation();
                           void redownloadModel(model);
                         }}
-                        disabled={downloadState === 'downloading'}
+                        disabled={isDownloadActive}
                         className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-gray-300 transition hover:border-white/20 hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         <Icons.RotateLoop className="h-3 w-3" />
@@ -977,6 +1014,6 @@ const OnnxModelsPreferences: React.FC = () => {
       </div>
     </div>
   );
-};
+}
 
 export default OnnxModelsPreferences;

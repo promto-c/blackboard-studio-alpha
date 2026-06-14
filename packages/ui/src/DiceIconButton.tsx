@@ -4,8 +4,8 @@ import IconButton, { type IconButtonProps } from './IconButton';
 
 export type DiceIconButtonProps = Omit<IconButtonProps, 'icon'>;
 
-const DiceIconButton: React.FC<DiceIconButtonProps> = (props) => (
-  <IconButton {...props} icon={Dice} />
-);
+function DiceIconButton({ tooltip, iconClassName, ...rest }: DiceIconButtonProps) {
+  return <IconButton icon={Dice} tooltip={tooltip} iconClassName={iconClassName} {...rest} />;
+}
 
 export default DiceIconButton;

@@ -6,7 +6,7 @@ interface HotkeyBadgeProps {
   className?: string;
 }
 
-const HotkeyBadge: React.FC<HotkeyBadgeProps> = ({ combo, className = '' }) => {
+export function HotkeyBadge({ combo, className = '' }: HotkeyBadgeProps) {
   const keys = formatHotkeyCombo(combo);
   if (!keys.length) return null;
 
@@ -24,6 +24,4 @@ const HotkeyBadge: React.FC<HotkeyBadgeProps> = ({ combo, className = '' }) => {
       ))}
     </span>
   );
-};
-
-export default HotkeyBadge;
+}

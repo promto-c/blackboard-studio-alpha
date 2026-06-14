@@ -17,7 +17,7 @@ export interface InspectorStackProps {
   renderCardHeader?: (node: AnyNode) => React.ReactNode;
 }
 
-const InspectorStack: React.FC<InspectorStackProps> = ({
+export function InspectorStack({
   selectedNode,
   selectedNodeId,
   nodes,
@@ -31,7 +31,7 @@ const InspectorStack: React.FC<InspectorStackProps> = ({
   stackClassName = 'space-y-2',
   getCardClassName,
   renderCardHeader,
-}) => {
+}: InspectorStackProps) {
   if (isOutputSelected) {
     return <>{outputContent}</>;
   }
@@ -59,6 +59,4 @@ const InspectorStack: React.FC<InspectorStackProps> = ({
       ))}
     </div>
   );
-};
-
-export default InspectorStack;
+}

@@ -1,6 +1,6 @@
 import type { RotoMotionBlurPhase, RotoMotionBlurSettings } from '@blackboard/types';
 
-export type ResolvedRotoMotionBlurSettings = Omit<RotoMotionBlurSettings, 'phase'> & {
+type ResolvedRotoMotionBlurSettings = Omit<RotoMotionBlurSettings, 'phase'> & {
   phase: RotoMotionBlurPhase;
 };
 
@@ -15,10 +15,10 @@ const CANVAS_SAMPLE_WEIGHT_RANGE = 255;
 const MIN_SAMPLES = 2;
 const MAX_SAMPLES = 128;
 
-export const isRotoMotionBlurPhase = (value: unknown): value is RotoMotionBlurPhase =>
+const isRotoMotionBlurPhase = (value: unknown): value is RotoMotionBlurPhase =>
   value === 'start' || value === 'centered' || value === 'end';
 
-export const clampRotoMotionBlurShutter = (value: number): number =>
+const clampRotoMotionBlurShutter = (value: number): number =>
   Number.isFinite(value) ? Math.max(0, value) : 0;
 
 export const clampRotoMotionBlurSamples = (value: number): number =>

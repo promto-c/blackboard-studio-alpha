@@ -1,94 +1,209 @@
 import React from 'react';
-import { AnyNode, SceneNode, ViewerSlotAssignments } from '@blackboard/types';
-import { effectRegistry } from '@/effects/effectRegistry';
+import {
+  AnyNode,
+  BlendMode,
+  NodeType,
+  type NoteColor,
+  type NoteNode,
+  SceneNode,
+  ViewerSlotAssignments,
+} from '@blackboard/types';
+import { nodeRegistry } from '@/nodes/registry';
 import NodeIcon from '@/features/nodes/NodeIcon';
-import { getStaticThumbnailAssetId, hasMediaThumbnail } from '@/features/nodes/nodeVisualHelpers';
+import {
+  getBlendModeLabel,
+  getStaticThumbnailAssetId,
+  hasMediaThumbnail,
+} from '@/features/nodes/nodeVisualHelpers';
 import { NodeActionMenu } from '@/features/nodes/NodeActionMenu';
 import { createExecutionAction, createStackingAction } from '@/features/nodes/nodeActionFactories';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { isSourceNodeType } from '@/utils/nodePredicates';
+import { usesImplicitPipelineInput } from '@/utils/nodePredicates';
 import * as Icons from '@blackboard/icons';
-import { ImageThumbnail, LiveThumbnail, ViewerSlotBadges } from '@/components';
-import type { ThumbnailMode } from '@/state/preferencesContext';
+import { ImageThumbnail, LiveThumbnail, MarkdownNote, ViewerSlotBadges } from '@/components';
+import type { ThumbnailMode } from '@/state/preferences';
 import { NodeProgressBackground } from '@/features/nodes/NodeProgressBackground';
 import type { BackgroundJob } from '@/state/editor/services/backgroundJobs';
 
 // --- Port Components ---
 
-export const InputPortDot: React.FC<{
+export function InputPortDot({
+  nodeId,
+  portName,
+  label,
+  isConnected,
+  isDragTarget,
+  isReserved = false,
+  portRef,
+}: {
   nodeId: string;
   portName: string;
   label: string;
   isConnected: boolean;
   isDragTarget: boolean;
+  isReserved?: boolean;
   portRef: (el: HTMLDivElement | null) => void;
-}> = ({ nodeId, portName, label, isConnected, isDragTarget, portRef }) => (
-  <div
-    ref={portRef}
-    data-port-input="true"
-    data-node-id={nodeId}
-    data-port-name={portName}
-    className={`flex flex-col items-center ${isDragTarget ? 'z-20' : ''}`}
-    title={label}
-  >
+}) {
+  return (
     <div
-      className={`w-3 h-3 rounded-full border-2 transition-all flex-shrink-0 ${
-        isConnected
-          ? 'bg-primary-500 border-primary-400'
-          : isDragTarget
-            ? 'border-primary-400 bg-primary-900/50 scale-125'
-            : 'border-gray-600 bg-gray-800 hover:border-gray-400'
-      }`}
-    />
-  </div>
-);
+      ref={portRef}
+      data-port-input="true"
+      data-node-id={nodeId}
+      data-port-name={portName}
+      className={`flex flex-col items-center ${isDragTarget ? 'z-20' : ''}`}
+      title={label}
+    >
+      <div
+        className={`w-3 h-3 rounded-full border-2 transition-all flex-shrink-0 ${
+          isConnected
+            ? isReserved
+              ? 'border-transparent bg-transparent ring-2 ring-primary-400/35'
+              : 'bg-primary-500 border-primary-400'
+            : isDragTarget
+              ? 'border-primary-400 bg-primary-900/50 scale-125'
+              : 'border-gray-600 bg-gray-800 hover:border-gray-400'
+        }`}
+      />
+    </div>
+  );
+}
 
-export const OutputPortDot: React.FC<{
+export function OutputPortDot({
+  portRef,
+  onMouseDown,
+}: {
   portRef: (el: HTMLDivElement | null) => void;
   onMouseDown?: (e: React.MouseEvent) => void;
-}> = ({ portRef, onMouseDown }) => (
-  <div ref={portRef} className="flex flex-col items-center">
-    <div
-      className={`w-3 h-3 rounded-full border-2 border-gray-600 bg-gray-800 transition-colors flex-shrink-0 ${
-        onMouseDown ? 'hover:border-primary-400 hover:bg-primary-900/50 cursor-crosshair' : ''
-      }`}
-      onMouseDown={onMouseDown}
-      title={onMouseDown ? 'Drag to connect' : undefined}
-    />
-  </div>
-);
+}) {
+  return (
+    <div ref={portRef} className="flex flex-col items-center">
+      <div
+        className={`w-3 h-3 rounded-full border-2 border-gray-600 bg-gray-800 transition-colors flex-shrink-0 ${
+          onMouseDown ? 'hover:border-primary-400 hover:bg-primary-900/50 cursor-crosshair' : ''
+        }`}
+        onMouseDown={onMouseDown}
+        title={onMouseDown ? 'Drag to connect' : undefined}
+      />
+    </div>
+  );
+}
 
 // --- Helpers ---
 
+function nodeHasBlendInfo(node: AnyNode): boolean {
+  return node.type === NodeType.MERGE;
+}
+
+function getOpacityDisplay(node: AnyNode): string {
+  const opacity = (node as unknown as { opacity?: number | Array<{ value: number }> }).opacity;
+  if (typeof opacity === 'number') return `${Math.round(opacity)}%`;
+  if (Array.isArray(opacity) && opacity.length > 0) {
+    return `${Math.round(opacity[0].value)}%`;
+  }
+  return '100%';
+}
+
+const NOTE_COLOR_STYLES: Record<
+  NoteColor,
+  {
+    shell: string;
+    content: string;
+    fold: string;
+  }
+> = {
+  theme: {
+    shell:
+      'border-primary-300/55 bg-primary-950/20 shadow-[0_0_26px_rgb(var(--color-primary-400)/0.08)] hover:border-primary-200/80',
+    content: 'text-primary-50',
+    fold: 'border-primary-200/70 bg-primary-300/55',
+  },
+  teal: {
+    shell:
+      'border-teal-300/55 bg-teal-950/20 shadow-[0_0_26px_rgba(45,212,191,0.08)] hover:border-teal-200/80',
+    content: 'text-teal-50',
+    fold: 'border-teal-200/70 bg-teal-300/55',
+  },
+  slate: {
+    shell:
+      'border-slate-300/45 bg-slate-950/30 shadow-[0_0_26px_rgba(148,163,184,0.07)] hover:border-slate-200/75',
+    content: 'text-slate-100',
+    fold: 'border-slate-200/60 bg-slate-300/45',
+  },
+  amber: {
+    shell:
+      'border-amber-300/55 bg-amber-950/20 shadow-[0_0_26px_rgba(252,211,77,0.08)] hover:border-amber-200/80',
+    content: 'text-amber-50',
+    fold: 'border-amber-200/70 bg-amber-300/55',
+  },
+  rose: {
+    shell:
+      'border-rose-300/55 bg-rose-950/20 shadow-[0_0_26px_rgba(253,164,175,0.08)] hover:border-rose-200/80',
+    content: 'text-rose-50',
+    fold: 'border-rose-200/70 bg-rose-300/55',
+  },
+  violet: {
+    shell:
+      'border-violet-300/55 bg-violet-950/20 shadow-[0_0_26px_rgba(196,181,253,0.08)] hover:border-violet-200/80',
+    content: 'text-violet-50',
+    fold: 'border-violet-200/70 bg-violet-300/55',
+  },
+};
+
 function getInputPortsForNode(node: AnyNode) {
-  const inputPorts = effectRegistry.get(node.type)?.inputPorts;
+  const inputPorts = nodeRegistry.get(node.type)?.inputPorts;
   if (!inputPorts) return [];
   return typeof inputPorts === 'function' ? inputPorts(node) : inputPorts;
 }
 
-type PortSpec = { nodeId: string; portName: string; label: string };
+type PortSpec = { nodeId: string; portName: string; label: string; isReserved?: boolean };
+type OutputPortSpec = { portName: string; label: string };
+
+const getReservedPortLabel = (portName: string): string => `${portName} (reserved)`;
 
 function buildStackInputPorts(stack: AnyNode[]) {
   const baseNode = stack[0];
-  const isSource = isSourceNodeType(baseNode.type);
-  const ports: PortSpec[] = isSource
-    ? []
-    : [{ nodeId: baseNode.id, portName: 'pipe', label: 'in' }];
+  const pipePorts: PortSpec[] = usesImplicitPipelineInput(baseNode.type)
+    ? [{ nodeId: baseNode.id, portName: 'pipe', label: 'in' }]
+    : [];
+  const inputPorts: PortSpec[] = [];
 
   for (const node of stack) {
+    const declaredPortNames = new Set<string>();
     for (const port of getInputPortsForNode(node)) {
-      ports.push({ nodeId: node.id, portName: port.name, label: port.label });
+      declaredPortNames.add(port.name);
+      inputPorts.push({ nodeId: node.id, portName: port.name, label: port.label });
+    }
+    for (const portName of Object.keys(node.inputs ?? {})) {
+      if (portName === 'pipe' || declaredPortNames.has(portName)) continue;
+      inputPorts.push({
+        nodeId: node.id,
+        portName,
+        label: getReservedPortLabel(portName),
+        isReserved: true,
+      });
     }
   }
 
-  return ports;
+  if (baseNode.type === NodeType.MERGE) {
+    return [...inputPorts, ...pipePorts];
+  }
+
+  return [...pipePorts, ...inputPorts];
+}
+
+function getOutputPortsForNode(node: AnyNode): OutputPortSpec[] {
+  const outputPorts = nodeRegistry.get(node.type)?.outputPorts;
+  if (!outputPorts) return [{ portName: 'output', label: 'out' }];
+  const resolved = typeof outputPorts === 'function' ? outputPorts(node) : outputPorts;
+  return resolved.map((port) => ({ portName: port.name, label: port.label }));
 }
 
 // --- Shared Layout Pieces ---
 
 type NodeCardShellProps = {
   isSelected: boolean;
-  onSelect: () => void;
+  disabled?: boolean;
+  onSelect: (event: React.MouseEvent) => void;
   onDragStart: (e: React.MouseEvent) => void;
   className?: string;
   children: React.ReactNode;
@@ -96,6 +211,7 @@ type NodeCardShellProps = {
 
 function NodeCardShell({
   isSelected,
+  disabled = false,
   onSelect,
   onDragStart,
   className = '',
@@ -105,13 +221,14 @@ function NodeCardShell({
     <div
       onClick={(e) => {
         e.stopPropagation();
-        onSelect();
+        onSelect(e);
       }}
       onMouseDown={onDragStart}
       className={[
         'relative cursor-pointer transition-colors select-none',
-        'rounded-lg bg-gray-800/50 border-2 w-48',
+        'rounded-lg bg-gray-800/50 border-2 w-48 backdrop-blur-md',
         isSelected ? 'border-primary-500' : 'border-gray-700/50 hover:border-gray-600',
+        disabled ? 'opacity-40' : '',
         className,
       ].join(' ')}
     >
@@ -150,7 +267,7 @@ function InputPorts({
         zIndex: 15,
       }}
     >
-      {ports.map(({ nodeId, portName, label }) => {
+      {ports.map(({ nodeId, portName, label, isReserved }) => {
         const connKey = `${nodeId}:${portName}`;
         const conn = connectionMap.get(connKey);
 
@@ -162,6 +279,7 @@ function InputPorts({
             label={label}
             isConnected={!!conn}
             isDragTarget={isDragTarget}
+            isReserved={isReserved}
             portRef={(el) => registerPortRef(`${nodeId}:input:${portName}`, el)}
           />
         );
@@ -171,21 +289,32 @@ function InputPorts({
 }
 
 type OutputPortProps = {
-  portKey: string;
+  ports: OutputPortSpec[];
+  nodeId: string;
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
-  onOutputPortMouseDown?: (e: React.MouseEvent) => void;
+  onOutputPortMouseDown?: (e: React.MouseEvent, sourcePortName: string) => void;
 };
 
-function OutputPort({ portKey, registerPortRef, onOutputPortMouseDown }: OutputPortProps) {
+const getOutputPortKey = (nodeId: string, portName: string) =>
+  portName === 'output' ? `${nodeId}:output` : `${nodeId}:output:${portName}`;
+
+function OutputPort({ ports, nodeId, registerPortRef, onOutputPortMouseDown }: OutputPortProps) {
   return (
     <div
-      className="absolute left-1/2 flex justify-center pointer-events-auto"
-      style={{ bottom: 0, transform: 'translate(-50%, 50%)', zIndex: 15 }}
+      className="absolute left-0 right-0 flex justify-center gap-3 pointer-events-auto"
+      style={{ bottom: 0, transform: 'translateY(50%)', zIndex: 15 }}
     >
-      <OutputPortDot
-        portRef={(el) => registerPortRef(portKey, el)}
-        onMouseDown={onOutputPortMouseDown}
-      />
+      {ports.map((port) => (
+        <OutputPortDot
+          key={port.portName}
+          portRef={(el) => registerPortRef(getOutputPortKey(nodeId, port.portName), el)}
+          onMouseDown={
+            onOutputPortMouseDown
+              ? (event) => onOutputPortMouseDown(event, port.portName)
+              : undefined
+          }
+        />
+      ))}
     </div>
   );
 }
@@ -244,12 +373,17 @@ function StackMagnetPlaceholder({ isActive, instantClose, height }: StackMagnetP
 
 // --- Scene Node ---
 
-export const SceneNodeCard: React.FC<{
+export function SceneNodeCard({
+  sceneNode,
+  isSelected,
+  onSelect,
+  onDragStart,
+}: {
   sceneNode: SceneNode;
   isSelected: boolean;
   onSelect: () => void;
   onDragStart: (e: React.MouseEvent) => void;
-}> = ({ sceneNode, isSelected, onSelect, onDragStart }) => {
+}) {
   return (
     <div
       onClick={(e) => {
@@ -274,38 +408,82 @@ export const SceneNodeCard: React.FC<{
       </span>
     </div>
   );
-};
+}
+
+// --- Preview Node Card (ghost placeholder for graph view) ---
+
+export function PreviewNodeCard({
+  nodeType,
+  name,
+  isMerge,
+}: {
+  nodeType: NodeType;
+  name: string;
+  isMerge?: boolean;
+}) {
+  const IconComponent =
+    nodeType === NodeType.GROUP
+      ? Icons.FolderOpen
+      : (nodeRegistry.get(nodeType)?.IconComponent ?? Icons.Cog);
+
+  return (
+    <div
+      className={[
+        'relative cursor-default select-none pointer-events-none',
+        'rounded-lg border-2 border-dashed border-primary-400/25 bg-primary-950/20 w-48',
+        'animate-pulse opacity-60',
+        'backdrop-blur-md',
+      ].join(' ')}
+    >
+      <div className="flex items-center gap-2 p-2">
+        <div className="flex-shrink-0 w-6 h-6 flex items-center justify-center text-primary-300/50">
+          <IconComponent className="h-4 w-4 text-primary-300/50" />
+        </div>
+        <span className="flex-1 truncate text-xs text-primary-200/70">{name}</span>
+        {isMerge ? (
+          <span className="text-[10px] text-primary-300/50 px-1 py-0.5 rounded border border-dashed border-primary-300/20">
+            merge
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 // --- Output Node ---
 
-export const OutputNodeCard: React.FC<{
-  isSelected: boolean;
-  isDragTarget: boolean;
-  viewerNodeId: string | null;
-  viewerSlots: ViewerSlotAssignments;
-  onSelect: () => void;
-  onDragStart: (e: React.MouseEvent) => void;
-  registerPortRef: (key: string, el: HTMLDivElement | null) => void;
-}> = ({
+export function OutputNodeCard({
   isSelected,
   isDragTarget,
+  isConnected,
   viewerNodeId,
   viewerSlots,
   onSelect,
   onDragStart,
   registerPortRef,
-}) => {
+}: {
+  isSelected: boolean;
+  isDragTarget: boolean;
+  isConnected: boolean;
+  viewerNodeId: string | null;
+  viewerSlots: ViewerSlotAssignments;
+  onSelect: (event: React.MouseEvent) => void;
+  onDragStart: (e: React.MouseEvent) => void;
+  registerPortRef: (key: string, el: HTMLDivElement | null) => void;
+}) {
   const ports: PortSpec[] = [{ nodeId: OUTPUT_NODE_ID, portName: 'pipe', label: 'in' }];
 
   const connectionMap = new Map<
     string,
     { sourceNodeId: string; targetNodeId: string; targetPortName: string }
   >();
-  connectionMap.set(`${OUTPUT_NODE_ID}:pipe`, {
-    sourceNodeId: '',
-    targetNodeId: OUTPUT_NODE_ID,
-    targetPortName: 'pipe',
-  });
+  if (isConnected) {
+    connectionMap.set(`${OUTPUT_NODE_ID}:pipe`, {
+      sourceNodeId: '',
+      targetNodeId: OUTPUT_NODE_ID,
+      targetPortName: 'pipe',
+    });
+  }
 
   return (
     <NodeCardShell
@@ -332,7 +510,81 @@ export const OutputNodeCard: React.FC<{
       />
     </NodeCardShell>
   );
-};
+}
+
+function NoteGraphCard({
+  node,
+  isSelected,
+  onSelect,
+  onDragStart,
+  onToggleEnabled,
+  onDeleteNode,
+}: {
+  node: NoteNode;
+  isSelected: boolean;
+  onSelect: (event: React.MouseEvent) => void;
+  onDragStart: (e: React.MouseEvent) => void;
+  onToggleEnabled: (nodeId: string) => void;
+  onDeleteNode: (nodeId: string) => void;
+}) {
+  const color = NOTE_COLOR_STYLES[node.color];
+  const content = node.content.trim() || '_Empty note_';
+
+  return (
+    <NodeCardShell
+      isSelected={isSelected}
+      disabled={!node.enabled}
+      onSelect={onSelect}
+      onDragStart={onDragStart}
+      className={[
+        'group/note min-h-36 w-56 overflow-hidden rounded-md p-4 pb-8 pr-5',
+        'border backdrop-blur-md transition-[border-color,background-color,box-shadow,opacity]',
+        color.shell,
+        isSelected ? 'ring-2 ring-primary-300/45' : '',
+      ].join(' ')}
+    >
+      <div className="pointer-events-none absolute right-0 top-0 h-0 w-0 border-l-[20px] border-t-[20px] border-l-transparent border-t-gray-950/80" />
+      <div
+        className={`pointer-events-none absolute right-0 top-0 h-5 w-5 rounded-bl border-b border-l ${color.fold}`}
+      />
+
+      <div className="absolute bottom-1.5 right-1.5 opacity-0 transition-opacity group-hover/note:opacity-100">
+        <NodeActionMenu
+          actions={[
+            {
+              id: 'delete',
+              label: 'Delete',
+              icon: <Icons.Trash className="h-4 w-4" />,
+              iconClassName:
+                'w-6 h-6 flex items-center justify-center rounded text-gray-500 hover:text-red-400 hover:bg-gray-700/60 transition-colors',
+              onClick: (e) => {
+                e.stopPropagation();
+                onDeleteNode(node.id);
+              },
+            },
+            {
+              id: 'enabled',
+              label: node.enabled ? 'Disable' : 'Enable',
+              icon: node.enabled ? (
+                <Icons.Power className="h-4 w-4" />
+              ) : (
+                <Icons.PowerOff className="h-4 w-4" />
+              ),
+              iconClassName:
+                'w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:bg-gray-700/60 hover:text-white',
+              onClick: (e) => {
+                e.stopPropagation();
+                onToggleEnabled(node.id);
+              },
+            },
+          ]}
+        />
+      </div>
+
+      <MarkdownNote content={content} className={`text-sm leading-5 ${color.content}`} />
+    </NodeCardShell>
+  );
+}
 
 // --- Stack Node ---
 
@@ -341,6 +593,7 @@ interface StackNodeCardProps {
   sceneNode: SceneNode | undefined;
   isSelected: boolean;
   selectedNodeId: string | null;
+  selectedNodeIds: string[];
   thumbnailMode: ThumbnailMode;
   connectionMap: Map<
     string,
@@ -353,24 +606,26 @@ interface StackNodeCardProps {
   isStackMagnetSource?: boolean;
   isStackMagnetDropCommit?: boolean;
   stackMagnetPlaceholderHeight?: number;
-  onSelect: () => void;
-  onSelectNode: (nodeId: string) => void;
+  onSelect: (event: React.MouseEvent) => void;
+  onSelectNode: (event: React.MouseEvent, nodeId: string) => void;
+  onOpenGroupNode: (nodeId: string) => void;
   onDragStart: (e: React.MouseEvent) => void;
-  onToggleVisibility: (nodeId: string) => void;
+  onToggleEnabled: (nodeId: string) => void;
   onToggleStacking: (nodeId: string) => void;
   canStackNode: (nodeId: string) => boolean;
   onDeleteNode: (nodeId: string) => void;
-  onOutputPortMouseDown: (e: React.MouseEvent) => void;
+  onOutputPortMouseDown: (e: React.MouseEvent, sourcePortName: string) => void;
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
   activeNodeJobMap: Map<string, BackgroundJob>;
   onExecuteNode?: (nodeId: string) => void;
 }
 
-export const StackNodeCard: React.FC<StackNodeCardProps> = ({
+export function StackNodeCard({
   stack,
   sceneNode,
   isSelected,
   selectedNodeId,
+  selectedNodeIds,
   thumbnailMode,
   connectionMap,
   viewerNodeId,
@@ -382,8 +637,9 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
   stackMagnetPlaceholderHeight = 0,
   onSelect,
   onSelectNode,
+  onOpenGroupNode,
   onDragStart,
-  onToggleVisibility,
+  onToggleEnabled,
   onToggleStacking,
   canStackNode,
   onDeleteNode,
@@ -391,13 +647,31 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
   registerPortRef,
   activeNodeJobMap,
   onExecuteNode,
-}) => {
+}: StackNodeCardProps) {
   const baseNode = stack[0];
+  const noteNode =
+    stack.length === 1 && baseNode.type === NodeType.NOTE ? (baseNode as NoteNode) : null;
   const stackInputPorts = buildStackInputPorts(stack);
+  const outputPorts = getOutputPortsForNode(baseNode);
+  const selectedNodeIdSet = React.useMemo(() => new Set(selectedNodeIds), [selectedNodeIds]);
+
+  if (noteNode) {
+    return (
+      <NoteGraphCard
+        node={noteNode}
+        isSelected={isSelected}
+        onSelect={onSelect}
+        onDragStart={onDragStart}
+        onToggleEnabled={onToggleEnabled}
+        onDeleteNode={onDeleteNode}
+      />
+    );
+  }
 
   return (
     <NodeCardShell
       isSelected={isSelected}
+      disabled={!baseNode.enabled}
       onSelect={onSelect}
       onDragStart={onDragStart}
       className={[
@@ -416,7 +690,8 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
       />
 
       <OutputPort
-        portKey={`${baseNode.id}:output`}
+        ports={outputPorts}
+        nodeId={baseNode.id}
         registerPortRef={registerPortRef}
         onOutputPortMouseDown={onOutputPortMouseDown}
       />
@@ -431,13 +706,18 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
             key={node.id}
             onClick={(e) => {
               e.stopPropagation();
-              onSelectNode(node.id);
+              onSelectNode(e, node.id);
+            }}
+            onDoubleClick={(e) => {
+              if (node.type !== NodeType.GROUP) return;
+              e.stopPropagation();
+              onOpenGroupNode(node.id);
             }}
             className={`relative flex w-full flex-col items-start gap-2 overflow-hidden rounded-md p-2 transition-colors ${
-              node.id === selectedNodeId
+              node.id === selectedNodeId || selectedNodeIdSet.has(node.id)
                 ? 'bg-primary-900/40 ring-1 ring-inset ring-primary-500/50'
                 : 'bg-gray-900/70'
-            }`}
+            } ${!node.enabled ? 'opacity-40' : ''}`}
             title={node.name}
           >
             <NodeProgressBackground job={activeNodeJobMap.get(node.id)} />
@@ -467,23 +747,30 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
                     },
                   },
                   {
-                    id: 'visibility',
-                    label: node.visible ? 'Hide' : 'Show',
-                    icon: node.visible ? (
-                      <Icons.Eye className="h-4 w-4" />
+                    id: 'enabled',
+                    label: node.enabled ? 'Disable' : 'Enable',
+                    icon: node.enabled ? (
+                      <Icons.Power className="h-4 w-4" />
                     ) : (
-                      <Icons.EyeSlash className="h-4 w-4" />
+                      <Icons.PowerOff className="h-4 w-4" />
                     ),
                     iconClassName:
                       'w-6 h-6 flex items-center justify-center text-gray-400 hover:text-white rounded',
                     onClick: (e) => {
                       e.stopPropagation();
-                      onToggleVisibility(node.id);
+                      onToggleEnabled(node.id);
                     },
                   },
                 ]}
               />
             </div>
+            {nodeHasBlendInfo(node) && (
+              <div className="flex items-center gap-3 w-full text-[10px] text-gray-500 font-mono">
+                <span>{getBlendModeLabel((node as { operator?: BlendMode }).operator)}</span>
+                <span className="text-gray-600">|</span>
+                <span>Mix {getOpacityDisplay(node)}</span>
+              </div>
+            )}
             {hasMediaThumbnail(node) && (
               <div className="relative w-full h-20 rounded overflow-hidden bg-gray-900 text-gray-500 flex items-center justify-center">
                 {thumbnailMode === 'live' && sceneNode ? (
@@ -509,4 +796,4 @@ export const StackNodeCard: React.FC<StackNodeCardProps> = ({
       />
     </NodeCardShell>
   );
-};
+}

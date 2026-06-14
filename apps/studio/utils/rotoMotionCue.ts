@@ -7,7 +7,7 @@ import {
 import { hasCustomRotoPointTypes } from '@/utils/rotoPointTypes';
 import type { RotoPointWeightMode } from '@/utils/rotoPointWeights';
 
-export type ResolvedPoint = { x: number; y: number };
+type ResolvedPoint = { x: number; y: number };
 
 export interface HeatlineSegment {
   x1: number;
@@ -17,13 +17,13 @@ export interface HeatlineSegment {
   color: string;
 }
 
-export interface GradientTrailStyle {
+interface GradientTrailStyle {
   stroke: string;
   opacity: number;
 }
 
-export const MIN_ROTO_MOTION_TRAIL_FRAMES = 1;
-export const MAX_ROTO_MOTION_TRAIL_FRAMES = 8;
+const MIN_ROTO_MOTION_TRAIL_FRAMES = 1;
+const MAX_ROTO_MOTION_TRAIL_FRAMES = 8;
 
 const PAST_TRAIL_COLOR: [number, number, number] = [59, 130, 246];
 const CURRENT_TRAIL_COLOR: [number, number, number] = [250, 204, 21];
@@ -146,7 +146,7 @@ export const normalizeSpeeds = (speeds: number[], floor = 0.35): number[] => {
   });
 };
 
-export const getSpeedHeatColor = (normalizedSpeed: number, alpha = 0.92): string => {
+const getSpeedHeatColor = (normalizedSpeed: number, alpha = 0.92): string => {
   const t = clamp01(normalizedSpeed);
   const hue = lerp(215, 0, t);
   const lightness = lerp(58, 50, t);

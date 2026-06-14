@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   collectTreeGuideSegments,
   type TreeGuideAdapter,
@@ -29,9 +29,16 @@ export const useTreeGuideSegments = <TItem>({
 }: UseTreeGuideSegmentsOptions<TItem>): TreeGuideSegment[] => {
   const [segments, setSegments] = useState<TreeGuideSegment[]>([]);
 
+  const adapterRef = useRef(adapter);
+  adapterRef.current = adapter;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const flatRowKeysRef = useRef(flatRowKeys);
+  flatRowKeysRef.current = flatRowKeys;
+
   const updateTreeGuides = useCallback(() => {
     const contentElement = contentRef.current;
-    if (!contentElement || flatRowKeys.length === 0) {
+    if (!contentElement || flatRowKeysRef.current.length === 0) {
       setSegments([]);
       return;
     }
@@ -39,7 +46,7 @@ export const useTreeGuideSegments = <TItem>({
     const contentRect = contentElement.getBoundingClientRect();
     const rowMetrics = new Map<string, TreeGuideRowMetric>();
 
-    flatRowKeys.forEach((rowKey) => {
+    flatRowKeysRef.current.forEach((rowKey) => {
       const element = rowRefs.current.get(rowKey);
       if (!element) return;
 
@@ -50,8 +57,8 @@ export const useTreeGuideSegments = <TItem>({
       });
     });
 
-    setSegments(collectTreeGuideSegments(items, rowMetrics, adapter));
-  }, [adapter, contentRef, flatRowKeys, items, rowRefs]);
+    setSegments(collectTreeGuideSegments(itemsRef.current, rowMetrics, adapterRef.current));
+  }, [contentRef, rowRefs]);
 
   useLayoutEffect(() => {
     updateTreeGuides();

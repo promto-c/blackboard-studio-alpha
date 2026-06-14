@@ -59,7 +59,7 @@ describe('clampRotoMotionBlurSamples', () => {
   it('enforces sample bounds', () => {
     expect(clampRotoMotionBlurSamples(1)).toBe(2);
     expect(clampRotoMotionBlurSamples(64)).toBe(64);
-    expect(clampRotoMotionBlurSamples(99)).toBe(64);
+    expect(clampRotoMotionBlurSamples(129)).toBe(128);
   });
 });
 

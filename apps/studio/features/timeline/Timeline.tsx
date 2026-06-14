@@ -2,7 +2,8 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import * as Icons from '@blackboard/icons';
-import SlidingSegmentedControl, {
+import {
+  SlidingSegmentedControl,
   type SlidingSegmentedControlOption,
 } from '@/components/SlidingSegmentedControl';
 import { ScrollArea } from '@blackboard/ui';
@@ -10,10 +11,14 @@ import { AnimatableNumber, Keyframe, SelectedKeyframeRef } from '@blackboard/typ
 import GraphEditor from './GraphEditor';
 import { useHotkeyScope } from '@/hotkeys';
 import { useFrameScrubSession } from '@/hooks/useFrameScrubSession';
-import { getAnimatableProperties, type AnimatablePropertyDef } from '@/effects/effectAnimation';
+import { getAnimatableProperties, type AnimatablePropertyDef } from '@/nodes/animation';
 // FIX: Added AnimatablePropertyDef to imports to resolve type inference issues in useMemo.
 import { getSortedKeyframes, getValueAtFrame } from '@blackboard/renderer';
-import { EDITOR_TIMELINE_HEIGHT_DEFAULT } from '@/utils/editorLayout';
+import { EditorTimelineHeight } from '@/utils/editorLayout';
+
+type VisibleTrack =
+  | { type: 'group'; groupName: string; key: string }
+  | { type: 'property'; property: AnimatablePropertyDef; key: string };
 
 // --- CONSTANTS ---
 const SIDEBAR_WIDTH = 260;
@@ -87,17 +92,7 @@ interface TimelineProps {
   minHeight: number;
 }
 
-// --- SUBCOMPONENTS ---
-
-const MiniTimelineScrubber: React.FC<{
-  currentFrame: number;
-  maxFrames: number;
-  keyframes: number[]; // Array of unique frame numbers with keyframes
-  cachedFrames: boolean[];
-  cachingFrames: boolean[];
-  onSeek: (frame: number) => void;
-  setFrameScrubbing: (isScrubbing: boolean) => void;
-}> = ({
+function MiniTimelineScrubber({
   currentFrame,
   maxFrames,
   keyframes,
@@ -105,7 +100,15 @@ const MiniTimelineScrubber: React.FC<{
   cachingFrames,
   onSeek,
   setFrameScrubbing,
-}) => {
+}: {
+  currentFrame: number;
+  maxFrames: number;
+  keyframes: number[]; // Array of unique frame numbers with keyframes
+  cachedFrames: boolean[];
+  cachingFrames: boolean[];
+  onSeek: (frame: number) => void;
+  setFrameScrubbing: (isScrubbing: boolean) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hoverFrame, setHoverFrame] = useState<number | null>(null);
   const { startFrameScrubSession } = useFrameScrubSession({ setFrameScrubbing });
@@ -231,19 +234,9 @@ const MiniTimelineScrubber: React.FC<{
       )}
     </div>
   );
-};
+}
 
-const Ruler: React.FC<{
-  zoom: number;
-  panX: number;
-  width: number;
-  maxFrames: number;
-  currentFrame: number;
-  onSeek: (frame: number) => void;
-  cachedFrames: boolean[];
-  cachingFrames: boolean[];
-  setFrameScrubbing: (isScrubbing: boolean) => void;
-}> = ({
+function Ruler({
   zoom,
   panX,
   width,
@@ -253,7 +246,17 @@ const Ruler: React.FC<{
   cachedFrames,
   cachingFrames,
   setFrameScrubbing,
-}) => {
+}: {
+  zoom: number;
+  panX: number;
+  width: number;
+  maxFrames: number;
+  currentFrame: number;
+  onSeek: (frame: number) => void;
+  cachedFrames: boolean[];
+  cachingFrames: boolean[];
+  setFrameScrubbing: (isScrubbing: boolean) => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hoverFrame, setHoverFrame] = useState<number | null>(null);
   const [hoverX, setHoverX] = useState(0);
@@ -403,41 +406,32 @@ const Ruler: React.FC<{
       )}
     </div>
   );
-};
+}
 
-const KeyframeMarker: React.FC<{
+function KeyframeMarker({
+  x,
+  isSelected,
+  onMouseDown,
+}: {
   x: number;
   isSelected: boolean;
   onMouseDown: (e: React.MouseEvent) => void;
-}> = ({ x, isSelected, onMouseDown }) => (
-  <div
-    onMouseDown={onMouseDown}
-    data-keyframe="true"
-    className={`absolute top-1/2 -mt-1.5 w-3 h-3 transform rotate-45 cursor-col-resize shadow-sm z-10 transition-colors duration-75 hover:scale-125`}
-    style={{
-      left: x - 6,
-      backgroundColor: isSelected ? KEYFRAME_SELECTED_COLOR : KEYFRAME_COLOR,
-      border: isSelected ? '1px solid white' : '1px solid #171717',
-    }}
-  />
-);
+}) {
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      data-keyframe="true"
+      className={`absolute top-1/2 -mt-1.5 w-3 h-3 transform rotate-45 cursor-col-resize shadow-sm z-10 transition-colors duration-75 hover:scale-125`}
+      style={{
+        left: x - 6,
+        backgroundColor: isSelected ? KEYFRAME_SELECTED_COLOR : KEYFRAME_COLOR,
+        border: isSelected ? '1px solid white' : '1px solid #171717',
+      }}
+    />
+  );
+}
 
-const DopeSheetTrack: React.FC<{
-  prop: AnimatableNumber;
-  zoom: number;
-  panX: number;
-  width: number;
-  nodeId: string;
-  path: string;
-  maxFrames: number;
-  setSelectedKeyframes: (keyframes: SelectedKeyframeRef[]) => void;
-  onKeyframeMouseDown: (e: React.MouseEvent, frame: number) => SelectedKeyframeRef[];
-  isKeyframeSelected: (frame: number) => boolean;
-  updateKeyframe: (nodeId: string, path: string, frame: number, updates: Partial<Keyframe>) => void;
-  onAddKeyframe: (frame: number, value: number) => void;
-  isEven: boolean;
-  trackingData?: { [frame: number]: number };
-}> = ({
+function DopeSheetTrack({
   prop,
   zoom,
   panX,
@@ -452,7 +446,22 @@ const DopeSheetTrack: React.FC<{
   onAddKeyframe,
   isEven,
   trackingData,
-}) => {
+}: {
+  prop: AnimatableNumber;
+  zoom: number;
+  panX: number;
+  width: number;
+  nodeId: string;
+  path: string;
+  maxFrames: number;
+  setSelectedKeyframes: (keyframes: SelectedKeyframeRef[]) => void;
+  onKeyframeMouseDown: (e: React.MouseEvent, frame: number) => SelectedKeyframeRef[];
+  isKeyframeSelected: (frame: number) => boolean;
+  updateKeyframe: (nodeId: string, path: string, frame: number, updates: Partial<Keyframe>) => void;
+  onAddKeyframe: (frame: number, value: number) => void;
+  isEven: boolean;
+  trackingData?: { [frame: number]: number };
+}) {
   const keyframes = useMemo(() => getSortedKeyframes(prop), [prop]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [dragState, setDragState] = useState<{
@@ -608,17 +617,16 @@ const DopeSheetTrack: React.FC<{
       })}
     </div>
   );
-};
+}
 
-// --- MAIN COMPONENT ---
-
-const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => {
+function Timeline({ height, setHeight, minHeight }: TimelineProps) {
   const isPlaying = useEditorSelector((s) => s.isPlaying);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
   const maxFrames = useEditorSelector((s) => s.maxFrames);
-  const nodes = useEditorSelector((s) => s.nodes);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
-  const selectedRotoPathIds = useEditorSelector((s) => s.selectedRotoPathIds);
+  const selectedRotoPathIds = useEditorSelector(
+    (s) => s.hierarchySelections[s.selectedNodeId ?? '']?.itemIds ?? [],
+  );
   const cacheStatus = useEditorSelector((s) => s.cacheStatus);
   const selectedKeyframes = useEditorSelector((s) => s.selectedKeyframes);
   const {
@@ -718,7 +726,7 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
       }
     });
     setCollapsedGroups(initialCollapsed);
-  }, [selectedNodeId, selectedRotoPathIds]); // Re-eval on selection change
+  }, [groupedProps]); // Re-eval on groupedProps change
 
   const toggleGroup = (group: string) => {
     const newSet = new Set(collapsedGroups);
@@ -751,7 +759,7 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
   useEffect(() => {
     const allPaths = Object.values(groupedProps)
       .flat()
-      .map((p: any) => p.path);
+      .map((p: AnimatablePropertyDef) => p.path);
     if (allPaths.length > 0 && (!selectedProperty || !allPaths.includes(selectedProperty))) {
       setSelectedProperty(allPaths[0]);
     } else if (allPaths.length === 0) {
@@ -877,24 +885,19 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
   const isCollapsed = height <= minHeight + 20;
 
   const visibleTracks = useMemo(() => {
-    const tracks: { type: 'group' | 'property'; data: any; key: string }[] = [];
+    const tracks: VisibleTrack[] = [];
     Object.entries(groupedProps).forEach(([groupName, props]) => {
       const typedProps = props as AnimatablePropertyDef[];
-      tracks.push({ type: 'group', data: groupName, key: groupName });
+      tracks.push({ type: 'group', groupName, key: groupName });
       if (!collapsedGroups.has(groupName)) {
         typedProps.forEach((p) => {
-          tracks.push({ type: 'property', data: p, key: p.path });
+          tracks.push({ type: 'property', property: p, key: p.path });
         });
       } else {
-        // If collapsed, but it's a Roto Shape group, show the summary track (first item) as a "proxy" for the group?
-        // No, standard behavior is header only.
-        // But for Roto, we want "Show Shape Item" which is essentially the header + ability to key.
-        // Since the Header isn't keyable, we can just force the first property (Shape Summary) to show even if collapsed?
-        // Let's implement that:
         if (groupName.startsWith('Shape') && typedProps.length > 0) {
-          const masterProp = typedProps[0]; // "Path Animation"
+          const masterProp = typedProps[0];
           if (masterProp.name === 'Path Animation') {
-            tracks.push({ type: 'property', data: masterProp, key: masterProp.path });
+            tracks.push({ type: 'property', property: masterProp, key: masterProp.path });
           }
         }
       }
@@ -916,7 +919,7 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
     const map = new Map<string, number>();
     visibleTracks.forEach((item, index) => {
       if (item.type === 'property') {
-        map.set(item.data.path, index);
+        map.set(item.property.path, index);
       }
     });
     return map;
@@ -1067,7 +1070,7 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
       {/* --- HEADER / CONTROLLER --- */}
       <div
         className={`${TIMELINE_TOP_BAR_CLASS} flex-shrink-0 z-20`}
-        style={{ height: EDITOR_TIMELINE_HEIGHT_DEFAULT }}
+        style={{ height: EditorTimelineHeight.DEFAULT }}
       >
         {/* Center: Transport Controls & Scrubber */}
         <div className="flex-1 flex items-center justify-center gap-2">
@@ -1153,7 +1156,6 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
           />
         </div>
       </div>
-
       {/* --- MAIN AREA --- */}
       {!isCollapsed && (
         <div className="flex-1 flex flex-col min-h-0 relative">
@@ -1195,8 +1197,8 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
             {/* SIDEBAR (Tracks) */}
             <ScrollArea
               ref={sidebarRef}
-              containerClassName="flex-shrink-0 min-h-0 z-10"
-              containerStyle={{ width: SIDEBAR_WIDTH }}
+              rootClassName="flex-shrink-0 min-h-0 z-10"
+              rootStyle={{ width: SIDEBAR_WIDTH }}
               className="flex h-full flex-col overflow-auto border-r border-white/10 bg-gray-900/25 shadow-lg backdrop-blur-sm supports-[backdrop-filter]:bg-gray-900/12"
               onScroll={handleSidebarScroll}
             >
@@ -1224,12 +1226,12 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
                               className={`w-3 h-3 mr-2 transition-transform text-gray-500 ${isGroupCollapsed ? '-rotate-90' : ''}`}
                             />
                             <span className="font-semibold tracking-wide uppercase text-[9px]">
-                              {item.data}
+                              {item.groupName}
                             </span>
                           </div>
                         );
                       } else {
-                        const prop = item.data;
+                        const prop = item.property;
                         const isSelected = selectedProperty === prop.path;
                         const isSummaryPath = prop.name === 'Path Animation';
 
@@ -1301,7 +1303,7 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
             {/* TIMELINE CONTENT */}
             <ScrollArea
               ref={timelineRef}
-              containerClassName="flex-1 min-h-0"
+              rootClassName="flex-1 min-h-0"
               className="relative h-full overflow-auto bg-gradient-to-b from-gray-950/70 to-black/40"
               onScroll={handleScroll}
               onWheel={handleWheel}
@@ -1351,30 +1353,30 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
                           <div key={item.key} style={{ height: TRACK_HEIGHT }}>
                             {item.type === 'property' ? (
                               <DopeSheetTrack
-                                prop={item.data.prop}
+                                prop={item.property.prop}
                                 zoom={zoom}
                                 panX={panX}
                                 width={timelineWidth}
                                 nodeId={selectedNodeId!}
-                                path={item.data.path}
+                                path={item.property.path}
                                 maxFrames={maxFrames}
                                 setSelectedKeyframes={setSelectedKeyframes}
                                 onKeyframeMouseDown={(e, frame) =>
                                   handleKeyframeMouseDown(e, {
                                     nodeId: selectedNodeId!,
-                                    path: item.data.path,
+                                    path: item.property.path,
                                     frame,
                                   })
                                 }
                                 isKeyframeSelected={(frame) =>
-                                  isKeyframeSelected(item.data.path, frame)
+                                  isKeyframeSelected(item.property.path, frame)
                                 }
                                 updateKeyframe={updateKeyframe}
                                 onAddKeyframe={(f, v) =>
-                                  setKeyframe(selectedNodeId!, item.data.path, v, true, f, true)
+                                  setKeyframe(selectedNodeId!, item.property.path, v, true, f, true)
                                 }
                                 isEven={rowIndex % 2 === 0}
-                                trackingData={item.data.trackingData}
+                                trackingData={item.property.trackingData}
                               />
                             ) : (
                               <div className="w-full h-full border-b border-white/5 bg-gray-800/30" />
@@ -1389,7 +1391,7 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
                   <div className="sticky top-0 h-full w-full">
                     <GraphEditor
                       width={timelineWidth}
-                      height={Math.max(height - EDITOR_TIMELINE_HEIGHT_DEFAULT - RULER_HEIGHT, 200)}
+                      height={Math.max(height - EditorTimelineHeight.DEFAULT - RULER_HEIGHT, 200)}
                       view={{ panX, panY, zoomX: zoom, zoomY }}
                       setView={(v) => {
                         let newState;
@@ -1419,6 +1421,6 @@ const Timeline: React.FC<TimelineProps> = ({ height, setHeight, minHeight }) => 
       )}
     </div>
   );
-};
+}
 
 export default Timeline;

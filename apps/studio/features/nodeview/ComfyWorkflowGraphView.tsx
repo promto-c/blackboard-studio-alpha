@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ComfyWorkflow } from '@blackboard/types';
 import { useCanvasViewport } from '@/hooks/useCanvasViewport';
+import { isJsonObject, getNonEmptyString } from '@/utils/guards';
 import CanvasGrid from './CanvasGrid';
 
 type JsonObject = Record<string, unknown>;
@@ -11,8 +12,24 @@ interface ComfyGraphNode {
   pos?: [number, number] | number[];
   size?: [number, number] | number[];
   title?: string;
-  inputs?: Array<{ name?: string; link?: number | string | null }>;
-  outputs?: Array<{ name?: string; links?: Array<number | string> | null }>;
+  inputs?: ComfyGraphNodeInput[];
+  outputs?: ComfyGraphNodeOutput[];
+}
+
+interface ComfyGraphNodeInput {
+  name?: string;
+  label?: string;
+  localized_name?: string;
+  type?: string;
+  link?: number | string | null;
+}
+
+interface ComfyGraphNodeOutput {
+  name?: string;
+  label?: string;
+  localized_name?: string;
+  type?: string;
+  links?: Array<number | string> | null;
 }
 
 interface ComfyGraphLink {
@@ -23,13 +40,35 @@ interface ComfyGraphLink {
   targetSlot: number;
 }
 
+export interface ComfyGraphPortSummary {
+  name?: string;
+  label?: string;
+  localizedName?: string;
+  type?: string;
+  connected?: boolean;
+}
+
 export interface ComfyGraphPathItem {
   id: string;
   name: string;
+  inputs?: ComfyGraphPortSummary[];
+  outputs?: ComfyGraphPortSummary[];
 }
 
 interface ComfyGraphLevel extends ComfyGraphPathItem {
   graph: JsonObject;
+}
+
+interface ComfyGraphBoundaryPort {
+  id: string;
+  kind: 'input' | 'output';
+  slot: number;
+  label: string;
+  type?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 interface ComfyWorkflowGraphViewProps {
@@ -40,9 +79,9 @@ interface ComfyWorkflowGraphViewProps {
 
 const NODE_WIDTH = 220;
 const NODE_MIN_HEIGHT = 74;
-
-const isJsonObject = (value: unknown): value is JsonObject =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+const BOUNDARY_PORT_WIDTH = 178;
+const BOUNDARY_PORT_HEIGHT = 34;
+const BOUNDARY_PORT_GAP = 58;
 
 const getGraphNodes = (graph: JsonObject): ComfyGraphNode[] =>
   Array.isArray(graph.nodes)
@@ -52,7 +91,12 @@ const getGraphNodes = (graph: JsonObject): ComfyGraphNode[] =>
     : [];
 
 const getGraphLinks = (graph: JsonObject): ComfyGraphLink[] => {
-  const links = Array.isArray(graph.links) ? graph.links : [];
+  const extra = isJsonObject(graph.extra) ? graph.extra : null;
+  const links = Array.isArray(graph.links)
+    ? graph.links
+    : extra && Array.isArray(extra.links)
+      ? extra.links
+      : [];
   return links
     .map((link): ComfyGraphLink | null => {
       if (Array.isArray(link)) {
@@ -101,6 +145,44 @@ const getGraphLinks = (graph: JsonObject): ComfyGraphLink[] => {
     .filter((link): link is ComfyGraphLink => link !== null);
 };
 
+const getGraphPortDefinitions = (
+  graph: JsonObject,
+  key: 'inputs' | 'outputs',
+): ComfyGraphPortSummary[] =>
+  Array.isArray(graph[key])
+    ? graph[key].map((port): ComfyGraphPortSummary => {
+        if (!isJsonObject(port)) return {};
+        return {
+          name: getNonEmptyString(port.name),
+          label: getNonEmptyString(port.label),
+          localizedName:
+            getNonEmptyString(port.localized_name) ?? getNonEmptyString(port.localizedName),
+          type: getNonEmptyString(port.type),
+        };
+      })
+    : [];
+
+const getNodeInputPortSummaries = (
+  ports: ComfyGraphNodeInput[] | undefined,
+): ComfyGraphPortSummary[] =>
+  (ports ?? []).map((port) => ({
+    name: port.name,
+    label: port.label,
+    localizedName: port.localized_name,
+    type: port.type,
+    connected: port.link !== undefined && port.link !== null,
+  }));
+
+const getNodeOutputPortSummaries = (
+  ports: Array<ComfyGraphNodeInput | ComfyGraphNodeOutput> | undefined,
+): ComfyGraphPortSummary[] =>
+  (ports ?? []).map((port) => ({
+    name: port.name,
+    label: port.label,
+    localizedName: port.localized_name,
+    type: port.type,
+  }));
+
 const getSubgraphsById = (workflow: ComfyWorkflow): Map<string, JsonObject> => {
   const sourceGraph = workflow.sourceGraph;
   if (!sourceGraph) return new Map();
@@ -118,7 +200,7 @@ const getSubgraphsById = (workflow: ComfyWorkflow): Map<string, JsonObject> => {
 };
 
 const getGraphName = (graph: JsonObject, fallback: string): string =>
-  typeof graph.name === 'string' && graph.name.trim() ? graph.name : fallback;
+  getNonEmptyString(graph.name) ?? fallback;
 
 const getNodePosition = (node: ComfyGraphNode): { x: number; y: number } => {
   const pos = Array.isArray(node.pos) ? node.pos : [];
@@ -143,6 +225,14 @@ const getPortY = (node: ComfyGraphNode, slot: number, side: 'input' | 'output'):
   return getNodePosition(node).y + ((slot + 1) * size.height) / (count + 1);
 };
 
+const getBoundaryPortDisplayName = (
+  definition: ComfyGraphPortSummary | undefined,
+  fallback: string,
+): string => {
+  const label = definition?.localizedName ?? definition?.label ?? definition?.name;
+  return label?.trim() || fallback;
+};
+
 const getBounds = (nodes: ComfyGraphNode[]) => {
   if (nodes.length === 0) return { minX: 0, minY: 0, maxX: 640, maxY: 360 };
   return nodes.reduce(
@@ -160,11 +250,121 @@ const getBounds = (nodes: ComfyGraphNode[]) => {
   );
 };
 
-const ComfyWorkflowGraphView: React.FC<ComfyWorkflowGraphViewProps> = ({
+const includeBoundaryPortsInBounds = (
+  bounds: ReturnType<typeof getBounds>,
+  ports: ComfyGraphBoundaryPort[],
+) =>
+  ports.reduce(
+    (nextBounds, port) => ({
+      minX: Math.min(nextBounds.minX, port.x),
+      minY: Math.min(nextBounds.minY, port.y),
+      maxX: Math.max(nextBounds.maxX, port.x + port.width),
+      maxY: Math.max(nextBounds.maxY, port.y + port.height),
+    }),
+    bounds,
+  );
+
+const getAverage = (values: number[]): number | null => {
+  if (values.length === 0) return null;
+  return values.reduce((total, value) => total + value, 0) / values.length;
+};
+
+const getBoundaryPorts = ({
+  graph,
+  links,
+  nodesById,
+  bounds,
+  pathItem,
+}: {
+  graph: JsonObject;
+  links: ComfyGraphLink[];
+  nodesById: Map<string, ComfyGraphNode>;
+  bounds: ReturnType<typeof getBounds>;
+  pathItem?: ComfyGraphPathItem;
+}): ComfyGraphBoundaryPort[] => {
+  if (!pathItem) return [];
+
+  const inputDefinitions = getGraphPortDefinitions(graph, 'inputs');
+  const outputDefinitions = getGraphPortDefinitions(graph, 'outputs');
+  const isWrapperInputConnected = (slot: number): boolean =>
+    pathItem.inputs?.[slot]?.connected === true;
+
+  const inputSlots = new Set(
+    inputDefinitions
+      .map((_definition, slot) => slot)
+      .filter((slot) => !isWrapperInputConnected(slot)),
+  );
+  const outputSlots = new Set(outputDefinitions.map((_definition, slot) => slot));
+
+  for (const link of links) {
+    if (link.originId === '-10' && !isWrapperInputConnected(link.originSlot)) {
+      inputSlots.add(link.originSlot);
+    }
+    if (link.targetId === '-20') outputSlots.add(link.targetSlot);
+  }
+
+  const makeFallbackY = (slot: number) => bounds.minY + 42 + slot * BOUNDARY_PORT_GAP;
+  const inputX = bounds.minX - BOUNDARY_PORT_WIDTH - 72;
+  const outputX = bounds.maxX + 72;
+
+  const inputs = [...inputSlots]
+    .sort((a, b) => a - b)
+    .map((slot): ComfyGraphBoundaryPort => {
+      const linkedYs = links
+        .filter((link) => link.originId === '-10' && link.originSlot === slot)
+        .map((link) => {
+          const target = nodesById.get(link.targetId);
+          return target ? getPortY(target, link.targetSlot, 'input') : null;
+        })
+        .filter((value): value is number => value !== null);
+      const definition = inputDefinitions[slot] ?? pathItem.inputs?.[slot];
+      const y = getAverage(linkedYs) ?? makeFallbackY(slot);
+      return {
+        id: `external-input-${slot}`,
+        kind: 'input',
+        slot,
+        label: getBoundaryPortDisplayName(definition, `Input ${slot + 1}`),
+        type: definition?.type,
+        x: inputX,
+        y: y - BOUNDARY_PORT_HEIGHT / 2,
+        width: BOUNDARY_PORT_WIDTH,
+        height: BOUNDARY_PORT_HEIGHT,
+      };
+    });
+
+  const outputs = [...outputSlots]
+    .sort((a, b) => a - b)
+    .map((slot): ComfyGraphBoundaryPort => {
+      const linkedYs = links
+        .filter((link) => link.targetId === '-20' && link.targetSlot === slot)
+        .map((link) => {
+          const source = nodesById.get(link.originId);
+          return source ? getPortY(source, link.originSlot, 'output') : null;
+        })
+        .filter((value): value is number => value !== null);
+      const definition = outputDefinitions[slot] ?? pathItem.outputs?.[slot];
+      const y = getAverage(linkedYs) ?? makeFallbackY(slot);
+      return {
+        id: `external-output-${slot}`,
+        kind: 'output',
+        slot,
+        label: getBoundaryPortDisplayName(definition, `Output ${slot + 1}`),
+        type: definition?.type,
+        x: outputX,
+        y: y - BOUNDARY_PORT_HEIGHT / 2,
+        width: BOUNDARY_PORT_WIDTH,
+        height: BOUNDARY_PORT_HEIGHT,
+      };
+    });
+
+  return [...inputs, ...outputs];
+};
+
+function ComfyWorkflowGraphView({
   workflow,
   subgraphPath,
   onSubgraphPathChange,
-}) => {
+}: ComfyWorkflowGraphViewProps) {
   const sourceGraph = workflow.sourceGraph;
   const subgraphsById = useMemo(() => getSubgraphsById(workflow), [workflow]);
   const [localSubgraphPath, setLocalSubgraphPath] = useState<ComfyGraphPathItem[]>([]);
@@ -206,7 +406,29 @@ const ComfyWorkflowGraphView: React.FC<ComfyWorkflowGraphViewProps> = ({
     [currentLevel],
   );
   const nodesById = useMemo(() => new Map(nodes.map((node) => [String(node.id), node])), [nodes]);
-  const bounds = useMemo(() => getBounds(nodes), [nodes]);
+  const nodeBounds = useMemo(() => getBounds(nodes), [nodes]);
+  const currentPathItem = currentSubgraphPath[currentSubgraphPath.length - 1];
+  const boundaryPorts = useMemo(
+    () =>
+      currentLevel
+        ? getBoundaryPorts({
+            graph: currentLevel.graph,
+            links,
+            nodesById,
+            bounds: nodeBounds,
+            pathItem: currentPathItem,
+          })
+        : [],
+    [currentLevel, currentPathItem, links, nodeBounds, nodesById],
+  );
+  const boundaryPortsById = useMemo(
+    () => new Map(boundaryPorts.map((port) => [`${port.kind}:${port.slot}`, port])),
+    [boundaryPorts],
+  );
+  const bounds = useMemo(
+    () => includeBoundaryPortsInBounds(nodeBounds, boundaryPorts),
+    [boundaryPorts, nodeBounds],
+  );
   const svgPadding = 300;
 
   useEffect(() => {
@@ -247,14 +469,37 @@ const ComfyWorkflowGraphView: React.FC<ComfyWorkflowGraphViewProps> = ({
           {links.map((link) => {
             const source = nodesById.get(link.originId);
             const target = nodesById.get(link.targetId);
-            if (!source || !target) return null;
-            const sourcePos = getNodePosition(source);
-            const sourceSize = getNodeSize(source);
-            const targetPos = getNodePosition(target);
-            const x1 = sourcePos.x + sourceSize.width - bounds.minX + svgPadding;
-            const y1 = getPortY(source, link.originSlot, 'output') - bounds.minY + svgPadding;
-            const x2 = targetPos.x - bounds.minX + svgPadding;
-            const y2 = getPortY(target, link.targetSlot, 'input') - bounds.minY + svgPadding;
+            const inputBoundaryPort = boundaryPortsById.get(`input:${link.originSlot}`);
+            const outputBoundaryPort = boundaryPortsById.get(`output:${link.targetSlot}`);
+            const sourcePoint =
+              link.originId === '-10' && inputBoundaryPort
+                ? {
+                    x: inputBoundaryPort.x + inputBoundaryPort.width,
+                    y: inputBoundaryPort.y + inputBoundaryPort.height / 2,
+                  }
+                : source
+                  ? {
+                      x: getNodePosition(source).x + getNodeSize(source).width,
+                      y: getPortY(source, link.originSlot, 'output'),
+                    }
+                  : null;
+            const targetPoint =
+              link.targetId === '-20' && outputBoundaryPort
+                ? {
+                    x: outputBoundaryPort.x,
+                    y: outputBoundaryPort.y + outputBoundaryPort.height / 2,
+                  }
+                : target
+                  ? {
+                      x: getNodePosition(target).x,
+                      y: getPortY(target, link.targetSlot, 'input'),
+                    }
+                  : null;
+            if (!sourcePoint || !targetPoint) return null;
+            const x1 = sourcePoint.x - bounds.minX + svgPadding;
+            const y1 = sourcePoint.y - bounds.minY + svgPadding;
+            const x2 = targetPoint.x - bounds.minX + svgPadding;
+            const y2 = targetPoint.y - bounds.minY + svgPadding;
             const handle = Math.max(80, Math.abs(x2 - x1) * 0.35);
             return (
               <path
@@ -267,6 +512,60 @@ const ComfyWorkflowGraphView: React.FC<ComfyWorkflowGraphViewProps> = ({
             );
           })}
         </svg>
+
+        {boundaryPorts.map((port) => {
+          const isInput = port.kind === 'input';
+          return (
+            <div
+              key={port.id}
+              className={`pointer-events-none absolute flex items-center gap-2 rounded-md border px-2 py-1.5 text-[10px] shadow-lg backdrop-blur-sm ${
+                isInput
+                  ? 'border-emerald-300/35 bg-emerald-950/55 text-emerald-50'
+                  : 'border-amber-300/35 bg-amber-950/55 text-amber-50'
+              }`}
+              style={{
+                left: port.x,
+                top: port.y,
+                width: port.width,
+                height: port.height,
+              }}
+              title={`${isInput ? 'Input from outside' : 'Output to outside'}: ${port.label}`}
+            >
+              {isInput ? (
+                <>
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="mr-1 text-[9px] font-semibold uppercase text-emerald-100/60">
+                      In
+                    </span>
+                    {port.label}
+                  </span>
+                  <span className="h-2.5 w-2.5 rounded-full border border-emerald-100/70 bg-emerald-300 shadow-[0_0_10px_rgba(110,231,183,0.65)]" />
+                </>
+              ) : (
+                <>
+                  <span className="h-2.5 w-2.5 rounded-full border border-amber-100/70 bg-amber-300 shadow-[0_0_10px_rgba(252,211,77,0.6)]" />
+                  <span className="min-w-0 flex-1 truncate text-right">
+                    {port.label}
+                    <span className="ml-1 text-[9px] font-semibold uppercase text-amber-100/60">
+                      Out
+                    </span>
+                  </span>
+                </>
+              )}
+              {port.type ? (
+                <span
+                  className={`shrink-0 rounded border px-1 font-mono text-[9px] ${
+                    isInput
+                      ? 'border-emerald-100/20 bg-emerald-300/10 text-emerald-100/70'
+                      : 'border-amber-100/20 bg-amber-300/10 text-amber-100/70'
+                  }`}
+                >
+                  {port.type}
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
 
         {nodes.map((node) => {
           const pos = getNodePosition(node);
@@ -286,6 +585,8 @@ const ComfyWorkflowGraphView: React.FC<ComfyWorkflowGraphViewProps> = ({
                   {
                     id: String(subgraph.id ?? node.type),
                     name: getGraphName(subgraph, nodeTitle),
+                    inputs: getNodeInputPortSummaries(node.inputs),
+                    outputs: getNodeOutputPortSummaries(node.outputs),
                   },
                 ]);
               }}
@@ -320,6 +621,6 @@ const ComfyWorkflowGraphView: React.FC<ComfyWorkflowGraphViewProps> = ({
       </div>
     </div>
   );
-};
+}
 
 export default ComfyWorkflowGraphView;

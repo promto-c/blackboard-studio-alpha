@@ -41,7 +41,7 @@ const createHarness = () => {
         id: 'scene-1',
         type: NodeType.SCENE,
         name: 'Scene',
-        visible: true,
+        enabled: true,
         width: 4,
         height: 4,
         bitDepth: 16,
@@ -51,9 +51,10 @@ const createHarness = () => {
       },
       {
         id: 'img-1',
-        type: NodeType.IMAGE,
+        type: NodeType.MEDIA_SOURCE,
         name: 'Plate',
-        visible: true,
+        enabled: true,
+        mediaKind: 'image',
         src: 'plate',
         width: 4,
         height: 4,
@@ -66,7 +67,7 @@ const createHarness = () => {
         id: 'roto-1',
         type: NodeType.ROTO,
         name: 'Roto',
-        visible: true,
+        enabled: true,
         invert: false,
         paths: [
           {
@@ -89,8 +90,9 @@ const createHarness = () => {
     state = { ...state, ...fn(state) };
   };
   const get = () => state;
+  const commitMutation = (_input: unknown) => {};
   const actions = createRotoDrawingActions(set as never, get as never, {
-    pushHistory: vi.fn(),
+    commitMutation,
   });
 
   return {

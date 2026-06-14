@@ -1,15 +1,25 @@
 import React from 'react';
 import { usePreferences } from '@/state/preferencesContext';
 
-const ToolButton: React.FC<{
+export function ToolButton({
+  label,
+  icon,
+  onClick,
+  onMouseEnter,
+  onMouseLeave,
+  disabled = false,
+  badge,
+  title,
+}: {
   label: string;
-  // FIX: Replace `JSX.Element` with `React.ReactNode` to resolve TypeScript error when the JSX namespace is not globally available.
   icon: React.ReactNode;
   onClick: () => void;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
   disabled?: boolean;
   badge?: string;
   title?: string;
-}> = ({ label, icon, onClick, disabled = false, badge, title }) => {
+}) {
   const { incrementToolUsage } = usePreferences();
 
   const handleClick = () => {
@@ -20,6 +30,8 @@ const ToolButton: React.FC<{
   return (
     <button
       onClick={handleClick}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
       disabled={disabled}
       title={title}
       className="relative flex flex-col items-center justify-center w-full gap-1 p-2 text-[10px] font-medium text-center text-gray-300 rounded-lg bg-gray-800 hover:bg-primary-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed aspect-square focus:outline-none"
@@ -33,6 +45,4 @@ const ToolButton: React.FC<{
       )}
     </button>
   );
-};
-
-export default ToolButton;
+}

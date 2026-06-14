@@ -1,16 +1,17 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
-import { effectRegistry } from '@/effects/effectRegistry';
+import { nodeRegistry } from '@/nodes/registry';
 import { AnyNode, NodeType, StabilizationScope } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
 import { useRegisterHotkeyCommands, useRegisterHotkeys } from '@/hotkeys';
 import type { HotkeyBinding, HotkeyCommand } from '@/hotkeys';
+import { ToggleButton } from '@blackboard/ui';
 import {
   ViewportToolButton,
   ViewportToolPanel,
   ViewportToolPanelHeader,
-  ToggleButton,
+  ViewportToolsRenderer,
 } from '@/components';
 import { toggleTransformWithHierarchy } from '@/utils/transformHierarchy';
 
@@ -27,9 +28,7 @@ type ViewportToolPanelProps = {
   onPanelClose: (panel: string) => void;
 };
 
-// ─── Stabilize panel ──────────────────────────────────────────────────────────
-
-const StabilizePanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+function StabilizePanel({ onClose }: { onClose: () => void }) {
   const isStabilized = useEditorSelector((s) => s.isStabilized);
   const stabilizationConfig = useEditorSelector((s) => s.stabilizationConfig);
   const { toggleStabilize, setStabilizationConfig } = useEditorActions();
@@ -126,11 +125,9 @@ const StabilizePanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       </div>
     </ViewportToolPanel>
   );
-};
+}
 
-// ─── Main toolbar ─────────────────────────────────────────────────────────────
-
-const ViewportToolbar: React.FC = () => {
+function ViewportToolbar() {
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const activeViewportTool = useEditorSelector((s) => s.activeViewportTool);
   const isStabilized = useEditorSelector((s) => s.isStabilized);
@@ -152,18 +149,20 @@ const ViewportToolbar: React.FC = () => {
 
   const definition = useMemo(() => {
     if (!selectedNode) return null;
-    return effectRegistry.get(selectedNode.type) ?? null;
+    return nodeRegistry.get(selectedNode.type) ?? null;
   }, [selectedNode]);
 
   const ToolsComponent = definition?.ViewportToolsComponent as
     | React.ComponentType<ViewportToolsProps>
     | undefined;
+  const tools = definition?.viewportTools;
 
   const ToolPanelComponent = definition?.ViewportToolPanelComponent as
     | React.ComponentType<ViewportToolPanelProps>
     | undefined;
 
   const hasStabilize = !!definition?.getStabilizeTransform;
+  const hasTools = !!ToolsComponent || (tools && tools.length > 0);
 
   const handlePanelToggle = useCallback((panel: string) => {
     setOpenPanels((prev) => {
@@ -216,7 +215,7 @@ const ViewportToolbar: React.FC = () => {
   useRegisterHotkeyCommands('viewport.toolbar', trackingPanelCommands);
   useRegisterHotkeys('viewport.toolbar', trackingPanelBindings);
 
-  if (!selectedNode || (!ToolsComponent && !ToolPanelComponent && !hasStabilize)) {
+  if (!selectedNode || (!hasTools && !ToolPanelComponent && !hasStabilize)) {
     return null;
   }
 
@@ -227,18 +226,24 @@ const ViewportToolbar: React.FC = () => {
   return (
     <div className="absolute inset-y-0 left-4 z-20 pointer-events-none flex flex-row items-center gap-2">
       {/* Main tool icon strip — always vertically centered */}
-      {(ToolsComponent || hasStabilize) && (
+      {(hasTools || hasStabilize) && (
         <div className="relative z-30 self-center pointer-events-auto overflow-visible glass-component flex flex-col items-center gap-1 bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-lg shadow-lg p-1.5 ring-1 ring-inset ring-white/20 animate-[fadeIn_150ms_ease-out]">
-          {ToolsComponent && (
+          {ToolsComponent ? (
             <ToolsComponent
               node={selectedNode}
               openPanels={openPanels}
               onPanelToggle={handlePanelToggle}
             />
-          )}
+          ) : tools ? (
+            <ViewportToolsRenderer
+              tools={tools}
+              openPanels={openPanels}
+              onPanelToggle={handlePanelToggle}
+            />
+          ) : null}
           {hasStabilize && (
             <>
-              {ToolsComponent && <div className="w-full h-px bg-gray-700/50 my-1" />}
+              {hasTools && <div className="w-full h-px bg-gray-700/50 my-1" />}
               <ViewportToolButton
                 label="Stabilize View"
                 icon={<Icons.LockClosed className="h-5 w-5" />}
@@ -268,6 +273,6 @@ const ViewportToolbar: React.FC = () => {
       )}
     </div>
   );
-};
+}
 
 export default ViewportToolbar;

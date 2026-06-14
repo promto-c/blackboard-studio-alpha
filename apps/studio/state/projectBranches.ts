@@ -10,6 +10,9 @@ export interface ProjectBranchRecord {
   kind: ProjectBranchKind;
   parentBranchId?: string;
   createdByAgentRunId?: string;
+  workingOwnerType?: 'user' | 'agent' | 'mixed';
+  workingOwnerId?: string;
+  defaultUserAccess?: 'read-only' | 'review' | 'editor';
   status: ProjectBranchStatus;
   createdAt: number;
   updatedAt: number;
@@ -20,7 +23,7 @@ type ProjectBranchIndexRecord = {
   branches: ProjectBranchRecord[];
 };
 
-const PROJECT_BRANCH_INDEX_KEY = 'blackboard-project-branches-v1';
+const PROJECT_BRANCH_INDEX_KEY = 'blackboard-studio-project-branches';
 
 let memoryBranchIndex: Record<string, ProjectBranchIndexRecord> = {};
 
@@ -59,6 +62,24 @@ const createId = (prefix: string) => {
   }
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 };
+
+const PROJECT_BRANCH_SLUG_LENGTH = 36;
+
+const getProjectBranchSlug = (value: string | null | undefined, fallback: string) => {
+  const slug = (value ?? '')
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, PROJECT_BRANCH_SLUG_LENGTH);
+
+  return slug || fallback;
+};
+
+export const createScopedProjectBranchName = (
+  scope: string | null | undefined,
+  label: string | null | undefined,
+  fallback = 'task',
+) => `${getProjectBranchSlug(scope, 'branch')}/${getProjectBranchSlug(label, fallback)}`;
 
 const createMainBranch = (projectId: string, timestamp = Date.now()): ProjectBranchRecord => ({
   id: MAIN_PROJECT_BRANCH_ID,
@@ -159,8 +180,15 @@ export const createProjectBranchRecord = (params: {
   kind?: Exclude<ProjectBranchKind, 'main'>;
   parentBranchId?: string;
   createdByAgentRunId?: string;
+  workingOwnerType?: 'user' | 'agent' | 'mixed';
+  workingOwnerId?: string;
+  defaultUserAccess?: 'read-only' | 'review' | 'editor';
 }): ProjectBranchRecord => {
   const timestamp = Date.now();
+  const workingOwnerType =
+    params.workingOwnerType ?? (params.kind === 'agent' ? ('agent' as const) : undefined);
+  const workingOwnerId =
+    params.workingOwnerId ?? (params.kind === 'agent' ? params.createdByAgentRunId : undefined);
   return {
     id: createId(params.kind === 'agent' ? 'agent_branch' : 'branch'),
     projectId: params.projectId,
@@ -168,6 +196,10 @@ export const createProjectBranchRecord = (params: {
     kind: params.kind ?? 'user',
     parentBranchId: params.parentBranchId,
     createdByAgentRunId: params.createdByAgentRunId,
+    workingOwnerType,
+    workingOwnerId,
+    defaultUserAccess:
+      params.defaultUserAccess ?? (params.kind === 'agent' ? 'read-only' : undefined),
     status: 'active',
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -201,6 +233,55 @@ export const touchProjectBranch = (
     branches: record.branches.map((branch) =>
       branch.id === branchId ? { ...branch, updatedAt: timestamp } : branch,
     ),
+  });
+};
+
+export const updateProjectBranchOwnership = (
+  projectId: string,
+  branchId: string,
+  ownership: Pick<ProjectBranchRecord, 'workingOwnerType' | 'workingOwnerId' | 'defaultUserAccess'>,
+): ProjectBranchIndexRecord => {
+  const record = ensureProjectBranches(projectId);
+  const timestamp = Date.now();
+  return saveProjectBranchRecord(projectId, {
+    ...record,
+    branches: record.branches.map((branch) =>
+      branch.id === branchId
+        ? {
+            ...branch,
+            workingOwnerType: ownership.workingOwnerType,
+            workingOwnerId: ownership.workingOwnerId,
+            defaultUserAccess: ownership.defaultUserAccess,
+            updatedAt: timestamp,
+          }
+        : branch,
+    ),
+  });
+};
+
+export const deleteProjectBranchRecord = (
+  projectId: string,
+  branchId: string,
+  fallbackActiveBranchId?: string,
+): ProjectBranchIndexRecord => {
+  if (branchId === MAIN_PROJECT_BRANCH_ID) {
+    return ensureProjectBranches(projectId);
+  }
+
+  const record = ensureProjectBranches(projectId);
+  const nextBranches = record.branches.filter((branch) => branch.id !== branchId);
+  const hasDeletedActiveBranch = record.activeBranchId === branchId;
+  const fallbackBranchExists = fallbackActiveBranchId
+    ? nextBranches.some((branch) => branch.id === fallbackActiveBranchId)
+    : false;
+
+  return saveProjectBranchRecord(projectId, {
+    activeBranchId: hasDeletedActiveBranch
+      ? fallbackBranchExists
+        ? fallbackActiveBranchId!
+        : MAIN_PROJECT_BRANCH_ID
+      : record.activeBranchId,
+    branches: nextBranches,
   });
 };
 

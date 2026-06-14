@@ -12,14 +12,14 @@ interface MediaSourceSelectProps {
 
 const DEFAULT_UPSTREAM_HINT = 'Use the rendered result of every node before this node.';
 
-const MediaSourceSelect: React.FC<MediaSourceSelectProps> = ({
+export function MediaSourceSelect({
   value,
   options,
   onChange,
   label = 'Source',
   placeholder = 'Select Source...',
   upstreamHint = DEFAULT_UPSTREAM_HINT,
-}) => {
+}: MediaSourceSelectProps) {
   return (
     <div className="space-y-1">
       <label className="text-[10px] text-gray-400 font-medium">{label}</label>
@@ -40,6 +40,4 @@ const MediaSourceSelect: React.FC<MediaSourceSelectProps> = ({
       ) : null}
     </div>
   );
-};
-
-export default MediaSourceSelect;
+}

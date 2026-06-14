@@ -20,9 +20,7 @@ export const useInstalledOnnxModels = (): InstalledOnnxModelsContextType => {
   return context;
 };
 
-export const InstalledOnnxModelsProvider: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => {
+export function InstalledOnnxModelsProvider({ children }: { children: React.ReactNode }) {
   const [models, setModels] = useState<InstalledOnnxModel[]>([]);
   const mountedRef = useRef(false);
 
@@ -45,4 +43,4 @@ export const InstalledOnnxModelsProvider: React.FC<{ children: React.ReactNode }
       {children}
     </InstalledOnnxModelsContext.Provider>
   );
-};
+}

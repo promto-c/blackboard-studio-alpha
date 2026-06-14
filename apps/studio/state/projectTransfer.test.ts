@@ -30,18 +30,6 @@ vi.mock('@/state/assetStorage', () => ({
   deleteAssets: deleteAssetsMock,
 }));
 
-vi.mock('@/effects/effectHelpers', () => ({
-  getNodeAssetIds: (node: { src?: string; frames?: string[] }) => {
-    if (typeof node.src === 'string') {
-      return [node.src];
-    }
-    if (Array.isArray(node.frames)) {
-      return node.frames;
-    }
-    return [];
-  },
-}));
-
 import { exportProjectBundle, importProjectBundle, inspectProjectBundle } from './projectTransfer';
 
 const createProjectState = (assetId: string) => {
@@ -51,7 +39,7 @@ const createProjectState = (assetId: string) => {
       kind: NodeKind.SCENE,
       type: NodeType.SCENE,
       name: 'Scene',
-      visible: true,
+      enabled: true,
       width: 1920,
       height: 1080,
       bitDepth: 16,
@@ -62,9 +50,10 @@ const createProjectState = (assetId: string) => {
     {
       id: 'img_1',
       kind: NodeKind.EFFECT,
-      type: NodeType.IMAGE,
+      type: NodeType.MEDIA_SOURCE,
       name: 'Plate',
-      visible: true,
+      enabled: true,
+      mediaKind: 'image',
       src: assetId,
       width: 1920,
       height: 1080,
@@ -78,7 +67,7 @@ const createProjectState = (assetId: string) => {
       kind: NodeKind.OUTPUT,
       type: NodeType.OUTPUT,
       name: 'Output',
-      visible: true,
+      enabled: true,
     },
   ];
 
@@ -86,8 +75,9 @@ const createProjectState = (assetId: string) => {
     id: 'root',
     name: 'Root Flow',
     nodes,
-    nodeOrder: ['scene_1', 'img_1', 'out_1'],
-    relationships: [],
+    edges: [],
+    stacks: [],
+    outputNodeId: 'out_1',
   };
 
   return {
@@ -220,40 +210,5 @@ describe('projectTransfer', () => {
     ]);
     expect(result.state.flows.root.nodes[1]).toMatchObject({ src: 'ref_new' });
     expect(deleteAssetsMock).not.toHaveBeenCalled();
-  });
-
-  it('still imports legacy embedded bundles', async () => {
-    saveAssetMock.mockResolvedValue('asset_new');
-
-    const file = new File(
-      [
-        JSON.stringify({
-          format: 'blackboard-studio-project',
-          version: 1,
-          exportedAt: '2026-04-03T00:00:00.000Z',
-          project: {
-            name: 'Legacy Project',
-            thumbnail: null,
-            state: createProjectState('asset_old'),
-          },
-          assets: [
-            {
-              id: 'asset_old',
-              name: 'plate.txt',
-              type: 'text/plain',
-              dataUrl: 'data:text/plain;base64,SGVsbG8=',
-            },
-          ],
-        }),
-      ],
-      'legacy.blackboard-project.json',
-      { type: 'application/json' },
-    );
-
-    const result = await importProjectBundle(file);
-
-    expect(saveAssetMock).toHaveBeenCalledTimes(1);
-    expect(result.projectName).toBe('Legacy Project');
-    expect(result.state.flows.root.nodes[1]).toMatchObject({ src: 'asset_new' });
   });
 });

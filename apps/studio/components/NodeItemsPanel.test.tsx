@@ -3,8 +3,8 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { NodeType, type AnyNode } from '@blackboard/types';
 
-vi.mock('@/effects/effectRegistry', () => ({
-  effectRegistry: {
+vi.mock('@/nodes/registry', () => ({
+  nodeRegistry: {
     get: (type: string) => {
       if (type === NodeType.ROTO) {
         return {
@@ -18,14 +18,14 @@ vi.mock('@/effects/effectRegistry', () => ({
   },
 }));
 
-import NodeItemsPanel from './NodeItemsPanel';
+import { NodeItemsPanel } from './NodeItemsPanel';
 
 const createNode = (type: string): AnyNode =>
   ({
     id: `${type}-1`,
     type,
     name: type,
-    visible: true,
+    enabled: true,
   }) as AnyNode;
 
 describe('NodeItemsPanel', () => {

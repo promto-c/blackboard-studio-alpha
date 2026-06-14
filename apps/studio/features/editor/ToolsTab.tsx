@@ -1,15 +1,25 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { imageTools, adjustmentTools, effectTools } from '@/effects/effectRegistry';
-import { ToolDefinition } from '@/effects/EffectDefinition';
+import {
+  imageTools,
+  spatialTools,
+  adjustmentTools,
+  effectTools,
+  utilityTools,
+} from '@/nodes/registry';
+import { ToolDefinition } from '@/nodes/NodeDefinition';
 import { usePreferences } from '@/state/preferencesContext';
 import * as Icons from '@blackboard/icons';
 import { ScrollArea } from '@blackboard/ui';
 
-const ToolSection: React.FC<{
+function ToolSection({
+  title,
+  tools,
+  selectedToolType,
+}: {
   title: string;
   tools: ToolDefinition[];
   selectedToolType: string | null;
-}> = ({ title, tools, selectedToolType }) => {
+}) {
   if (tools.length === 0) return null;
 
   return (
@@ -32,9 +42,9 @@ const ToolSection: React.FC<{
       </div>
     </div>
   );
-};
+}
 
-const ToolsTab: React.FC = () => {
+function ToolsTab() {
   const { toolUsageCounts, enableToolSorting } = usePreferences();
   const [filter, setFilter] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -64,10 +74,10 @@ const ToolsTab: React.FC = () => {
   );
 
   const sortedImageTools = useMemo(() => sortTools(imageTools), [sortTools]);
+  const sortedSpatialTools = useMemo(() => sortTools(spatialTools), [sortTools]);
   const sortedAdjustmentTools = useMemo(() => sortTools(adjustmentTools), [sortTools]);
   const sortedEffectTools = useMemo(() => sortTools(effectTools), [sortTools]);
-
-  const getUsageCount = (tool: ToolDefinition) => toolUsageCounts[tool.name] || 0;
+  const sortedUtilityTools = useMemo(() => sortTools(utilityTools), [sortTools]);
 
   const getSearchScore = (tool: ToolDefinition, lowerFilter: string) => {
     const lowerName = tool.name.toLowerCase();
@@ -86,12 +96,18 @@ const ToolsTab: React.FC = () => {
     if (!filter) return null;
     const lowerFilter = filter.toLowerCase();
     // When searching, rank direct name matches ahead of description matches.
-    const allTools = [...imageTools, ...adjustmentTools, ...effectTools];
+    const allTools = [
+      ...imageTools,
+      ...spatialTools,
+      ...adjustmentTools,
+      ...effectTools,
+      ...utilityTools,
+    ];
     return allTools
       .map((tool) => ({
         tool,
         score: getSearchScore(tool, lowerFilter),
-        usageCount: getUsageCount(tool),
+        usageCount: toolUsageCounts[tool.name] || 0,
       }))
       .filter((entry) => entry.score >= 0)
       .sort((a, b) => {
@@ -105,8 +121,21 @@ const ToolsTab: React.FC = () => {
   // Flattened list for navigation logic (matches render order)
   const flatTools = useMemo(() => {
     if (filteredTools) return filteredTools;
-    return [...sortedImageTools, ...sortedAdjustmentTools, ...sortedEffectTools];
-  }, [filteredTools, sortedImageTools, sortedAdjustmentTools, sortedEffectTools]);
+    return [
+      ...sortedImageTools,
+      ...sortedSpatialTools,
+      ...sortedAdjustmentTools,
+      ...sortedEffectTools,
+      ...sortedUtilityTools,
+    ];
+  }, [
+    filteredTools,
+    sortedImageTools,
+    sortedSpatialTools,
+    sortedAdjustmentTools,
+    sortedEffectTools,
+    sortedUtilityTools,
+  ]);
 
   const selectedTool = flatTools[selectedIndex] || null;
   // Only show selection highlight if the input is actively focused
@@ -300,6 +329,11 @@ const ToolsTab: React.FC = () => {
                 selectedToolType={activeToolType}
               />
               <ToolSection
+                title="Spatial"
+                tools={sortedSpatialTools}
+                selectedToolType={activeToolType}
+              />
+              <ToolSection
                 title="Adjustments"
                 tools={sortedAdjustmentTools}
                 selectedToolType={activeToolType}
@@ -309,12 +343,17 @@ const ToolsTab: React.FC = () => {
                 tools={sortedEffectTools}
                 selectedToolType={activeToolType}
               />
+              <ToolSection
+                title="Utility"
+                tools={sortedUtilityTools}
+                selectedToolType={activeToolType}
+              />
             </>
           )}
         </div>
       </div>
     </ScrollArea>
   );
-};
+}
 
 export default ToolsTab;

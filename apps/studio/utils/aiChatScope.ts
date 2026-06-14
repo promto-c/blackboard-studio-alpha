@@ -8,12 +8,12 @@ import {
 } from '@blackboard/types';
 import { supportsAiNodeTools } from './aiNodeTools';
 
-export type AiChatScopeMode = 'generic' | 'context' | 'action';
+type AiChatScopeMode = 'generic' | 'context' | 'action';
 
 const formatAnimatableValue = (value: number | Array<unknown>) =>
   typeof value === 'number' ? String(value) : 'animated';
 
-export const getNodeTypeLabel = (nodeType: string) =>
+const getNodeTypeLabel = (nodeType: string) =>
   nodeType
     .split('_')
     .filter(Boolean)

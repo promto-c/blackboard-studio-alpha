@@ -1,7 +1,10 @@
-import { GoogleGenAI, Modality, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import type { Content, Part } from '@google/genai';
-import type { AiChatAttachment, AiProvider } from '@blackboard/types';
+import type { AiAgentModeSettings, AiChatAttachment, AiProvider } from '@blackboard/types';
+import { isNonEmptyString, getNonEmptyString } from '@/utils/guards';
 import { DEFAULT_OPENAI_BASE_URL, normalizeOpenAiBaseUrl } from '@/utils/aiRouting';
+import { buildAgentModePromptSection } from '@/utils/agentMode';
+import { publishDebugEvent } from '@/utils/debugEventBus';
 
 let aiClient: { apiKey: string; client: GoogleGenAI } | null = null;
 
@@ -27,7 +30,7 @@ export interface PromptEnhancementOptions extends RoutedTextAiOptions {
   followUpInstruction?: string;
 }
 
-export interface PromptEnhancementResult {
+interface PromptEnhancementResult {
   message: string;
   options: string[];
   suggestions: string[];
@@ -66,17 +69,20 @@ export interface GenerateAssistantChatOptions {
   attachments?: AiChatAttachment[];
   contextSummary?: string;
   mode?: 'generic' | 'context' | 'action';
+  agentMode?: AiAgentModeSettings | false;
+  maxAgentToolSteps?: number;
+  maxAgentSubagentSpawns?: number;
   onStreamUpdate?: (update: AssistantChatStreamUpdate) => void;
   signal?: AbortSignal;
   enableThinking?: boolean;
 }
 
-export interface AssistantChatTurn {
+interface AssistantChatTurn {
   role: 'user' | 'assistant';
   content: string;
 }
 
-export interface AssistantChatResult {
+interface AssistantChatResult {
   message: string;
   provider: AiProvider;
   model: string;
@@ -92,13 +98,13 @@ export interface AssistantChatStreamUpdate {
   isThinking?: boolean;
 }
 
-export interface ShaderChatTurn {
+interface ShaderChatTurn {
   role: 'user' | 'assistant';
   content: string;
   shaderCode?: string;
 }
 
-export interface ShaderGenerationResult {
+interface ShaderGenerationResult {
   message: string;
   shaderCode: string;
   suggestions: string[];
@@ -149,7 +155,7 @@ export interface OllamaModelSummary {
   };
 }
 
-export class OllamaAuthenticationRequiredError extends Error {
+class OllamaAuthenticationRequiredError extends Error {
   authUrl: string;
 
   constructor(authUrl: string, message?: string) {
@@ -263,6 +269,64 @@ const readOpenAiOutputText = (body: unknown): string => {
     .trim();
 };
 
+/**
+ * Redact sensitive fields (apiKey, api_key, Authorization headers, image data) from a payload
+ * for safe debug logging. Truncates large arrays/strings.
+ */
+function redactPayload(payload: unknown, maxStringLen = 500): unknown {
+  if (typeof payload === 'string') {
+    if (payload.length <= maxStringLen) return payload;
+    return payload.slice(0, maxStringLen) + `… [truncated, total ${payload.length} chars]`;
+  }
+  if (Array.isArray(payload)) {
+    if (payload.length <= 5) {
+      return payload.map((item) => redactPayload(item, maxStringLen));
+    }
+    const redacted = payload.slice(0, 5).map((item) => redactPayload(item, maxStringLen));
+    redacted.push(`[+${payload.length - 5} more items]`);
+    return redacted;
+  }
+  if (payload && typeof payload === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+      const lowerKey = key.toLowerCase();
+      if (
+        lowerKey === 'apikey' ||
+        lowerKey === 'api_key' ||
+        lowerKey === 'api-key' ||
+        lowerKey === 'authorization'
+      ) {
+        result[key] = '[REDACTED]';
+      } else if (lowerKey === 'images' && Array.isArray(value)) {
+        result[key] = `[${value.length} image payload(s)]`;
+      } else if (lowerKey === 'data' && typeof value === 'string' && value.length > 200) {
+        result[key] = `[base64 payload ${value.length} chars]`;
+      } else if (lowerKey === 'inlinedata' && value && typeof value === 'object') {
+        const inline = value as Record<string, unknown>;
+        result[key] = {
+          ...inline,
+          data: inline.data ? `[base64 payload ${String(inline.data).length} chars]` : inline.data,
+        };
+      } else if (lowerKey === 'image_url' && typeof value === 'string' && value.length > 200) {
+        result[key] = `[data URL ${value.length} chars]`;
+      } else if (lowerKey === 'content' && Array.isArray(value)) {
+        result[key] = value.map((item) => redactPayload(item, maxStringLen));
+      } else if (typeof value === 'string') {
+        result[key] =
+          value.length <= maxStringLen ? value : value.slice(0, maxStringLen) + `… [truncated]`;
+      } else if (Array.isArray(value)) {
+        result[key] = redactPayload(value, maxStringLen);
+      } else if (value && typeof value === 'object') {
+        result[key] = redactPayload(value, maxStringLen);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+  return payload;
+}
+
 const generateOpenAiResponseText = async (
   prompt: string,
   options: OpenAiApiOptions & {
@@ -285,21 +349,45 @@ const generateOpenAiResponseText = async (
     headers.Authorization = `Bearer ${apiKey}`;
   }
 
+  const requestBody = {
+    model,
+    input: buildOpenAiInput(prompt, options.attachments),
+  };
+
+  publishDebugEvent({
+    type: 'ai_request',
+    source: 'generateOpenAiResponseText',
+    detail: `OpenAI request to ${options.openAiBaseUrl || DEFAULT_OPENAI_BASE_URL} model=${model}`,
+    data: { provider: 'openai', model, body: redactPayload(requestBody) },
+  });
+
   const response = await fetch(getOpenAiResponsesEndpoint(options.openAiBaseUrl), {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model,
-      input: buildOpenAiInput(prompt, options.attachments),
-    }),
+    body: JSON.stringify(requestBody),
     signal: options.signal,
   });
 
   if (!response.ok) {
-    throw new Error(`OpenAI request failed: ${await readErrorResponse(response)}`);
+    const errorDetail = await readErrorResponse(response);
+    publishDebugEvent({
+      type: 'ai_response',
+      source: 'generateOpenAiResponseText',
+      detail: `OpenAI request failed: ${errorDetail}`,
+      data: { provider: 'openai', model, status: response.status, error: errorDetail },
+    });
+    throw new Error(`OpenAI request failed: ${errorDetail}`);
   }
 
   const body = await response.json();
+
+  publishDebugEvent({
+    type: 'ai_response',
+    source: 'generateOpenAiResponseText',
+    detail: `OpenAI response received model=${model}`,
+    data: { provider: 'openai', model, status: response.status, body: redactPayload(body) },
+  });
+
   const text = readOpenAiOutputText(body);
   if (!text) {
     throw new Error('OpenAI returned an empty response.');
@@ -381,9 +469,7 @@ function getAiErrorDetails(error: unknown): string {
       }
     ).response?.data?.error?.message;
 
-    if (typeof responseError === 'string' && responseError.trim()) {
-      return responseError.trim();
-    }
+    return getNonEmptyString(responseError);
   }
 
   return error instanceof Error ? error.message : String(error);
@@ -504,113 +590,6 @@ export const getAiAttachmentTextContext = (attachments: AiChatAttachment[] | und
     .join('\n\n');
 };
 
-/**
- * Converts a base64 string to a Blob object.
- */
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const byteCharacters = atob(base64.split(',')[1]);
-  const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
-  }
-  const byteArray = new Uint8Array(byteNumbers);
-  return new Blob([byteArray], { type: mimeType });
-}
-
-/**
- * Sends a masked image and a prompt to the Gemini API for inpainting.
- * @param base64MaskedImage The source image with a transparent area for inpainting, encoded as a base64 string.
- * @param prompt The text prompt describing the desired edit.
- * @returns A base64 string of the newly generated image.
- */
-export async function generateInpainting(
-  base64MaskedImage: string,
-  prompt: string,
-  options: GeminiApiOptions = {},
-): Promise<string> {
-  try {
-    const ai = getAiClient(options.geminiApiKey);
-    const imagePart = {
-      inlineData: {
-        mimeType: 'image/png',
-        data: base64MaskedImage.split(',')[1],
-      },
-    };
-    const textPart = { text: prompt };
-
-    const response = await ai.models.generateContent({
-      // FIX: Use the correct model for image editing.
-      model: 'gemini-2.5-flash-image',
-      contents: { parts: [imagePart, textPart] },
-      config: {
-        // FIX: responseModalities must be an array with a single Modality.IMAGE element for image editing.
-        responseModalities: [Modality.IMAGE],
-      },
-    });
-
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        const base64Data = part.inlineData.data;
-        const mimeType = part.inlineData.mimeType || 'image/png';
-        return `data:${mimeType};base64,${base64Data}`;
-      }
-    }
-
-    throw new Error('No image was generated by the AI.');
-  } catch (error) {
-    console.error('Gemini API Error:', error);
-    throw new Error(`AI generation failed: ${getAiErrorDetails(error)}`);
-  }
-}
-
-/**
- * Generates an image from a text prompt using the Imagen model.
- * @param prompt The text prompt describing the desired image.
- * @param aspectRatio The desired aspect ratio for the generated image.
- * @returns A base64 string of the newly generated image.
- */
-export async function generateImageFromText(
-  prompt: string,
-  aspectRatio: '1:1' | '16:9' | '9:16' | '4:3' | '3:4',
-  options: GeminiApiOptions = {},
-): Promise<string> {
-  try {
-    const ai = getAiClient(options.geminiApiKey);
-    const response = await ai.models.generateImages({
-      model: 'imagen-4.0-generate-001',
-      prompt: prompt,
-      config: {
-        numberOfImages: 1,
-        outputMimeType: 'image/png',
-        aspectRatio: aspectRatio,
-      },
-    });
-
-    if (response.generatedImages && response.generatedImages.length > 0) {
-      const base64ImageBytes: string = response.generatedImages[0].image.imageBytes;
-      const mimeType = response.generatedImages[0].image.mimeType || 'image/png';
-      return `data:${mimeType};base64,${base64ImageBytes}`;
-    }
-
-    throw new Error('No image was generated by the AI.');
-  } catch (error) {
-    console.error('Gemini API Error (Image Generation):', error);
-    throw new Error(`AI image generation failed: ${getAiErrorDetails(error)}`);
-  }
-}
-
-/**
- * Converts a base64 string into a File object.
- * @param base64 The base64 string of the image.
- * @param filename The desired filename for the new File object.
- * @returns A File object.
- */
-export function base64ToFile(base64: string, filename: string): File {
-  const mimeType = base64.match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+).*,.*/)?.[1] || 'image/png';
-  const blob = base64ToBlob(base64, mimeType);
-  return new File([blob], filename, { type: mimeType });
-}
-
 const generateTextResponseWithOllama = async (
   prompt: string,
   options: RoutedTextAiOptions,
@@ -655,14 +634,10 @@ const generateTextResponseWithOllama = async (
   };
 };
 
-/**
- * Calls Gemini to suggest creative inpainting prompts.
- * @returns An array of prompt suggestion strings.
- */
 export async function getPromptSuggestions(options: RoutedTextAiOptions = {}): Promise<string[]> {
   try {
     const prompt =
-      'Suggest 5 creative and short prompts for photo inpainting, where a part of the image is being replaced. Return only a JSON array of strings. Example: ["a majestic eagle", "a futuristic cityscape", "a portal to another dimension"].';
+      'Suggest 5 creative and short image prompts. Return only a JSON array of strings. Example: ["a majestic eagle", "a futuristic cityscape", "a portal to another dimension"].';
     const provider =
       options.provider === 'ollama'
         ? 'ollama'
@@ -773,14 +748,14 @@ const parsePromptEnhancementResponse = (
   const normalizeStringList = (value: unknown, limit: number): string[] =>
     Array.isArray(value)
       ? value
-          .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+          .filter((entry): entry is string => isNonEmptyString(entry))
           .map((entry) => entry.trim())
           .slice(0, limit)
       : [];
   const normalizeSuggestionList = (value: unknown, limit: number): string[] =>
     Array.isArray(value)
       ? value
-          .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+          .filter((entry): entry is string => isNonEmptyString(entry))
           .map((entry) => normalizeSuggestionLabel(entry))
           .filter(Boolean)
           .slice(0, limit)
@@ -797,9 +772,8 @@ const parsePromptEnhancementResponse = (
     if (options.length > 0) {
       return {
         message:
-          typeof jsonValue.message === 'string' && jsonValue.message.trim().length > 0
-            ? jsonValue.message.trim()
-            : 'Choose an enhanced prompt, then tweak it if needed before applying it.',
+          getNonEmptyString(jsonValue.message) ??
+          'Choose an enhanced prompt, then tweak it if needed before applying it.',
         options,
         suggestions,
       };
@@ -1140,11 +1114,13 @@ const buildAssistantChatPrompt = (prompt: string, options: GenerateAssistantChat
       : options.mode === 'context'
         ? 'A node is in focus. Use that context when it helps, but keep the conversation assistive.'
         : 'No specific node is in focus. Answer as a general Blackboard Studio assistant.';
+  const agentModeInstruction = buildAgentModePromptSection(options.agentMode);
 
   return `You are Blackboard Studio's in-app assistant.
 You help users understand nodes, suggest settings, troubleshoot workflows, and explain editing choices.
 
 ${modeInstruction}
+${agentModeInstruction ? `\n${agentModeInstruction}\n` : ''}
 
 Rules:
 - Be concise, practical, and collaborative.
@@ -1502,11 +1478,7 @@ const getOllamaBrowserEndpoint = (endpoint: string | undefined): string => {
 };
 
 const getOllamaAuthenticationUrl = (endpoint: string | undefined, response?: Response): string => {
-  if (typeof response?.url === 'string' && response.url.trim()) {
-    return response.url.trim();
-  }
-
-  return getOllamaBrowserEndpoint(endpoint);
+  return getNonEmptyString(response?.url) ?? getOllamaBrowserEndpoint(endpoint);
 };
 
 const normalizeUrlPath = (url: string): string => {
@@ -1608,22 +1580,16 @@ const parseStructuredShaderResponse = (
     };
   }
 
-  const message =
-    typeof jsonValue.message === 'string' && jsonValue.message.trim()
-      ? jsonValue.message.trim()
-      : 'Updated the shader.';
-  const shaderCode =
-    typeof jsonValue.shaderCode === 'string' && jsonValue.shaderCode.trim()
-      ? jsonValue.shaderCode
-      : '';
+  const message = getNonEmptyString(jsonValue.message) ?? 'Updated the shader.';
+  const shaderCode = getNonEmptyString(jsonValue.shaderCode) ?? '';
   const suggestions = Array.isArray(jsonValue.suggestions)
     ? jsonValue.suggestions
-        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .filter(isNonEmptyString)
         .map((value) => value.trim())
         .slice(0, 3)
     : [];
 
-  if (!shaderCode.trim()) {
+  if (!shaderCode) {
     throw new Error('The AI response did not include shaderCode.');
   }
 
@@ -1741,28 +1707,28 @@ export const readOllamaNdjsonStream = async (
 };
 
 export const readErrorResponse = async (response: Response): Promise<string> => {
-  try {
-    const errorBody = (await response.json()) as { error?: string; message?: string };
-    if (typeof errorBody.error === 'string' && errorBody.error.trim()) {
-      return errorBody.error.trim();
-    }
-    if (typeof errorBody.message === 'string' && errorBody.message.trim()) {
-      return errorBody.message.trim();
-    }
-  } catch {
-    // Ignore JSON parsing errors and fall through to response.text().
-  }
+  const fallbackMessage = `${response.status} ${response.statusText}`.trim();
 
   try {
-    const text = await response.text();
-    if (text.trim()) {
-      return text.trim();
+    const text = getNonEmptyString(await response.text());
+
+    if (!text) {
+      return fallbackMessage;
+    }
+
+    try {
+      const errorBody = JSON.parse(text) as {
+        error?: unknown;
+        message?: unknown;
+      };
+
+      return getNonEmptyString(errorBody.error) ?? getNonEmptyString(errorBody.message) ?? text;
+    } catch {
+      return text;
     }
   } catch {
-    // Ignore body read errors and fall back to status text.
+    return fallbackMessage;
   }
-
-  return `${response.status} ${response.statusText}`.trim();
 };
 
 const normalizeOllamaCapabilities = (value: unknown): string[] | undefined => {
@@ -1888,12 +1854,7 @@ export async function listOllamaModels(
   }
 
   const models = body.models.flatMap((model) => {
-    const modelId =
-      typeof model.model === 'string' && model.model.trim()
-        ? model.model.trim()
-        : typeof model.name === 'string' && model.name.trim()
-          ? model.name.trim()
-          : '';
+    const modelId = getNonEmptyString(model.model) ?? getNonEmptyString(model.name) ?? '';
 
     if (!modelId) {
       return [];
@@ -1901,12 +1862,9 @@ export async function listOllamaModels(
 
     return [
       {
-        name: typeof model.name === 'string' && model.name.trim() ? model.name.trim() : modelId,
+        name: getNonEmptyString(model.name) ?? modelId,
         model: modelId,
-        modifiedAt:
-          typeof model.modified_at === 'string' && model.modified_at.trim()
-            ? model.modified_at
-            : undefined,
+        modifiedAt: getNonEmptyString(model.modified_at),
         size: typeof model.size === 'number' ? model.size : undefined,
         capabilities: normalizeOllamaCapabilities(model.capabilities),
         details: model.details,
@@ -2121,28 +2079,51 @@ const streamAssistantResponseWithOllama = async (
     throw new Error('Missing Ollama model for assistant chat. Configure it in Preferences > AI.');
   }
 
+  const requestBody = {
+    model,
+    stream: true,
+    think: options.enableThinking ?? true,
+    messages: [
+      buildOllamaUserMessage(buildAssistantChatPrompt(prompt, options), options.attachments),
+    ],
+    options: {
+      temperature: 0.3,
+    },
+  };
+
+  publishDebugEvent({
+    type: 'ai_request',
+    source: 'streamAssistantResponseWithOllama',
+    detail: `Ollama streaming request model=${model}`,
+    data: { provider: 'ollama', model, body: redactPayload(requestBody) },
+  });
+
   const response = await fetch(getOllamaApiEndpoint(options.ollamaEndpoint, 'chat'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      stream: true,
-      think: options.enableThinking ?? true,
-      messages: [
-        buildOllamaUserMessage(buildAssistantChatPrompt(prompt, options), options.attachments),
-      ],
-      options: {
-        temperature: 0.3,
-      },
-    }),
+    body: JSON.stringify(requestBody),
     signal: options.signal,
   });
 
   if (!response.ok) {
-    throw new Error(`AI assistant chat failed: ${await readErrorResponse(response)}`);
+    const errorDetail = await readErrorResponse(response);
+    publishDebugEvent({
+      type: 'ai_response',
+      source: 'streamAssistantResponseWithOllama',
+      detail: `Ollama request failed: ${errorDetail}`,
+      data: { provider: 'ollama', model, status: response.status, error: errorDetail },
+    });
+    throw new Error(`AI assistant chat failed: ${errorDetail}`);
   }
+
+  publishDebugEvent({
+    type: 'ai_response',
+    source: 'streamAssistantResponseWithOllama',
+    detail: `Ollama streaming started model=${model}`,
+    data: { provider: 'ollama', model, status: response.status, stream: true },
+  });
 
   let accumulatedThinking = '';
   let accumulatedContent = '';
@@ -2347,22 +2328,12 @@ export async function generateShaderChatTurn(
   );
 }
 
-/**
- * Generates GLSL fragment shader code from a text prompt.
- * @param prompt The text prompt describing the desired shader effect.
- * @returns A string containing the GLSL code.
- */
 export async function generateShaderCode(
   prompt: string,
   options: GenerateShaderCodeOptions = {},
 ): Promise<string> {
-  try {
-    const result = await generateShaderChatTurn(prompt, options);
-    return result.shaderCode;
-  } catch (error) {
-    console.error('Shader Generation Error:', error);
-    throw new Error(`AI shader generation failed: ${getAiErrorDetails(error)}`);
-  }
+  const result = await generateShaderChatTurn(prompt, options);
+  return result.shaderCode;
 }
 
 export async function generateAssistantChatTurn(
@@ -2391,29 +2362,45 @@ export async function generateAssistantChatTurn(
         return streamAssistantResponseWithOllama(requestPrompt, options);
       }
 
+      const requestBody = {
+        model,
+        stream: false,
+        messages: [
+          buildOllamaUserMessage(
+            buildAssistantChatPrompt(requestPrompt, options),
+            options.attachments,
+          ),
+        ],
+        options: {
+          temperature: 0.3,
+        },
+      };
+
+      publishDebugEvent({
+        type: 'ai_request',
+        source: 'generateAssistantChatTurn',
+        detail: `Ollama request model=${model}`,
+        data: { provider: 'ollama', model, body: redactPayload(requestBody) },
+      });
+
       const response = await fetch(getOllamaApiEndpoint(options.ollamaEndpoint, 'chat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model,
-          stream: false,
-          messages: [
-            buildOllamaUserMessage(
-              buildAssistantChatPrompt(requestPrompt, options),
-              options.attachments,
-            ),
-          ],
-          options: {
-            temperature: 0.3,
-          },
-        }),
+        body: JSON.stringify(requestBody),
         signal: options.signal,
       });
 
       if (!response.ok) {
-        throw new Error(`AI assistant chat failed: ${await readErrorResponse(response)}`);
+        const errorDetail = await readErrorResponse(response);
+        publishDebugEvent({
+          type: 'ai_response',
+          source: 'generateAssistantChatTurn',
+          detail: `Ollama request failed: ${errorDetail}`,
+          data: { provider: 'ollama', model, status: response.status, error: errorDetail },
+        });
+        throw new Error(`AI assistant chat failed: ${errorDetail}`);
       }
 
       const body = (await response.json()) as {
@@ -2423,6 +2410,18 @@ export async function generateAssistantChatTurn(
           thinking?: string;
         };
       };
+
+      publishDebugEvent({
+        type: 'ai_response',
+        source: 'generateAssistantChatTurn',
+        detail: `Ollama response received model=${body.model?.trim() || model}`,
+        data: {
+          provider: 'ollama',
+          model: body.model?.trim() || model,
+          status: response.status,
+          body: redactPayload(body),
+        },
+      });
 
       const content = body.message?.content?.trim();
       if (!content) {
@@ -2457,16 +2456,51 @@ export async function generateAssistantChatTurn(
     }
 
     const model = options.geminiModel?.trim() || 'gemini-2.5-flash';
+    const geminiContents = buildGeminiContents(
+      buildAssistantChatPrompt(requestPrompt, options),
+      options.attachments,
+    );
+
+    publishDebugEvent({
+      type: 'ai_request',
+      source: 'generateAssistantChatTurn',
+      detail: `Gemini request model=${model}`,
+      data: {
+        provider: 'gemini',
+        model,
+        body: redactPayload({
+          model,
+          contents:
+            typeof geminiContents === 'string'
+              ? geminiContents.slice(0, 2000) +
+                (geminiContents.length > 2000 ? '… [truncated]' : '')
+              : geminiContents,
+        }),
+      },
+    });
+
     const ai = getAiClient(options.geminiApiKey);
     const response = await ai.models.generateContent({
       model,
-      contents: buildGeminiContents(
-        buildAssistantChatPrompt(requestPrompt, options),
-        options.attachments,
-      ),
+      contents: geminiContents,
     });
 
     const content = response.text.trim();
+
+    publishDebugEvent({
+      type: 'ai_response',
+      source: 'generateAssistantChatTurn',
+      detail: `Gemini response received model=${model}`,
+      data: {
+        provider: 'gemini',
+        model,
+        body: redactPayload({
+          text: content.slice(0, 2000),
+          truncated: content.length > 2000,
+        }),
+      },
+    });
+
     if (!content) {
       throw new Error('AI assistant chat failed: Gemini returned an empty response.');
     }

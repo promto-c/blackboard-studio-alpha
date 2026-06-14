@@ -1,21 +1,26 @@
 import React from 'react';
 
-export const Branch: React.FC<{ className?: string }> = ({ className }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-    strokeWidth={2}
-  >
-    {/* top node */}
-    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3a3 3 0 110 6 3 3 0 010-6z" />
-    {/* left bottom node */}
-    <path strokeLinecap="round" strokeLinejoin="round" d="M6 15a3 3 0 110 6 3 3 0 010-6z" />
-    {/* right bottom node */}
-    <path strokeLinecap="round" strokeLinejoin="round" d="M18 15a3 3 0 110 6 3 3 0 010-6z" />
-    {/* connections */}
-    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v6m0 0h-6m6 0h6" />
-  </svg>
-);
+export function Branch({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.9}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {/* Main left trunk */}
+      <path d="M7 5v14" />
+      {/* Branch merges into the main trunk */}
+      <path d="M17 5v3c0 2.2-1.8 4-4 4H7" />
+      {/* Nodes */}
+      <circle cx="7" cy="5" r="1.9" />
+      <circle cx="17" cy="5" r="1.9" />
+      <circle cx="7" cy="19" r="1.9" />
+    </svg>
+  );
+}

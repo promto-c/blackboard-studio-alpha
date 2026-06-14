@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import ItemsPanelLayout from './ItemsPanelLayout';
+import { ItemsPanelLayout } from './ItemsPanelLayout';
 
 describe('ItemsPanelLayout', () => {
   it('handles Ctrl+A and Cmd+A as select all', () => {

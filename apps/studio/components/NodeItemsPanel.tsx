@@ -1,10 +1,11 @@
 import { AnyNode } from '@blackboard/types';
-import { effectRegistry } from '@/effects/effectRegistry';
+import { nodeRegistry } from '@/nodes/registry';
+import type { RotoInspectorLevel } from '@/hooks/useAutoSyncRotoInspectorLevel';
 
 export interface NodeItemsPanelProps {
   node?: AnyNode;
   inspectorLevel?: string;
-  onInspectorLevelChange?: (level: string) => void;
+  onInspectorLevelChange?: (level: RotoInspectorLevel) => void;
 }
 
 export function getNodeItemsComponent(node?: AnyNode) {
@@ -12,10 +13,14 @@ export function getNodeItemsComponent(node?: AnyNode) {
     return null;
   }
 
-  return effectRegistry.get(node.type)?.ItemsComponent ?? null;
+  return nodeRegistry.get(node.type)?.ItemsComponent ?? null;
 }
 
-const NodeItemsPanel = ({ node, inspectorLevel, onInspectorLevelChange }: NodeItemsPanelProps) => {
+export const NodeItemsPanel = ({
+  node,
+  inspectorLevel,
+  onInspectorLevelChange,
+}: NodeItemsPanelProps) => {
   const ItemsComponent = getNodeItemsComponent(node);
   if (!ItemsComponent) {
     return null;
@@ -29,5 +34,3 @@ const NodeItemsPanel = ({ node, inspectorLevel, onInspectorLevelChange }: NodeIt
     />
   );
 };
-
-export default NodeItemsPanel;

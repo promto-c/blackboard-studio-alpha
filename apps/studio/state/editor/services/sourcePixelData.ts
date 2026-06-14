@@ -1,16 +1,16 @@
 import * as THREE from 'three';
-import { AnyNode, ImageNode, ImageSequenceNode, SceneNode, VideoNode } from '@blackboard/types';
-import { nodeFlags } from '@/effects/effectHelpers';
+import { AnyNode, ImageSequenceNode, MediaSourceNode, SceneNode } from '@blackboard/types';
 import { renderWithSharedPipeline } from '@/renderer/pipeline';
-import { type PixelDataResult, getPixelDataForFrame } from './pixelData';
+import { type PixelDataResult, createPixelDataReader } from './pixelData';
 import {
   getUpstreamMediaSourceNode,
   getUpstreamSourceNodes,
   isMediaSourceNode,
   isUpstreamMediaSourceId,
 } from '@/utils/mediaSourceSelection';
+import { findSceneNode } from '@/utils/graphCommands';
 
-type SourcePixelMediaNode = ImageNode | VideoNode | ImageSequenceNode;
+type SourcePixelMediaNode = MediaSourceNode | ImageSequenceNode;
 
 export type SourcePixelSource =
   | { kind: 'media-node'; node: SourcePixelMediaNode }
@@ -22,9 +22,6 @@ export interface SourcePixelDataReader {
 }
 
 const clampUnit = (value: number): number => Math.max(0, Math.min(1, value));
-
-const findSceneNode = (nodes: AnyNode[]): SceneNode | undefined =>
-  nodes.find((node) => nodeFlags(node.type).isSceneLike) as SceneNode | undefined;
 
 const readRenderTargetPixelData = (
   renderer: THREE.WebGLRenderer,
@@ -136,9 +133,10 @@ export const createSourcePixelDataReader = (
   fps: number,
 ): SourcePixelDataReader => {
   if (source.kind === 'media-node') {
+    const reader = createPixelDataReader(source.node, fps);
     return {
-      getFramePixelData: (frame) => getPixelDataForFrame(source.node, frame, fps),
-      dispose: () => {},
+      getFramePixelData: (frame) => reader.getFramePixelData(frame),
+      dispose: () => reader.dispose(),
     };
   }
 

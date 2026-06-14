@@ -36,8 +36,6 @@ function ItemsHierarchyRendererInner<TItem>({
   );
 }
 
-const ItemsHierarchyRenderer = React.memo(
+export const ItemsHierarchyRenderer = React.memo(
   ItemsHierarchyRendererInner,
 ) as typeof ItemsHierarchyRendererInner;
-
-export default ItemsHierarchyRenderer;

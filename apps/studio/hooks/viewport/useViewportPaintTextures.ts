@@ -9,9 +9,9 @@ import {
   compositePaintRasterOntoCanvas,
   resizeOrClearPaintCanvas,
   type PaintLivePreview,
-} from '@/effects/paint/paintRaster';
-import { withSharedPaintSnapshotRenderer } from '@/effects/paint/paintSnapshotRenderer';
-import { getPaintTextureCommittedState } from '@/effects/paint/paintTextureKeys';
+} from '@/nodes/builtin/paint/paintRaster';
+import { withSharedPaintSnapshotRenderer } from '@/nodes/builtin/paint/paintSnapshotRenderer';
+import { getPaintTextureCommittedState } from '@/nodes/builtin/paint/paintTextureKeys';
 import { renderWithSharedPipeline } from '@/renderer/pipeline';
 import { getCanvasStorageColorTypeForBitDepth } from '@/utils/canvasColorType';
 

@@ -3,7 +3,7 @@ import { getLinearValueAtFrame } from '@blackboard/renderer';
 import { readExrDimensions } from '@/utils/exr';
 import { isExrFileLike, isImageFileLike } from '@/utils/mediaFiles';
 import { saveAsset, saveDirectoryAssetReferences } from '@/state/assetStorage';
-import { getNodeAssetIds } from '@/effects/effectHelpers';
+import { getNodeAssetIds } from '@/nodes/helpers';
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -94,6 +94,11 @@ export const getSequenceProjectName = (firstRelativePath: string): string => {
 // Directory / sequence helpers
 // ---------------------------------------------------------------------------
 
+type DirectoryHandleEntry = [string, FileSystemDirectoryHandle | FileSystemFileHandle];
+type IterableDirectoryHandle = FileSystemDirectoryHandle & {
+  entries: () => AsyncIterable<DirectoryHandleEntry>;
+};
+
 export const collectImageEntriesFromDirectoryHandle = async (
   directoryHandle: FileSystemDirectoryHandle,
 ): Promise<DirectoryImageEntry[]> => {
@@ -103,7 +108,7 @@ export const collectImageEntriesFromDirectoryHandle = async (
     handle: FileSystemDirectoryHandle,
     prefix: string,
   ): Promise<void> => {
-    for await (const [name, childHandle] of (handle as any).entries()) {
+    for await (const [name, childHandle] of (handle as IterableDirectoryHandle).entries()) {
       const relativePath = prefix ? `${prefix}/${name}` : name;
       if (childHandle.kind === 'directory') {
         await walkDirectory(childHandle, relativePath);

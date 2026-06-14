@@ -6,7 +6,7 @@ type ExrBrowserModule = typeof import('@bb-studio/exr/browser');
 
 type BlobLike = Blob & Partial<Pick<File, 'lastModified' | 'name'>>;
 
-export interface DecodedExrImage {
+interface DecodedExrImage {
   width: number;
   height: number;
   rgba: Float32Array;

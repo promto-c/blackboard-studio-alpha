@@ -24,7 +24,7 @@ const isTextInput = (target: EventTarget | null): boolean => {
   return false;
 };
 
-const ItemsPanelLayout: React.FC<ItemsPanelLayoutProps> = ({
+export function ItemsPanelLayout({
   title,
   subtitle,
   headerActions,
@@ -34,7 +34,7 @@ const ItemsPanelLayout: React.FC<ItemsPanelLayoutProps> = ({
   onDeleteSelected,
   onSelectAll,
   clipboardHotkeys,
-}) => {
+}: ItemsPanelLayoutProps) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   const handleKeyDown = useCallback(
@@ -92,6 +92,4 @@ const ItemsPanelLayout: React.FC<ItemsPanelLayoutProps> = ({
       )}
     </div>
   );
-};
-
-export default ItemsPanelLayout;
+}

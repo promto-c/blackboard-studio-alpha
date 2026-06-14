@@ -1,8 +1,11 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import './index.css';
 import App from './App';
 import { StudioHotkeysProvider } from '@/hotkeys';
-import { PreferencesProvider, initTheme } from './state/preferencesContext';
+import { initTheme } from '@/state/preferences';
+import { PreferencesProvider } from './state/preferencesContext';
+import { DebugLogProvider } from './utils/debugLogContext';
 import { EditorProvider } from './state/editorContext';
 import { OcioProvider } from './state/ocioContext';
 import { InstalledOnnxModelsProvider } from './state/installedOnnxModelsContext';
@@ -18,16 +21,18 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <PreferencesProvider>
-      <InstalledOnnxModelsProvider>
-        <OcioProvider>
-          <EditorProvider>
-            <StudioHotkeysProvider>
-              <App />
-            </StudioHotkeysProvider>
-          </EditorProvider>
-        </OcioProvider>
-      </InstalledOnnxModelsProvider>
-    </PreferencesProvider>
+    <DebugLogProvider>
+      <PreferencesProvider>
+        <InstalledOnnxModelsProvider>
+          <OcioProvider>
+            <EditorProvider>
+              <StudioHotkeysProvider>
+                <App />
+              </StudioHotkeysProvider>
+            </EditorProvider>
+          </OcioProvider>
+        </InstalledOnnxModelsProvider>
+      </PreferencesProvider>
+    </DebugLogProvider>
   </React.StrictMode>,
 );

@@ -1034,7 +1034,7 @@ function getPointAtNormalizedDist(
   arcLengths: number[],
   totalLength: number,
   t: number,
-  closed: boolean,
+  _closed: boolean,
 ): Point {
   if (totalLength === 0) return points[0];
   const targetDist = t * totalLength;

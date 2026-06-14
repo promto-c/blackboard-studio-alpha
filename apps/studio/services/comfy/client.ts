@@ -1,16 +1,20 @@
 import type {
+  ComfyWorkflowDynamicInputOption,
   ComfyWorkflowControlOptions,
   ComfyWorkflowInputCandidate,
   ComfyWorkflowOutputCandidate,
 } from '@blackboard/types';
+import { isJsonObject } from '@/utils/guards';
+import { normalizeComfyType } from '@/utils/comfyUtils';
 
 export const DEFAULT_COMFY_ENDPOINT = 'http://127.0.0.1:8188';
 
-export interface ComfyOutputImage {
+export interface ComfyOutputFile {
   filename: string;
   subfolder?: string;
   type?: string;
   nodeId?: string;
+  kind?: 'image' | 'video';
 }
 
 export interface ComfyPromptQueueResult {
@@ -29,7 +33,7 @@ export interface ComfyProgressEvent {
 
 export type ComfyPromptStatus =
   | { status: 'queued' | 'running' }
-  | { status: 'success'; images: ComfyOutputImage[] }
+  | { status: 'success'; outputs: ComfyOutputFile[] }
   | { status: 'error'; message: string }
   | { status: 'missing' };
 
@@ -102,8 +106,13 @@ type PromptLink = [string, number];
 const previewImageNodeType = 'PreviewImage';
 const knownComfyOutputNodeTypes = new Set([previewImageNodeType, 'SaveImage']);
 const syntheticPreviewNodePrefix = 'blackboard_preview';
+const syntheticExrNodePrefix = 'blackboard_exr';
+const preferredExrOutputNodeTypes = ['SaveImageAdvanced', 'SaveEXR'];
 const seedControlWidgetValues = new Set(['fixed', 'increment', 'decrement', 'randomize']);
 const primitiveWidgetInputTypes = new Set(['INT', 'FLOAT', 'BOOLEAN', 'STRING', 'COMBO']);
+const passthroughGraphNodeTypes = new Set(['Reroute']);
+const ignorableGraphSinkNodeTypes = new Set(['PreviewAny']);
+const imageOutputTypes = new Set(['IMAGE', 'IMAGES', 'IMAGE_LIST']);
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -197,7 +206,7 @@ const fetchComfy = async (
 ): Promise<Response> => {
   const url = buildComfyUrl(endpoint, path, params);
   try {
-    return await fetch(url, init);
+    return await fetch(url, { ...init, cache: 'no-cache' });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error;
@@ -221,9 +230,6 @@ const fetchComfyView = async (
     throw new Error(getBrowserConnectionErrorMessage(endpoint));
   }
 };
-
-const isJsonObject = (value: unknown): value is JsonObject =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const utf8Decoder = new TextDecoder('utf-8');
@@ -254,7 +260,9 @@ const inflateBytes = async (bytes: Uint8Array): Promise<Uint8Array | null> => {
   if (typeof DecompressionStream === 'undefined') return null;
 
   try {
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+    // Ensure we pass an ArrayBufferView backed by a real ArrayBuffer (not SharedArrayBuffer)
+    const chunk = bytes.slice();
+    const stream = new Blob([chunk]).stream().pipeThrough(new DecompressionStream('deflate'));
     return new Uint8Array(await new Response(stream).arrayBuffer());
   } catch {
     return null;
@@ -643,20 +651,45 @@ const getOrderedInputNames = (info: JsonObject): string[] => {
   const names: string[] = [];
 
   for (const section of ['required', 'optional']) {
+    const sectionInputs = input[section];
     const orderedNames = inputOrder?.[section];
     if (Array.isArray(orderedNames)) {
       names.push(...orderedNames.filter((name): name is string => typeof name === 'string'));
-      continue;
     }
 
-    const sectionInputs = input[section];
     if (isJsonObject(sectionInputs)) {
-      names.push(...Object.keys(sectionInputs));
+      for (const inputName of Object.keys(sectionInputs)) {
+        if (!names.includes(inputName)) names.push(inputName);
+      }
     }
   }
 
   return names;
 };
+
+const getInputNamesForSection = (info: JsonObject, section: 'required' | 'optional'): string[] => {
+  const input = getObjectInfoInputSections(info);
+  const inputOrder = isJsonObject(info.input_order) ? info.input_order : null;
+  const orderedNames = inputOrder?.[section];
+  const names = Array.isArray(orderedNames)
+    ? orderedNames.filter((name): name is string => typeof name === 'string')
+    : [];
+  const seen = new Set(names);
+  const sectionInputs = input[section];
+  if (isJsonObject(sectionInputs)) {
+    for (const inputName of Object.keys(sectionInputs)) {
+      if (!seen.has(inputName)) {
+        names.push(inputName);
+        seen.add(inputName);
+      }
+    }
+  }
+
+  return names;
+};
+
+const getRequiredInputNames = (info: JsonObject): string[] =>
+  getInputNamesForSection(info, 'required');
 
 const getObjectInfoInputDefinition = (info: JsonObject, name: string): unknown => {
   const input = getObjectInfoInputSections(info);
@@ -709,33 +742,24 @@ const getDynamicComboOptionInputNames = (option: JsonObject): string[] => {
   return names;
 };
 
-const getDynamicComboNestedInputNames = (definition: unknown): Set<string> => {
-  const names = new Set<string>();
-  for (const option of getInputDefinitionOptions(definition)) {
-    if (!isJsonObject(option)) continue;
-    for (const name of getDynamicComboOptionInputNames(option)) {
-      names.add(name);
+const getDynamicComboOptionInputDefinitions = (option: JsonObject): Map<string, unknown> => {
+  const optionInputs = isJsonObject(option.inputs) ? option.inputs : {};
+  const definitions = new Map<string, unknown>();
+
+  for (const section of ['required', 'optional']) {
+    const sectionInputs = optionInputs[section];
+    if (!isJsonObject(sectionInputs)) continue;
+
+    for (const [name, definition] of Object.entries(sectionInputs)) {
+      definitions.set(name, definition);
     }
   }
-  return names;
+
+  return definitions;
 };
 
-const getPromptInputNameForGraphInput = (info: JsonObject, graphInputName: string): string => {
-  if (getObjectInfoInputDefinition(info, graphInputName) !== undefined) {
-    return graphInputName;
-  }
-
-  const separatorIndex = graphInputName.indexOf('.');
-  if (separatorIndex === -1) return graphInputName;
-
-  const parentName = graphInputName.slice(0, separatorIndex);
-  const nestedName = graphInputName.slice(separatorIndex + 1);
-  const parentDefinition = getObjectInfoInputDefinition(info, parentName);
-  if (!isDynamicComboInputDefinition(parentDefinition)) return graphInputName;
-
-  const nestedNames = getDynamicComboNestedInputNames(parentDefinition);
-  return nestedNames.has(nestedName) ? nestedName : graphInputName;
-};
+const getPromptInputNameForGraphInput = (_info: JsonObject, graphInputName: string): string =>
+  graphInputName;
 
 const isWidgetInputDefinition = (definition: unknown): boolean => {
   if (!Array.isArray(definition) || definition.length === 0) return false;
@@ -821,8 +845,253 @@ const getSyntheticPreviewNodeId = (
     `${context.prefix}${syntheticPreviewNodePrefix}_${String(node.id).replace(/[^a-z0-9_-]+/gi, '_')}_${slot}`,
   );
 
+const getSyntheticExrNodeId = (context: ComfyGraphContext, node: ComfyGraphNode, slot: number) =>
+  getUniquePromptNodeId(
+    context.prompt,
+    `${context.prefix}${syntheticExrNodePrefix}_${String(node.id).replace(/[^a-z0-9_-]+/gi, '_')}_${slot}`,
+  );
+
+const isExrOptionValue = (value: unknown): boolean => String(value).toLowerCase().includes('exr');
+
+const isMediaOutputInputType = (type: string | null): boolean =>
+  type !== null && (imageOutputTypes.has(type) || type === 'IMAGE');
+
+const getExrOutputImageInputName = (info: JsonObject): string | null => {
+  const inputNames = getOrderedInputNames(info);
+  return (
+    inputNames.find((inputName) => {
+      const type = getInputDefinitionType(getObjectInfoInputDefinition(info, inputName));
+      return isMediaOutputInputType(type);
+    }) ??
+    inputNames.find((inputName) => ['images', 'image'].includes(inputName.toLowerCase())) ??
+    null
+  );
+};
+
+const getExrOutputFormatInput = (
+  info: JsonObject,
+): { inputName: string; value: string | number } | null => {
+  for (const inputName of getOrderedInputNames(info)) {
+    const options = getInputDefinitionEnumOptions(getObjectInfoInputDefinition(info, inputName));
+    const exrOption = options.find(isExrOptionValue);
+    if (exrOption !== undefined) return { inputName, value: exrOption };
+  }
+  return null;
+};
+
+const applyExrOutputFormatNestedInputs = (
+  inputs: JsonObject,
+  info: JsonObject,
+  formatInput: { inputName: string; value: string | number },
+): void => {
+  const definition = getObjectInfoInputDefinition(info, formatInput.inputName);
+  const option = getDynamicComboOption(definition, formatInput.value);
+  if (!option) return;
+
+  for (const [nestedName, nestedDefinition] of getDynamicComboOptionInputDefinitions(option)) {
+    const value = getDefaultPromptValueForInputDefinition(nestedDefinition);
+    if (value === undefined) continue;
+
+    const dottedName = `${formatInput.inputName}.${nestedName}`;
+    if (!(nestedName in inputs) && !(dottedName in inputs)) {
+      inputs[dottedName] = value;
+    }
+  }
+};
+
+const getDefaultPromptValueForInputDefinition = (definition: unknown): unknown => {
+  const config = getInputDefinitionConfig(definition);
+  if ('default' in config) return config.default;
+
+  const options = getInputDefinitionEnumOptions(definition);
+  if (options.length > 0) return options[0];
+
+  const type = getInputDefinitionType(definition);
+  if (type === 'BOOLEAN') return false;
+  if (type === 'INT') return 0;
+  if (type === 'FLOAT') return 0;
+  if (type === 'STRING') return '';
+  return undefined;
+};
+
+const isPrimitivePromptInputDefinition = (definition: unknown): boolean => {
+  const type = getInputDefinitionType(definition);
+  if (getInputDefinitionEnumOptions(definition).length > 0) return true;
+  return type !== null && primitiveWidgetInputTypes.has(type);
+};
+
+const collectDynamicInputOptions = (info: JsonObject): ComfyWorkflowDynamicInputOption[] => {
+  const dynamicOptions: ComfyWorkflowDynamicInputOption[] = [];
+
+  for (const parentInputName of getOrderedInputNames(info)) {
+    const parentDefinition = getObjectInfoInputDefinition(info, parentInputName);
+    if (!isDynamicComboInputDefinition(parentDefinition)) continue;
+
+    for (const option of getInputDefinitionOptions(parentDefinition)) {
+      if (!isJsonObject(option)) continue;
+      if (typeof option.key !== 'string' && typeof option.key !== 'number') continue;
+
+      const fields = Array.from(getDynamicComboOptionInputDefinitions(option))
+        .map(([inputName, definition]) => {
+          const defaultValue = getDefaultPromptValueForInputDefinition(definition);
+          const options = getInputDefinitionEnumOptions(definition);
+          if (
+            defaultValue !== undefined &&
+            typeof defaultValue !== 'string' &&
+            typeof defaultValue !== 'number' &&
+            typeof defaultValue !== 'boolean'
+          ) {
+            return null;
+          }
+
+          return {
+            inputName,
+            dottedInputName: `${parentInputName}.${inputName}`,
+            ...(defaultValue !== undefined ? { defaultValue } : {}),
+            ...(options.length > 0 ? { options } : {}),
+          };
+        })
+        .filter(
+          (field): field is ComfyWorkflowDynamicInputOption['fields'][number] => field !== null,
+        );
+
+      dynamicOptions.push({
+        parentInputName,
+        optionKey: option.key,
+        fields,
+      });
+    }
+  }
+
+  return dynamicOptions;
+};
+
+const getExrOutputFilenamePrefixInputName = (info: JsonObject): string | null => {
+  const inputNames = getOrderedInputNames(info);
+  return (
+    inputNames.find((inputName) => inputName === 'filename_prefix') ??
+    inputNames.find((inputName) => /filename|prefix/i.test(inputName)) ??
+    null
+  );
+};
+
+const getSyntheticOutputFilenamePrefix = (
+  context: ComfyGraphContext,
+  node: ComfyGraphNode,
+  slot: number,
+): string => {
+  const sourceId = `${context.prefix}${String(node.id)}_${slot}`.replace(/[^a-z0-9_-]+/gi, '_');
+  return `blackboard/${sourceId || 'comfy'}_exr`;
+};
+
+const createExrOutputNodeInputs = ({
+  info,
+  promptLink,
+  filenamePrefix,
+}: {
+  info: JsonObject;
+  promptLink: PromptLink;
+  filenamePrefix: string;
+}): JsonObject | null => {
+  const imageInputName = getExrOutputImageInputName(info);
+  if (!imageInputName) return null;
+
+  const inputs: JsonObject = {};
+  const requiredInputNames = getRequiredInputNames(info);
+
+  for (const inputName of requiredInputNames) {
+    if (inputName === imageInputName) {
+      inputs[inputName] = promptLink;
+      continue;
+    }
+
+    const definition = getObjectInfoInputDefinition(info, inputName);
+    if (!isPrimitivePromptInputDefinition(definition)) continue;
+    const value = getDefaultPromptValueForInputDefinition(definition);
+    if (value !== undefined) inputs[inputName] = value;
+  }
+
+  const formatInput = getExrOutputFormatInput(info);
+  if (formatInput) {
+    inputs[formatInput.inputName] = formatInput.value;
+    applyExrOutputFormatNestedInputs(inputs, info, formatInput);
+  }
+
+  const filenamePrefixInputName = getExrOutputFilenamePrefixInputName(info);
+  if (filenamePrefixInputName) {
+    inputs[filenamePrefixInputName] = filenamePrefix;
+  }
+
+  inputs[imageInputName] = promptLink;
+  return inputs;
+};
+
+const getExrOutputNodeType = (objectInfo: ComfyObjectInfo): string | null => {
+  for (const nodeType of preferredExrOutputNodeTypes) {
+    const info = objectInfo[nodeType];
+    if (!isJsonObject(info) || !getExrOutputImageInputName(info)) continue;
+    if (normalizeComfyType(nodeType).includes('saveexr') || getExrOutputFormatInput(info)) {
+      return nodeType;
+    }
+  }
+
+  for (const [nodeType, info] of Object.entries(objectInfo)) {
+    if (!isJsonObject(info) || !isComfyOutputNodeType(objectInfo, nodeType)) continue;
+    if (!getExrOutputImageInputName(info)) continue;
+    if (normalizeComfyType(nodeType).includes('saveexr') || getExrOutputFormatInput(info)) {
+      return nodeType;
+    }
+  }
+
+  return null;
+};
+
+const createSyntheticOutputNodeSpec = (
+  context: ComfyGraphContext,
+  node: ComfyGraphNode,
+  slot: number,
+  promptLink: PromptLink,
+): Pick<
+  ComfyWorkflowOutputCandidate,
+  | 'previewNodeId'
+  | 'syntheticOutputNodeType'
+  | 'syntheticOutputNodeInputs'
+  | 'syntheticOutputFormat'
+  | 'outputNodeDynamicInputs'
+> => {
+  const exrNodeType = getExrOutputNodeType(context.objectInfo);
+  const exrInfo = exrNodeType ? context.objectInfo[exrNodeType] : undefined;
+  if (exrNodeType && isJsonObject(exrInfo)) {
+    const dynamicInputs = collectDynamicInputOptions(exrInfo);
+    const inputs = createExrOutputNodeInputs({
+      info: exrInfo,
+      promptLink,
+      filenamePrefix: getSyntheticOutputFilenamePrefix(context, node, slot),
+    });
+
+    if (inputs) {
+      return {
+        previewNodeId: getSyntheticExrNodeId(context, node, slot),
+        syntheticOutputNodeType: exrNodeType,
+        syntheticOutputNodeInputs: inputs,
+        syntheticOutputFormat: 'exr_float',
+        ...(dynamicInputs.length > 0 ? { outputNodeDynamicInputs: dynamicInputs } : {}),
+      };
+    }
+  }
+
+  return {
+    previewNodeId: getSyntheticPreviewNodeId(context, node, slot),
+    syntheticOutputNodeType: previewImageNodeType,
+    syntheticOutputNodeInputs: {
+      images: promptLink,
+    },
+    syntheticOutputFormat: 'preview',
+  };
+};
+
 const getOutputCandidateLabel = (node: ComfyGraphNode, output: ComfyGraphOutput, slot: number) => {
-  const outputName = typeof output.name === 'string' && output.name.trim() ? output.name : 'IMAGE';
+  const outputName = typeof output.name === 'string' && output.name.trim() ? output.name : 'output';
   return `${node.type} #${String(node.id)} ${outputName}${slot > 0 ? ` ${slot + 1}` : ''}`;
 };
 
@@ -851,9 +1120,10 @@ const collectImageOutputCandidates = (
       return Array.from({ length: outputCount }, (_, slot) => {
         const output = graphOutputs[slot] ?? {};
         const outputType = getGraphOutputType(context, node, output, slot);
-        if (outputType !== 'IMAGE') return null;
+        if (!imageOutputTypes.has(outputType)) return null;
         const link = resolveGraphSource(context, node.id, slot);
         if (!link) return null;
+        const syntheticOutputNode = createSyntheticOutputNodeSpec(context, node, slot, link);
         const candidate: ComfyWorkflowOutputCandidate & {
           linkCount: number;
           order: number;
@@ -865,9 +1135,10 @@ const collectImageOutputCandidates = (
           outputIndex: slot,
           outputName:
             typeof output.name === 'string' && output.name.trim() ? output.name : outputType,
+          outputType,
           label: getOutputCandidateLabel(node, output, slot),
           promptLink: link,
-          previewNodeId: getSyntheticPreviewNodeId(context, node, slot),
+          ...syntheticOutputNode,
           linkCount: countOutputLinks(context, node, output, slot),
           order: getNodeOrder(node),
         };
@@ -892,29 +1163,42 @@ const collectImageOutputCandidates = (
   return candidates.map(({ linkCount: _linkCount, order: _order, ...candidate }) => candidate);
 };
 
-const collectExistingOutputNodeCandidates = (
-  context: ComfyGraphContext,
+const collectExistingPromptOutputNodeCandidates = (
+  prompt: JsonObject,
+  objectInfo: ComfyObjectInfo,
 ): ComfyWorkflowOutputCandidate[] =>
-  Object.entries(context.prompt)
+  Object.entries(prompt)
     .map(([nodeId, promptNode]): ComfyWorkflowOutputCandidate | null => {
       if (!isJsonObject(promptNode) || typeof promptNode.class_type !== 'string') return null;
-      if (!isComfyOutputNodeType(context.objectInfo, promptNode.class_type)) return null;
+      if (!isComfyOutputNodeType(objectInfo, promptNode.class_type)) return null;
+      const info = objectInfo[promptNode.class_type];
       const inputs = isJsonObject(promptNode.inputs) ? promptNode.inputs : {};
       const imageInput = toPromptLink(inputs.images);
+      const videoInput = toPromptLink(inputs.video);
+      const outputName = imageInput ? 'images' : videoInput ? 'video' : 'output';
+      const dynamicInputs = isJsonObject(info) ? collectDynamicInputOptions(info) : [];
       return {
         id: nodeId,
         nodeId,
         nodeType: promptNode.class_type,
         kind: 'existing',
         outputIndex: 0,
-        outputName: imageInput ? 'images' : 'output',
+        outputName,
+        outputType: videoInput ? 'VIDEO' : imageInput ? 'IMAGE' : undefined,
         label: `${promptNode.class_type} #${nodeId}`,
-        promptLink: imageInput,
+        promptLink: imageInput ?? videoInput,
         previewNodeId: nodeId,
+        outputNodeInputs: inputs,
+        ...(dynamicInputs.length > 0 ? { outputNodeDynamicInputs: dynamicInputs } : {}),
       };
     })
     .filter((candidate): candidate is ComfyWorkflowOutputCandidate => candidate !== null)
     .sort((a, b) => a.nodeId.localeCompare(b.nodeId, undefined, { numeric: true }));
+
+const collectExistingOutputNodeCandidates = (
+  context: ComfyGraphContext,
+): ComfyWorkflowOutputCandidate[] =>
+  collectExistingPromptOutputNodeCandidates(context.prompt, context.objectInfo);
 
 const getUniquePromptNodeId = (prompt: JsonObject, baseId: string): string => {
   let candidate = baseId;
@@ -932,8 +1216,8 @@ const appendPreviewImageOutputNode = (
 ): void => {
   if (!candidate.promptLink) return;
   context.prompt[candidate.previewNodeId] = {
-    class_type: previewImageNodeType,
-    inputs: {
+    class_type: candidate.syntheticOutputNodeType ?? previewImageNodeType,
+    inputs: candidate.syntheticOutputNodeInputs ?? {
       images: candidate.promptLink,
     },
   };
@@ -1028,6 +1312,14 @@ const resolveGraphSource = (
   if (!node) return null;
   const subgraph = context.subgraphsById.get(node.type);
   if (subgraph) return resolveSubgraphOutput(context, node, subgraph, originSlot);
+  if (passthroughGraphNodeTypes.has(node.type)) {
+    const inputLink = node.inputs?.find(
+      (input) => input.link !== undefined && input.link !== null,
+    )?.link;
+    return inputLink !== undefined && inputLink !== null
+      ? resolveGraphLink(context, inputLink)
+      : null;
+  }
   if (!context.objectInfo[node.type]) return null;
   return [getApiNodeId(context, node.id), originSlot];
 };
@@ -1092,7 +1384,7 @@ const applyDynamicComboWidgetValues = ({
 
     const dottedName = `${parentName}.${nestedName}`;
     if (!linkedInputNames.has(nestedName) && !linkedInputNames.has(dottedName)) {
-      inputs[nestedName] = nestedValue;
+      inputs[dottedName] = nestedValue;
     }
   }
 
@@ -1211,6 +1503,10 @@ const applyWidgetValues = (
 };
 
 const convertGraphNode = (context: ComfyGraphContext, node: ComfyGraphNode): void => {
+  if (passthroughGraphNodeTypes.has(node.type) || ignorableGraphSinkNodeTypes.has(node.type)) {
+    return;
+  }
+
   if (context.subgraphsById.has(node.type)) {
     expandSubgraph(context, node, context.subgraphsById.get(node.type)!);
     return;
@@ -1292,8 +1588,7 @@ interface ComfyPromptExtractionResult {
   selectedOutputIds: string[];
 }
 
-const getInputEnumOptions = (info: JsonObject, inputName: string): Array<string | number> => {
-  const definition = getObjectInfoInputDefinition(info, inputName);
+const getInputDefinitionEnumOptions = (definition: unknown): Array<string | number> => {
   if (!Array.isArray(definition)) return [];
 
   const inputType = definition[0];
@@ -1319,11 +1614,170 @@ const getInputEnumOptions = (info: JsonObject, inputName: string): Array<string 
     .filter((option): option is string | number => option !== null);
 };
 
+const getInputEnumOptions = (info: JsonObject, inputName: string): Array<string | number> =>
+  getInputDefinitionEnumOptions(getObjectInfoInputDefinition(info, inputName));
+
 const getObjectInfoInputType = (info: JsonObject | undefined, inputName: string): string | null => {
   if (!info) return null;
   const definition = getObjectInfoInputDefinition(info, inputName);
   if (!Array.isArray(definition)) return null;
   return typeof definition[0] === 'string' ? definition[0] : null;
+};
+
+const mediaPromptInputNames = new Set(['image', 'images', 'video']);
+const mediaGraphInputTypes = new Set(['IMAGE', 'IMAGES', 'IMAGE_LIST', 'VIDEO']);
+
+const isLoadMediaNodeType = (nodeType: string): boolean => {
+  const normalizedType = normalizeComfyType(nodeType);
+  return (
+    normalizedType.includes('loadimage') ||
+    normalizedType.includes('loadimages') ||
+    normalizedType.includes('loadvideo')
+  );
+};
+
+const isLoadMediaGraphNode = (node: ComfyGraphNode): boolean => isLoadMediaNodeType(node.type);
+
+const getFallbackLoadMediaInputName = (nodeType: string): string => {
+  const normalizedType = normalizeComfyType(nodeType);
+  if (normalizedType.includes('loadvideo')) return 'video';
+  if (normalizedType.includes('loadimages')) return 'images';
+  return 'image';
+};
+
+const isMediaGraphInputType = (inputType: string | null | undefined): boolean => {
+  if (!inputType) return false;
+  return (
+    mediaGraphInputTypes.has(inputType) ||
+    inputType === 'IMAGEUPLOAD' ||
+    inputType === 'VIDEOUPLOAD'
+  );
+};
+
+const getGraphNodeInput = (node: ComfyGraphNode, inputName: string): ComfyGraphInput | undefined =>
+  node.inputs?.find((input) => input.name === inputName);
+
+const getSubgraphInputPromptTargets = ({
+  subgraph,
+  wrapperNode,
+  inputName,
+}: {
+  subgraph: JsonObject | undefined;
+  wrapperNode: ComfyGraphNode;
+  inputName: string;
+}): Array<{ nodeId: string; inputName: string }> | undefined => {
+  if (!subgraph) return undefined;
+  const inputSlot = (wrapperNode.inputs ?? []).findIndex((input) => input.name === inputName);
+  if (inputSlot < 0) return undefined;
+
+  const subgraphNodesById = new Map(getGraphNodes(subgraph).map((node) => [String(node.id), node]));
+  const targets = getGraphLinks(subgraph)
+    .filter((link) => String(link.originId) === '-10' && link.originSlot === inputSlot)
+    .map((link) => {
+      const targetNode = subgraphNodesById.get(String(link.targetId));
+      const targetInputName = targetNode?.inputs?.[link.targetSlot]?.name;
+      if (!targetNode || !targetInputName) return null;
+      return {
+        nodeId: `${String(wrapperNode.id)}_${String(targetNode.id)}`,
+        inputName: targetInputName,
+      };
+    })
+    .filter((target): target is { nodeId: string; inputName: string } => target !== null);
+
+  return targets.length > 0 ? targets : undefined;
+};
+
+const getTopLevelGraphInputCandidateNames = (
+  node: ComfyGraphNode,
+  info: JsonObject | undefined,
+): string[] => {
+  const names = new Set<string>();
+  const graphInputNames = (node.inputs ?? []).map((input) => input.name).filter(Boolean);
+
+  if (isLoadMediaGraphNode(node)) {
+    for (const inputName of graphInputNames) {
+      const inputType = getObjectInfoInputType(info, inputName);
+      if (isMediaGraphInputType(inputType) || mediaPromptInputNames.has(inputName.toLowerCase())) {
+        names.add(inputName);
+      }
+    }
+
+    if (info) {
+      for (const inputName of getOrderedInputNames(info)) {
+        const inputType = getObjectInfoInputType(info, inputName);
+        if (
+          isMediaGraphInputType(inputType) ||
+          mediaPromptInputNames.has(inputName.toLowerCase())
+        ) {
+          names.add(inputName);
+        }
+      }
+    }
+
+    if (names.size === 0) {
+      names.add(getFallbackLoadMediaInputName(node.type));
+    }
+
+    return [...names];
+  }
+
+  if (!info) {
+    return graphInputNames.filter((inputName) => {
+      const graphInput = getGraphNodeInput(node, inputName);
+      return (
+        (mediaPromptInputNames.has(inputName.toLowerCase()) ||
+          isMediaGraphInputType(graphInput?.type)) &&
+        (graphInput?.link === undefined || graphInput.link === null)
+      );
+    });
+  }
+
+  for (const inputName of getOrderedInputNames(info)) {
+    const inputType = getObjectInfoInputType(info, inputName);
+    if (!isMediaGraphInputType(inputType)) continue;
+
+    const graphInput = getGraphNodeInput(node, inputName);
+    if (graphInput?.link !== undefined && graphInput.link !== null) continue;
+    names.add(inputName);
+  }
+
+  return [...names];
+};
+
+const collectTopLevelGraphInputCandidates = (
+  graph: JsonObject,
+  objectInfo: ComfyObjectInfo | undefined,
+): ComfyWorkflowInputCandidate[] => {
+  const seen = new Set<string>();
+  const result: ComfyWorkflowInputCandidate[] = [];
+  const subgraphsById = getSubgraphsById(graph);
+
+  for (const node of getGraphNodes(graph)) {
+    const info = objectInfo?.[node.type];
+    const subgraph = subgraphsById.get(node.type);
+    if (objectInfo && isComfyOutputNodeType(objectInfo, node.type)) continue;
+
+    for (const inputName of getTopLevelGraphInputCandidateNames(node, info)) {
+      const id = `${String(node.id)}:${inputName}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const promptTargets = getSubgraphInputPromptTargets({
+        subgraph,
+        wrapperNode: node,
+        inputName,
+      });
+      result.push({
+        id,
+        nodeId: String(node.id),
+        nodeType: node.type,
+        inputName,
+        label: `${node.type} #${String(node.id)}`,
+        ...(promptTargets ? { promptTargets } : {}),
+      });
+    }
+  }
+
+  return result;
 };
 
 const isImageUploadPromptInput = ({
@@ -1348,35 +1802,32 @@ const isImageUploadPromptInput = ({
 const collectPromptInputCandidates = (
   prompt: JsonObject,
   objectInfo: ComfyObjectInfo | undefined,
-): ComfyWorkflowInputCandidate[] =>
-  Object.entries(prompt).flatMap(([nodeId, promptNode]) => {
-    if (!isJsonObject(promptNode) || typeof promptNode.class_type !== 'string') return [];
+): ComfyWorkflowInputCandidate[] => {
+  const seen = new Set<string>();
+  const result: ComfyWorkflowInputCandidate[] = [];
+
+  for (const [nodeId, promptNode] of Object.entries(prompt)) {
+    if (!isJsonObject(promptNode) || typeof promptNode.class_type !== 'string') continue;
+
+    const classType = promptNode.class_type;
     const inputs = isJsonObject(promptNode.inputs) ? promptNode.inputs : {};
-    const info = objectInfo?.[promptNode.class_type];
+    const info = objectInfo?.[classType];
 
-    return Object.entries(inputs)
-      .map(([inputName, value]): ComfyWorkflowInputCandidate | null => {
-        if (
-          !isImageUploadPromptInput({
-            classType: promptNode.class_type as string,
-            inputName,
-            value,
-            inputType: getObjectInfoInputType(info, inputName),
-          })
-        ) {
-          return null;
-        }
+    for (const [inputName, value] of Object.entries(inputs)) {
+      const inputType = getObjectInfoInputType(info, inputName);
+      if (!isImageUploadPromptInput({ classType, inputName, value, inputType })) {
+        continue;
+      }
 
-        return {
-          id: `${nodeId}:${inputName}`,
-          nodeId,
-          nodeType: promptNode.class_type as string,
-          inputName,
-          label: `${promptNode.class_type as string} #${nodeId}`,
-        };
-      })
-      .filter((entry): entry is ComfyWorkflowInputCandidate => entry !== null);
-  });
+      const id = `${nodeId}:${inputName}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      result.push({ id, nodeId, nodeType: classType, inputName, label: `${classType} #${nodeId}` });
+    }
+  }
+
+  return result;
+};
 
 const collectPromptControlOptions = (
   prompt: JsonObject,
@@ -1389,13 +1840,38 @@ const collectPromptControlOptions = (
     const info = objectInfo[promptNode.class_type];
     if (!isJsonObject(info)) return [];
     const inputs = isJsonObject(promptNode.inputs) ? promptNode.inputs : {};
+    const optionsByInputName = new Map<string, ComfyWorkflowControlOptions>();
 
-    return Object.keys(inputs)
-      .map((inputName): ComfyWorkflowControlOptions | null => {
-        const options = getInputEnumOptions(info, inputName);
-        return options.length > 0 ? { nodeId, inputName, options } : null;
-      })
-      .filter((entry): entry is ComfyWorkflowControlOptions => entry !== null);
+    for (const inputName of Object.keys(inputs)) {
+      const options = getInputEnumOptions(info, inputName);
+      if (options.length > 0) {
+        optionsByInputName.set(inputName, { nodeId, inputName, options });
+      }
+    }
+
+    for (const parentName of getOrderedInputNames(info)) {
+      const parentDefinition = getObjectInfoInputDefinition(info, parentName);
+      if (!isDynamicComboInputDefinition(parentDefinition)) continue;
+
+      const selectedOption = getDynamicComboOption(parentDefinition, inputs[parentName]);
+      if (!selectedOption) continue;
+
+      for (const [nestedName, nestedDefinition] of getDynamicComboOptionInputDefinitions(
+        selectedOption,
+      )) {
+        const dottedName = `${parentName}.${nestedName}`;
+        const inputName =
+          nestedName in inputs ? nestedName : dottedName in inputs ? dottedName : null;
+        if (!inputName) continue;
+
+        const options = getInputDefinitionEnumOptions(nestedDefinition);
+        if (options.length > 0) {
+          optionsByInputName.set(inputName, { nodeId, inputName, options });
+        }
+      }
+    }
+
+    return Array.from(optionsByInputName.values());
   });
 };
 
@@ -1435,15 +1911,22 @@ const convertComfyGraphWorkflowToPrompt = (
         ? [outputCandidates[0].id]
         : [];
 
-  if (outputCandidates.length > 0 && !context.objectInfo[previewImageNodeType]) {
+  const selectedSyntheticOutputCandidates = outputCandidates.filter(
+    (candidate) => candidate.kind === 'synthetic' && selectedOutputIds.includes(candidate.id),
+  );
+
+  const selectedPreviewOutputCandidates = selectedSyntheticOutputCandidates.filter(
+    (candidate) =>
+      (candidate.syntheticOutputNodeType ?? previewImageNodeType) === previewImageNodeType,
+  );
+
+  if (selectedPreviewOutputCandidates.length > 0 && !context.objectInfo[previewImageNodeType]) {
     throw new Error(
       'Could not append a ComfyUI preview output because PreviewImage is unavailable.',
     );
   }
 
-  for (const candidate of outputCandidates.filter(
-    (candidate) => candidate.kind === 'synthetic' && selectedOutputIds.includes(candidate.id),
-  )) {
+  for (const candidate of selectedSyntheticOutputCandidates) {
     appendPreviewImageOutputNode(context, candidate);
   }
 
@@ -1459,10 +1942,32 @@ const convertComfyGraphWorkflowToPrompt = (
 
   return {
     prompt,
-    inputCandidates: collectPromptInputCandidates(prompt, objectInfo),
+    inputCandidates: collectTopLevelGraphInputCandidates(workflow, objectInfo),
     controlOptions: collectPromptControlOptions(prompt, objectInfo),
     outputCandidates,
     selectedOutputIds,
+  };
+};
+
+const getEmbeddedComfyPrompt = (workflow: JsonObject): JsonObject | null => {
+  const extra = isJsonObject(workflow.extra) ? workflow.extra : null;
+  const prompt = extra?.prompt;
+  return isComfyApiPrompt(prompt) ? prompt : null;
+};
+
+const extractEmbeddedComfyPromptWithGraphInputs = (
+  workflow: JsonObject,
+  objectInfo: ComfyObjectInfo | undefined,
+): ComfyPromptExtractionResult | null => {
+  const prompt = getEmbeddedComfyPrompt(workflow);
+  if (!prompt) return null;
+
+  return {
+    prompt,
+    inputCandidates: collectTopLevelGraphInputCandidates(workflow, objectInfo),
+    controlOptions: collectPromptControlOptions(prompt, objectInfo),
+    outputCandidates: [],
+    selectedOutputIds: [],
   };
 };
 
@@ -1518,7 +2023,17 @@ export const extractComfyPrompt = (value: unknown, objectInfo?: ComfyObjectInfo)
   if (isComfyApiPrompt(value)) return value;
   if (isJsonObject(value) && isComfyApiPrompt(value.prompt)) return value.prompt;
   if (isComfyGraphWorkflow(value) && objectInfo) {
-    return convertComfyGraphWorkflowToPrompt(value, objectInfo).prompt;
+    try {
+      return convertComfyGraphWorkflowToPrompt(value, objectInfo).prompt;
+    } catch (error) {
+      const fallback = extractEmbeddedComfyPromptWithGraphInputs(value, objectInfo);
+      if (fallback) return fallback.prompt;
+      throw error;
+    }
+  }
+  if (isComfyGraphWorkflow(value)) {
+    const fallback = extractEmbeddedComfyPromptWithGraphInputs(value, objectInfo);
+    if (fallback) return fallback.prompt;
   }
   throw new Error(getComfyWorkflowImportError(value) ?? 'Invalid ComfyUI workflow JSON.');
 };
@@ -1528,25 +2043,40 @@ export const extractComfyPromptWithOutputs = (
   objectInfo?: ComfyObjectInfo,
 ): ComfyPromptExtractionResult => {
   if (isComfyApiPrompt(value)) {
+    const outputCandidates = collectExistingPromptOutputNodeCandidates(value, objectInfo ?? {});
     return {
       prompt: value,
       inputCandidates: collectPromptInputCandidates(value, objectInfo),
       controlOptions: collectPromptControlOptions(value, objectInfo),
-      outputCandidates: [],
-      selectedOutputIds: [],
+      outputCandidates,
+      selectedOutputIds: outputCandidates.map((candidate) => candidate.id),
     };
   }
   if (isJsonObject(value) && isComfyApiPrompt(value.prompt)) {
+    const outputCandidates = collectExistingPromptOutputNodeCandidates(
+      value.prompt,
+      objectInfo ?? {},
+    );
     return {
       prompt: value.prompt,
       inputCandidates: collectPromptInputCandidates(value.prompt, objectInfo),
       controlOptions: collectPromptControlOptions(value.prompt, objectInfo),
-      outputCandidates: [],
-      selectedOutputIds: [],
+      outputCandidates,
+      selectedOutputIds: outputCandidates.map((candidate) => candidate.id),
     };
   }
   if (isComfyGraphWorkflow(value) && objectInfo) {
-    return convertComfyGraphWorkflowToPrompt(value, objectInfo);
+    try {
+      return convertComfyGraphWorkflowToPrompt(value, objectInfo);
+    } catch (error) {
+      const fallback = extractEmbeddedComfyPromptWithGraphInputs(value, objectInfo);
+      if (fallback) return fallback;
+      throw error;
+    }
+  }
+  if (isComfyGraphWorkflow(value)) {
+    const fallback = extractEmbeddedComfyPromptWithGraphInputs(value, objectInfo);
+    if (fallback) return fallback;
   }
   throw new Error(getComfyWorkflowImportError(value) ?? 'Invalid ComfyUI workflow JSON.');
 };
@@ -1577,8 +2107,8 @@ export const selectComfyPromptOutputs = ({
     if (candidate.kind !== 'synthetic' || !selectedIds.includes(candidate.id)) continue;
     if (!candidate.promptLink) continue;
     nextPrompt[candidate.previewNodeId] = {
-      class_type: previewImageNodeType,
-      inputs: {
+      class_type: candidate.syntheticOutputNodeType ?? previewImageNodeType,
+      inputs: candidate.syntheticOutputNodeInputs ?? {
         images: candidate.promptLink,
       },
     };
@@ -1590,20 +2120,44 @@ export const selectComfyPromptOutputs = ({
 export const applyComfyWorkflowInputImages = (
   prompt: Record<string, unknown>,
   inputImages: Array<{
-    candidate: Pick<ComfyWorkflowInputCandidate, 'nodeId' | 'inputName'>;
+    candidate: Pick<
+      ComfyWorkflowInputCandidate,
+      'nodeId' | 'inputName' | 'nodeType' | 'promptTargets'
+    >;
     imageName: string;
   }>,
 ): Record<string, unknown> => {
   const nextPrompt = cloneJsonObject(prompt);
 
   for (const { candidate, imageName } of inputImages) {
-    const promptNode = nextPrompt[candidate.nodeId];
-    if (!isJsonObject(promptNode)) continue;
-    const inputs = isJsonObject(promptNode.inputs) ? promptNode.inputs : {};
-    promptNode.inputs = {
-      ...inputs,
-      [candidate.inputName]: imageName,
-    };
+    const isLoadMedia = isLoadMediaNodeType(candidate.nodeType ?? '');
+
+    if (isLoadMedia) {
+      const promptNode = nextPrompt[candidate.nodeId];
+      if (!isJsonObject(promptNode)) continue;
+      const inputs = isJsonObject(promptNode.inputs) ? promptNode.inputs : {};
+      promptNode.inputs = { ...inputs, [candidate.inputName]: imageName };
+    } else {
+      const loadNodeId = getUniquePromptNodeId(
+        nextPrompt,
+        `blackboard_input_load_${candidate.nodeId}_${candidate.inputName}`,
+      );
+      nextPrompt[loadNodeId] = {
+        class_type: 'LoadImage',
+        inputs: { image: imageName },
+      };
+      const targets =
+        candidate.promptTargets && candidate.promptTargets.length > 0
+          ? candidate.promptTargets
+          : [{ nodeId: candidate.nodeId, inputName: candidate.inputName }];
+
+      for (const target of targets) {
+        const promptNode = nextPrompt[target.nodeId];
+        if (!isJsonObject(promptNode)) continue;
+        const inputs = isJsonObject(promptNode.inputs) ? promptNode.inputs : {};
+        promptNode.inputs = { ...inputs, [target.inputName]: [loadNodeId, 0] };
+      }
+    }
   }
 
   return nextPrompt;
@@ -1705,7 +2259,7 @@ export const testComfyConnection = async (endpoint: string): Promise<void> => {
   );
 };
 
-export const interruptComfyPrompt = async (promptId: string, endpoint: string): Promise<void> => {
+export const interruptComfyPrompt = async (_promptId: string, endpoint: string): Promise<void> => {
   try {
     await fetchComfy(endpoint, '/interrupt', { method: 'POST' });
   } catch {
@@ -1717,15 +2271,21 @@ export const queueComfyPrompt = async ({
   endpoint,
   prompt,
   clientId,
+  extraData,
 }: {
   endpoint: string;
   prompt: JsonObject;
   clientId: string;
+  extraData?: JsonObject;
 }): Promise<ComfyPromptQueueResult> => {
   const response = await fetchComfy(endpoint, '/prompt', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, client_id: clientId }),
+    body: JSON.stringify({
+      prompt,
+      client_id: clientId,
+      ...(extraData ? { extra_data: extraData } : {}),
+    }),
   });
 
   if (!response.ok) {
@@ -1871,42 +2431,54 @@ const isSuccessfulHistoryItem = (historyItem: JsonObject): boolean => {
   return status.status_str === 'success' || status.completed === true;
 };
 
-const findOutputImages = (historyItem: JsonObject): ComfyOutputImage[] => {
+export const collectComfyHistoryOutputFiles = (historyItem: JsonObject): ComfyOutputFile[] => {
   const outputs = historyItem.outputs;
   if (!isJsonObject(outputs)) return [];
 
-  const images: ComfyOutputImage[] = [];
+  const files: ComfyOutputFile[] = [];
+  const outputKeys: Array<{ key: string; kind?: 'image' | 'video' }> = [
+    { key: 'images', kind: 'image' },
+    { key: 'videos', kind: 'video' },
+    { key: 'gifs', kind: 'video' },
+    { key: 'animated', kind: 'video' },
+  ];
 
   for (const [nodeId, output] of Object.entries(outputs)) {
-    if (!isJsonObject(output) || !Array.isArray(output.images)) continue;
-    for (const candidate of output.images) {
-      if (
-        !isJsonObject(candidate) ||
-        typeof candidate.filename !== 'string' ||
-        candidate.filename.trim().length === 0
-      ) {
-        continue;
-      }
+    if (!isJsonObject(output)) continue;
+    for (const { key, kind } of outputKeys) {
+      const outputEntries = output[key];
+      if (!Array.isArray(outputEntries)) continue;
 
-      images.push({
-        nodeId,
-        filename: candidate.filename,
-        subfolder: typeof candidate.subfolder === 'string' ? candidate.subfolder : undefined,
-        type: typeof candidate.type === 'string' ? candidate.type : undefined,
-      });
+      for (const candidate of outputEntries) {
+        if (
+          !isJsonObject(candidate) ||
+          typeof candidate.filename !== 'string' ||
+          candidate.filename.trim().length === 0
+        ) {
+          continue;
+        }
+
+        files.push({
+          nodeId,
+          kind,
+          filename: candidate.filename,
+          subfolder: typeof candidate.subfolder === 'string' ? candidate.subfolder : undefined,
+          type: typeof candidate.type === 'string' ? candidate.type : undefined,
+        });
+      }
     }
   }
 
-  return images;
+  return files;
 };
 
-const orderOutputImages = (
-  images: ComfyOutputImage[],
+const orderOutputFiles = (
+  files: ComfyOutputFile[],
   outputNodeIds: string[] | undefined,
-): ComfyOutputImage[] => {
-  if (!outputNodeIds?.length) return images;
+): ComfyOutputFile[] => {
+  if (!outputNodeIds?.length) return files;
   const orderByNodeId = new Map(outputNodeIds.map((nodeId, index) => [nodeId, index]));
-  return [...images].sort((a, b) => {
+  return [...files].sort((a, b) => {
     const aOrder = a.nodeId ? orderByNodeId.get(a.nodeId) : undefined;
     const bOrder = b.nodeId ? orderByNodeId.get(b.nodeId) : undefined;
     return (aOrder ?? Number.MAX_SAFE_INTEGER) - (bOrder ?? Number.MAX_SAFE_INTEGER);
@@ -1952,19 +2524,19 @@ export const fetchComfyPromptStatus = async ({
     const error = getHistoryError(historyItem);
     if (error) return { status: 'error', message: error };
 
-    const images = orderOutputImages(findOutputImages(historyItem), outputNodeIds);
-    const imageNodeIds = new Set(images.map((image) => image.nodeId).filter(Boolean));
-    const hasExpectedImages =
+    const files = orderOutputFiles(collectComfyHistoryOutputFiles(historyItem), outputNodeIds);
+    const outputNodeIdsWithFiles = new Set(files.map((file) => file.nodeId).filter(Boolean));
+    const hasExpectedOutputs =
       expectedNodeIds.size > 0
-        ? [...expectedNodeIds].every((nodeId) => imageNodeIds.has(nodeId))
-        : images.length > 0;
+        ? [...expectedNodeIds].every((nodeId) => outputNodeIdsWithFiles.has(nodeId))
+        : files.length > 0;
 
-    if (hasExpectedImages || isSuccessfulHistoryItem(historyItem)) {
-      return images.length > 0
-        ? { status: 'success', images }
+    if (hasExpectedOutputs || isSuccessfulHistoryItem(historyItem)) {
+      return files.length > 0
+        ? { status: 'success', outputs: files }
         : {
             status: 'error',
-            message: 'ComfyUI completed the workflow, but no output image was found.',
+            message: 'ComfyUI completed the workflow, but no output file was found.',
           };
     }
   }
@@ -1983,7 +2555,7 @@ export const fetchComfyPromptStatus = async ({
   return { status: 'missing' };
 };
 
-export const waitForComfyOutputImages = async ({
+export const waitForComfyOutputFiles = async ({
   endpoint,
   promptId,
   outputNodeIds,
@@ -1999,7 +2571,7 @@ export const waitForComfyOutputImages = async ({
   onPoll?: (attempt: number) => void;
   pollIntervalMs?: number;
   timeoutMs?: number;
-}): Promise<ComfyOutputImage[]> => {
+}): Promise<ComfyOutputFile[]> => {
   const startedAt = Date.now();
   let attempt = 0;
   const expectedNodeIds = new Set(outputNodeIds ?? []);
@@ -2022,17 +2594,19 @@ export const waitForComfyOutputImages = async ({
       const error = getHistoryError(historyItem);
       if (error) throw new Error(error);
 
-      const images = orderOutputImages(findOutputImages(historyItem), outputNodeIds);
+      const files = orderOutputFiles(collectComfyHistoryOutputFiles(historyItem), outputNodeIds);
       if (expectedNodeIds.size > 0) {
-        const imageNodeIds = new Set(images.map((image) => image.nodeId).filter(Boolean));
-        if ([...expectedNodeIds].every((nodeId) => imageNodeIds.has(nodeId))) return images;
-      } else if (images.length > 0) {
-        return images;
+        const outputNodeIdsWithFiles = new Set(files.map((file) => file.nodeId).filter(Boolean));
+        if ([...expectedNodeIds].every((nodeId) => outputNodeIdsWithFiles.has(nodeId))) {
+          return files;
+        }
+      } else if (files.length > 0) {
+        return files;
       }
 
       if (isSuccessfulHistoryItem(historyItem)) {
-        if (images.length > 0) return images;
-        throw new Error('ComfyUI completed the workflow, but no output image was found.');
+        if (files.length > 0) return files;
+        throw new Error('ComfyUI completed the workflow, but no output file was found.');
       }
     }
 
@@ -2042,31 +2616,22 @@ export const waitForComfyOutputImages = async ({
   throw new Error('Timed out waiting for ComfyUI to finish the workflow.');
 };
 
-export const waitForComfyOutputImage = async (
-  options: Parameters<typeof waitForComfyOutputImages>[0],
-): Promise<ComfyOutputImage> => {
-  const images = await waitForComfyOutputImages(options);
-  const image = images[0];
-  if (!image) throw new Error('ComfyUI completed the workflow, but no output image was found.');
-  return image;
-};
-
-export const fetchComfyImage = async ({
+export const fetchComfyOutputFile = async ({
   endpoint,
-  image,
+  file,
   signal,
 }: {
   endpoint: string;
-  image: ComfyOutputImage;
+  file: ComfyOutputFile;
   signal?: AbortSignal;
 }): Promise<Blob> => {
-  const params = new URLSearchParams({ filename: image.filename });
-  if (image.subfolder) params.set('subfolder', image.subfolder);
-  if (image.type) params.set('type', image.type);
+  const params = new URLSearchParams({ filename: file.filename });
+  if (file.subfolder) params.set('subfolder', file.subfolder);
+  if (file.type) params.set('type', file.type);
 
   const response = await fetchComfyView(endpoint, params, { signal });
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Could not download ComfyUI output image.'));
+    throw new Error(await getErrorMessage(response, 'Could not download ComfyUI output file.'));
   }
   return response.blob();
 };

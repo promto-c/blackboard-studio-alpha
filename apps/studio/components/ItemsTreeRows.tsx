@@ -44,6 +44,8 @@ export interface LayerRowShellProps {
   layerMenuExtra?: (close: () => void) => React.ReactNode;
   menuWidthClass?: string;
   visibilityLabel?: string;
+  createChildLayerLabel?: string;
+  showMoveMenu?: boolean;
   rowControlDataAttr?: Record<string, string>;
   layerParentOptions: LayerOption[];
   parentLayerId: string | null;
@@ -59,7 +61,7 @@ export interface LayerRowShellProps {
   children?: React.ReactNode;
 }
 
-export const LayerRowShell: React.FC<LayerRowShellProps> = ({
+export function LayerRowShell({
   layerName,
   rowKey: _rowKey,
   depth,
@@ -77,6 +79,8 @@ export const LayerRowShell: React.FC<LayerRowShellProps> = ({
   layerMenuExtra,
   menuWidthClass,
   visibilityLabel,
+  createChildLayerLabel = 'New Child Layer',
+  showMoveMenu = true,
   rowControlDataAttr = {},
   layerParentOptions,
   parentLayerId,
@@ -90,7 +94,7 @@ export const LayerRowShell: React.FC<LayerRowShellProps> = ({
   onPrimaryClick,
   rowRef,
   children,
-}) => {
+}: LayerRowShellProps) {
   const rowControlClass = isSelected
     ? TREE_ROW_CONTROL_SELECTED_CLASS
     : TREE_ROW_CONTROL_IDLE_CLASS;
@@ -199,7 +203,7 @@ export const LayerRowShell: React.FC<LayerRowShellProps> = ({
                 <MenuSectionLabel>Layer</MenuSectionLabel>
                 <MenuButton
                   icon={<LayerPlusIcon />}
-                  label="New Child Layer"
+                  label={createChildLayerLabel}
                   onClick={() => {
                     onCreateChildLayer();
                     close();
@@ -207,17 +211,21 @@ export const LayerRowShell: React.FC<LayerRowShellProps> = ({
                 />
                 {layerMenuExtra?.(close)}
               </div>
-              <div className="h-px bg-white/10" />
-              <MoveMenuSection
-                label="Move to"
-                options={layerParentOptions}
-                currentValue={parentLayerId}
-                onMove={(targetLayerId) => {
-                  onMove(targetLayerId);
-                  close();
-                }}
-                close={close}
-              />
+              {showMoveMenu ? (
+                <>
+                  <div className="h-px bg-white/10" />
+                  <MoveMenuSection
+                    label="Move to"
+                    options={layerParentOptions}
+                    currentValue={parentLayerId}
+                    onMove={(targetLayerId) => {
+                      onMove(targetLayerId);
+                      close();
+                    }}
+                    close={close}
+                  />
+                </>
+              ) : null}
               <div className="h-px bg-white/10" />
               <MenuButton
                 icon={<Icons.Trash className="h-4 w-4" />}
@@ -236,7 +244,7 @@ export const LayerRowShell: React.FC<LayerRowShellProps> = ({
       {children}
     </div>
   );
-};
+}
 
 export interface LeafItemRowShellProps {
   itemName: string;
@@ -264,7 +272,7 @@ export interface LeafItemRowShellProps {
   rowRef: (element: HTMLDivElement | null) => void;
 }
 
-export const LeafItemRowShell: React.FC<LeafItemRowShellProps> = ({
+export function LeafItemRowShell({
   itemName,
   rowKey: _rowKey,
   depth,
@@ -288,7 +296,7 @@ export const LeafItemRowShell: React.FC<LeafItemRowShellProps> = ({
   onPointerDown,
   onPrimaryClick,
   rowRef,
-}) => {
+}: LeafItemRowShellProps) {
   const rowControlClass = isSelected
     ? TREE_ROW_CONTROL_SELECTED_CLASS
     : TREE_ROW_CONTROL_IDLE_CLASS;
@@ -387,4 +395,4 @@ export const LeafItemRowShell: React.FC<LeafItemRowShellProps> = ({
       </FloatingMenu>
     </div>
   );
-};
+}

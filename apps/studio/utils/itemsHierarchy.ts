@@ -1,10 +1,21 @@
 import type { LayerOption } from '@/components';
 
-export interface HierarchyItemWithLayer {
+interface HierarchyItemWithLayer {
   type: string;
   depth: number;
   children?: readonly HierarchyItemWithLayer[];
   layer?: { id: string; name: string };
+}
+
+export interface HierarchyItemNode {
+  type: string;
+  depth: number;
+  visible: boolean;
+  activeAtFrame?: boolean;
+  layer?: { id: string; name: string; expanded?: boolean };
+  children?: readonly HierarchyItemNode[];
+  stroke?: { id: string; name: string };
+  path?: { id: string; name: string };
 }
 
 export const getLayerOptions = <T extends HierarchyItemWithLayer>(

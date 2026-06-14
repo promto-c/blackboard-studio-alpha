@@ -25,6 +25,6 @@
     "@blackboard/types": "workspace:*"
   },
   "peerDependencies": {
-    "three": "^0.168.0"
+    "three": ">=0.180.0"
   }
 }

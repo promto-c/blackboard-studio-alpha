@@ -6,7 +6,8 @@ import {
   ViewerSlotAssignments,
 } from '@blackboard/types';
 import { getInitialState } from '@/state/editor/initialState';
-import type { SetState, GetState } from '@/state/editor/slices/types';
+import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
+import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import {
   assignViewerSlotToNode,
   sanitizeActiveViewerSlot,
@@ -14,12 +15,23 @@ import {
   sanitizeViewerSlots,
 } from '@/utils/viewerSlots';
 
-export function createViewerActions(set: SetState, get: GetState) {
+export function createViewerActions(
+  set: SetState,
+  get: GetState,
+  deps: { commitMutation: CommitEditorMutation<EditorState> },
+) {
   return {
     setViewerSettings: (updates: Partial<ViewerSettings>) =>
-      set((s) => ({ viewerSettings: { ...s.viewerSettings, ...updates } })),
+      deps.commitMutation((s) => ({
+        patch: { viewerSettings: { ...s.viewerSettings, ...updates } },
+        persist: 'debounced',
+      })),
 
-    resetViewerSettings: () => set(() => ({ viewerSettings: getInitialState().viewerSettings })),
+    resetViewerSettings: () =>
+      deps.commitMutation(() => ({
+        patch: { viewerSettings: getInitialState().viewerSettings },
+        persist: 'debounced',
+      })),
 
     toggleExposureDefault: () => {
       const { viewerSettings } = get();
@@ -52,7 +64,10 @@ export function createViewerActions(set: SetState, get: GetState) {
     },
 
     setRenderSettings: (updates: Partial<RenderSettings>) =>
-      set((s) => ({ renderSettings: { ...s.renderSettings, ...updates } })),
+      deps.commitMutation((s) => ({
+        patch: { renderSettings: { ...s.renderSettings, ...updates } },
+        persist: 'debounced',
+      })),
 
     updateCacheStatus: (status: Partial<CacheStatus>) =>
       set((s) => ({ cacheStatus: { ...s.cacheStatus, ...status } })),
@@ -93,6 +108,14 @@ export function createViewerActions(set: SetState, get: GetState) {
 
       const validNodeId = sanitizeViewerNodeId(nodeId, state.nodes);
       if (!validNodeId) return false;
+
+      if (state.activeViewerSlot === slot && state.viewerNodeId === validNodeId) {
+        set(() => ({
+          viewerNodeId: null,
+          activeViewerSlot: null,
+        }));
+        return true;
+      }
 
       set(() => ({
         viewerNodeId: validNodeId,

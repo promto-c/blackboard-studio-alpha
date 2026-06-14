@@ -1,8 +1,9 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import * as Icons from '@blackboard/icons';
 import Popover from './Popover';
 import ResetIconButton from './ResetIconButton';
 import ScrollArea from './ScrollArea';
+import { Spinner } from './Spinner';
 
 export interface PromptTextFieldProps {
   label: React.ReactNode;
@@ -15,6 +16,10 @@ export interface PromptTextFieldProps {
   rows?: number;
   minHeight?: number;
   maxHeightClassName?: string;
+  maxHeight?: number;
+  initialMaxHeight?: number;
+  resizeStep?: number;
+  resizeLabel?: string;
   canUsePromptTools?: boolean;
   promptToolsUnavailableReason?: string;
   isSuggesting?: boolean;
@@ -38,20 +43,7 @@ export interface PromptTextFieldProps {
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
 }
 
-const Spinner: React.FC<{ className?: string }> = ({ className = 'h-4 w-4' }) => (
-  <svg
-    aria-hidden="true"
-    className={`animate-spin ${className}`}
-    xmlns="http://www.w3.org/2000/svg"
-    fill="none"
-    viewBox="0 0 24 24"
-  >
-    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4Z" />
-  </svg>
-);
-
-const PromptTextField: React.FC<PromptTextFieldProps> = ({
+function PromptTextField({
   label,
   description,
   value,
@@ -62,6 +54,10 @@ const PromptTextField: React.FC<PromptTextFieldProps> = ({
   rows = 1,
   minHeight = 36,
   maxHeightClassName = 'max-h-44',
+  maxHeight = 280,
+  initialMaxHeight = 176,
+  resizeStep = 12,
+  resizeLabel = 'Resize text area',
   canUsePromptTools = true,
   promptToolsUnavailableReason = 'Configure prompt tools in Preferences > Integrations.',
   isSuggesting = false,
@@ -83,11 +79,13 @@ const PromptTextField: React.FC<PromptTextFieldProps> = ({
   onReset,
   resetTooltip,
   onKeyDown,
-}) => {
+}: PromptTextFieldProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const generatedInputId = useId();
   const descriptionId = useId();
   const [isPromptMenuOpen, setIsPromptMenuOpen] = useState(false);
+  const [resizeMaxHeight, setResizeMaxHeight] = useState(initialMaxHeight);
+  const dragStartRef = useRef<{ height: number; y: number } | null>(null);
   const inputId = id ?? generatedInputId;
   const hasDescription = description !== undefined && description !== null;
   const descriptionTitle = typeof description === 'string' ? description : undefined;
@@ -98,12 +96,65 @@ const PromptTextField: React.FC<PromptTextFieldProps> = ({
   const hasSuggestions = suggestionsVisible && suggestions.length > 0;
   const unavailableReason = canUsePromptTools ? '' : promptToolsUnavailableReason;
 
+  const handleResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      dragStartRef.current = {
+        height: resizeMaxHeight,
+        y: event.clientY,
+      };
+    },
+    [resizeMaxHeight],
+  );
+
+  const handleResizePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const dragStart = dragStartRef.current;
+      if (!dragStart) return;
+      const nextHeight = dragStart.height + event.clientY - dragStart.y;
+      setResizeMaxHeight(Math.min(maxHeight, Math.max(minHeight, nextHeight)));
+    },
+    [maxHeight, minHeight],
+  );
+
+  const handleResizePointerEnd = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    dragStartRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  const handleResizeKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      setResizeMaxHeight((current) =>
+        Math.min(
+          maxHeight,
+          Math.max(minHeight, current + (event.key === 'ArrowDown' ? resizeStep : -resizeStep)),
+        ),
+      );
+    },
+    [maxHeight, minHeight, resizeStep],
+  );
+
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.max(minHeight, textarea.scrollHeight)}px`;
   }, [minHeight, value]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const handler = (e: WheelEvent) => {
+      e.stopPropagation();
+    };
+    textarea.addEventListener('wheel', handler);
+    return () => textarea.removeEventListener('wheel', handler);
+  }, []);
 
   const actionButtonClass =
     'inline-flex h-6 items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:opacity-50';
@@ -271,23 +322,44 @@ const PromptTextField: React.FC<PromptTextFieldProps> = ({
           ) : null}
         </div>
       </div>
-      <ScrollArea
-        axis="y"
-        rootClassName="rounded-lg border border-gray-700 bg-gray-900 transition focus-within:border-primary-400/70 focus-within:ring-2 focus-within:ring-primary-400/20"
-        viewportClassName={maxHeightClassName}
-      >
-        <textarea
-          ref={textareaRef}
-          id={inputId}
-          value={value}
-          rows={rows}
-          disabled={disabled}
-          aria-describedby={hasDescription ? descriptionId : undefined}
-          placeholder={placeholder}
-          onChange={(event) => onValueChange(event.currentTarget.value)}
-          className="block min-h-9 w-full resize-none overflow-hidden border-0 bg-transparent px-3 py-2 text-xs leading-5 text-gray-100 outline-none placeholder:text-gray-600 disabled:cursor-not-allowed disabled:text-gray-500"
-        />
-      </ScrollArea>
+      <div className="relative">
+        <ScrollArea
+          axis="y"
+          rootClassName="rounded-lg border border-gray-700 bg-gray-900 transition focus-within:border-primary-400/70 focus-within:ring-2 focus-within:ring-primary-400/20"
+          viewportClassName={maxHeightClassName}
+          viewportStyle={{ maxHeight: resizeMaxHeight }}
+        >
+          <textarea
+            ref={textareaRef}
+            id={inputId}
+            value={value}
+            rows={rows}
+            disabled={disabled}
+            aria-describedby={hasDescription ? descriptionId : undefined}
+            placeholder={placeholder}
+            onChange={(event) => onValueChange(event.currentTarget.value)}
+            className="block min-h-9 w-full resize-none overflow-hidden border-0 bg-transparent px-3 py-2 text-xs leading-5 text-gray-100 outline-none placeholder:text-gray-600 disabled:cursor-not-allowed disabled:text-gray-500"
+          />
+        </ScrollArea>
+        <div
+          role="slider"
+          tabIndex={0}
+          aria-label={resizeLabel}
+          aria-valuemin={minHeight}
+          aria-valuemax={maxHeight}
+          aria-valuenow={Math.round(resizeMaxHeight)}
+          title={resizeLabel}
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerEnd}
+          onPointerCancel={handleResizePointerEnd}
+          onKeyDown={handleResizeKeyDown}
+          className="absolute bottom-0 right-0 h-5 w-5 cursor-nwse-resize touch-none select-none rounded-br-xl opacity-55 transition hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary-300/35"
+        >
+          <span className="absolute bottom-1 right-1 h-2.5 w-2.5 rounded-br-md border-b border-r border-white/25" />
+          <span className="absolute bottom-1.5 right-1.5 h-1.5 w-1.5 rounded-br border-b border-r border-white/20" />
+        </div>
+      </div>
       {hasSuggestions ? (
         <div className="space-y-1 pt-0.5">
           <div className="flex items-center justify-between gap-2">
@@ -366,6 +438,6 @@ const PromptTextField: React.FC<PromptTextFieldProps> = ({
       ) : null}
     </div>
   );
-};
+}
 
 export default PromptTextField;

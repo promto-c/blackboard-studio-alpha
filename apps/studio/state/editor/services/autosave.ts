@@ -1,3 +1,4 @@
+import type { EditorState } from '@/state/editor/slices/types';
 import {
   SCHEMA_VERSION,
   getProjectBranchStorageId,
@@ -7,7 +8,6 @@ import {
   touchProjectBranch,
 } from '@/state/persist';
 import { buildPersistedProjectState } from '@/state/editor/projectSnapshots';
-import type { EditorState } from '@/state/editor/slices/types';
 
 type DebouncedAsyncFunction = (() => void) & { flush: () => Promise<void> };
 
@@ -37,6 +37,8 @@ const debounceAsync = (task: () => Promise<void>, waitMs: number): DebouncedAsyn
 
 export const createProjectAutosave = (
   getSnapshot: () => EditorState,
+  getReopenHistoryLimit?: () => number,
+  getAutoCheckpointEnabled?: () => boolean,
   waitMs = 500,
 ): DebouncedAsyncFunction => {
   return debounceAsync(async () => {
@@ -48,11 +50,12 @@ export const createProjectAutosave = (
     }
 
     const timestamp = Date.now();
-    const persistedState = buildPersistedProjectState(snapshot);
+    const persistedState = buildPersistedProjectState(snapshot, {
+      maxHistoryEntries: getReopenHistoryLimit?.(),
+      checkpointLatestHistoryEntry: getAutoCheckpointEnabled?.(),
+    });
     await saveProject(getProjectBranchStorageId(projectId, activeProjectBranchId), persistedState);
     touchProjectBranch(projectId, activeProjectBranchId, timestamp);
-
-    const estimatedSize = new Blob([JSON.stringify(persistedState)]).size;
 
     const index = getProjectIndex();
     const nextIndex = index.map((entry) =>
@@ -62,7 +65,6 @@ export const createProjectAutosave = (
             lastModified: timestamp,
             thumbnail: thumbnail ?? undefined,
             thumbnailAssetId: snapshot.thumbnailAssetId ?? entry.thumbnailAssetId,
-            estimatedSize,
             schemaVersion: SCHEMA_VERSION,
           }
         : entry,

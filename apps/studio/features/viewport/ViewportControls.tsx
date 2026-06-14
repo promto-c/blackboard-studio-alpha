@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import { useRef, useEffect } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import * as Icons from '@blackboard/icons';
 
@@ -11,7 +11,7 @@ interface ViewportControlsProps {
   zoomValue: number;
 }
 
-const ViewportControls: React.FC<ViewportControlsProps> = ({ visible, onFit, zoomValue }) => {
+function ViewportControls({ visible, onFit, zoomValue }: ViewportControlsProps) {
   const targetZoom = useEditorSelector((s) => s.targetZoom);
   const { setAnimationTarget } = useEditorActions();
   const glowRef = useRef<HTMLDivElement>(null);
@@ -100,6 +100,6 @@ const ViewportControls: React.FC<ViewportControlsProps> = ({ visible, onFit, zoo
       </button>
     </div>
   );
-};
+}
 
 export default ViewportControls;

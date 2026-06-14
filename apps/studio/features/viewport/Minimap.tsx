@@ -10,12 +10,7 @@ interface MinimapProps {
 
 const MINIMAP_MAX_SIZE = 120; // pixels
 
-const Minimap: React.FC<MinimapProps> = ({
-  sourceCanvas,
-  viewportSize,
-  sceneSize,
-  previewRefreshToken,
-}) => {
+function Minimap({ sourceCanvas, viewportSize, sceneSize, previewRefreshToken }: MinimapProps) {
   const zoom = useEditorSelector((s) => s.zoom);
   const pan = useEditorSelector((s) => s.pan);
   const { setPan, setAnimationTarget } = useEditorActions();
@@ -244,6 +239,6 @@ const Minimap: React.FC<MinimapProps> = ({
       </div>
     </div>
   );
-};
+}
 
 export default Minimap;

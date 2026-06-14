@@ -1,6 +1,6 @@
 import isTextEntryTarget from './isTextEntryTarget';
 
-export const TEXT_SELECTION_SCOPE_SELECTOR = '[data-text-selection-scope]';
+const TEXT_SELECTION_SCOPE_SELECTOR = '[data-text-selection-scope]';
 
 const TEXT_SELECTION_TARGET_SELECTOR = [
   '[data-selectable-text]',

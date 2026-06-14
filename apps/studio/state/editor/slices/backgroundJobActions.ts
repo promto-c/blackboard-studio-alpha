@@ -1,7 +1,6 @@
 import {
   createBackgroundJob,
   pruneBackgroundJobs,
-  requestRegisteredBackgroundJobCancel,
   requestBackgroundJobCancelById,
   savePersistedBackgroundJobs,
   updateBackgroundJobById,
@@ -10,6 +9,11 @@ import {
   type BackgroundJobInput,
   type BackgroundJobUpdate,
 } from '@/state/editor/services/backgroundJobs';
+import {
+  defaultBackgroundJobExecutor,
+  requestRegisteredBackgroundJobCancel,
+  type BackgroundJobRunner,
+} from '@/state/editor/services/backgroundJobExecutor';
 import type { SetState } from '@/state/editor/slices/types';
 
 const commitBackgroundJobs = (
@@ -28,6 +32,35 @@ export function createBackgroundJobActions(set: SetState) {
     startBackgroundJob: (input: BackgroundJobInput): string => {
       const job = createBackgroundJob(input);
       commitBackgroundJobs(set, (jobs) => pruneBackgroundJobs(upsertBackgroundJob(jobs, job)));
+      return job.id;
+    },
+
+    runBackgroundJob: (input: BackgroundJobInput, runner: BackgroundJobRunner): string => {
+      const job = createBackgroundJob(input);
+      commitBackgroundJobs(set, (jobs) => pruneBackgroundJobs(upsertBackgroundJob(jobs, job)));
+      void defaultBackgroundJobExecutor.run(
+        job,
+        {
+          update: (jobId, updates) => {
+            commitBackgroundJobs(set, (jobs) =>
+              pruneBackgroundJobs(updateBackgroundJobById(jobs, jobId, updates)),
+            );
+          },
+          finish: (jobId, updates = {}) => {
+            commitBackgroundJobs(set, (jobs) =>
+              pruneBackgroundJobs(
+                updateBackgroundJobById(jobs, jobId, {
+                  status: updates.status ?? 'complete',
+                  progress: updates.progress ?? 100,
+                  indeterminate: false,
+                  ...updates,
+                }),
+              ),
+            );
+          },
+        },
+        runner,
+      );
       return job.id;
     },
 

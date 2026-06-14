@@ -1,10 +1,4 @@
-import {
-  AnyNode,
-  EditorStateSlice,
-  EditorTab,
-  HistoryEntry,
-  NodePositions,
-} from '@blackboard/types';
+import { AnyNode, EditorTab, HistoryEntry, PersistedProjectState } from '@blackboard/types';
 import { getInitialState } from '@/state/editor/initialState';
 import { buildFlowFromNodes, ROOT_FLOW_ID } from '@/state/editor/flowModel';
 import { computeAutoLayout } from '@/utils/autoLayoutGraph';
@@ -22,21 +16,23 @@ export const buildProjectInitState = ({
   fps = 30,
 }: BuildProjectInitParams): {
   historyEntry: HistoryEntry;
-  persistedState: Omit<EditorStateSlice, 'projectId'>;
-  nodePositions: NodePositions;
+  persistedState: PersistedProjectState;
 } => {
   const rootFlow = buildFlowFromNodes(nodes, ROOT_FLOW_ID, 'Root Flow');
   const nodePositions = computeAutoLayout(nodes, buildNodeStacks(nodes));
   const nodePositionsByFlow = { [rootFlow.id]: nodePositions };
+  const timestamp = Date.now();
 
   const historyEntry: HistoryEntry = {
-    id: `init_${Date.now()}`,
+    id: `init_${timestamp}`,
     label: 'New Project',
+    createdAt: timestamp,
     state: {
       flows: { [rootFlow.id]: rootFlow },
       rootFlowId: rootFlow.id,
       activeFlowId: rootFlow.id,
       selectedNodeId,
+      selectedNodeIds: selectedNodeId ? [selectedNodeId] : [],
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
@@ -48,7 +44,7 @@ export const buildProjectInitState = ({
   };
 
   const initialState = getInitialState();
-  const persistedState: Omit<EditorStateSlice, 'projectId'> = {
+  const persistedState: PersistedProjectState = {
     flows: { [rootFlow.id]: rootFlow },
     rootFlowId: rootFlow.id,
     activeFlowId: rootFlow.id,
@@ -56,8 +52,7 @@ export const buildProjectInitState = ({
     aiChats: [],
     activeAiChatId: null,
     selectedNodeId,
-    history: [historyEntry],
-    historyIndex: 0,
+    selectedNodeIds: selectedNodeId ? [selectedNodeId] : [],
     viewerNodeId: null,
     viewerSlots: initialState.viewerSlots,
     activeViewerSlot: initialState.activeViewerSlot,
@@ -65,7 +60,9 @@ export const buildProjectInitState = ({
     viewerSettings: initialState.viewerSettings,
     fps,
     nodePositionsByFlow,
+    history: [historyEntry],
+    historyIndex: 0,
   };
 
-  return { historyEntry, persistedState, nodePositions };
+  return { historyEntry, persistedState };
 };

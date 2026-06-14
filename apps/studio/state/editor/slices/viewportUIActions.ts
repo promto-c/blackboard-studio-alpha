@@ -1,5 +1,5 @@
 import { EditorTab, Pan, TransformData, StabilizationConfig } from '@blackboard/types';
-import { effectRegistry } from '@/effects/effectRegistry';
+import { nodeRegistry } from '@/nodes/registry';
 import type { SetState, GetState } from '@/state/editor/slices/types';
 
 export function createViewportUIActions(set: SetState, get: GetState) {
@@ -16,15 +16,18 @@ export function createViewportUIActions(set: SetState, get: GetState) {
     setActiveViewportTool: (tool: string | null) => set(() => ({ activeViewportTool: tool })),
 
     toggleStabilize: () => {
+      const state = get();
       const {
         isStabilized,
         nodes,
         selectedNodeId,
         currentFrame,
         stabilizationConfig,
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      } = get();
+        hierarchySelections,
+      } = state;
+      const hierarchySel = hierarchySelections[selectedNodeId ?? ''];
+      const selectedRotoLayerIds = hierarchySel?.layerIds ?? [];
+      const selectedRotoPathIds = hierarchySel?.itemIds ?? [];
 
       if (isStabilized) {
         set(() => ({
@@ -37,7 +40,7 @@ export function createViewportUIActions(set: SetState, get: GetState) {
         const node = nodes.find((l) => l.id === selectedNodeId);
 
         if (node) {
-          const def = effectRegistry.get(node.type);
+          const def = nodeRegistry.get(node.type);
           if (def && def.getStabilizeTransform) {
             ref = def.getStabilizeTransform(node, currentFrame, {
               stabilizationConfig,
@@ -56,15 +59,18 @@ export function createViewportUIActions(set: SetState, get: GetState) {
     },
 
     recaptureStabilizationReference: () => {
+      const state = get();
       const {
         isStabilized,
         nodes,
         selectedNodeId,
         currentFrame,
         stabilizationConfig,
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      } = get();
+        hierarchySelections,
+      } = state;
+      const hierarchySel = hierarchySelections[selectedNodeId ?? ''];
+      const selectedRotoLayerIds = hierarchySel?.layerIds ?? [];
+      const selectedRotoPathIds = hierarchySel?.itemIds ?? [];
 
       if (!isStabilized) return;
 
@@ -72,7 +78,7 @@ export function createViewportUIActions(set: SetState, get: GetState) {
       const node = nodes.find((l) => l.id === selectedNodeId);
 
       if (node) {
-        const def = effectRegistry.get(node.type);
+        const def = nodeRegistry.get(node.type);
         if (def && def.getStabilizeTransform) {
           ref = def.getStabilizeTransform(node, currentFrame, {
             stabilizationConfig,

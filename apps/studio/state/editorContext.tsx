@@ -1,4 +1,4 @@
-import React, {
+import {
   createContext,
   useCallback,
   useContext,
@@ -11,14 +11,21 @@ import React, {
 import { usePreferences } from '@/state/preferencesContext';
 import { getInitialState } from '@/state/editor/initialState';
 import { createProjectAutosave } from '@/state/editor/services/autosave';
+import { buildPersistedProjectState } from '@/state/editor/projectSnapshots';
+import {
+  createProjectBranchRecord,
+  createScopedProjectBranchName,
+  getActiveProjectBranchId,
+  getProjectBranchStorageId,
+  saveProject,
+  upsertProjectBranch,
+} from '@/state/persist';
 import { usePlayback } from '@/hooks/usePlayback';
 import {
-  getNodePositionsForFlow,
   getOrderedNodesFromFlow,
   getRootFlow,
   replaceFlowNodes,
   ROOT_FLOW_ID,
-  setNodePositionsForFlow,
 } from '@/state/editor/flowModel';
 
 import { createViewportUIActions } from '@/state/editor/slices/viewportUIActions';
@@ -32,34 +39,42 @@ import { createAiActions } from '@/state/editor/slices/aiActions';
 import { createProjectActions } from '@/state/editor/slices/projectActions';
 import { createNodeViewActions } from '@/state/editor/slices/nodeViewActions';
 import { createBackgroundJobActions } from '@/state/editor/slices/backgroundJobActions';
+import { installAgentMcpRuntimeBridge } from '@/utils/agentMcpRuntimeBridge';
+import { createCommitMutation } from '@/state/editor/commitMutation';
+import type { HistoryEntry, NodeType } from '@blackboard/types';
 
 type EditorState = ReturnType<typeof getInitialState> & { maxFrames: number };
 type SetState = (fn: (prevState: EditorState) => Partial<EditorState> | EditorState) => void;
-
-const hasOwn = (obj: object, key: string) => Object.prototype.hasOwnProperty.call(obj, key);
 
 const normalizeEditorState = (
   previousState: EditorState,
   patch: Partial<EditorState> | EditorState,
 ): EditorState => {
   const nextState = { ...previousState, ...patch } as EditorState;
-  const hasNodesMutation = hasOwn(patch, 'nodes');
-  const hasLegacyNodePositionsMutation = hasOwn(patch, 'nodePositions');
+  const hasNodesMutation = 'nodes' in patch;
   const hasStructuralFlowMutation =
-    hasOwn(patch, 'flows') || hasOwn(patch, 'rootFlowId') || hasOwn(patch, 'activeFlowId');
-  const hasPositionFlowMutation = hasOwn(patch, 'nodePositionsByFlow');
+    'flows' in patch || 'rootFlowId' in patch || 'activeFlowId' in patch;
+  const hasSelectedNodeMutation = 'selectedNodeId' in patch;
+  const hasSelectedNodesMutation = 'selectedNodeIds' in patch;
+
+  if (hasSelectedNodeMutation && !hasSelectedNodesMutation) {
+    nextState.selectedNodeIds = nextState.selectedNodeId ? [nextState.selectedNodeId] : [];
+  } else if (hasSelectedNodesMutation && !hasSelectedNodeMutation) {
+    nextState.selectedNodeId =
+      nextState.selectedNodeIds?.[nextState.selectedNodeIds.length - 1] ?? null;
+  }
 
   if (hasNodesMutation) {
     const nextNodes = nextState.nodes ?? [];
     if (nextNodes.length > 0) {
-      const flowId = nextState.rootFlowId ?? ROOT_FLOW_ID;
+      const flowId = nextState.activeFlowId ?? nextState.rootFlowId ?? ROOT_FLOW_ID;
       nextState.flows = replaceFlowNodes(
         nextState.flows,
         flowId,
         nextNodes,
-        getRootFlow(previousState.flows, previousState.rootFlowId)?.name ?? 'Root Flow',
+        getRootFlow(previousState.flows, flowId)?.name ?? 'Root Flow',
       );
-      nextState.rootFlowId = flowId;
+      nextState.rootFlowId = nextState.rootFlowId ?? flowId;
       nextState.activeFlowId = flowId;
     } else {
       nextState.flows = {};
@@ -70,32 +85,9 @@ const normalizeEditorState = (
     }
   }
 
-  if (hasLegacyNodePositionsMutation && !hasPositionFlowMutation) {
-    nextState.nodePositionsByFlow = setNodePositionsForFlow(
-      nextState.nodePositionsByFlow,
-      nextState.rootFlowId,
-      nextState.nodePositions ?? {},
-    );
-  }
-
-  // Only recreate the nodes array when the flow structure actually changes.
-  // Position-only changes (nodePositionsByFlow) should NOT recreate nodes,
-  // as that causes unnecessary re-renders of thumbnails/viewport.
   if (hasNodesMutation || hasStructuralFlowMutation) {
-    const rootFlow = getRootFlow(nextState.flows, nextState.rootFlowId);
-    nextState.nodes = getOrderedNodesFromFlow(rootFlow);
-  }
-
-  if (
-    hasNodesMutation ||
-    hasStructuralFlowMutation ||
-    hasPositionFlowMutation ||
-    hasLegacyNodePositionsMutation
-  ) {
-    nextState.nodePositions = getNodePositionsForFlow(
-      nextState.nodePositionsByFlow,
-      nextState.rootFlowId,
-    );
+    const activeFlow = getRootFlow(nextState.flows, nextState.activeFlowId);
+    nextState.nodes = getOrderedNodesFromFlow(activeFlow);
   }
 
   return nextState;
@@ -144,9 +136,7 @@ const ActionsContext = createContext<Record<string, unknown> | null>(null);
 const UNSET = Symbol('unset');
 
 /** Selective hook – only re-renders when the selected slice changes (Object.is). */
-export function useEditorSelector<T>(
-  selector: (state: EditorState & Record<string, any>) => T, // eslint-disable-line @typescript-eslint/no-explicit-any
-): T {
+export function useEditorSelector<T>(selector: (state: EditorState) => T): T {
   const store = useContext(StoreContext);
   if (!store) throw new Error('useEditorSelector must be used within an EditorProvider');
 
@@ -155,11 +145,14 @@ export function useEditorSelector<T>(
   const resultRef = useRef<T | typeof UNSET>(UNSET);
   selectorRef.current = selector;
 
+  const stateRef = useRef(store.getState());
   const getSnapshot = useCallback(() => {
-    const nextResult = selectorRef.current(store.getState() as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-    if (resultRef.current !== UNSET && Object.is(resultRef.current, nextResult)) {
+    const currentState = store.getState();
+    if (resultRef.current !== UNSET && currentState === stateRef.current) {
       return resultRef.current as T;
     }
+    stateRef.current = currentState;
+    const nextResult = selectorRef.current(currentState);
     resultRef.current = nextResult;
     return nextResult;
   }, [store]);
@@ -183,10 +176,15 @@ export const useOptionalEditorActions = () => {
 // Provider
 // ---------------------------------------------------------------------------
 
-export const EditorProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const { playbackMode, geminiApiKey } = usePreferences();
-  const geminiApiKeyRef = useRef(geminiApiKey);
-  geminiApiKeyRef.current = geminiApiKey;
+export function EditorProvider({ children }: { children: ReactNode }) {
+  const { playbackMode, undoHistoryLimit, reopenHistoryLimit, autoCheckpointEnabled } =
+    usePreferences();
+  const undoHistoryLimitRef = useRef(undoHistoryLimit);
+  undoHistoryLimitRef.current = undoHistoryLimit;
+  const reopenHistoryLimitRef = useRef(reopenHistoryLimit);
+  reopenHistoryLimitRef.current = reopenHistoryLimit;
+  const autoCheckpointEnabledRef = useRef(autoCheckpointEnabled);
+  autoCheckpointEnabledRef.current = autoCheckpointEnabled;
 
   // Create the store once — it lives for the lifetime of the provider.
   const storeRef = useRef<EditorStore | null>(null);
@@ -211,62 +209,131 @@ export const EditorProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   const debouncedSave = useMemo(
     () =>
-      createProjectAutosave(() => {
-        return get();
-      }),
+      createProjectAutosave(
+        () => get(),
+        () => reopenHistoryLimitRef.current,
+        () => autoCheckpointEnabledRef.current,
+      ),
     [get],
   );
 
   const actions = useMemo(() => {
-    const historyActions = createHistoryActions(set, get, debouncedSave);
+    const backupRedoHistory = ({
+      history,
+      historyIndex,
+    }: {
+      history: HistoryEntry[];
+      historyIndex: number;
+      nextEntry: HistoryEntry;
+    }) => {
+      const state = get();
+      if (!state.projectId || historyIndex >= history.length - 1) return;
+
+      const futureHistory = history.slice(historyIndex + 1);
+      const oldHead = futureHistory[futureHistory.length - 1];
+      if (!oldHead) return;
+
+      const branch = createProjectBranchRecord({
+        projectId: state.projectId,
+        name: createScopedProjectBranchName('backup', oldHead.label),
+        kind: 'autosave',
+        parentBranchId: state.activeProjectBranchId || getActiveProjectBranchId(state.projectId),
+      });
+      const branchIndex = upsertProjectBranch(state.projectId, branch);
+      set(() => ({ projectBranches: branchIndex.branches }));
+
+      const backupState = futureHistory.reduce<EditorState>(
+        (snapshot, entry) => normalizeEditorState(snapshot, entry.state),
+        {
+          ...state,
+          history,
+          historyIndex: history.length - 1,
+        },
+      );
+
+      void saveProject(
+        getProjectBranchStorageId(state.projectId, branch.id),
+        buildPersistedProjectState(backupState, {
+          maxHistoryEntries: reopenHistoryLimitRef.current,
+        }),
+      );
+    };
+
+    const historyActions = createHistoryActions(set, get, debouncedSave, {
+      backupRedoHistory,
+      getUndoHistoryLimit: () =>
+        undoHistoryLimitRef.current === 'unlimited' ? null : undoHistoryLimitRef.current,
+    });
     const backgroundJobActions = createBackgroundJobActions(set);
 
-    const sharedDeps = {
+    // -----------------------------------------------------------------------
+    // Single commitMutation instance shared by all slices.
+    // Never inject fake no-op deps — debouncedSave is optional in MutationDeps.
+    // -----------------------------------------------------------------------
+    const commitMutation = createCommitMutation<EditorState>(set, get, {
       pushHistory: historyActions.pushHistory,
       debouncedSave,
-    };
-
-    const rotoDrawingDeps = {
-      pushHistory: historyActions.pushHistory,
-    };
-
-    const projectDeps = {
-      pushHistory: historyActions.pushHistory,
-      debouncedSave,
-      trackingAbortController,
-      startBackgroundJob: backgroundJobActions.startBackgroundJob,
-      updateBackgroundJob: backgroundJobActions.updateBackgroundJob,
-      finishBackgroundJob: backgroundJobActions.finishBackgroundJob,
-    };
+    });
 
     return {
       ...createViewportUIActions(set, get),
-      ...createViewerActions(set, get),
-      ...createPlaybackActions(set, get, renderLockRef),
+      ...createViewerActions(set, get, { commitMutation }),
+      ...createPlaybackActions(set, get, renderLockRef, { commitMutation }),
       ...createSelectionActions(set, get),
       ...historyActions,
-      ...createNodeActions(set, get, sharedDeps),
-      ...createRotoDrawingActions(set, get, rotoDrawingDeps),
-      ...createAiActions(set, get, {
-        pushHistory: historyActions.pushHistory,
-        debouncedSave,
-        getGeminiApiKey: () => geminiApiKeyRef.current,
+      ...createNodeActions(set, get, {
+        commitMutation,
       }),
-      ...createProjectActions(set, get, projectDeps),
-      ...createNodeViewActions(set, get, sharedDeps),
+      ...createRotoDrawingActions(set, get, {
+        commitMutation,
+      }),
+      ...createAiActions(set, get, {
+        commitMutation,
+        debouncedSave,
+      }),
+      ...createProjectActions(set, get, {
+        commitMutation,
+        getReopenHistoryLimit: () => reopenHistoryLimitRef.current,
+        getAutoCheckpointEnabled: () => autoCheckpointEnabledRef.current,
+        trackingAbortController,
+        startBackgroundJob: backgroundJobActions.startBackgroundJob,
+        updateBackgroundJob: backgroundJobActions.updateBackgroundJob,
+        finishBackgroundJob: backgroundJobActions.finishBackgroundJob,
+      }),
+      ...createNodeViewActions(set, get, {
+        commitMutation,
+      }),
       ...backgroundJobActions,
+      commitMutation,
+      setPreviewNodeType: (nodeType: NodeType | null) => {
+        set(() => ({ previewNodeType: nodeType }));
+      },
     };
   }, [debouncedSave, get, set]);
 
   useEffect(() => {
-    if (!state.isAiCurrentlyGenerating && state.aiGenerationQueue.length > 0) {
-      actions._processAiQueue();
+    if (typeof window === 'undefined' || typeof actions.pushHistory !== 'function') {
+      return;
     }
-  }, [actions, state.aiGenerationQueue, state.isAiCurrentlyGenerating]);
+
+    // Create a second commitMutation instance for the MCP bridge.
+    // Functionally identical to the one in useMemo — same set/get/debouncedSave.
+    const mcpCommitMutation = createCommitMutation<EditorState>(set, get, {
+      pushHistory: actions.pushHistory,
+      debouncedSave,
+    });
+
+    return installAgentMcpRuntimeBridge({
+      commitMutation: mcpCommitMutation,
+      getState: get,
+      setState: set,
+      debouncedSave,
+    });
+  }, [actions, debouncedSave, get, set]);
 
   return (
     <StoreContext.Provider value={store}>
       <ActionsContext.Provider value={actions}>{children}</ActionsContext.Provider>
     </StoreContext.Provider>
   );
-};
+}

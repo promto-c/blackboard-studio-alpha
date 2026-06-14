@@ -10,7 +10,7 @@ import {
   type RotoNode,
   type SceneNode,
 } from '@blackboard/types';
-import type { RotoMotionBlurPreviewBackend } from '@/state/preferencesContext';
+import type { RotoMotionBlurPreviewBackend } from '@/state/preferences';
 import { getValueAtFrame } from '@blackboard/renderer';
 import { drawBSplineOnCanvas } from '@/utils/bspline';
 import {
@@ -45,6 +45,10 @@ interface RotoMaskEntry {
   accCtx?: CanvasRenderingContext2D;
   gpuSampleTexture?: THREE.CanvasTexture;
   gpuTarget?: THREE.WebGLRenderTarget;
+  addCanvas?: HTMLCanvasElement;
+  subCanvas?: HTMLCanvasElement;
+  addCanvasTexture?: THREE.CanvasTexture;
+  subCanvasTexture?: THREE.CanvasTexture;
   dispose: () => void;
 }
 
@@ -112,6 +116,8 @@ const disposeMaskEntry = (entry: RotoMaskEntry): void => {
   entry.canvasTexture.dispose();
   entry.gpuSampleTexture?.dispose();
   entry.gpuTarget?.dispose();
+  entry.addCanvasTexture?.dispose();
+  entry.subCanvasTexture?.dispose();
 };
 
 const createGpuCompositor = (): RotoMaskGpuCompositor | null => {
@@ -257,7 +263,9 @@ const getCanvas2dContext = (
   requestedColorType: CanvasStorageColorType,
 ): { ctx: CanvasRenderingContext2D; actualColorType: CanvasStorageColorType } | null => {
   const requestedOptions =
-    requestedColorType === 'float16' ? ({ colorType: 'float16' } as any) : undefined;
+    requestedColorType === 'float16'
+      ? ({ colorType: 'float16' } as CanvasRenderingContext2DSettings)
+      : undefined;
   const ctx = requestedOptions
     ? ((canvas.getContext('2d', requestedOptions) as CanvasRenderingContext2D | null) ??
       canvas.getContext('2d'))
@@ -265,8 +273,8 @@ const getCanvas2dContext = (
   if (!ctx) return null;
 
   const attributes =
-    typeof (ctx as any).getContextAttributes === 'function'
-      ? ((ctx as any).getContextAttributes() as { colorType?: unknown } | null)
+    typeof ctx.getContextAttributes === 'function'
+      ? (ctx.getContextAttributes() as { colorType?: unknown } | null)
       : null;
 
   return {
@@ -315,7 +323,7 @@ export const useViewportRotoMasks = ({
     };
 
     const rotoNodes = nodes.filter(
-      (node) => node.type === NodeType.ROTO && node.visible,
+      (node) => node.type === NodeType.ROTO && node.enabled,
     ) as RotoNode[];
     const nextMasks = new Map<string, RotoMaskEntry>();
     let didUpdate = false;
@@ -728,6 +736,80 @@ export const useViewportRotoMasks = ({
         renderMaskAtFrame(ctx, currentFrame);
         canvasTexture.needsUpdate = true;
         entry.texture = canvasTexture;
+      }
+
+      // --- add/sub masks for Add alpha mode ---
+      {
+        const isAddPath = (b: RotoPathBlend) => b === RotoPathBlend.ADD;
+        const isSubPath = (b: RotoPathBlend) => b === RotoPathBlend.SUBTRACT;
+
+        const ensureAddSubCanvas = (key: 'addCanvas' | 'subCanvas') => {
+          if (
+            !entry[key] ||
+            entry[key]!.width !== sceneNode.width ||
+            entry[key]!.height !== sceneNode.height
+          ) {
+            const c = document.createElement('canvas');
+            c.width = sceneNode.width;
+            c.height = sceneNode.height;
+            entry[key] = c;
+          }
+          return entry[key]!;
+        };
+
+        const renderAddSubMask = (
+          targetCtx: CanvasRenderingContext2D,
+          blendFilter: (b: RotoPathBlend) => boolean,
+        ) => {
+          const w = sceneNode.width;
+          const h = sceneNode.height;
+          targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+          targetCtx.clearRect(0, 0, w, h);
+          targetCtx.fillRect(0, 0, w, h);
+          for (const path of getActivePathsAtFrame(currentFrame)) {
+            if (!blendFilter(getBlendForPath(path))) continue;
+            const opacity = getValueAtFrame(path.opacity, currentFrame);
+            if (opacity <= 0) continue;
+            const feather = getValueAtFrame(path.feather, currentFrame);
+            targetCtx.save();
+            targetCtx.globalAlpha = opacity / 100;
+            targetCtx.filter = feather > 0 ? `blur(${feather}px)` : 'none';
+            drawPathGeometry(targetCtx, path, currentFrame);
+            targetCtx.restore();
+          }
+        };
+
+        const addCvs = ensureAddSubCanvas('addCanvas');
+        const subCvs = ensureAddSubCanvas('subCanvas');
+        const addCtx = addCvs.getContext('2d');
+        const subCtx = subCvs.getContext('2d');
+
+        if (node.invert) {
+          renderAddSubMask(addCtx!, isSubPath);
+          renderAddSubMask(subCtx!, isAddPath);
+        } else {
+          renderAddSubMask(addCtx!, isAddPath);
+          renderAddSubMask(subCtx!, isSubPath);
+        }
+
+        if (!entry.addCanvasTexture || entry.addCanvasTexture.image !== addCvs) {
+          entry.addCanvasTexture?.dispose();
+          entry.addCanvasTexture = new THREE.CanvasTexture(addCvs);
+          entry.addCanvasTexture.minFilter = THREE.LinearFilter;
+          entry.addCanvasTexture.magFilter = THREE.LinearFilter;
+          entry.addCanvasTexture.generateMipmaps = false;
+          entry.addCanvasTexture.colorSpace = THREE.NoColorSpace;
+        }
+        if (!entry.subCanvasTexture || entry.subCanvasTexture.image !== subCvs) {
+          entry.subCanvasTexture?.dispose();
+          entry.subCanvasTexture = new THREE.CanvasTexture(subCvs);
+          entry.subCanvasTexture.minFilter = THREE.LinearFilter;
+          entry.subCanvasTexture.magFilter = THREE.LinearFilter;
+          entry.subCanvasTexture.generateMipmaps = false;
+          entry.subCanvasTexture.colorSpace = THREE.NoColorSpace;
+        }
+        entry.addCanvasTexture.needsUpdate = true;
+        entry.subCanvasTexture.needsUpdate = true;
       }
 
       if (entry.texture !== previousTexture) {

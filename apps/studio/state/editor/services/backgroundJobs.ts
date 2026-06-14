@@ -1,12 +1,20 @@
-export type BackgroundJobType =
-  | 'comfy'
-  | 'render'
-  | 'tracking'
-  | 'ai'
-  | 'agent'
-  | 'model-download'
-  | 'download'
-  | 'other';
+import {
+  backgroundJobTypes,
+  getBackgroundJobDefinition,
+  type BackgroundJobProgressState,
+  type BackgroundJobSource,
+  type BackgroundJobType,
+} from '@/state/editor/services/backgroundJobDefinitions';
+import {
+  clampBackgroundJobProgress,
+  createBackgroundJobResumeUpdate,
+  isBackgroundJobResumable,
+  requestRegisteredBackgroundJobCancel,
+  registerBackgroundJobCancelHandler,
+} from '@/state/editor/services/backgroundJobExecutor';
+
+export type { BackgroundJobProgressState, BackgroundJobSource, BackgroundJobType };
+export { registerBackgroundJobCancelHandler, requestRegisteredBackgroundJobCancel };
 
 export type BackgroundJobStatus =
   | 'queued'
@@ -16,55 +24,33 @@ export type BackgroundJobStatus =
   | 'error'
   | 'cancelled';
 
-export interface BackgroundJobSource {
-  projectId?: string;
-  nodeId?: string;
-  workflowId?: string;
-  historyId?: string;
-  promptId?: string;
-  comfyEndpoint?: string;
-  outputNodeIds?: string[];
-  restoredFromStorage?: boolean;
-  chatId?: string;
-  taskId?: string;
-  modelId?: string;
-  runIndex?: number;
-  runCount?: number;
-  completedCount?: number;
-}
-
 export interface BackgroundJob {
   id: string;
   type: BackgroundJobType;
+  specVersion?: number;
   title: string;
   subtitle?: string;
   detail?: string;
   status: BackgroundJobStatus;
   progress?: number;
+  progressState?: BackgroundJobProgressState;
   indeterminate?: boolean;
   cancellable?: boolean;
   error?: string;
   source?: BackgroundJobSource;
+  payload?: unknown;
+  attempt?: number;
+  maxAttempts?: number;
+  retryAt?: number;
   startedAt: number;
   updatedAt: number;
   completedAt?: number;
   cancelRequestedAt?: number;
 }
 
-const BACKGROUND_JOBS_STORAGE_KEY = 'blackboard-background-jobs-v1';
+const BACKGROUND_JOBS_STORAGE_KEY = 'blackboard-studio-background-jobs';
 const PERSISTED_JOB_LIMIT = 8;
 const PERSISTED_JOB_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-const backgroundJobTypes = new Set<BackgroundJobType>([
-  'comfy',
-  'render',
-  'tracking',
-  'ai',
-  'agent',
-  'model-download',
-  'download',
-  'other',
-]);
 
 const backgroundJobStatuses = new Set<BackgroundJobStatus>([
   'queued',
@@ -74,9 +60,6 @@ const backgroundJobStatuses = new Set<BackgroundJobStatus>([
   'error',
   'cancelled',
 ]);
-
-type BackgroundJobCancelHandler = () => void;
-const backgroundJobCancelHandlers = new Map<string, BackgroundJobCancelHandler>();
 
 export type BackgroundJobInput = Omit<
   BackgroundJob,
@@ -94,10 +77,15 @@ export type BackgroundJobUpdate = Partial<
     | 'detail'
     | 'status'
     | 'progress'
+    | 'progressState'
     | 'indeterminate'
     | 'cancellable'
     | 'error'
     | 'source'
+    | 'payload'
+    | 'attempt'
+    | 'maxAttempts'
+    | 'retryAt'
   >
 >;
 
@@ -107,27 +95,31 @@ export const isBackgroundJobActive = (job: Pick<BackgroundJob, 'status'>): boole
 export const createBackgroundJobId = (prefix = 'job'): string =>
   `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-export const registerBackgroundJobCancelHandler = (
-  jobId: string,
-  handler: BackgroundJobCancelHandler,
-): (() => void) => {
-  backgroundJobCancelHandlers.set(jobId, handler);
-  return () => {
-    if (backgroundJobCancelHandlers.get(jobId) === handler) {
-      backgroundJobCancelHandlers.delete(jobId);
-    }
-  };
-};
-
-export const requestRegisteredBackgroundJobCancel = (jobId: string): void => {
-  backgroundJobCancelHandlers.get(jobId)?.();
-};
-
 export const createBackgroundJob = (input: BackgroundJobInput): BackgroundJob => {
   const now = input.startedAt ?? Date.now();
+  const definition = getBackgroundJobDefinition(input.type);
+  const retryPolicy = definition.retryPolicy;
+  const defaultProgress = definition.progress.initial.progress;
+  const defaultIndeterminate = definition.progress.initial.indeterminate;
+  const defaultDetail = definition.progress.initial.detail;
+  const finiteMaxAttempts =
+    retryPolicy && Number.isFinite(retryPolicy.maxAttempts) ? retryPolicy.maxAttempts : undefined;
+
   return {
     ...input,
     id: input.id ?? createBackgroundJobId(input.type),
+    specVersion: input.specVersion ?? definition.version,
+    detail: input.detail ?? defaultDetail,
+    progress:
+      input.progress !== undefined ? clampBackgroundJobProgress(input.progress) : defaultProgress,
+    indeterminate: input.indeterminate ?? defaultIndeterminate,
+    cancellable: input.cancellable ?? definition.defaultCancellable,
+    attempt: input.attempt ?? 0,
+    ...(input.maxAttempts !== undefined
+      ? { maxAttempts: input.maxAttempts }
+      : finiteMaxAttempts !== undefined
+        ? { maxAttempts: finiteMaxAttempts }
+        : {}),
     startedAt: now,
     updatedAt: now,
   };
@@ -152,10 +144,17 @@ export const updateBackgroundJobById = (
       !isBackgroundJobActive({ status: nextStatus }) && !job.completedAt
         ? Date.now()
         : job.completedAt;
+    const progress =
+      updates.progress !== undefined
+        ? clampBackgroundJobProgress(updates.progress)
+        : updates.progressState?.percent !== undefined
+          ? clampBackgroundJobProgress(updates.progressState.percent)
+          : job.progress;
 
     return {
       ...job,
       ...updates,
+      ...(progress !== undefined ? { progress } : {}),
       updatedAt: Date.now(),
       completedAt,
     };
@@ -209,8 +208,29 @@ const readStringArray = (value: unknown): string[] | undefined => {
   return strings.length > 0 ? strings : undefined;
 };
 
+const readComfyInputContext = (value: unknown): 'props' | 'viewportTool' | undefined =>
+  value === 'props' || value === 'viewportTool' ? value : undefined;
+
+const readComfyViewportRect = (
+  value: unknown,
+): { x: number; y: number; width: number; height: number } | undefined => {
+  if (!isRecord(value)) return undefined;
+  const x = readFiniteNumber(value.x);
+  const y = readFiniteNumber(value.y);
+  const width = readFiniteNumber(value.width);
+  const height = readFiniteNumber(value.height);
+  if (x === undefined || y === undefined || width === undefined || height === undefined) {
+    return undefined;
+  }
+  if (width <= 0 || height <= 0) return undefined;
+  return { x, y, width, height };
+};
+
 const readBoolean = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
+
+const readJsonPayload = (value: unknown): unknown =>
+  value === undefined || typeof value === 'function' ? undefined : value;
 
 const readBackgroundJobType = (value: unknown): BackgroundJobType | undefined =>
   typeof value === 'string' && backgroundJobTypes.has(value as BackgroundJobType)
@@ -227,11 +247,14 @@ const readBackgroundJobSource = (value: unknown): BackgroundJobSource | undefine
 
   const source: BackgroundJobSource = {};
   const projectId = readString(value.projectId);
+  const branchId = readString(value.branchId);
   const nodeId = readString(value.nodeId);
   const workflowId = readString(value.workflowId);
   const historyId = readString(value.historyId);
   const promptId = readString(value.promptId);
   const comfyEndpoint = readString(value.comfyEndpoint);
+  const comfyInputContext = readComfyInputContext(value.comfyInputContext);
+  const comfyViewportRect = readComfyViewportRect(value.comfyViewportRect);
   const outputNodeIds = readStringArray(value.outputNodeIds);
   const restoredFromStorage = readBoolean(value.restoredFromStorage);
   const chatId = readString(value.chatId);
@@ -240,13 +263,22 @@ const readBackgroundJobSource = (value: unknown): BackgroundJobSource | undefine
   const runIndex = readFiniteNumber(value.runIndex);
   const runCount = readFiniteNumber(value.runCount);
   const completedCount = readFiniteNumber(value.completedCount);
+  const upstreamNodeIds = readStringArray(value.upstreamNodeIds);
+  const downloadId = readString(value.downloadId);
+  const repoName = readString(value.repoName);
+  const variantId = readString(value.variantId);
+  const url = readString(value.url);
+  const filename = readString(value.filename);
 
   if (projectId) source.projectId = projectId;
+  if (branchId) source.branchId = branchId;
   if (nodeId) source.nodeId = nodeId;
   if (workflowId) source.workflowId = workflowId;
   if (historyId) source.historyId = historyId;
   if (promptId) source.promptId = promptId;
   if (comfyEndpoint) source.comfyEndpoint = comfyEndpoint;
+  if (comfyInputContext) source.comfyInputContext = comfyInputContext;
+  if (comfyViewportRect) source.comfyViewportRect = comfyViewportRect;
   if (outputNodeIds) source.outputNodeIds = outputNodeIds;
   if (restoredFromStorage !== undefined) source.restoredFromStorage = restoredFromStorage;
   if (chatId) source.chatId = chatId;
@@ -255,8 +287,54 @@ const readBackgroundJobSource = (value: unknown): BackgroundJobSource | undefine
   if (runIndex !== undefined) source.runIndex = runIndex;
   if (runCount !== undefined) source.runCount = runCount;
   if (completedCount !== undefined) source.completedCount = completedCount;
+  if (upstreamNodeIds) source.upstreamNodeIds = upstreamNodeIds;
+  if (downloadId) source.downloadId = downloadId;
+  if (repoName) source.repoName = repoName;
+  if (variantId) source.variantId = variantId;
+  if (url) source.url = url;
+  if (filename) source.filename = filename;
 
   return Object.keys(source).length > 0 ? source : undefined;
+};
+
+const readBackgroundJobProgressState = (value: unknown): BackgroundJobProgressState | undefined => {
+  if (!isRecord(value)) return undefined;
+
+  const progressState: BackgroundJobProgressState = {};
+  const label = readString(value.label);
+  const detail = readString(value.detail);
+  const loaded = readFiniteNumber(value.loaded);
+  const total = readFiniteNumber(value.total);
+  const percent = clampBackgroundJobProgress(readFiniteNumber(value.percent));
+
+  if (label) progressState.label = label;
+  if (detail) progressState.detail = detail;
+  if (loaded !== undefined) progressState.loaded = loaded;
+  if (total !== undefined) progressState.total = total;
+  if (percent !== undefined) progressState.percent = percent;
+
+  if (isRecord(value.currentFile)) {
+    const name = readString(value.currentFile.name);
+    if (name) {
+      progressState.currentFile = {
+        name,
+        ...(readFiniteNumber(value.currentFile.loaded) !== undefined
+          ? { loaded: readFiniteNumber(value.currentFile.loaded) }
+          : {}),
+        ...(readFiniteNumber(value.currentFile.size) !== undefined
+          ? { size: readFiniteNumber(value.currentFile.size) }
+          : {}),
+        ...(readFiniteNumber(value.currentFile.index) !== undefined
+          ? { index: readFiniteNumber(value.currentFile.index) }
+          : {}),
+        ...(readFiniteNumber(value.currentFile.count) !== undefined
+          ? { count: readFiniteNumber(value.currentFile.count) }
+          : {}),
+      };
+    }
+  }
+
+  return Object.keys(progressState).length > 0 ? progressState : undefined;
 };
 
 const normalizePersistedBackgroundJob = (value: unknown, now: number): BackgroundJob | null => {
@@ -268,50 +346,79 @@ const normalizePersistedBackgroundJob = (value: unknown, now: number): Backgroun
   const status = readBackgroundJobStatus(value.status);
   if (!id || !type || !title || !status) return null;
 
+  const definition = getBackgroundJobDefinition(type);
   const source = readBackgroundJobSource(value.source);
+  const progressState = readBackgroundJobProgressState(value.progressState);
+  const payload = readJsonPayload(value.payload);
+  const hasRequiredRestartPayload =
+    type !== 'onnx-download' && type !== 'model-download'
+      ? true
+      : isRecord(payload) && isRecord(payload.variant);
   const wasActive = isBackgroundJobActive({ status });
-  const isResumableComfyJob =
-    (status === 'queued' || status === 'running') && type === 'comfy' && !!source?.promptId;
-  const nextStatus: BackgroundJobStatus = wasActive && !isResumableComfyJob ? 'error' : status;
+  const resumableJob =
+    wasActive && hasRequiredRestartPayload && isBackgroundJobResumable({ type, source });
+  const resumeUpdate = resumableJob
+    ? createBackgroundJobResumeUpdate({
+        type,
+        source,
+        progress: readFiniteNumber(value.progress),
+      })
+    : null;
+  const nextStatus: BackgroundJobStatus = wasActive && !resumableJob ? 'error' : status;
   const startedAt = readFiniteNumber(value.startedAt) ?? now;
   const updatedAt =
-    wasActive && !isResumableComfyJob ? now : (readFiniteNumber(value.updatedAt) ?? startedAt);
+    wasActive && !resumableJob ? now : (readFiniteNumber(value.updatedAt) ?? startedAt);
   const completedAt =
-    wasActive && !isResumableComfyJob
+    wasActive && !resumableJob
       ? now
       : (readFiniteNumber(value.completedAt) ??
         (!isBackgroundJobActive({ status: nextStatus }) ? updatedAt : undefined));
   const subtitle = readString(value.subtitle);
-  const detail = isResumableComfyJob
-    ? 'Reconnecting to ComfyUI...'
+  const detail = resumableJob
+    ? resumeUpdate?.detail
     : wasActive
       ? 'Interrupted when the app was reloaded.'
       : readString(value.detail);
-  const progress = readFiniteNumber(value.progress);
+  const progress = clampBackgroundJobProgress(
+    resumeUpdate?.progress ?? progressState?.percent ?? readFiniteNumber(value.progress),
+  );
   const indeterminate = readBoolean(value.indeterminate);
   const cancellable = readBoolean(value.cancellable);
   const error = readString(value.error);
   const cancelRequestedAt = readFiniteNumber(value.cancelRequestedAt);
-  const normalizedSource = isResumableComfyJob
-    ? { ...source, restoredFromStorage: true }
-    : source;
+  const normalizedSource = resumableJob ? resumeUpdate?.source : source;
+  const attempt = readFiniteNumber(value.attempt);
+  const maxAttempts = readFiniteNumber(value.maxAttempts);
+  const retryAt = readFiniteNumber(value.retryAt);
+  const specVersion = readFiniteNumber(value.specVersion) ?? definition.version;
 
   return {
     id,
     type,
+    specVersion,
     title,
     ...(subtitle ? { subtitle } : {}),
     ...(detail ? { detail } : {}),
-    status: nextStatus,
-    ...(progress !== undefined ? { progress: Math.max(0, Math.min(100, progress)) } : {}),
-    ...(isResumableComfyJob ? { indeterminate: true, cancellable: false } : {}),
-    ...(wasActive && !isResumableComfyJob
+    status: resumeUpdate?.status ?? nextStatus,
+    ...(progress !== undefined ? { progress } : {}),
+    ...(progressState && !resumableJob ? { progressState } : {}),
+    ...(resumableJob
+      ? {
+          indeterminate: resumeUpdate?.indeterminate ?? definition.progress.initial.indeterminate,
+          cancellable: false,
+        }
+      : {}),
+    ...(wasActive && !resumableJob
       ? { indeterminate: false, cancellable: false, error: 'Interrupted by app reload' }
       : {}),
     ...(indeterminate !== undefined && !wasActive ? { indeterminate } : {}),
     ...(cancellable !== undefined && !wasActive ? { cancellable } : {}),
     ...(error && !wasActive ? { error } : {}),
     ...(normalizedSource ? { source: normalizedSource } : {}),
+    ...(payload !== undefined ? { payload } : {}),
+    ...(attempt !== undefined ? { attempt } : {}),
+    ...(maxAttempts !== undefined ? { maxAttempts } : {}),
+    ...(retryAt !== undefined ? { retryAt } : {}),
     startedAt,
     updatedAt,
     ...(completedAt !== undefined ? { completedAt } : {}),

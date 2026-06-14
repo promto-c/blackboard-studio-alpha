@@ -1,5 +1,4 @@
 import {
-  HistoryEntry,
   NodeType,
   RotoNode,
   RotoPath,
@@ -24,6 +23,7 @@ import {
   removeRotoPointWeightModes,
   removeRotoPointWeights,
 } from '@/utils/rotoPointWeights';
+import { collectAnimatablePointFrames } from '@/utils/animatablePointFrames';
 import { getRotoCreationParentLayerId, prependRotoPath } from '@/utils/rotoHierarchy';
 import {
   projectScenePointToRotoLayerLocal,
@@ -35,14 +35,31 @@ import {
   getSourcePixelDataForFrame,
   resolveSourcePixelSource,
 } from '@/state/editor/services/sourcePixelData';
-import type { SetState, GetState } from '@/state/editor/slices/types';
+import { getHierarchySelection } from '@/state/editor/slices/selectionActions';
+import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
+import type { CommitEditorMutation } from '@/state/editor/commitMutation';
+
+// Helpers
+// -------
+
+function createRotoPathId(): string {
+  return `path_${crypto.randomUUID()}`;
+}
+
+// Interface
+// ---------
+
+interface RotoDrawingActionDeps {
+  commitMutation: CommitEditorMutation<EditorState>;
+}
+
+// Slice
+// -----
 
 export function createRotoDrawingActions(
   set: SetState,
   get: GetState,
-  deps: {
-    pushHistory: (entry: Omit<HistoryEntry, 'id'>) => void;
-  },
+  deps: RotoDrawingActionDeps,
 ) {
   const rotoActions = {
     startDrawingShape: (initialPath: RotoPath) => {
@@ -64,19 +81,24 @@ export function createRotoDrawingActions(
     },
 
     commitDrawingShape: (finalUpdates?: Partial<RotoPath>) => {
-      const { nodes, selectedNodeId, drawingRotoPath, currentFrame } = get();
+      const { nodes, selectedNodeId, drawingRotoPath, currentFrame, hierarchySelections } = get();
       if (!drawingRotoPath || !selectedNodeId) return;
 
-      const layerIndex = nodes.findIndex((l) => l.id === selectedNodeId);
+      const layerIndex = nodes.findIndex((node) => node.id === selectedNodeId);
       if (layerIndex === -1 || nodes[layerIndex].type !== NodeType.ROTO) return;
 
       const rawPoints = resolveAnimatablePoints(drawingRotoPath.points, currentFrame);
       const keyframedPoints = toFrameAnchoredPoints(rawPoints, currentFrame);
 
-      const finalPath = { ...drawingRotoPath, ...finalUpdates, points: keyframedPoints };
-      if (finalPath.id.startsWith('path_drawing_')) {
-        finalPath.id = `path_${Date.now()}`;
-      }
+      const pathId = drawingRotoPath.id.startsWith('path_drawing_')
+        ? createRotoPathId()
+        : drawingRotoPath.id;
+      const finalPath: RotoPath = {
+        ...drawingRotoPath,
+        ...finalUpdates,
+        id: pathId,
+        points: keyframedPoints,
+      };
 
       const newNode = {
         ...nodes[layerIndex],
@@ -86,20 +108,26 @@ export function createRotoDrawingActions(
       const newNodes = [...nodes];
       newNodes[layerIndex] = newNode;
 
-      set(() => ({
-        nodes: newNodes,
-        selectedRotoLayerIds: [],
-        isDrawing: false,
-        drawingRotoPath: null,
-        drawingSubHistory: [],
-        drawingSubHistoryIndex: -1,
-        selectedRotoPathIds: [finalPath.id],
-        activeViewportTool: 'select',
-      }));
+      const nextHierarchySelections = {
+        ...hierarchySelections,
+        [selectedNodeId]: { layerIds: [], itemIds: [finalPath.id] },
+      };
 
-      deps.pushHistory({
-        label: `Draw Shape`,
-        state: { nodes: newNodes, selectedNodeId },
+      deps.commitMutation({
+        patch: {
+          nodes: newNodes,
+          hierarchySelections: nextHierarchySelections,
+          isDrawing: false,
+          drawingRotoPath: null,
+          drawingSubHistory: [],
+          drawingSubHistoryIndex: -1,
+          activeViewportTool: 'select',
+        },
+        history: {
+          label: 'Draw Shape',
+          state: { nodes: newNodes, selectedNodeId },
+        },
+        persist: 'debounced',
       });
     },
 
@@ -178,7 +206,7 @@ export function createRotoDrawingActions(
       targetPathId?: string,
     ) => {
       const { nodes, currentFrame, fps } = get();
-      const rotoNode = nodes.find((l) => l.id === rotoNodeId) as RotoNode | undefined;
+      const rotoNode = nodes.find((node) => node.id === rotoNodeId) as RotoNode | undefined;
       if (!rotoNode) return;
 
       const source = resolveSourcePixelSource(nodes, rotoNodeId, sourceId);
@@ -198,10 +226,15 @@ export function createRotoDrawingActions(
 
       if (rawContours.length === 0) return;
 
-      const largestContour = rawContours.sort((a, b) => b.length - a.length)[0];
+      const largestContour = rawContours.reduce((largest, contour) =>
+        contour.length > largest.length ? contour : largest,
+      );
       const halfW = pixelData.width / 2;
       const halfH = pixelData.height / 2;
-      const scenePoints = largestContour.map((p) => ({ x: p.x - halfW, y: p.y - halfH }));
+      const scenePoints = largestContour.map((point) => ({
+        x: point.x - halfW,
+        y: point.y - halfH,
+      }));
       const sourceLabel =
         getMediaSourceLabel(nodes, rotoNodeId, sourceId) ??
         (source.kind === 'media-node' ? source.node.name : 'Upstream Result');
@@ -211,35 +244,33 @@ export function createRotoDrawingActions(
         originalPoints: scenePoints,
         epsilon: 2.0,
         closed: true,
-        targetPathId: targetPathId,
+        targetPathId,
       });
     },
 
     startRotoRefinement: (refinement: RotoRefinement) =>
       set(() => ({ rotoRefinement: refinement })),
     updateRotoRefinement: (updates: Partial<RotoRefinement>) =>
-      set((s) => ({
-        rotoRefinement: s.rotoRefinement ? { ...s.rotoRefinement, ...updates } : null,
+      set((state) => ({
+        rotoRefinement: state.rotoRefinement ? { ...state.rotoRefinement, ...updates } : null,
       })),
     cancelRotoRefinement: () => set(() => ({ rotoRefinement: null })),
 
     commitRotoRefinement: () => {
-      const {
-        rotoRefinement,
-        nodes,
-        selectedNodeId,
-        currentFrame,
-        selectedRotoLayerIds,
-        selectedRotoPathIds,
-      } = get();
+      const { nodes, selectedNodeId, hierarchySelections, rotoRefinement, currentFrame } = get();
+      const sel = getHierarchySelection(hierarchySelections, selectedNodeId);
+      const selectedRotoLayerIds = sel.layerIds;
+      const selectedRotoPathIds = sel.itemIds;
       if (!rotoRefinement || !selectedNodeId) return;
 
-      const rotoIndex = nodes.findIndex((l) => l.id === selectedNodeId);
+      const rotoIndex = nodes.findIndex((node) => node.id === selectedNodeId);
       if (rotoIndex === -1) return;
       const rotoNode = nodes[rotoIndex] as RotoNode;
 
       if (rotoRefinement.targetPathId) {
-        const pathIndex = rotoNode.paths.findIndex((p) => p.id === rotoRefinement.targetPathId);
+        const pathIndex = rotoNode.paths.findIndex(
+          (path) => path.id === rotoRefinement.targetPathId,
+        );
         if (pathIndex !== -1) {
           const existingPath = rotoNode.paths[pathIndex];
           const existingResolved = resolveRotoPathPointsAtFrame(
@@ -254,22 +285,21 @@ export function createRotoDrawingActions(
             rotoRefinement.closed,
           );
 
-          const updatedPoints = existingPath.points.map((pt, i) => {
-            const newPos = mappedPoints[i] || existingResolved[i];
+          const updatedPoints = existingPath.points.map((point, index) => {
+            const newPos = mappedPoints[index] ?? existingResolved[index];
             const projectedPoint = projectScenePointToRotoPathBasePoint(
               rotoNode,
               existingPath,
               currentFrame,
-              i,
+              index,
               newPos,
             );
 
             return {
-              x: setKeyframeOnValue(pt.x, currentFrame, projectedPoint.x),
-              y: setKeyframeOnValue(pt.y, currentFrame, projectedPoint.y),
+              x: setKeyframeOnValue(point.x, currentFrame, projectedPoint.x),
+              y: setKeyframeOnValue(point.y, currentFrame, projectedPoint.y),
             };
           });
-
           const updatedPath = { ...existingPath, points: updatedPoints };
           const newPaths = [...rotoNode.paths];
           newPaths[pathIndex] = updatedPath;
@@ -277,10 +307,13 @@ export function createRotoDrawingActions(
           const newNodes = [...nodes];
           newNodes[rotoIndex] = { ...rotoNode, paths: newPaths };
 
-          set(() => ({ nodes: newNodes, rotoRefinement: null }));
-          deps.pushHistory({
-            label: `Keyframe Shape via Trace: ${existingPath.name}`,
-            state: { nodes: newNodes, selectedNodeId },
+          deps.commitMutation({
+            patch: { nodes: newNodes, rotoRefinement: null },
+            history: {
+              label: `Keyframe Shape via Trace: ${existingPath.name}`,
+              state: { nodes: newNodes, selectedNodeId },
+            },
+            persist: 'debounced',
           });
         }
       } else {
@@ -296,7 +329,7 @@ export function createRotoDrawingActions(
         const keyframedPoints = toFrameAnchoredPoints(localPoints, currentFrame);
 
         const newPath: RotoPath = {
-          id: `path_${Date.now()}`,
+          id: createRotoPathId(),
           name: rotoRefinement.name,
           parentLayerId,
           shapeType: RotoShapeType.BSPLINE,
@@ -317,15 +350,23 @@ export function createRotoDrawingActions(
         } as RotoNode;
         const newNodes = [...nodes];
         newNodes[rotoIndex] = updatedRoto;
-        set(() => ({
-          nodes: newNodes,
-          selectedRotoLayerIds: [],
-          selectedRotoPathIds: [newPath.id],
-          rotoRefinement: null,
-        }));
-        deps.pushHistory({
-          label: `Commit Shape: ${rotoRefinement.name}`,
-          state: { nodes: newNodes, selectedNodeId },
+
+        const nextHierarchySelections = {
+          ...hierarchySelections,
+          [selectedNodeId]: { layerIds: [], itemIds: [newPath.id] },
+        };
+
+        deps.commitMutation({
+          patch: {
+            nodes: newNodes,
+            rotoRefinement: null,
+            hierarchySelections: nextHierarchySelections,
+          },
+          history: {
+            label: `Commit Shape: ${rotoRefinement.name}`,
+            state: { nodes: newNodes, selectedNodeId },
+          },
+          persist: 'debounced',
         });
       }
     },
@@ -334,7 +375,7 @@ export function createRotoDrawingActions(
       const { nodes, selectedNodeId, selectedRotoPointRefs } = get();
       if (!selectedNodeId || selectedRotoPointRefs.length === 0) return;
 
-      const rotoIndex = nodes.findIndex((l) => l.id === selectedNodeId);
+      const rotoIndex = nodes.findIndex((node) => node.id === selectedNodeId);
       if (rotoIndex === -1 || nodes[rotoIndex].type !== NodeType.ROTO) return;
 
       const node = nodes[rotoIndex] as RotoNode;
@@ -384,26 +425,31 @@ export function createRotoDrawingActions(
       const newNodes = [...nodes];
       newNodes[rotoIndex] = { ...node, paths: newPaths };
 
-      set(() => ({
-        nodes: newNodes,
-        selectedRotoPointRefs: [],
-      }));
-      deps.pushHistory({
-        label:
-          selectedPointIndicesByPath.size === 1
-            ? `Delete Points from ${
-                node.paths.find((path) => selectedPointIndicesByPath.has(path.id))?.name ?? 'Shape'
-              }`
-            : `Delete Points from ${selectedPointIndicesByPath.size} Shapes`,
-        state: { nodes: newNodes, selectedNodeId },
+      deps.commitMutation({
+        patch: { nodes: newNodes, selectedRotoPointRefs: [] },
+        history: {
+          label:
+            selectedPointIndicesByPath.size === 1
+              ? `Delete Points from ${
+                  node.paths.find((path) => selectedPointIndicesByPath.has(path.id))?.name ??
+                  'Shape'
+                }`
+              : `Delete Points from ${selectedPointIndicesByPath.size} Shapes`,
+          state: { nodes: newNodes, selectedNodeId },
+        },
+        persist: 'debounced',
       });
     },
 
     deleteSelectedRotoShapes: () => {
-      const { nodes, selectedNodeId, selectedRotoPathIds } = get();
+      const { nodes, selectedNodeId, hierarchySelections } = get();
+      const selectedRotoPathIds = getHierarchySelection(
+        hierarchySelections,
+        selectedNodeId,
+      ).itemIds;
       if (!selectedNodeId || selectedRotoPathIds.length === 0) return;
 
-      const rotoIndex = nodes.findIndex((l) => l.id === selectedNodeId);
+      const rotoIndex = nodes.findIndex((node) => node.id === selectedNodeId);
       if (rotoIndex === -1 || nodes[rotoIndex].type !== NodeType.ROTO) return;
 
       const node = nodes[rotoIndex] as RotoNode;
@@ -420,26 +466,35 @@ export function createRotoDrawingActions(
           ? `Delete Shape: ${deletedPaths[0].name}`
           : `Delete ${deletedPaths.length} Shapes`;
 
-      set(() => ({
-        nodes: newNodes,
-        selectedRotoPathIds: [],
-        selectedRotoPointRefs: [],
-      }));
-      deps.pushHistory({
-        label,
-        state: { nodes: newNodes, selectedNodeId },
+      const nextHierarchySelections = {
+        ...hierarchySelections,
+        [selectedNodeId]: { layerIds: [], itemIds: [] },
+      };
+
+      deps.commitMutation({
+        patch: {
+          nodes: newNodes,
+          selectedRotoPointRefs: [],
+          hierarchySelections: nextHierarchySelections,
+        },
+        history: { label, state: { nodes: newNodes, selectedNodeId } },
+        persist: 'debounced',
       });
     },
 
-    addRotoPointToPath: (pathId: string, insertIndex: number, point: { x: number; y: number }) => {
+    addRotoPointToPath: (
+      pathId: string,
+      insertIndex: number,
+      scenePoint: { x: number; y: number },
+    ) => {
       const { nodes, selectedNodeId, currentFrame } = get();
       if (!selectedNodeId) return;
 
-      const rotoIndex = nodes.findIndex((l) => l.id === selectedNodeId);
+      const rotoIndex = nodes.findIndex((node) => node.id === selectedNodeId);
       if (rotoIndex === -1 || nodes[rotoIndex].type !== NodeType.ROTO) return;
 
       const node = nodes[rotoIndex] as RotoNode;
-      const pathIndex = node.paths.findIndex((p) => p.id === pathId);
+      const pathIndex = node.paths.findIndex((path) => path.id === pathId);
       if (pathIndex === -1) return;
 
       const path = node.paths[pathIndex];
@@ -459,38 +514,33 @@ export function createRotoDrawingActions(
       const segLenSq = segX * segX + segY * segY;
 
       if (segLenSq > 0.001) {
-        t = ((point.x - prevPos.x) * segX + (point.y - prevPos.y) * segY) / segLenSq;
+        t = ((scenePoint.x - prevPos.x) * segX + (scenePoint.y - prevPos.y) * segY) / segLenSq;
         t = Math.max(0, Math.min(1, t));
       }
 
       const newTrackPoints = path.trackPoints ? [...path.trackPoints] : undefined;
       if (newTrackPoints) {
-        const keyframeSet = new Set<number>();
-        newTrackPoints.forEach((p) => {
-          if (Array.isArray(p.x)) p.x.forEach((k) => keyframeSet.add(k.frame));
-          if (Array.isArray(p.y)) p.y.forEach((k) => keyframeSet.add(k.frame));
-        });
-        keyframeSet.add(currentFrame);
-        const uniqueFrames = Array.from(keyframeSet).sort((a, b) => a - b);
+        const trackPoints = newTrackPoints;
+        const frames = collectAnimatablePointFrames(trackPoints, [currentFrame]);
 
         const newTrackXKeys: Keyframe[] = [];
         const newTrackYKeys: Keyframe[] = [];
 
-        uniqueFrames.forEach((f) => {
+        frames.forEach((frame) => {
           const tpPrev = {
-            x: getLinearValueAtFrame(newTrackPoints![prevIdx].x, f),
-            y: getLinearValueAtFrame(newTrackPoints![prevIdx].y, f),
+            x: getLinearValueAtFrame(trackPoints[prevIdx].x, frame),
+            y: getLinearValueAtFrame(trackPoints[prevIdx].y, frame),
           };
           const tpNext = {
-            x: getLinearValueAtFrame(newTrackPoints![nextIdx].x, f),
-            y: getLinearValueAtFrame(newTrackPoints![nextIdx].y, f),
+            x: getLinearValueAtFrame(trackPoints[nextIdx].x, frame),
+            y: getLinearValueAtFrame(trackPoints[nextIdx].y, frame),
           };
           newTrackXKeys.push({
-            frame: f,
+            frame,
             value: tpPrev.x + (tpNext.x - tpPrev.x) * t,
           });
           newTrackYKeys.push({
-            frame: f,
+            frame,
             value: tpPrev.y + (tpNext.y - tpPrev.y) * t,
           });
         });
@@ -500,51 +550,45 @@ export function createRotoDrawingActions(
         newTrackPoints.splice(insertIndex, 0, newTrackPointObj);
       }
 
-      const keyframeSet = new Set<number>();
-      oldPoints.forEach((p) => {
-        if (Array.isArray(p.x)) p.x.forEach((k) => keyframeSet.add(k.frame));
-        if (Array.isArray(p.y)) p.y.forEach((k) => keyframeSet.add(k.frame));
-      });
-      keyframeSet.add(currentFrame);
-      const uniqueFrames = Array.from(keyframeSet).sort((a, b) => a - b);
+      const frames = collectAnimatablePointFrames(oldPoints, [currentFrame]);
 
       const newPointXKeyframes: Keyframe[] = [];
       const newPointYKeyframes: Keyframe[] = [];
 
-      uniqueFrames.forEach((f) => {
+      frames.forEach((frame) => {
         const fPrevPos = {
-          x: getLinearValueAtFrame(oldPoints[prevIdx].x, f),
-          y: getLinearValueAtFrame(oldPoints[prevIdx].y, f),
+          x: getLinearValueAtFrame(oldPoints[prevIdx].x, frame),
+          y: getLinearValueAtFrame(oldPoints[prevIdx].y, frame),
         };
         const fNextPos = {
-          x: getLinearValueAtFrame(oldPoints[nextIdx].x, f),
-          y: getLinearValueAtFrame(oldPoints[nextIdx].y, f),
+          x: getLinearValueAtFrame(oldPoints[nextIdx].x, frame),
+          y: getLinearValueAtFrame(oldPoints[nextIdx].y, frame),
         };
 
-        if (f === currentFrame) {
+        if (frame === currentFrame) {
           const trackX = newTrackPoints
-            ? getLinearValueAtFrame(newTrackPoints[insertIndex].x, f)
+            ? getLinearValueAtFrame(newTrackPoints[insertIndex].x, frame)
             : 0;
           const trackY = newTrackPoints
-            ? getLinearValueAtFrame(newTrackPoints[insertIndex].y, f)
+            ? getLinearValueAtFrame(newTrackPoints[insertIndex].y, frame)
             : 0;
           const projectedPoint = projectScenePointToRotoPathBasePoint(
             node,
             path,
-            f,
+            frame,
             insertIndex,
-            point,
+            scenePoint,
             { x: trackX, y: trackY },
           );
-          newPointXKeyframes.push({ frame: f, value: projectedPoint.x });
-          newPointYKeyframes.push({ frame: f, value: projectedPoint.y });
+          newPointXKeyframes.push({ frame, value: projectedPoint.x });
+          newPointYKeyframes.push({ frame, value: projectedPoint.y });
         } else {
           newPointXKeyframes.push({
-            frame: f,
+            frame,
             value: fPrevPos.x + (fNextPos.x - fPrevPos.x) * t,
           });
           newPointYKeyframes.push({
-            frame: f,
+            frame,
             value: fPrevPos.y + (fNextPos.y - fPrevPos.y) * t,
           });
         }
@@ -589,13 +633,16 @@ export function createRotoDrawingActions(
       const newNodes = [...nodes];
       newNodes[rotoIndex] = { ...node, paths: newPaths };
 
-      set(() => ({
-        nodes: newNodes,
-        selectedRotoPointRefs: [{ pathId: path.id, pointIndex: insertIndex }],
-      }));
-      deps.pushHistory({
-        label: `Add Point to ${path.name}`,
-        state: { nodes: newNodes, selectedNodeId },
+      deps.commitMutation({
+        patch: {
+          nodes: newNodes,
+          selectedRotoPointRefs: [{ pathId: path.id, pointIndex: insertIndex }],
+        },
+        history: {
+          label: `Add Point to ${path.name}`,
+          state: { nodes: newNodes, selectedNodeId },
+        },
+        persist: 'debounced',
       });
     },
   };

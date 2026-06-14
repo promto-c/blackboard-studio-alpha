@@ -1,22 +1,33 @@
-export const EDITOR_PANEL_WIDTH_MIN = 280;
-export const EDITOR_PANEL_WIDTH_MAX = 1000;
-export const EDITOR_PANEL_WIDTH_DEFAULT = 600;
+export const EditorPanelWidth = {
+  MIN: 280,
+  MAX: 1000,
+  DEFAULT: 600,
+} as const;
 
-export const EDITOR_TIMELINE_HEIGHT_MIN = 40;
-export const EDITOR_TIMELINE_HEIGHT_MAX = 600;
-export const EDITOR_TIMELINE_HEIGHT_DEFAULT = EDITOR_TIMELINE_HEIGHT_MIN;
+export const EditorTimelineHeight = {
+  MIN: 40,
+  MAX: 600,
+  /** Defaults to MIN (40) */
+  DEFAULT: 40,
+} as const;
 
-export const EDITOR_SUB_PANEL_WIDTH_MIN = 240;
-export const EDITOR_SUB_PANEL_WIDTH_MAX = 560;
-export const EDITOR_SUB_PANEL_WIDTH_DEFAULT = 360;
+export const EditorSubPanelWidth = {
+  MIN: 240,
+  MAX: 560,
+  DEFAULT: 360,
+} as const;
 
-export const EDITOR_SUB_PANEL_HEIGHT_MIN = 180;
-export const EDITOR_SUB_PANEL_HEIGHT_MAX = 340;
-export const EDITOR_SUB_PANEL_HEIGHT_DEFAULT = 220;
+export const EditorSubPanelHeight = {
+  MIN: 180,
+  MAX: 340,
+  DEFAULT: 220,
+} as const;
 
-export const EDITOR_ITEMS_PANEL_PERCENT_MIN = 20;
-export const EDITOR_ITEMS_PANEL_PERCENT_MAX = 72;
-export const EDITOR_ITEMS_PANEL_PERCENT_DEFAULT = 38;
+export const EditorItemsPanelPercent = {
+  MIN: 20,
+  MAX: 72,
+  DEFAULT: 38,
+} as const;
 
 const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -27,41 +38,36 @@ const clampFiniteNumber = (value: unknown, fallback: number, min: number, max: n
 };
 
 export const clampEditorPanelWidth = (value: unknown): number =>
-  clampFiniteNumber(
-    value,
-    EDITOR_PANEL_WIDTH_DEFAULT,
-    EDITOR_PANEL_WIDTH_MIN,
-    EDITOR_PANEL_WIDTH_MAX,
-  );
+  clampFiniteNumber(value, EditorPanelWidth.DEFAULT, EditorPanelWidth.MIN, EditorPanelWidth.MAX);
 
 export const clampEditorTimelineHeight = (value: unknown): number =>
   clampFiniteNumber(
     value,
-    EDITOR_TIMELINE_HEIGHT_DEFAULT,
-    EDITOR_TIMELINE_HEIGHT_MIN,
-    EDITOR_TIMELINE_HEIGHT_MAX,
+    EditorTimelineHeight.DEFAULT,
+    EditorTimelineHeight.MIN,
+    EditorTimelineHeight.MAX,
   );
 
 export const clampEditorSubPanelWidth = (value: unknown): number =>
   clampFiniteNumber(
     value,
-    EDITOR_SUB_PANEL_WIDTH_DEFAULT,
-    EDITOR_SUB_PANEL_WIDTH_MIN,
-    EDITOR_SUB_PANEL_WIDTH_MAX,
+    EditorSubPanelWidth.DEFAULT,
+    EditorSubPanelWidth.MIN,
+    EditorSubPanelWidth.MAX,
   );
 
 export const clampEditorSubPanelHeight = (value: unknown): number =>
   clampFiniteNumber(
     value,
-    EDITOR_SUB_PANEL_HEIGHT_DEFAULT,
-    EDITOR_SUB_PANEL_HEIGHT_MIN,
-    EDITOR_SUB_PANEL_HEIGHT_MAX,
+    EditorSubPanelHeight.DEFAULT,
+    EditorSubPanelHeight.MIN,
+    EditorSubPanelHeight.MAX,
   );
 
 export const clampEditorItemsPanelPercent = (value: unknown): number =>
   clampFiniteNumber(
     value,
-    EDITOR_ITEMS_PANEL_PERCENT_DEFAULT,
-    EDITOR_ITEMS_PANEL_PERCENT_MIN,
-    EDITOR_ITEMS_PANEL_PERCENT_MAX,
+    EditorItemsPanelPercent.DEFAULT,
+    EditorItemsPanelPercent.MIN,
+    EditorItemsPanelPercent.MAX,
   );

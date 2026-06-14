@@ -1,10 +1,13 @@
-import { useEffect, type MutableRefObject } from 'react';
-import { nodeFlags } from '@/effects/effectHelpers';
+import { useEffect, type RefObject } from 'react';
+import { getMediaDescriptor, nodeFlags } from '@/nodes/helpers';
 import type { AnyNode } from '@blackboard/types';
 
 interface CacheEntry {
-  texture?: unknown;
   video?: HTMLVideoElement;
+}
+
+interface MediaTextureCacheReader {
+  get(id: string): CacheEntry | undefined;
 }
 
 interface UseViewportVideoSyncParams {
@@ -13,7 +16,7 @@ interface UseViewportVideoSyncParams {
   isPlaying: boolean;
   playbackDirection?: 1 | -1;
   fps: number;
-  textureCacheRef: MutableRefObject<Map<string, CacheEntry>>;
+  textureCacheRef: RefObject<MediaTextureCacheReader>;
 }
 
 /**
@@ -37,8 +40,10 @@ export function useViewportVideoSync({
     nodes.forEach((node) => {
       // Video-like nodes need seeking / play-pause sync
       const flags = nodeFlags(node.type);
-      if (flags.isMediaNode && flags.isLooping) {
-        const src = (node as any).src;
+      const descriptor = getMediaDescriptor(node.type);
+      const isVideoFile = !!(descriptor?.isVideoFile?.(node) ?? flags.isVideoFile);
+      if (flags.isMediaNode && (flags.isLooping || isVideoFile)) {
+        const src = (node as { src?: string }).src;
         if (!src) return;
         // If the frame is already cached, we skip seeking the video element to improve performance
         // The cache is populated by the `seeked` listener in useViewportMediaCache
@@ -47,21 +52,21 @@ export function useViewportVideoSync({
 
         if (!isCached) {
           const entry = textureCacheRef.current.get(src);
-          if (entry && entry.video) {
-            const video = entry.video;
-            // Only seek if we are outside the tolerance threshold to prevent micro-stutters during playback
-            if (Math.abs(video.currentTime - targetTime) > 0.5 / frameRate) {
-              video.currentTime = targetTime;
-            }
+          if (!entry || !entry.video) return;
 
-            if (isPlaying && playbackDirection > 0 && video.paused) {
-              video.play().catch(() => {});
-            } else if ((!isPlaying || playbackDirection < 0) && !video.paused) {
-              video.pause();
-            }
+          const video = entry.video;
+          // Only seek if we are outside the tolerance threshold to prevent micro-stutters during playback
+          if (Math.abs(video.currentTime - targetTime) > 0.5 / frameRate) {
+            video.currentTime = targetTime;
+          }
+
+          if (isPlaying && playbackDirection > 0 && video.paused) {
+            video.play().catch(() => {});
+          } else if ((!isPlaying || playbackDirection < 0) && !video.paused) {
+            video.pause();
           }
         }
       }
     });
-  }, [currentFrame, isPlaying, playbackDirection, nodes, fps]);
+  }, [currentFrame, isPlaying, playbackDirection, nodes, fps, textureCacheRef]);
 }
