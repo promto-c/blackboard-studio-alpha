@@ -1,12 +1,10 @@
 import { AiChatMessage, AiChatBranch, AiChatThread, EditorTab } from '@blackboard/types';
 import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
-import { generatePromptEnhancementResult, type PromptEnhancementOptions } from '@/utils/ai';
+import type { PromptEnhancementOptions } from '@/utils/ai';
 import { isComfyNode } from '@/nodes/helpers';
-import { isAbortError } from '@/utils/guards';
 import {
   addBranchVariantGroup,
-  aiChatAbortControllers,
   createAiApplyNoticeId,
   createAssistantChatThread,
   createChatBranchId,
@@ -18,10 +16,10 @@ import {
   getLatestPromptPreviewMessage,
   getResolvedAiModel,
   getResolvedAiProvider,
-  getStoppedMessageContent,
   setMessageBranchPoint,
   updateChatById,
 } from './helpers/chat';
+import { runPromptEnhancementRequest } from './helpers/promptEnhancement';
 
 export function createAiPromptEnhancementActions(
   set: SetState,
@@ -76,10 +74,6 @@ export function createAiPromptEnhancementActions(
         messages: [...currentChat.messages, userMessage, pendingMessage],
       }));
 
-      aiChatAbortControllers.get(chat.id)?.abort();
-      const abortController = new AbortController();
-      aiChatAbortControllers.set(chat.id, abortController);
-
       set(() => ({
         aiChats: nextChats,
         activeAiChatId: chat.id,
@@ -88,119 +82,21 @@ export function createAiPromptEnhancementActions(
       }));
       deps.debouncedSave();
 
-      try {
-        const result = await generatePromptEnhancementResult(prompt, {
-          ...generationOptions,
-          signal: abortController.signal,
-        });
-
-        if (abortController.signal.aborted) {
-          return chat.id;
-        }
-
-        const options = result.options.length > 0 ? result.options : [prompt];
-        const assistantMessage: AiChatMessage = {
-          id: pendingMessageId,
-          role: 'assistant',
-          content: result.message,
-          createdAt: Date.now(),
-          status: 'complete',
-          isThinking: false,
-          provider: result.provider,
-          model: result.model,
-          artifact: {
-            type: 'prompt-preview',
-            originalPrompt: prompt,
-            options,
-            draft: options[0] ?? prompt,
-            suggestions: result.suggestions,
-            summary: result.message,
-            provider: result.provider,
-            model: result.model,
-            target: {
-              kind: 'comfy-control' as const,
-              nodeId: node.id,
-              controlId: control.id,
-              controlLabel: control.label,
-              inputName: control.inputName,
-            },
-          },
-        };
-
-        set((currentState) => ({
-          aiChats: updateChatById(currentState.aiChats, chat.id, (currentChat) => ({
-            ...currentChat,
-            status: 'idle',
-            lastError: undefined,
-            updatedAt: Date.now(),
-            messages: currentChat.messages.map((message) =>
-              message.id === pendingMessageId ? assistantMessage : message,
-            ),
-          })),
-          activeAiChatId: chat.id,
-          activeTab: EditorTab.Chats,
-          isSubPanelVisible: true,
-        }));
-        deps.debouncedSave();
-        return chat.id;
-      } catch (error) {
-        if (abortController.signal.aborted || isAbortError(error)) {
-          set((currentState) => ({
-            aiChats: updateChatById(currentState.aiChats, chat.id, (currentChat) => ({
-              ...currentChat,
-              status: 'idle',
-              lastError: undefined,
-              updatedAt: Date.now(),
-              messages: currentChat.messages.map((entry) =>
-                entry.id === pendingMessageId
-                  ? {
-                      ...entry,
-                      content: getStoppedMessageContent(entry),
-                      isThinking: false,
-                      status: 'complete',
-                    }
-                  : entry,
-              ),
-            })),
-            activeAiChatId: chat.id,
-            activeTab: EditorTab.Chats,
-            isSubPanelVisible: true,
-          }));
-          deps.debouncedSave();
-          return chat.id;
-        }
-
-        const message =
-          error instanceof Error ? error.message : 'Prompt enhancement chat failed unexpectedly.';
-
-        set((currentState) => ({
-          aiChats: updateChatById(currentState.aiChats, chat.id, (currentChat) => ({
-            ...currentChat,
-            status: 'error',
-            lastError: message,
-            updatedAt: Date.now(),
-            messages: currentChat.messages.map((entry) =>
-              entry.id === pendingMessageId
-                ? {
-                    ...entry,
-                    content: message,
-                    isThinking: false,
-                    status: 'complete',
-                  }
-                : entry,
-            ),
-          })),
-          activeAiChatId: chat.id,
-          activeTab: EditorTab.Chats,
-          isSubPanelVisible: true,
-        }));
-        deps.debouncedSave();
-        throw error;
-      } finally {
-        if (aiChatAbortControllers.get(chat.id) === abortController) {
-          aiChatAbortControllers.delete(chat.id);
-        }
-      }
+      return runPromptEnhancementRequest({
+        set,
+        debouncedSave: deps.debouncedSave,
+        chatId: chat.id,
+        pendingMessageId,
+        sourcePrompt: prompt,
+        target: {
+          kind: 'comfy-control',
+          nodeId: node.id,
+          controlId: control.id,
+          controlLabel: control.label,
+          inputName: control.inputName,
+        },
+        generationOptions,
+      });
     },
 
     regenerateAiChatPromptPreview: async (
@@ -308,10 +204,6 @@ export function createAiPromptEnhancementActions(
         activeBranchId: newBranch.id,
       };
 
-      aiChatAbortControllers.get(chat.id)?.abort();
-      const abortController = new AbortController();
-      aiChatAbortControllers.set(chat.id, abortController);
-
       set(() => ({
         aiChats: state.aiChats.map((entry) => (entry.id === chatId ? nextChat : entry)),
         activeAiChatId: chatId,
@@ -320,115 +212,16 @@ export function createAiPromptEnhancementActions(
       }));
       deps.debouncedSave();
 
-      try {
-        const result = await generatePromptEnhancementResult(prompt, {
-          ...generationOptions,
-          signal: abortController.signal,
-        });
-
-        if (abortController.signal.aborted) {
-          return chatId;
-        }
-
-        const options = result.options.length > 0 ? result.options : [prompt];
-        const assistantMessage: AiChatMessage = {
-          id: pendingMessageId,
-          role: 'assistant',
-          content: result.message,
-          createdAt: Date.now(),
-          status: 'complete',
-          isThinking: false,
-          provider: result.provider,
-          model: result.model,
-          branchPointId,
-          artifact: {
-            type: 'prompt-preview',
-            originalPrompt: prompt,
-            options,
-            draft: options[0] ?? prompt,
-            suggestions: result.suggestions,
-            summary: result.message,
-            provider: result.provider,
-            model: result.model,
-            target: promptPreviewArtifact.target,
-          },
-        };
-
-        set((currentState) => ({
-          aiChats: updateChatById(currentState.aiChats, chatId, (currentChat) => ({
-            ...currentChat,
-            status: 'idle',
-            lastError: undefined,
-            updatedAt: Date.now(),
-            messages: currentChat.messages.map((message) =>
-              message.id === pendingMessageId ? assistantMessage : message,
-            ),
-          })),
-          activeAiChatId: chatId,
-          activeTab: EditorTab.Chats,
-          isSubPanelVisible: true,
-        }));
-        deps.debouncedSave();
-        return chatId;
-      } catch (error) {
-        if (abortController.signal.aborted || isAbortError(error)) {
-          set((currentState) => ({
-            aiChats: updateChatById(currentState.aiChats, chatId, (currentChat) => ({
-              ...currentChat,
-              status: 'idle',
-              lastError: undefined,
-              updatedAt: Date.now(),
-              messages: currentChat.messages.map((entry) =>
-                entry.id === pendingMessageId
-                  ? {
-                      ...entry,
-                      content: getStoppedMessageContent(entry),
-                      isThinking: false,
-                      status: 'complete',
-                    }
-                  : entry,
-              ),
-            })),
-            activeAiChatId: chatId,
-            activeTab: EditorTab.Chats,
-            isSubPanelVisible: true,
-          }));
-          deps.debouncedSave();
-          return chatId;
-        }
-
-        const message =
-          error instanceof Error ? error.message : 'Prompt enhancement chat failed unexpectedly.';
-
-        set((currentState) => ({
-          aiChats: updateChatById(currentState.aiChats, chatId, (currentChat) => ({
-            ...currentChat,
-            status: 'error',
-            lastError: message,
-            updatedAt: Date.now(),
-            messages: currentChat.messages.map((entry) =>
-              entry.id === pendingMessageId
-                ? {
-                    ...entry,
-                    content: message,
-                    isThinking: false,
-                    status: 'error',
-                    branchPointId,
-                  }
-                : entry,
-            ),
-          })),
-          activeAiChatId: chatId,
-          activeTab: EditorTab.Chats,
-          isSubPanelVisible: true,
-        }));
-        deps.debouncedSave();
-        throw error;
-      } finally {
-        if (aiChatAbortControllers.get(chat.id) === abortController) {
-          aiChatAbortControllers.delete(chat.id);
-        }
-      }
+      return runPromptEnhancementRequest({
+        set,
+        debouncedSave: deps.debouncedSave,
+        chatId,
+        pendingMessageId,
+        sourcePrompt: prompt,
+        target: promptPreviewArtifact.target,
+        generationOptions,
+        branchPointId,
+      });
     },
 
     continueAiChatPromptPreview: async (
@@ -481,10 +274,6 @@ export function createAiPromptEnhancementActions(
         model: getResolvedAiModel(generationOptions),
       };
 
-      aiChatAbortControllers.get(chat.id)?.abort();
-      const abortController = new AbortController();
-      aiChatAbortControllers.set(chat.id, abortController);
-
       set(() => ({
         aiChats: updateChatById(state.aiChats, chat.id, (currentChat) => ({
           ...currentChat,
@@ -499,114 +288,18 @@ export function createAiPromptEnhancementActions(
       }));
       deps.debouncedSave();
 
-      try {
-        const result = await generatePromptEnhancementResult(sourcePrompt, {
+      return runPromptEnhancementRequest({
+        set,
+        debouncedSave: deps.debouncedSave,
+        chatId: chat.id,
+        pendingMessageId,
+        sourcePrompt,
+        target: promptPreviewArtifact.target,
+        generationOptions: {
           ...generationOptions,
           followUpInstruction,
-          signal: abortController.signal,
-        });
-
-        if (abortController.signal.aborted) {
-          return chat.id;
-        }
-
-        const options = result.options.length > 0 ? result.options : [sourcePrompt];
-        const assistantMessage: AiChatMessage = {
-          id: pendingMessageId,
-          role: 'assistant',
-          content: result.message,
-          createdAt: Date.now(),
-          status: 'complete',
-          isThinking: false,
-          provider: result.provider,
-          model: result.model,
-          artifact: {
-            type: 'prompt-preview',
-            originalPrompt: sourcePrompt,
-            options,
-            draft: options[0] ?? sourcePrompt,
-            suggestions: result.suggestions,
-            summary: result.message,
-            provider: result.provider,
-            model: result.model,
-            target: promptPreviewArtifact.target,
-          },
-        };
-
-        set((currentState) => ({
-          aiChats: updateChatById(currentState.aiChats, chat.id, (currentChat) => ({
-            ...currentChat,
-            status: 'idle',
-            lastError: undefined,
-            updatedAt: Date.now(),
-            messages: currentChat.messages.map((message) =>
-              message.id === pendingMessageId ? assistantMessage : message,
-            ),
-          })),
-          activeAiChatId: chat.id,
-          activeTab: EditorTab.Chats,
-          isSubPanelVisible: true,
-        }));
-        deps.debouncedSave();
-        return chat.id;
-      } catch (error) {
-        if (abortController.signal.aborted || isAbortError(error)) {
-          set((currentState) => ({
-            aiChats: updateChatById(currentState.aiChats, chat.id, (currentChat) => ({
-              ...currentChat,
-              status: 'idle',
-              lastError: undefined,
-              updatedAt: Date.now(),
-              messages: currentChat.messages.map((entry) =>
-                entry.id === pendingMessageId
-                  ? {
-                      ...entry,
-                      content: getStoppedMessageContent(entry),
-                      isThinking: false,
-                      status: 'complete',
-                    }
-                  : entry,
-              ),
-            })),
-            activeAiChatId: chat.id,
-            activeTab: EditorTab.Chats,
-            isSubPanelVisible: true,
-          }));
-          deps.debouncedSave();
-          return chat.id;
-        }
-
-        const message =
-          error instanceof Error ? error.message : 'Prompt enhancement chat failed unexpectedly.';
-
-        set((currentState) => ({
-          aiChats: updateChatById(currentState.aiChats, chat.id, (currentChat) => ({
-            ...currentChat,
-            status: 'error',
-            lastError: message,
-            updatedAt: Date.now(),
-            messages: currentChat.messages.map((entry) =>
-              entry.id === pendingMessageId
-                ? {
-                    ...entry,
-                    content: message,
-                    isThinking: false,
-                    status: 'error',
-                  }
-                : entry,
-            ),
-          })),
-          activeAiChatId: chat.id,
-          activeTab: EditorTab.Chats,
-          isSubPanelVisible: true,
-        }));
-        deps.debouncedSave();
-        throw error;
-      } finally {
-        if (aiChatAbortControllers.get(chat.id) === abortController) {
-          aiChatAbortControllers.delete(chat.id);
-        }
-      }
+        },
+      });
     },
 
     setAiChatPromptArtifactDraft: (chatId: string, messageId: string, draft: string) => {

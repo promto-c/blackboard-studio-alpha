@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type KeyboardEvent } from 'react';
 import type {
   ComfyNode,
   ComfyViewportBindingField,
@@ -10,7 +10,10 @@ import type {
 } from '@blackboard/types';
 import { NodeType } from '@blackboard/types';
 import { CollapsibleSection, PromptTextField } from '@blackboard/ui';
+import { SegmentedControl } from '@/components';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
+import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
+import { isComfyRunShortcut } from '../comfyRunShortcut';
 import {
   COMFY_VIEWPORT_BINDING_FIELDS,
   getComfyViewportBindingTargetOptions,
@@ -33,29 +36,16 @@ const updateBinding = (
 ): FieldBinding[] =>
   bindings.map((binding) => (binding.field === field ? { ...binding, ...updates } : binding));
 
-const clamp = (value: number, min: number, max: number): number =>
-  Math.max(min, Math.min(max, value));
-
 const normalizeRect = (
   rect: ViewportPromptRegion['rect'],
-  sceneNode: SceneNode | undefined,
+  _sceneNode: SceneNode | undefined,
 ): ViewportPromptRegion['rect'] => {
-  if (!sceneNode) {
-    return {
-      x: Math.max(0, rect.x),
-      y: Math.max(0, rect.y),
-      width: Math.max(MIN_REGION_SIZE, rect.width),
-      height: Math.max(MIN_REGION_SIZE, rect.height),
-    };
-  }
-
-  const x = clamp(rect.x, 0, Math.max(0, sceneNode.width - MIN_REGION_SIZE));
-  const y = clamp(rect.y, 0, Math.max(0, sceneNode.height - MIN_REGION_SIZE));
+  // Allow coordinates to extend beyond scene bounds for outpainting.
   return {
-    x,
-    y,
-    width: clamp(rect.width, MIN_REGION_SIZE, Math.max(MIN_REGION_SIZE, sceneNode.width - x)),
-    height: clamp(rect.height, MIN_REGION_SIZE, Math.max(MIN_REGION_SIZE, sceneNode.height - y)),
+    x: rect.x,
+    y: rect.y,
+    width: Math.max(MIN_REGION_SIZE, rect.width),
+    height: Math.max(MIN_REGION_SIZE, rect.height),
   };
 };
 
@@ -158,6 +148,24 @@ export function ComfyRegionInspector({
     }
   };
 
+  const handlePromptKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!region || !isComfyRunShortcut(event)) return;
+
+    const field = (event.target as HTMLElement | null)?.closest('textarea');
+    if (!(field instanceof HTMLElement)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (document.activeElement === field) field.blur();
+
+    window.setTimeout(() => {
+      requestRegisteredNodeExecution(node.id, {
+        source: 'viewportTool',
+        regionId: region.id,
+      });
+    }, 0);
+  };
+
   const setRectValue = (field: keyof ViewportPromptRegion['rect'], value: number) => {
     if (!region) return;
     updateRegion({
@@ -226,7 +234,34 @@ export function ComfyRegionInspector({
             initialMaxHeight={144}
             placeholder={isDefaultEditing ? 'Default region prompt' : 'Region prompt'}
             canUsePromptTools={false}
+            onKeyDown={handlePromptKeyDown}
           />
+
+          <div className="space-y-1">
+            <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+              Alpha Input
+            </span>
+            <SegmentedControl
+              value={region?.regionInputAlphaMode ?? defaults.regionInputAlphaMode ?? 'opaque'}
+              options={[
+                { value: 'opaque', label: 'Opaque' },
+                { value: 'preserve', label: 'Preserve' },
+              ]}
+              onChange={(value) => {
+                const nextValue = value as 'opaque' | 'preserve';
+                if (region) {
+                  updateRegion({ ...region, regionInputAlphaMode: nextValue });
+                } else {
+                  updateDefaults({ regionInputAlphaMode: nextValue });
+                }
+              }}
+            />
+            <p className="text-[10px] leading-relaxed text-gray-500">
+              {(region?.regionInputAlphaMode ?? defaults.regionInputAlphaMode) === 'preserve'
+                ? "Preserve alpha from the app's rendered output (transparent outpainting areas)."
+                : 'Output fully opaque pixels (standard for most Comfy workflows).'}
+            </p>
+          </div>
         </div>
       </CollapsibleSection>
 

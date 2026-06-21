@@ -18,6 +18,7 @@ export interface ComfyWorkflowControlCandidate {
   max?: number;
   step?: number;
   options?: Array<string | number>;
+  defaultVisible: boolean;
 }
 
 const isControlValue = (value: unknown): value is ComfyWorkflowControlValue =>
@@ -189,6 +190,9 @@ export const getComfyWorkflowControlCandidates = (
   workflow: ComfyWorkflow | null,
 ): ComfyWorkflowControlCandidate[] => {
   if (!workflow) return [];
+  const defaultControlKeys = workflow.defaultControlKeys
+    ? new Set(workflow.defaultControlKeys)
+    : null;
   const optionsByControlKey = new Map(
     (workflow.controlOptions ?? []).map((entry) => [
       getComfyControlKey(entry.nodeId, entry.inputName),
@@ -202,10 +206,7 @@ export const getComfyWorkflowControlCandidates = (
       const inputs = isJsonObject(promptNode.inputs) ? promptNode.inputs : {};
 
       return Object.entries(inputs)
-        .filter((entry): entry is [string, ComfyWorkflowControlValue] => {
-          const [, value] = entry;
-          return isControlValue(value);
-        })
+        .filter((entry): entry is [string, ComfyWorkflowControlValue] => isControlValue(entry[1]))
         .map(([inputName, value]) => {
           const range = typeof value === 'number' ? getNumericRange(value, inputName) : {};
 
@@ -221,6 +222,8 @@ export const getComfyWorkflowControlCandidates = (
               inputName,
             }),
             value,
+            defaultVisible:
+              !defaultControlKeys || defaultControlKeys.has(getComfyControlKey(nodeId, inputName)),
             options: optionsByControlKey.get(getComfyControlKey(nodeId, inputName)),
             ...range,
           };

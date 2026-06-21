@@ -3,7 +3,9 @@ import type { Content, Part } from '@google/genai';
 import type { AiAgentModeSettings, AiChatAttachment, AiProvider } from '@blackboard/types';
 import { isNonEmptyString, getNonEmptyString } from '@/utils/guards';
 import { DEFAULT_OPENAI_BASE_URL, normalizeOpenAiBaseUrl } from '@/utils/aiRouting';
+import { getAiProviderLabel, resolveTextAiProvider } from '@/utils/aiProviders';
 import { buildAgentModePromptSection } from '@/utils/agentMode';
+import { formatAttachmentSize } from '@/features/editor/chatAttachments';
 import { publishDebugEvent } from '@/utils/debugEventBus';
 
 let aiClient: { apiKey: string; client: GoogleGenAI } | null = null;
@@ -37,6 +39,25 @@ interface PromptEnhancementResult {
   provider: AiProvider;
   model: string;
 }
+
+const requireEnhancedPrompt = (
+  value: unknown,
+  originalPrompt: string,
+  provider: AiProvider,
+): string => {
+  const enhancedPrompt = typeof value === 'string' ? value.trim() : '';
+  if (!enhancedPrompt) {
+    throw new Error(`${getAiProviderLabel(provider)} returned an empty prompt enhancement.`);
+  }
+
+  if (enhancedPrompt === originalPrompt.trim()) {
+    throw new Error(
+      `${getAiProviderLabel(provider)} did not enhance the prompt. The original prompt was left unchanged.`,
+    );
+  }
+
+  return enhancedPrompt;
+};
 
 export interface GenerateShaderCodeOptions {
   provider?: AiProvider;
@@ -477,20 +498,6 @@ function getAiErrorDetails(error: unknown): string {
 
 const TEXT_ATTACHMENT_CHARACTER_LIMIT = 20000;
 
-const formatAttachmentSize = (bytes: number): string => {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-
-  const kilobytes = bytes / 1024;
-  if (kilobytes < 1024) {
-    return `${kilobytes.toFixed(kilobytes >= 10 ? 0 : 1)} KB`;
-  }
-
-  const megabytes = kilobytes / 1024;
-  return `${megabytes.toFixed(megabytes >= 10 ? 0 : 1)} MB`;
-};
-
 const getBase64Payload = (dataUrl: string | undefined): string | null => {
   if (!dataUrl) {
     return null;
@@ -690,11 +697,7 @@ export async function getPromptSuggestions(options: RoutedTextAiOptions = {}): P
   }
 }
 
-/**
- * Calls Gemini to enhance a user's prompt to be more descriptive.
- * @param currentPrompt The user-written prompt.
- * @returns An enhanced prompt string.
- */
+/** Enhances an image prompt through the configured text AI provider. */
 export async function enhancePrompt(
   currentPrompt: string,
   options: RoutedTextAiOptions = {},
@@ -702,35 +705,26 @@ export async function enhancePrompt(
   if (!currentPrompt.trim()) {
     return '';
   }
-  try {
-    const prompt = `You are a prompt enhancer for an AI image generator. Take the following user's prompt and make it more descriptive, vivid, and detailed to produce a better image. Keep the core subject but add artistic details. Return only the enhanced prompt. User prompt: "${currentPrompt}"`;
-    const provider =
-      options.provider === 'ollama'
-        ? 'ollama'
-        : options.provider === 'openai'
-          ? 'openai'
-          : 'gemini';
-    if (provider === 'ollama') {
-      return (await generateTextResponseWithOllama(prompt, options)).text;
-    }
-    if (provider === 'openai') {
-      return (await generateOpenAiResponseText(prompt, options)).text;
-    }
-    const ai = getAiClient(options.geminiApiKey);
-    const response = await ai.models.generateContent({
-      model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-      contents: prompt,
-    });
-    return response.text.trim();
-  } catch (error) {
-    console.error('Gemini Enhance Error:', error);
-    return currentPrompt; // Return original on error
+  const prompt = `You are a prompt enhancer for an AI image generator. Take the following user's prompt and make it more descriptive, vivid, and detailed to produce a better image. Keep the core subject but add artistic details. Return only the enhanced prompt. User prompt: "${currentPrompt}"`;
+  const provider = resolveTextAiProvider(options.provider);
+  if (provider === 'ollama') {
+    const response = await generateTextResponseWithOllama(prompt, options);
+    return requireEnhancedPrompt(response.text, currentPrompt, provider);
   }
+  if (provider === 'openai') {
+    const response = await generateOpenAiResponseText(prompt, options);
+    return requireEnhancedPrompt(response.text, currentPrompt, provider);
+  }
+  const ai = getAiClient(options.geminiApiKey);
+  const response = await ai.models.generateContent({
+    model: options.geminiModel?.trim() || 'gemini-2.5-flash',
+    contents: prompt,
+  });
+  return requireEnhancedPrompt(response.text, currentPrompt, provider);
 }
 
 const parsePromptEnhancementResponse = (
   rawContent: string,
-  currentPrompt: string,
 ): {
   message: string;
   options: string[];
@@ -798,12 +792,35 @@ const parsePromptEnhancementResponse = (
     };
   }
 
-  const fallback = rawContent.trim() || currentPrompt;
+  const fallback = rawContent.trim();
   return {
     message: 'Review the enhanced prompt, adjust it if needed, then apply it when it feels right.',
-    options: [fallback],
+    options: fallback ? [fallback] : [],
     suggestions: [],
   };
+};
+
+const requirePromptEnhancementResult = (
+  result: ReturnType<typeof parsePromptEnhancementResponse>,
+  originalPrompt: string,
+  provider: AiProvider,
+): ReturnType<typeof parsePromptEnhancementResponse> => {
+  const options = Array.from(
+    new Set(
+      result.options
+        .map((option) => option.trim())
+        .filter(Boolean)
+        .filter((option) => option !== originalPrompt.trim()),
+    ),
+  );
+
+  if (options.length === 0) {
+    throw new Error(
+      `${getAiProviderLabel(provider)} did not return an enhanced prompt. The original prompt was left unchanged.`,
+    );
+  }
+
+  return { ...result, options };
 };
 
 export async function generatePromptEnhancementResult(
@@ -840,61 +857,54 @@ export async function generatePromptEnhancementResult(
       ? `Use the current prompt as the source and apply this follow-up request: "${options.followUpInstruction.trim()}". ` +
         `Current prompt: "${trimmedPrompt}"`
       : `Original prompt: "${trimmedPrompt}"`);
-  const provider =
-    options.provider === 'ollama' ? 'ollama' : options.provider === 'openai' ? 'openai' : 'gemini';
+  const provider = resolveTextAiProvider(options.provider);
 
-  try {
-    if (provider === 'ollama') {
-      const response = await generateTextResponseWithOllama(request, options);
-      const parsed = parsePromptEnhancementResponse(response.text, trimmedPrompt);
-      return {
-        ...parsed,
-        provider,
-        model: response.model,
-      };
-    }
-
-    if (provider === 'openai') {
-      const response = await generateOpenAiResponseText(request, options);
-      const parsed = parsePromptEnhancementResponse(response.text, trimmedPrompt);
-      return {
-        ...parsed,
-        provider,
-        model: response.model,
-      };
-    }
-
-    const response = await getAiClient(options.geminiApiKey).models.generateContent({
-      model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-      contents: request,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: GEMINI_PROMPT_ENHANCEMENT_RESPONSE_SCHEMA,
-      },
-    });
-    const parsed = parsePromptEnhancementResponse(response.text.trim(), trimmedPrompt);
+  if (provider === 'ollama') {
+    const response = await generateTextResponseWithOllama(request, options);
+    const parsed = requirePromptEnhancementResult(
+      parsePromptEnhancementResponse(response.text),
+      trimmedPrompt,
+      provider,
+    );
     return {
       ...parsed,
       provider,
-      model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-    };
-  } catch (error) {
-    console.error('Prompt Enhancement Error:', error);
-    const fallback = await enhancePrompt(trimmedPrompt, options);
-    return {
-      message:
-        'Review the enhanced prompt, adjust it if needed, then apply it when it feels right.',
-      options: [fallback || trimmedPrompt],
-      suggestions: [],
-      provider,
-      model:
-        provider === 'ollama'
-          ? options.ollamaModel?.trim() || ''
-          : provider === 'openai'
-            ? options.openAiModel?.trim() || ''
-            : options.geminiModel?.trim() || 'gemini-2.5-flash',
+      model: response.model,
     };
   }
+
+  if (provider === 'openai') {
+    const response = await generateOpenAiResponseText(request, options);
+    const parsed = requirePromptEnhancementResult(
+      parsePromptEnhancementResponse(response.text),
+      trimmedPrompt,
+      provider,
+    );
+    return {
+      ...parsed,
+      provider,
+      model: response.model,
+    };
+  }
+
+  const response = await getAiClient(options.geminiApiKey).models.generateContent({
+    model: options.geminiModel?.trim() || 'gemini-2.5-flash',
+    contents: request,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: GEMINI_PROMPT_ENHANCEMENT_RESPONSE_SCHEMA,
+    },
+  });
+  const parsed = requirePromptEnhancementResult(
+    parsePromptEnhancementResponse(response.text.trim()),
+    trimmedPrompt,
+    provider,
+  );
+  return {
+    ...parsed,
+    provider,
+    model: options.geminiModel?.trim() || 'gemini-2.5-flash',
+  };
 }
 
 /**
@@ -957,11 +967,7 @@ export async function suggestShaderIdeas(options: RoutedTextAiOptions = {}): Pro
   }
 }
 
-/**
- * Calls Gemini to enhance a user's shader prompt to be more descriptive.
- * @param currentPrompt The user-written prompt.
- * @returns An enhanced prompt string.
- */
+/** Enhances a shader prompt through the configured text AI provider. */
 export async function enhanceShaderPrompt(
   currentPrompt: string,
   options: RoutedTextAiOptions = {},
@@ -969,30 +975,22 @@ export async function enhanceShaderPrompt(
   if (!currentPrompt.trim()) {
     return '';
   }
-  try {
-    const prompt = `You are a prompt enhancer for an AI shader generator. Take the following user's idea and make it more descriptive, vivid, and detailed to produce a better GLSL shader. Keep the core idea but add artistic and technical details. Return only the enhanced prompt. User prompt: "${currentPrompt}"`;
-    const provider =
-      options.provider === 'ollama'
-        ? 'ollama'
-        : options.provider === 'openai'
-          ? 'openai'
-          : 'gemini';
-    if (provider === 'ollama') {
-      return (await generateTextResponseWithOllama(prompt, options)).text;
-    }
-    if (provider === 'openai') {
-      return (await generateOpenAiResponseText(prompt, options)).text;
-    }
-    const ai = getAiClient(options.geminiApiKey);
-    const response = await ai.models.generateContent({
-      model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-      contents: prompt,
-    });
-    return response.text.trim();
-  } catch (error) {
-    console.error('Gemini Enhance Shader Prompt Error:', error);
-    return currentPrompt; // Return original on error
+  const prompt = `You are a prompt enhancer for an AI shader generator. Take the following user's idea and make it more descriptive, vivid, and detailed to produce a better GLSL shader. Keep the core idea but add artistic and technical details. Return only the enhanced prompt. User prompt: "${currentPrompt}"`;
+  const provider = resolveTextAiProvider(options.provider);
+  if (provider === 'ollama') {
+    const response = await generateTextResponseWithOllama(prompt, options);
+    return requireEnhancedPrompt(response.text, currentPrompt, provider);
   }
+  if (provider === 'openai') {
+    const response = await generateOpenAiResponseText(prompt, options);
+    return requireEnhancedPrompt(response.text, currentPrompt, provider);
+  }
+  const ai = getAiClient(options.geminiApiKey);
+  const response = await ai.models.generateContent({
+    model: options.geminiModel?.trim() || 'gemini-2.5-flash',
+    contents: prompt,
+  });
+  return requireEnhancedPrompt(response.text, currentPrompt, provider);
 }
 
 const buildShaderGenerationPrompt = (

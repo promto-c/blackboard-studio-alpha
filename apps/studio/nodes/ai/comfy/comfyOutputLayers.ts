@@ -6,6 +6,7 @@ import type {
 } from '@blackboard/types';
 import type { MediaCompositeLayer } from '@/nodes/NodeDefinition';
 import { getComfyOutputTransform } from './comfyOutputTransform';
+import { isComfy3DGeneratedOutput } from './comfyOutputActivation';
 export {
   getComfyGeneratedOutputsForActivation,
   getComfyGeneratedOutputsForGalleryActivation,
@@ -30,6 +31,7 @@ export const getComfyGeneratedOutputTextureKey = (
   output: GeneratedOutput,
   frame: number,
 ): { textureKey: string; assetId: string; isVideoFile: boolean } | null => {
+  if (isComfy3DGeneratedOutput(output)) return null;
   if (!output.src && (!output.frames || output.frames.length === 0)) return null;
   if (output.mediaKind === 'video') {
     return {
@@ -101,8 +103,16 @@ export const getOrderedComfyGeneratedOutputs = (node: ComfyNode): GeneratedOutpu
 };
 
 export const getVisibleComfyGeneratedOutputs = (node: ComfyNode): GeneratedOutput[] =>
-  getOrderedComfyGeneratedOutputs(node).filter((output) =>
-    isComfyGeneratedOutputVisible(node, output),
+  getOrderedComfyGeneratedOutputs(node).filter(
+    (output) => !isComfy3DGeneratedOutput(output) && isComfyGeneratedOutputVisible(node, output),
+  );
+
+export const getComfyGeneratedOutputsForGalleryScope = (
+  node: Pick<ComfyNode, 'generatedOutputs'>,
+  regionId?: string | null,
+): GeneratedOutput[] =>
+  (node.generatedOutputs ?? []).filter(
+    (output) => !output.deletedAt && (!regionId || output.regionId === regionId),
   );
 
 export const getComfyCompositeLayers = (

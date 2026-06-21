@@ -23,6 +23,7 @@ import * as THREE from 'three';
 import type { ResolveOutputContext } from '@blackboard/renderer';
 import { getLinearValueAtFrame, getValueAtFrame, setKeyframeOnValue } from '@blackboard/renderer';
 import { ROTO_SHADER } from './rotoShader';
+import { renderFloatRotoMask } from './rotoMaskGpu';
 import { DEFAULT_ROTO_MOTION_BLUR } from '@/utils/rotoMotionBlur';
 import { getRotoLayerPathIds, getRotoPathParentLayerId } from '@/utils/rotoHierarchy';
 import {
@@ -421,18 +422,14 @@ export const rotoNode: NodeDefinition = {
     inputTexture: THREE.Texture | undefined,
     context: ResolveOutputContext,
   ): boolean => {
-    const maskTexture = context.getRotoMaskTexture?.(node.id);
+    const maskLayers = context.getRotoMaskLayers?.(node.id);
+    const maskTexture = maskLayers ? renderFloatRotoMask(node.id, maskLayers, context) : null;
     if (!maskTexture) return false;
     const material = context.getMaterial(`${node.id}_mask`, ROTO_SHADER, {
       u_tDiffuse: { value: inputTexture ?? context.getTransparentInputTexture() },
       u_tMask: { value: maskTexture },
-      u_tAddMask: {
-        value: context.getRotoAddMaskTexture?.(node.id) ?? context.getTransparentInputTexture(),
-      },
-      u_tSubMask: {
-        value: context.getRotoSubMaskTexture?.(node.id) ?? context.getTransparentInputTexture(),
-      },
       u_alphaMode: { value: context.getRotoAlphaMode?.(node.id) ?? 0 },
+      u_invert: { value: (node as RotoNode).invert },
     });
     context.applyNoBlending(material);
     context.clearRenderTargetTransparent(target);

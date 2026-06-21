@@ -1,5 +1,6 @@
 import type { AnyNode, Flow, FlowEdge, FlowId, NodePositions } from '@blackboard/types';
 import { readItemsClipboard, writeItemsClipboard } from '@/utils/itemsClipboard';
+import { deepClone } from '@/utils/deepClone';
 
 export const NODE_CLIPBOARD_KIND = 'blackboard-studio.nodes';
 export const NODE_CLIPBOARD_VERSION = 1;
@@ -21,14 +22,6 @@ interface NodeClipboardRecord {
   version: typeof NODE_CLIPBOARD_VERSION;
   payload: NodeClipboardPayload;
 }
-
-const cloneClipboardValue = <T>(value: T): T => {
-  if (typeof structuredClone === 'function') {
-    return structuredClone(value);
-  }
-
-  return JSON.parse(JSON.stringify(value)) as T;
-};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -64,13 +57,13 @@ const parseNodeClipboardText = (text: string): NodeClipboardPayload | null => {
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     if (isNodeClipboardPayload(parsed)) {
-      return cloneClipboardValue(parsed);
+      return deepClone(parsed);
     }
 
     if (isRecord(parsed) && parsed.kind === NODE_CLIPBOARD_KIND) {
       const payload = parsed.payload;
       if (isNodeClipboardPayload(payload)) {
-        return cloneClipboardValue(payload);
+        return deepClone(payload);
       }
     }
   } catch {
@@ -81,7 +74,7 @@ const parseNodeClipboardText = (text: string): NodeClipboardPayload | null => {
 };
 
 export const writeNodeClipboard = async (payload: NodeClipboardPayload): Promise<boolean> => {
-  const payloadCopy = cloneClipboardValue(payload);
+  const payloadCopy = deepClone(payload);
   writeItemsClipboard({
     kind: NODE_CLIPBOARD_KIND,
     version: NODE_CLIPBOARD_VERSION,
@@ -129,5 +122,5 @@ export const readNodeClipboard = async (): Promise<NodeClipboardPayload | null> 
   const memoryRecord = readItemsClipboard<typeof NODE_CLIPBOARD_KIND, NodeClipboardPayload>(
     NODE_CLIPBOARD_KIND,
   );
-  return memoryRecord ? cloneClipboardValue(memoryRecord.payload) : null;
+  return memoryRecord ? deepClone(memoryRecord.payload) : null;
 };

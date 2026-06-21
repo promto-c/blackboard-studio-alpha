@@ -6,8 +6,9 @@ import {
   deleteAssets,
 } from '@/state/assetStorage';
 import { getNodeAssetIds } from '@/nodes/helpers';
-import type { AnyNode, Flow, PersistedProjectState } from '@blackboard/types';
+import type { PersistedProjectState } from '@blackboard/types';
 import { validateRootFlow } from '@blackboard/types';
+import { getAllProjectNodes } from '@/state/editor/flowModel';
 
 type StoredProjectState = PersistedProjectState;
 
@@ -123,31 +124,13 @@ const getFileNameFromPath = (value: string): string => {
   return segments[segments.length - 1] || value || 'asset';
 };
 
-const collectAssetIdsFromNodes = (nodes: AnyNode[] | undefined, assetIds: Set<string>): void => {
-  if (!nodes) return;
-  nodes.forEach((node) => {
-    getNodeAssetIds(node).forEach((assetId) => {
-      if (assetId) {
-        assetIds.add(assetId);
-      }
-    });
-  });
-};
-
-const collectAssetIdsFromFlows = (
-  flows: Record<string, Flow> | undefined,
-  assetIds: Set<string>,
-): void => {
-  if (!flows) return;
-  Object.values(flows).forEach((flow) => {
-    collectAssetIdsFromNodes(flow.nodes, assetIds);
-  });
-};
-
 const collectProjectAssetIds = (state: StoredProjectState): string[] => {
   const assetIds = new Set<string>();
-
-  collectAssetIdsFromFlows(state.flows, assetIds);
+  getAllProjectNodes(state.flows).forEach((node) => {
+    getNodeAssetIds(node).forEach((assetId) => {
+      if (assetId) assetIds.add(assetId);
+    });
+  });
 
   return Array.from(assetIds);
 };

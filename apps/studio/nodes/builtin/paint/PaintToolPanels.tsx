@@ -40,7 +40,7 @@ function DrawingToolsPanel({ onClose }: { onClose: () => void }) {
   const resolvedChannels = resolvePaintBrushChannels(paintBrush.channels, viewerChannels);
 
   return (
-    <Panel width="w-80">
+    <Panel>
       <PanelHeader title={`${panelTitle} Settings`} onClose={onClose} />
       <div className="space-y-3">
         {supportsChannelTargeting ? (
@@ -112,7 +112,7 @@ function DrawingToolsPanel({ onClose }: { onClose: () => void }) {
 function NudgePanel({ onClose }: { onClose: () => void }) {
   const { nudgeRadius, setPreferences } = usePreferences();
   return (
-    <Panel width="w-44">
+    <Panel>
       <PanelHeader title="Nudge" onClose={onClose} />
       <p className="text-[10px] text-gray-400 text-center mb-1">Ctrl/Cmd + Drag to resize</p>
       <p className="text-[10px] text-gray-400 text-center mb-2">Shift for uniform strength</p>
@@ -142,7 +142,7 @@ function StrokePathsPanel({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <Panel width="w-56">
+    <Panel>
       <PanelHeader
         title="Stroke Paths"
         onClose={onClose}

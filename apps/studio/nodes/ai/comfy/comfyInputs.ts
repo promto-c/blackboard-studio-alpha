@@ -60,3 +60,12 @@ export const getComfyWorkflowInputCandidates = (
 
   return result;
 };
+
+export const getSelectedComfyWorkflowInputCandidates = (
+  workflow: ComfyWorkflow | null | undefined,
+): ComfyWorkflowInputCandidate[] => {
+  const candidates = getComfyWorkflowInputCandidates(workflow);
+  if (!workflow?.selectedInputIds) return candidates;
+  const selectedIds = new Set(workflow.selectedInputIds);
+  return candidates.filter((candidate) => selectedIds.has(candidate.id));
+};

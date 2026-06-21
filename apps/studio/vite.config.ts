@@ -8,6 +8,7 @@ import {
   normalizePwaBasePath,
   type StudioServiceWorkerAsset,
 } from './pwa/buildServiceWorker';
+import { getOfflinePackAssetMetadata, getOfflinePackManualChunk } from './pwa/offlinePacks';
 
 const onnxWasmSrc = path.resolve(__dirname, 'node_modules/onnxruntime-web/dist');
 const publicWasmDir = path.resolve(__dirname, 'public/wasm');
@@ -52,6 +53,23 @@ function collectDistFiles(dir: string): string[] {
   });
 }
 
+const isPwaShellAsset = (relativePath: string): boolean =>
+  relativePath === 'index.html' ||
+  relativePath === 'manifest.webmanifest' ||
+  relativePath.startsWith('pwa/');
+
+const isThreeRuntimeModule = (id: string): boolean =>
+  id.includes('/node_modules/three/') || id.includes('\\node_modules\\three\\');
+
+const getOnDemandAssetMetadata = (
+  relativePath: string,
+): Pick<
+  StudioServiceWorkerAsset,
+  'description' | 'group' | 'label' | 'removable' | 'source'
+> | null => {
+  return getOfflinePackAssetMetadata(relativePath);
+};
+
 function createStudioPwaBuildPlugin({ base, version }: { base: string; version: string }): Plugin {
   return {
     name: 'studio-pwa-build',
@@ -75,6 +93,23 @@ function createStudioPwaBuildPlugin({ base, version }: { base: string; version: 
         };
       });
 
+      // Only classify large, optional packs as on-demand; everything else precaches automatically
+      const allAssetsWithMetadata = assets.map((asset) => {
+        const relativePath = asset.url.slice(normalizedBase.length);
+        return { ...asset, relativePath, metadata: getOnDemandAssetMetadata(relativePath) };
+      });
+
+      const precacheAssets = allAssetsWithMetadata
+        .filter((asset) => !asset.metadata || isPwaShellAsset(asset.relativePath))
+        .map(({ url, revision, size }) => ({ url, revision, size }));
+
+      const runtimeAssets = allAssetsWithMetadata
+        .filter((asset) => asset.metadata && !isPwaShellAsset(asset.relativePath))
+        .map(({ relativePath: _relativePath, metadata, ...rest }) => ({
+          ...rest,
+          ...metadata,
+        }));
+
       const cacheDigest = createHash('sha256')
         .update(JSON.stringify(assets.map(({ url, revision, size }) => ({ url, revision, size }))))
         .digest('hex')
@@ -86,7 +121,8 @@ function createStudioPwaBuildPlugin({ base, version }: { base: string; version: 
         cacheVersion,
         baseUrl: normalizedBase,
         navigationFallbackUrl: `${normalizedBase}index.html`,
-        assets,
+        precacheAssets,
+        runtimeAssets,
       });
 
       fs.writeFileSync(path.resolve(distDir, 'sw.js'), serviceWorker);
@@ -196,6 +232,13 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         output: {
           manualChunks(id) {
+            if (isThreeRuntimeModule(id)) {
+              return 'vendor-three';
+            }
+            const offlinePackChunk = getOfflinePackManualChunk(id);
+            if (offlinePackChunk) {
+              return offlinePackChunk;
+            }
             // Split heavy markdown libraries into their own chunk
             if (
               id.includes('node_modules/react-markdown') ||

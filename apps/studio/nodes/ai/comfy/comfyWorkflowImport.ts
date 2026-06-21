@@ -36,6 +36,64 @@ const getComfyWorkflowNameFromImageFile = (file: File): string => {
 export const isComfyWorkflowImageFile = (file: File): boolean =>
   file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name);
 
+const reconcileComfyWorkflowCandidateSelection = ({
+  previousCandidateIds,
+  selectedIds,
+  nextCandidateIds,
+  nextDefaultIds,
+}: {
+  previousCandidateIds: string[];
+  selectedIds: string[] | undefined;
+  nextCandidateIds: string[];
+  nextDefaultIds: string[];
+}): string[] => {
+  if (selectedIds === undefined) return nextDefaultIds;
+  const previousIds = new Set(previousCandidateIds);
+  const nextIds = new Set(nextCandidateIds);
+  return Array.from(
+    new Set([
+      ...selectedIds.filter((id) => nextIds.has(id)),
+      ...nextDefaultIds.filter((id) => !previousIds.has(id)),
+    ]),
+  );
+};
+
+export const reconcileComfyWorkflowOutputSelection = ({
+  previousCandidateIds,
+  selectedOutputIds,
+  nextCandidateIds,
+  nextDefaultOutputIds,
+}: {
+  previousCandidateIds: string[];
+  selectedOutputIds: string[] | undefined;
+  nextCandidateIds: string[];
+  nextDefaultOutputIds: string[];
+}): string[] =>
+  reconcileComfyWorkflowCandidateSelection({
+    previousCandidateIds,
+    selectedIds: selectedOutputIds,
+    nextCandidateIds,
+    nextDefaultIds: nextDefaultOutputIds,
+  });
+
+export const reconcileComfyWorkflowInputSelection = ({
+  previousCandidateIds,
+  selectedInputIds,
+  nextCandidateIds,
+  nextDefaultInputIds,
+}: {
+  previousCandidateIds: string[];
+  selectedInputIds: string[] | undefined;
+  nextCandidateIds: string[];
+  nextDefaultInputIds: string[];
+}): string[] =>
+  reconcileComfyWorkflowCandidateSelection({
+    previousCandidateIds,
+    selectedIds: selectedInputIds,
+    nextCandidateIds,
+    nextDefaultIds: nextDefaultInputIds,
+  });
+
 export const createComfyWorkflowFromJson = async ({
   endpoint,
   id,
@@ -69,12 +127,47 @@ export const createComfyWorkflowFromJson = async ({
     name,
     prompt: extracted.prompt,
     inputCandidates: extracted.inputCandidates,
+    selectedInputIds: extracted.selectedInputIds,
     controlOptions: extracted.controlOptions,
+    defaultControlKeys: extracted.defaultControlKeys,
     outputCandidates: extracted.outputCandidates,
     selectedOutputIds: extracted.selectedOutputIds,
     sourceGraph,
     createdAt,
     updatedAt,
+  };
+};
+
+export const refreshComfyWorkflowFromSource = async (
+  endpoint: string,
+  workflow: ComfyWorkflow,
+): Promise<ComfyWorkflow> => {
+  if (!workflow.sourceGraph) return workflow;
+
+  const objectInfo = await fetchComfyObjectInfo(endpoint);
+  const extracted = extractComfyPromptWithOutputs(workflow.sourceGraph, objectInfo);
+  const selectedOutputIds = reconcileComfyWorkflowOutputSelection({
+    previousCandidateIds: (workflow.outputCandidates ?? []).map((candidate) => candidate.id),
+    selectedOutputIds: workflow.selectedOutputIds,
+    nextCandidateIds: extracted.outputCandidates.map((candidate) => candidate.id),
+    nextDefaultOutputIds: extracted.selectedOutputIds,
+  });
+  const selectedInputIds = reconcileComfyWorkflowInputSelection({
+    previousCandidateIds: (workflow.inputCandidates ?? []).map((candidate) => candidate.id),
+    selectedInputIds: workflow.selectedInputIds,
+    nextCandidateIds: extracted.inputCandidates.map((candidate) => candidate.id),
+    nextDefaultInputIds: extracted.selectedInputIds,
+  });
+
+  return {
+    ...workflow,
+    prompt: extracted.prompt,
+    inputCandidates: extracted.inputCandidates,
+    selectedInputIds,
+    controlOptions: extracted.controlOptions,
+    defaultControlKeys: extracted.defaultControlKeys,
+    outputCandidates: extracted.outputCandidates,
+    selectedOutputIds,
   };
 };
 
@@ -138,6 +231,9 @@ export const createComfyWorkflowFromImage = async ({
 export const createDefaultComfyWorkflowControls = (
   workflow: ComfyWorkflow,
 ): ComfyWorkflowControl[] =>
-  getComfyWorkflowControlCandidates(workflow).map((candidate) =>
-    createComfyWorkflowControl(workflow.id, candidate),
-  );
+  getComfyWorkflowControlCandidates(workflow)
+    .filter(
+      (candidate) =>
+        !workflow.defaultControlKeys || workflow.defaultControlKeys.includes(candidate.key),
+    )
+    .map((candidate) => createComfyWorkflowControl(workflow.id, candidate));

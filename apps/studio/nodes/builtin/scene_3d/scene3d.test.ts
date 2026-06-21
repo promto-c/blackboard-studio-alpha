@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Scene3DAssetReference, Scene3DNode } from '@blackboard/types';
 import {
   createScene3DAssetItem,
+  createScene3DSettingsWithAsset,
   createDefaultScene3DSettings,
   getScene3DBackdropDistanceForCanvas,
   getScene3DBackdropRect,
@@ -17,6 +18,22 @@ const scene3DNode = (scene3d: Scene3DNode['scene3d']): Pick<Scene3DNode, 'scene3
 });
 
 describe('scene3d settings', () => {
+  it('creates a ready-to-view scene around an imported asset', () => {
+    const asset: Scene3DAssetReference = {
+      assetId: 'asset:splat',
+      fileName: 'result.spz',
+      kind: 'splat',
+      format: 'spz',
+    };
+    const settings = createScene3DSettingsWithAsset(asset, 1280, 720);
+
+    expect(settings.items.at(-1)).toMatchObject({
+      name: 'result',
+      type: 'splat',
+      asset,
+    });
+  });
+
   it('does not expose a background field on the world settings', () => {
     const settings = createDefaultScene3DSettings(1920, 1080);
 

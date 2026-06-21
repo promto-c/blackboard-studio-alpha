@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react';
 import {
   applyPwaUpdate,
   checkForPwaUpdate,
+  downloadPwaAssetGroup,
   getPwaSnapshot,
   registerPwa,
+  removePwaAssetGroup,
   requestPwaInstall,
+  refreshPwaCacheStatus,
   subscribeToPwa,
 } from './pwaLifecycle';
 
@@ -21,5 +24,8 @@ export function usePwa() {
     install: requestPwaInstall,
     checkForUpdate: checkForPwaUpdate,
     applyUpdate: applyPwaUpdate,
+    refreshCacheStatus: refreshPwaCacheStatus,
+    downloadAssetGroup: downloadPwaAssetGroup,
+    removeAssetGroup: removePwaAssetGroup,
   };
 }

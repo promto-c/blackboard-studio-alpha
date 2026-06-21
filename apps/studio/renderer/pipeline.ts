@@ -216,9 +216,7 @@ export const renderWithSharedPipeline = async (options: RenderPipelineOptions) =
       nodes,
       nodeRegistry,
       getAsset,
-      getRotoMaskTexture: (nodeId) => rotoMasks.textures.get(nodeId),
-      getRotoAddMaskTexture: (nodeId) => rotoMasks.addTextures.get(nodeId),
-      getRotoSubMaskTexture: (nodeId) => rotoMasks.subTextures.get(nodeId),
+      getRotoMaskLayers: (nodeId) => rotoMasks.layers.get(nodeId),
       getRotoAlphaMode: (nodeId) => rotoAlphaModeMap.get(nodeId) ?? 0,
       loadAssetTexture: loadStudioAssetTexture,
     });

@@ -22,6 +22,11 @@ import { createGeneratedOutputsFromComfyFiles } from './comfyGeneratedOutputs';
 import { isComfyNode } from '@/nodes/helpers';
 import { isAbortError } from '@/utils/guards';
 import { getComfyOutputTransform } from './comfyOutputTransform';
+import {
+  getComfyMediaOutput,
+  getComfyOutputActivationUpdates,
+  isComfy3DGeneratedOutput,
+} from './comfyOutputActivation';
 
 type ComfyJobContext = {
   projectId: string | null;
@@ -335,35 +340,28 @@ export const useSyncComfyBackgroundJobs = () => {
           const generatedOutputsWithRegion = source.comfyRegionId
             ? generatedOutputs.map((o) => ({ ...o, regionId: source.comfyRegionId }))
             : generatedOutputs;
-          const activeGeneratedOutput = generatedOutputsWithRegion[0];
+          const activeGeneratedOutput =
+            getComfyMediaOutput(generatedOutputsWithRegion) ?? generatedOutputsWithRegion[0];
           if (!activeGeneratedOutput) {
             throw new Error('ComfyUI completed the workflow, but no output file was found.');
           }
 
-          const transform = getComfyOutputTransform({
-            node: context.node,
-            output: activeGeneratedOutput,
-            sceneNode: context.sceneNode as { width: number; height: number } | null,
-          });
+          const transform = isComfy3DGeneratedOutput(activeGeneratedOutput)
+            ? undefined
+            : getComfyOutputTransform({
+                node: context.node,
+                output: activeGeneratedOutput,
+                sceneNode: context.sceneNode as { width: number; height: number } | null,
+              });
           phase = 'applying';
           const applyTarget = await applyComfyNodeRunResult({
             projectId: context.projectId,
             branchId: job.source?.branchId,
             nodeId: context.node.id,
             updates: {
-              src: activeGeneratedOutput.src,
-              mediaKind: activeGeneratedOutput.mediaKind ?? 'image',
-              colorSpace: activeGeneratedOutput.colorSpace ?? context.node.colorSpace,
-              frames: activeGeneratedOutput.frames,
-              duration: activeGeneratedOutput.duration,
-              fps: activeGeneratedOutput.fps,
-              width: activeGeneratedOutput.width,
-              height: activeGeneratedOutput.height,
-              transform,
-              activeGeneratedOutputId: activeGeneratedOutput.id,
+              ...getComfyOutputActivationUpdates(activeGeneratedOutput),
+              ...(transform ? { transform } : {}),
               selectedViewportPromptRegionId: activeGeneratedOutput.regionId,
-              lastPromptId: promptId,
-              lastRunAt: activeGeneratedOutput.createdAt,
               lastError: undefined,
             },
             newGeneratedOutputs: generatedOutputsWithRegion,

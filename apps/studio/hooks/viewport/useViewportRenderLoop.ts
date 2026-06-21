@@ -9,11 +9,13 @@ import {
   type SceneNode,
   type ViewerSettings,
 } from '@blackboard/types';
+import type { RendererMaskLayer } from '@blackboard/renderer';
 import { getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
 import { paintNodeHasVisibleContentAtFrame } from '@/nodes/builtin/paint/paintRaster';
 import { getPaintTextureCommittedState } from '@/nodes/builtin/paint/paintTextureKeys';
 import { renderViewportFrameWithSharedPipeline } from '@/renderer/pipeline';
 import type { TextTextureEntry } from './useViewportTextTextures';
+import type { TextureCache } from '@/utils/textureCache';
 
 const THUMBNAIL_CAPTURE_DELAY_MS = 1000;
 
@@ -47,15 +49,6 @@ const canvasToDataUrl = async (canvas: HTMLCanvasElement): Promise<string | null
   });
 };
 
-interface MediaTextureCacheEntry {
-  texture: THREE.Texture;
-  video?: HTMLVideoElement;
-}
-
-interface MediaTextureCacheReader {
-  get(id: string): MediaTextureCacheEntry | undefined;
-}
-
 const isVideoFileNode = (node: AnyNode): boolean => {
   const descriptor = getMediaDescriptor(node.type);
   return !!(descriptor?.isVideoFile?.(node) ?? nodeFlags(node.type).isVideoFile);
@@ -82,9 +75,10 @@ interface UseViewportRenderLoopParams {
   viewerSettings: ViewerSettings;
   alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
   hasRenderableNodes: boolean;
+  isRenderReady: boolean;
   mediaUpdateTrigger: number;
   threeStuff: ThreeStuff;
-  textureCacheRef: RefObject<MediaTextureCacheReader>;
+  textureCacheRef: RefObject<Pick<TextureCache, 'get'>>;
   textTexturesRef: RefObject<Map<string, TextTextureEntry>>;
   paintTexturesRef: RefObject<
     Map<string, { colorTexture: THREE.Texture; alphaTexture: THREE.Texture; committedKey: string }>
@@ -92,7 +86,9 @@ interface UseViewportRenderLoopParams {
   rotoMaskTexturesRef: RefObject<
     Map<
       string,
-      { texture: THREE.Texture; addCanvasTexture?: THREE.Texture; subCanvasTexture?: THREE.Texture }
+      {
+        maskLayers?: RendererMaskLayer[];
+      }
     >
   >;
   freezeImageWhileEditing: boolean;
@@ -162,6 +158,7 @@ export function useViewportRenderLoop({
   viewerSettings,
   alphaOverlayStyle,
   hasRenderableNodes,
+  isRenderReady,
   mediaUpdateTrigger,
   threeStuff,
   textureCacheRef,
@@ -192,6 +189,12 @@ export function useViewportRenderLoop({
 
   // --- Main GPU render ---
   useLayoutEffect(() => {
+    // Keep the last completed drawing buffer visible while the next viewer
+    // route or timeline frame is still preparing its resources.
+    if (!isRenderReady) {
+      return;
+    }
+
     if (!gl || !sceneNode || !threeStuff.quad || !hasRenderableNodes) {
       finalCompBufferRef.current = null;
       prevRenderInputsRef.current = null;
@@ -276,9 +279,7 @@ export function useViewportRenderLoop({
             }
           : undefined;
       },
-      getRotoMaskTexture: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.texture,
-      getRotoAddMaskTexture: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.addCanvasTexture,
-      getRotoSubMaskTexture: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.subCanvasTexture,
+      getRotoMaskLayers: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.maskLayers,
       getRotoAlphaMode: (nodeId) => {
         const rotoNode = nodes.find(
           (n): n is RotoNode => n.type === NodeType.ROTO && n.id === nodeId,
@@ -314,6 +315,7 @@ export function useViewportRenderLoop({
     viewerSettings,
     alphaOverlayStyle,
     hasRenderableNodes,
+    isRenderReady,
     visualFrame,
     freezeImageWhileEditing,
     signalFrameRendered,
@@ -326,7 +328,7 @@ export function useViewportRenderLoop({
 
   // Capture a project thumbnail after the viewport finishes rendering.
   useEffect(() => {
-    if (deferProjectThumbnailCapture) {
+    if (deferProjectThumbnailCapture || !isRenderReady) {
       return;
     }
 
@@ -363,6 +365,7 @@ export function useViewportRenderLoop({
     visualFrame,
     mediaUpdateTrigger,
     deferProjectThumbnailCapture,
+    isRenderReady,
   ]);
 
   return { finalCompBufferRef };

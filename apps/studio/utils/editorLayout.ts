@@ -29,45 +29,17 @@ export const EditorItemsPanelPercent = {
   DEFAULT: 38,
 } as const;
 
-const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-
 const clampFiniteNumber = (value: unknown, fallback: number, min: number, max: number): number => {
   const numericValue = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(numericValue)) return fallback;
-  return clampValue(numericValue, min, max);
+  return Math.min(max, Math.max(min, numericValue));
 };
 
-export const clampEditorPanelWidth = (value: unknown): number =>
-  clampFiniteNumber(value, EditorPanelWidth.DEFAULT, EditorPanelWidth.MIN, EditorPanelWidth.MAX);
+const clampEditor = (value: unknown, config: { DEFAULT: number; MIN: number; MAX: number }) =>
+  clampFiniteNumber(value, config.DEFAULT, config.MIN, config.MAX);
 
-export const clampEditorTimelineHeight = (value: unknown): number =>
-  clampFiniteNumber(
-    value,
-    EditorTimelineHeight.DEFAULT,
-    EditorTimelineHeight.MIN,
-    EditorTimelineHeight.MAX,
-  );
-
-export const clampEditorSubPanelWidth = (value: unknown): number =>
-  clampFiniteNumber(
-    value,
-    EditorSubPanelWidth.DEFAULT,
-    EditorSubPanelWidth.MIN,
-    EditorSubPanelWidth.MAX,
-  );
-
-export const clampEditorSubPanelHeight = (value: unknown): number =>
-  clampFiniteNumber(
-    value,
-    EditorSubPanelHeight.DEFAULT,
-    EditorSubPanelHeight.MIN,
-    EditorSubPanelHeight.MAX,
-  );
-
-export const clampEditorItemsPanelPercent = (value: unknown): number =>
-  clampFiniteNumber(
-    value,
-    EditorItemsPanelPercent.DEFAULT,
-    EditorItemsPanelPercent.MIN,
-    EditorItemsPanelPercent.MAX,
-  );
+export const clampEditorPanelWidth = (v: unknown) => clampEditor(v, EditorPanelWidth);
+export const clampEditorTimelineHeight = (v: unknown) => clampEditor(v, EditorTimelineHeight);
+export const clampEditorSubPanelWidth = (v: unknown) => clampEditor(v, EditorSubPanelWidth);
+export const clampEditorSubPanelHeight = (v: unknown) => clampEditor(v, EditorSubPanelHeight);
+export const clampEditorItemsPanelPercent = (v: unknown) => clampEditor(v, EditorItemsPanelPercent);

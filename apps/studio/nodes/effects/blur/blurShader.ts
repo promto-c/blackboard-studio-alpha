@@ -1,6 +1,7 @@
 // Adaptive separable Gaussian blur.
 // Samples at 1-pixel intervals covering ±3 sigma.
-// Blurs all 4 channels (RGBA). Uses clamp-to-edge wrapping.
+// Filters unassociated RGBA channels independently so RGB data remains available
+// even where alpha is zero. Compositing/display code owns any premultiplication.
 // sigma = radius / 2, coverage = ±3 sigma.
 // For large radii the sample count grows naturally.
 

@@ -4,6 +4,7 @@ import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import { usePreferences } from '@/state/preferencesContext';
 import { formatHotkeyCombo, isMacPlatform } from '@/hotkeys/strings';
 import { getAiTaskRouteError, resolveAiTaskRoute } from '@/utils/aiRouting';
+import { getAiProviderLabel } from '@/utils/aiProviders';
 import {
   getAiChatCapabilityLabel,
   getAiChatComposerPlaceholder,
@@ -326,9 +327,6 @@ const formatChatTime = (timestamp: number) =>
     hour: 'numeric',
     minute: '2-digit',
   }).format(timestamp);
-
-const getProviderLabel = (provider: string) =>
-  provider === 'ollama' ? 'Ollama' : provider === 'openai' ? 'OpenAI' : 'Gemini';
 
 const getPendingMessagePhaseLabel = (
   message: AiChatMessage | null | undefined,
@@ -3453,7 +3451,7 @@ function ChatsTab() {
       artifact?.provider ??
       gradePreviewArtifact?.provider ??
       (isAssistant ? aiTaskRoutes.assistantChat.provider : aiTaskRoutes.shaderGeneration.provider);
-    const providerLabel = isAssistant ? getProviderLabel(messageProvider) : null;
+    const providerLabel = isAssistant ? getAiProviderLabel(messageProvider) : null;
     const modelLabel = isAssistant
       ? (message.model ??
         artifact?.model ??
@@ -4436,7 +4434,7 @@ function ChatsTab() {
                 {activeRouteError
                   ? activeRouteError
                   : activeRoute
-                    ? `Using ${getProviderLabel(activeRoute.provider)}${activeRoute.model ? ` (${activeRoute.model})` : ''}.`
+                    ? `Using ${getAiProviderLabel(activeRoute.provider)}${activeRoute.model ? ` (${activeRoute.model})` : ''}.`
                     : 'Choose an AI route in Preferences > Integrations.'}
               </p>
               {!isSendDisabled ? <KeyHint keys={sendHotkeyKeys} label={sendHotkeyLabel} /> : null}

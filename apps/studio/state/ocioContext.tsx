@@ -1,10 +1,21 @@
-import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  ReactNode,
+} from 'react';
 import type { RendererColorManagement } from '@blackboard/renderer';
 import { usePreferences } from '@/state/preferencesContext';
+import { downloadPwaAssetGroup, refreshPwaCacheStatus } from '@/pwa/pwaLifecycle';
 import { ocioManager, OcioDefaults, type OcioRuntimeSnapshot } from '@/utils/ocio';
 
 interface OcioState extends OcioRuntimeSnapshot {
   rendererColorManagement?: RendererColorManagement;
+  load: () => Promise<void>;
   refresh: () => Promise<void>;
   resolveColorSpaceName: (value: string | undefined) => string;
   getViews: (display: string | undefined) => OcioRuntimeSnapshot['viewsByDisplay'][string];
@@ -16,40 +27,62 @@ const OcioContext = createContext<OcioState | undefined>(undefined);
 export function OcioProvider({ children }: { children: ReactNode }) {
   const { ocioConfigName } = usePreferences();
   const [snapshot, setSnapshot] = useState<OcioRuntimeSnapshot>(() => ocioManager.getSnapshot());
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
-    let cancelled = false;
-    setSnapshot({
-      ...ocioManager.getSnapshot(),
-      isLoading: true,
-      configName: ocioConfigName || OcioDefaults.CONFIG,
-      error: null,
-    });
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
-    void ocioManager.initialize(ocioConfigName || OcioDefaults.CONFIG).then((nextSnapshot) => {
-      if (!cancelled) {
+  const loadOcio = useCallback(
+    async (configName = ocioConfigName || OcioDefaults.CONFIG) => {
+      setSnapshot({
+        ...ocioManager.getSnapshot(),
+        isLoading: true,
+        configName,
+        error: null,
+      });
+
+      if (import.meta.env.PROD) {
+        await downloadPwaAssetGroup('color-management');
+      }
+
+      const nextSnapshot = await ocioManager.initialize(configName);
+      if (isMountedRef.current) {
         setSnapshot(nextSnapshot);
       }
-    });
+      void refreshPwaCacheStatus({ silent: true });
+    },
+    [ocioConfigName],
+  );
 
-    return () => {
-      cancelled = true;
-    };
-  }, [ocioConfigName]);
+  useEffect(() => {
+    const configName = ocioConfigName || OcioDefaults.CONFIG;
+    const currentSnapshot = ocioManager.getSnapshot();
+    if (!currentSnapshot.isInitialized && !currentSnapshot.isLoading) {
+      setSnapshot((prev) => ({
+        ...prev,
+        configName,
+        error: null,
+      }));
+      return;
+    }
+
+    void loadOcio(configName);
+  }, [loadOcio, ocioConfigName]);
 
   const value = useMemo<OcioState>(
     () => ({
       ...snapshot,
       rendererColorManagement: ocioManager.getRendererColorManagement(),
-      refresh: async () => {
-        const nextSnapshot = await ocioManager.initialize(snapshot.configName);
-        setSnapshot(nextSnapshot);
-      },
+      load: () => loadOcio(snapshot.configName),
+      refresh: () => loadOcio(snapshot.configName),
       resolveColorSpaceName: (value) => ocioManager.resolveColorSpaceName(value),
       getViews: (display) => ocioManager.getViews(display),
       getDefaultView: (display, colorSpace) => ocioManager.getDefaultView(display, colorSpace),
     }),
-    [snapshot],
+    [loadOcio, snapshot],
   );
 
   return <OcioContext.Provider value={value}>{children}</OcioContext.Provider>;

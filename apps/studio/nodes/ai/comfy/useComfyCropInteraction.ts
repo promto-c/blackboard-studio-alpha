@@ -25,17 +25,16 @@ interface DragState {
 
 const MIN_SIZE = 8;
 
-const clamp = (value: number, min: number, max: number): number =>
-  Math.max(min, Math.min(max, value));
-
 const normalizeRect = (
   rect: ViewportPromptRegion['rect'],
-  sceneNode: SceneNode,
+  _sceneNode: SceneNode,
 ): ViewportPromptRegion['rect'] => {
-  const x1 = clamp(Math.min(rect.x, rect.x + rect.width), 0, sceneNode.width);
-  const y1 = clamp(Math.min(rect.y, rect.y + rect.height), 0, sceneNode.height);
-  const x2 = clamp(Math.max(rect.x, rect.x + rect.width), 0, sceneNode.width);
-  const y2 = clamp(Math.max(rect.y, rect.y + rect.height), 0, sceneNode.height);
+  // Allow coordinates to extend beyond the scene bounds so that
+  // regions can be used for outpainting.
+  const x1 = Math.min(rect.x, rect.x + rect.width);
+  const y1 = Math.min(rect.y, rect.y + rect.height);
+  const x2 = Math.max(rect.x, rect.x + rect.width);
+  const y2 = Math.max(rect.y, rect.y + rect.height);
 
   return {
     x: x1,
@@ -46,8 +45,8 @@ const normalizeRect = (
 };
 
 const toScenePixel = (sceneNode: SceneNode, scenePos: { x: number; y: number }) => ({
-  x: clamp(scenePos.x + sceneNode.width / 2, 0, sceneNode.width),
-  y: clamp(scenePos.y + sceneNode.height / 2, 0, sceneNode.height),
+  x: scenePos.x + sceneNode.width / 2,
+  y: scenePos.y + sceneNode.height / 2,
 });
 
 const hitHandle = (
@@ -82,10 +81,11 @@ const resizeRect = (
   sceneNode: SceneNode,
 ): ViewportPromptRegion['rect'] => {
   if (handle === 'move') {
+    // Allow moving regions outside scene bounds for outpainting
     return {
       ...startRect,
-      x: clamp(startRect.x + delta.x, 0, Math.max(0, sceneNode.width - startRect.width)),
-      y: clamp(startRect.y + delta.y, 0, Math.max(0, sceneNode.height - startRect.height)),
+      x: startRect.x + delta.x,
+      y: startRect.y + delta.y,
     };
   }
 
@@ -136,6 +136,7 @@ export const useComfyCropInteraction = ({
   setHierarchySelection?: (nodeId: string, layerIds: string[], itemIds: string[]) => void;
 }) => {
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [justCreatedRegionId, setJustCreatedRegionId] = useState<string | null>(null);
   const workflow = useMemo(() => {
     if (!selectedNode) return null;
     return (
@@ -191,25 +192,36 @@ export const useComfyCropInteraction = ({
       const regions = selectedNode.viewportPromptRegions ?? [];
       const visibleRegions = regions.filter((region) => region.visible !== false);
       const tolerance = 10 / Math.max(zoom, 0.1);
-      const hitRegion = event.shiftKey
-        ? undefined
-        : [...visibleRegions]
-            .reverse()
-            .map((region) => ({ region, handle: hitHandle(region.rect, point, tolerance) }))
-            .find((candidate) => candidate.handle);
+
+      const findHitRegion = () =>
+        event.shiftKey
+          ? undefined
+          : [...visibleRegions]
+              .reverse()
+              .map((region) => ({ region, handle: hitHandle(region.rect, point, tolerance) }))
+              .find((candidate) => candidate.handle);
 
       if (isSelectToolActive) {
         event.preventDefault();
         event.stopPropagation();
-        updateRegions(selectedNode, regions, hitRegion?.region.id, false);
+        const hit = findHitRegion();
+        updateRegions(selectedNode, regions, hit?.region.id, false);
+        if (hit?.region.id !== justCreatedRegionId) {
+          setJustCreatedRegionId(null);
+        }
         return true;
       }
 
       event.preventDefault();
       event.stopPropagation();
 
+      const hitRegion = findHitRegion();
+
       if (hitRegion?.handle) {
         updateRegions(selectedNode, regions, hitRegion.region.id, false);
+        if (hitRegion.region.id !== justCreatedRegionId) {
+          setJustCreatedRegionId(null);
+        }
         setDragState({
           regionId: hitRegion.region.id,
           handle: hitRegion.handle,
@@ -219,6 +231,8 @@ export const useComfyCropInteraction = ({
         return true;
       }
 
+      // Always append the new region here. The stale-region replacement
+      // happens in handleMouseUp after confirming the drag was successful.
       const region = createComfyViewportPromptRegion(
         workflow,
         {
@@ -239,7 +253,16 @@ export const useComfyCropInteraction = ({
       });
       return true;
     },
-    [isCropToolActive, isSelectToolActive, sceneNode, selectedNode, updateRegions, workflow, zoom],
+    [
+      isCropToolActive,
+      isSelectToolActive,
+      justCreatedRegionId,
+      sceneNode,
+      selectedNode,
+      updateRegions,
+      workflow,
+      zoom,
+    ],
   );
 
   const handleMouseMove = useCallback(
@@ -269,9 +292,65 @@ export const useComfyCropInteraction = ({
 
   const handleMouseUp = useCallback(() => {
     if (!selectedNode || !dragState) return;
-    updateRegions(selectedNode, selectedNode.viewportPromptRegions ?? [], dragState.regionId, true);
+
+    const allRegions = selectedNode.viewportPromptRegions ?? [];
+
+    // If the user just clicked or dragged a negligible amount (draw handle,
+    // final rect still at MIN_SIZE), discard the region entirely instead of
+    // committing it to history.
+    if (dragState.handle === 'draw') {
+      const region = allRegions.find((r) => r.id === dragState.regionId);
+      if (region && region.rect.width === MIN_SIZE && region.rect.height === MIN_SIZE) {
+        const nextRegions = allRegions.filter((r) => r.id !== dragState.regionId);
+        updateRegions(selectedNode, nextRegions, undefined, false);
+        setDragState(null);
+        // Don't clear justCreatedRegionId — the stale candidate remains for
+        // the next successful draw.
+        return;
+      }
+    }
+
+    // On a successful draw, check whether the most recently created region
+    // (tracked by justCreatedRegionId) is stale (empty prompt) and should be
+    // replaced by the new region.
+    if (dragState.handle === 'draw' && justCreatedRegionId) {
+      const staleRegion = allRegions.find((r) => r.id === justCreatedRegionId);
+      if (staleRegion && staleRegion.prompt === '' && staleRegion.id !== dragState.regionId) {
+        // Remove the stale region (its replacement is the newly drawn one
+        // already in the array). Also clean up any orphaned outputs.
+        const nextRegions = allRegions.filter((r) => r.id !== staleRegion.id);
+        const nextOutputs = (selectedNode.generatedOutputs ?? []).filter(
+          (output) => output.regionId !== staleRegion.id,
+        );
+        updateNode(
+          selectedNode.id,
+          {
+            viewportPromptRegions: nextRegions,
+            selectedViewportPromptRegionId: dragState.regionId,
+            generatedOutputs: nextOutputs,
+          },
+          true,
+        );
+        setHierarchySelection?.(selectedNode.id, [dragState.regionId], []);
+        setJustCreatedRegionId(dragState.regionId);
+        setDragState(null);
+        return;
+      }
+    }
+
+    updateRegions(selectedNode, allRegions, dragState.regionId, true);
+    if (dragState.handle === 'draw') {
+      setJustCreatedRegionId(dragState.regionId);
+    }
     setDragState(null);
-  }, [dragState, selectedNode, updateRegions]);
+  }, [
+    dragState,
+    justCreatedRegionId,
+    selectedNode,
+    updateRegions,
+    updateNode,
+    setHierarchySelection,
+  ]);
 
   const deleteSelectedRegion = useCallback((): boolean => {
     if (!selectedNode) return false;
@@ -294,6 +373,7 @@ export const useComfyCropInteraction = ({
 
   const cleanupOnToolChange = useCallback(() => {
     setDragState(null);
+    setJustCreatedRegionId(null);
   }, []);
 
   return {

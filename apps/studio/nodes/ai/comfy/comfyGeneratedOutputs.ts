@@ -5,6 +5,11 @@ import { fetchComfyOutputFile, type ComfyOutputFile } from '@/services/comfy/cli
 import { getMediaFileKind, isExrFileLike } from '@/utils/mediaFiles';
 import { isNonEmptyString } from '@/utils/guards';
 import { readVideoMetadata } from '@/utils/mediaUtils';
+import {
+  createScene3DAssetReference,
+  getScene3DAssetFormat,
+  inferScene3DAssetKind,
+} from '@/nodes/builtin/scene_3d/scene3dModelAssets';
 
 const DEFAULT_SEQUENCE_FPS = 30;
 
@@ -51,9 +56,6 @@ export const createGeneratedOutputsFromComfyFiles = async ({
     files.map(async (outputFile, outputIndex) => {
       const blob = await fetchComfyOutputFile({ endpoint, file: outputFile, signal });
       const file = new File([blob], outputFile.filename, { type: blob.type });
-      const detectedKind = getMediaFileKind(file, outputFile.filename);
-      const mediaKind = outputFile.kind === 'video' ? 'video' : detectedKind;
-      const colorSpace = isExrFileLike(file, outputFile.filename) ? 'Linear' : 'sRGB';
       const assetId = await saveAsset(file);
       const outputCandidate = outputFile.nodeId
         ? outputCandidateByPreviewId.get(outputFile.nodeId)
@@ -61,6 +63,40 @@ export const createGeneratedOutputsFromComfyFiles = async ({
       const label = outputCandidate
         ? `${outputCandidate.label} · ${outputFile.filename}`
         : outputFile.filename;
+
+      if (outputFile.kind === '3d') {
+        const format = getScene3DAssetFormat(file.name);
+        if (!format) {
+          throw new Error(`ComfyUI returned an unsupported 3D format: ${file.name}`);
+        }
+        const assetKind = await inferScene3DAssetKind(file, format);
+        const scene3dAsset = createScene3DAssetReference(file, assetId, assetKind);
+        if (!scene3dAsset) {
+          throw new Error(`Could not create a 3D asset from ${file.name}.`);
+        }
+        return {
+          file: outputFile,
+          outputIndex,
+          output: {
+            id: getRecoveredOutputId({ promptId, file: outputFile, outputIndex }),
+            src: assetId,
+            mediaKind: 'model_3d',
+            scene3dAsset,
+            width: 0,
+            height: 0,
+            createdAt: createdAt + outputIndex,
+            label,
+            prompt: promptSummary,
+            promptId,
+            workflowId: workflow?.id,
+            workflowName: workflow?.name,
+          } satisfies GeneratedOutput,
+        };
+      }
+
+      const detectedKind = getMediaFileKind(file, outputFile.filename);
+      const mediaKind = outputFile.kind === 'video' ? 'video' : detectedKind;
+      const colorSpace = isExrFileLike(file, outputFile.filename) ? 'Linear' : 'sRGB';
 
       if (mediaKind === 'video') {
         const { width, height, duration } = await readVideoMetadata(file);

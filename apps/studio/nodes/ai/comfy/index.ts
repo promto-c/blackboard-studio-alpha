@@ -7,7 +7,7 @@ import * as Icons from '@blackboard/icons';
 import ComfyViewportToolPanel from './ComfyViewportToolPanel';
 import { ComfyCropSvgOverlay, ComfyCropPromptOverlay } from './ComfyCropOverlay';
 import ComfyItemsPanel from './ComfyItemsPanel';
-import { getComfyWorkflowInputCandidates } from './comfyInputs';
+import { getSelectedComfyWorkflowInputCandidates } from './comfyInputs';
 import { getComfyInputPortName } from '../../portMapping';
 import {
   getComfyCompositeLayers,
@@ -16,6 +16,7 @@ import {
   isComfyGeneratedOutputVisible,
 } from './comfyOutputLayers';
 import { createSourceTransformUpdate, sourceMediaNodeFlags } from '../../sourceNodeBehavior';
+import { isComfy3DGeneratedOutput } from './comfyOutputActivation';
 
 const getComfyNodeAssetIds = (node: ComfyNode): string[] =>
   Array.from(
@@ -31,6 +32,7 @@ const getComfyNodeAssetIds = (node: ComfyNode): string[] =>
 const getActiveGeneratedOutput = (node: ComfyNode) =>
   (node.generatedOutputs ?? []).find(
     (output) =>
+      !isComfy3DGeneratedOutput(output) &&
       isComfyGeneratedOutputVisible(node, output) &&
       (node.activeGeneratedOutputId
         ? output.id === node.activeGeneratedOutputId
@@ -39,8 +41,11 @@ const getActiveGeneratedOutput = (node: ComfyNode) =>
 
 const getComfyMediaKind = (node: ComfyNode): 'image' | 'image_sequence' | 'video' => {
   const activeOutput = getActiveGeneratedOutput(node);
+  const outputMediaKind = activeOutput?.mediaKind;
   return (
-    activeOutput?.mediaKind ?? node.mediaKind ?? (node.frames?.length ? 'image_sequence' : 'image')
+    (outputMediaKind === 'model_3d' ? undefined : outputMediaKind) ??
+    node.mediaKind ??
+    (node.frames?.length ? 'image_sequence' : 'image')
   );
 };
 
@@ -67,6 +72,8 @@ const canRunComfyNode = (node: ComfyNode): boolean => {
   if (!selectedWorkflow) return false;
 
   const outputCandidates = selectedWorkflow.outputCandidates ?? [];
+  if (selectedWorkflow.sourceGraph && outputCandidates.length === 0) return false;
+
   return outputCandidates.length === 0 || getSelectedWorkflowOutputIds(selectedWorkflow).length > 0;
 };
 
@@ -75,7 +82,7 @@ export const comfyNode: NodeDefinition = {
   name: 'Comfy',
   category: 'Image',
   renderMode: 'media',
-  description: 'Connect to ComfyUI, select a workflow, and render the output into Studio.',
+  description: 'Run ComfyUI workflows and bring image, video, mesh, or splat outputs into Studio.',
   IconComponent: Icons.ComputerDesktop,
   ToolComponent: ComfyTool,
   AdjustmentComponent: ComfyAdjustmentsPanel,
@@ -155,9 +162,9 @@ export const comfyNode: NodeDefinition = {
       }));
     }
 
-    const inputCandidates = getComfyWorkflowInputCandidates(workflow);
+    const inputCandidates = getSelectedComfyWorkflowInputCandidates(workflow);
     return inputCandidates.map((candidate) => ({
-      name: getComfyInputPortName(workflow.id, candidate, comfyNode.inputs, {
+      name: getComfyInputPortName(workflow.id, candidate, Object.keys(comfyNode.inputs ?? {}), {
         allowSingleReservedPort: inputCandidates.length === 1,
       }),
       label: candidate.label,

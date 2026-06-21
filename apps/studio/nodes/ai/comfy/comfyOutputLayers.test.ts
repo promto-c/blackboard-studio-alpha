@@ -11,6 +11,7 @@ import { createComfyViewportBindings } from './comfyViewportBindings';
 import {
   getComfyCompositeLayers,
   getComfyGeneratedOutputsForGalleryActivation,
+  getComfyGeneratedOutputsForGalleryScope,
   getOrderedComfyGeneratedOutputs,
   getVisibleComfyGeneratedOutputs,
 } from './comfyOutputLayers';
@@ -76,6 +77,26 @@ const makeNode = (updates: Partial<ComfyNode> = {}): ComfyNode => ({
 });
 
 describe('Comfy output layers', () => {
+  it('scopes gallery outputs to one region and excludes deleted entries', () => {
+    const node = makeNode({
+      generatedOutputs: [
+        makeOutput({ id: 'region_a_1', regionId: 'region_a' }),
+        makeOutput({ id: 'region_a_deleted', regionId: 'region_a', deletedAt: 10 }),
+        makeOutput({ id: 'region_b_1', regionId: 'region_b' }),
+        makeOutput({ id: 'node_output', regionId: undefined }),
+      ],
+    });
+
+    expect(
+      getComfyGeneratedOutputsForGalleryScope(node, 'region_a').map((output) => output.id),
+    ).toEqual(['region_a_1']);
+    expect(getComfyGeneratedOutputsForGalleryScope(node).map((output) => output.id)).toEqual([
+      'region_a_1',
+      'region_b_1',
+      'node_output',
+    ]);
+  });
+
   it('filters outputs hidden directly or through their region', () => {
     const node = makeNode({
       viewportPromptRegions: [

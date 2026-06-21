@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NodeType, type ComfyNode } from '@blackboard/types';
+import { NodeType, type ComfyNode, type ComfyWorkflow } from '@blackboard/types';
 import {
   applyComfyRootBindings,
   createComfyRootBindings,
@@ -12,6 +12,7 @@ import {
   getSelectedComfyViewportPromptRegion,
   getComfyViewportBindingTargetOptions,
   getComfyViewportControlSourceSummaries,
+  mergeComfyViewportBindings,
   shouldUseComfyWorkflowInputSource,
 } from './comfyViewportBindings';
 
@@ -97,6 +98,130 @@ describe('Comfy viewport bindings', () => {
 
     expect(getComfyViewportBindingTargetOptions(workflowWithDerivedSize, 'width')).toEqual([]);
     expect(getComfyViewportBindingTargetOptions(workflowWithDerivedSize, 'height')).toEqual([]);
+  });
+
+  it('binds prompts to an editable primitive source instead of its linked CLIP input', () => {
+    const promptWorkflow: ComfyWorkflow = {
+      id: 'workflow_prompt_chain',
+      name: 'Prompt chain',
+      createdAt: 1,
+      sourceGraph: {
+        nodes: [
+          {
+            id: 76,
+            type: 'video-edit-subgraph',
+            inputs: [
+              {
+                label: 'prompt',
+                name: 'text',
+                type: 'STRING',
+                widget: { name: 'text' },
+                link: null,
+              },
+            ],
+          },
+        ],
+        links: [],
+        definitions: {
+          subgraphs: [
+            {
+              id: 'video-edit-subgraph',
+              inputs: [{ name: 'text', type: 'STRING', linkIds: [308] }],
+              nodes: [
+                {
+                  id: 120,
+                  type: 'PrimitiveStringMultiline',
+                  inputs: [{ name: 'value', type: 'STRING', link: 308 }],
+                },
+              ],
+              links: [
+                {
+                  id: 308,
+                  origin_id: -10,
+                  origin_slot: 0,
+                  target_id: 120,
+                  target_slot: 0,
+                  type: 'STRING',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      prompt: {
+        '76_120': {
+          class_type: 'PrimitiveStringMultiline',
+          inputs: { value: 'wear hat' },
+        },
+        '76_59': {
+          class_type: 'StringConcatenate',
+          inputs: {
+            string_a: ['76_57_2', 0],
+            string_b: ['76_120', 0],
+            delimiter: '',
+          },
+        },
+        '76_3': {
+          class_type: 'CLIPTextEncode',
+          inputs: {
+            clip: ['76_9', 0],
+            text: ['76_59', 0],
+          },
+        },
+      },
+    };
+
+    expect(getComfyViewportBindingTargetOptions(promptWorkflow, 'prompt')).toEqual([
+      {
+        kind: 'workflowField',
+        nodeId: '76_120',
+        inputName: 'value',
+        classType: 'PrimitiveStringMultiline',
+        label: 'PrimitiveStringMultiline · #76_120 · value',
+      },
+    ]);
+
+    const staleBindings = [
+      {
+        id: 'prompt_binding',
+        field: 'prompt' as const,
+        target: {
+          kind: 'workflowField' as const,
+          nodeId: '76_3',
+          inputName: 'text',
+          classType: 'CLIPTextEncode',
+          label: 'CLIPTextEncode · #76_3 · text',
+        },
+      },
+    ];
+    expect(
+      mergeComfyViewportBindings(promptWorkflow, staleBindings).find(
+        (binding) => binding.field === 'prompt',
+      )?.target,
+    ).toMatchObject({ nodeId: '76_120', inputName: 'value' });
+
+    const node = {
+      id: 'comfy_prompt_chain',
+      type: NodeType.COMFY,
+      selectedWorkflowId: promptWorkflow.id,
+      workflows: [promptWorkflow],
+      selectedViewportPromptRegionId: 'region_prompt',
+      viewportPromptRegions: [
+        {
+          id: 'region_prompt',
+          rect: { x: 0, y: 0, width: 512, height: 512 },
+          prompt: 'replace the hat with a crown',
+          bindings: staleBindings,
+        },
+      ],
+    } as unknown as ComfyNode;
+
+    expect(
+      applyComfyViewportPromptRegionBindings(promptWorkflow.prompt, node, promptWorkflow),
+    ).toMatchObject({
+      '76_120': { inputs: { value: 'replace the hat with a crown' } },
+      '76_3': { inputs: { text: ['76_59', 0] } },
+    });
   });
 
   it('applies selected crop region values without mutating the stored workflow prompt', () => {
@@ -240,6 +365,41 @@ describe('Comfy viewport bindings', () => {
       '1': { inputs: { width: 512, height: 512 } },
       '2': { inputs: { x: 0, y: 0 } },
       '3': { inputs: { text: 'old prompt' } },
+    });
+  });
+
+  it('applies an explicitly requested region independently of the stored selection', () => {
+    const node = {
+      id: 'comfy_a',
+      type: NodeType.COMFY,
+      selectedWorkflowId: workflow.id,
+      workflows: [workflow],
+      selectedViewportPromptRegionId: 'region_a',
+      viewportPromptRegions: [
+        {
+          id: 'region_a',
+          rect: { x: 1, y: 2, width: 100, height: 80 },
+          prompt: 'region a prompt',
+          bindings: createComfyViewportBindings(workflow),
+        },
+        {
+          id: 'region_b',
+          rect: { x: 20, y: 30, width: 320, height: 240 },
+          prompt: 'region b prompt',
+          bindings: createComfyViewportBindings(workflow),
+        },
+      ],
+    } as unknown as ComfyNode;
+
+    const prompt = applyComfyViewportPromptRegionBindings(workflow.prompt, node, workflow, {
+      inputContext: 'viewportTool',
+      regionId: 'region_b',
+    });
+
+    expect(prompt).toMatchObject({
+      '1': { inputs: { width: 320, height: 240 } },
+      '2': { inputs: { x: 20, y: 30 } },
+      '3': { inputs: { text: 'region b prompt' } },
     });
   });
 

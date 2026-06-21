@@ -38,6 +38,69 @@ export const getOnnxInputPortName = (
 };
 
 /**
+ * Positional matching: assign unmatched old port connections to new port names
+ * that haven't been claimed yet, in insertion order.
+ *
+ * Modifies `cleanedInputs` in place by adding entries for each matched pair.
+ * Old ports beyond the count of new port names (or vice versa) are dropped.
+ */
+function assignUnmatchedPortsPositionally(
+  cleanedInputs: Record<string, string>,
+  oldUnmatchedPorts: Array<[string, string]>,
+  unmatchedNewPorts: string[],
+): void {
+  const count = Math.min(oldUnmatchedPorts.length, unmatchedNewPorts.length);
+  for (let i = 0; i < count; i++) {
+    cleanedInputs[unmatchedNewPorts[i]] = oldUnmatchedPorts[i][1];
+  }
+}
+
+/**
+ * Generic remap: separate existing input ports into matched/unmatched, then
+ * positionally remap unmatched ports to new port names.
+ *
+ * @param currentInputs - Current port→sourceNodeId map (or undefined).
+ * @param isMatch - Returns true when an existing port name matches a new candidate.
+ *                  Matched ports are kept as-is.
+ * @param getNewPortNames - Returns the list of new port names that haven't been
+ *                          claimed yet (usedNames are already in cleanedInputs).
+ *                          Each unmatched old port is paired with the next unused
+ *                          new port name positionally.
+ */
+function remapInputsGeneric(
+  currentInputs: Record<string, string> | undefined,
+  isMatch: (port: string) => boolean,
+  getNewPortNames: (usedNames: Set<string>) => string[],
+): Record<string, string> | undefined {
+  if (!currentInputs) return undefined;
+
+  const cleanedInputs: Record<string, string> = {};
+  const oldUnmatchedPorts: Array<[string, string]> = [];
+
+  for (const [port, sourceId] of Object.entries(currentInputs)) {
+    if (port === PIPE_PORT_NAME) {
+      cleanedInputs[port] = sourceId;
+      continue;
+    }
+    if (isMatch(port)) {
+      cleanedInputs[port] = sourceId;
+    } else {
+      oldUnmatchedPorts.push([port, sourceId]);
+    }
+  }
+
+  if (oldUnmatchedPorts.length > 0) {
+    const usedPortNames = new Set(Object.keys(cleanedInputs));
+    const unmatchedNewPorts = getNewPortNames(usedPortNames);
+    if (unmatchedNewPorts.length > 0) {
+      assignUnmatchedPortsPositionally(cleanedInputs, oldUnmatchedPorts, unmatchedNewPorts);
+    }
+  }
+
+  return Object.keys(cleanedInputs).length > 0 ? cleanedInputs : undefined;
+}
+
+/**
  * Remap ONNX node inputs when the model changes.
  *
  * Preserves connections when:
@@ -52,38 +115,15 @@ export const remapInputsOnModelChange = (
   newPortNames: string[],
 ): Record<string, string> | undefined => {
   if (!currentInputs) return undefined;
+  // When metadata not yet loaded, preserve everything — connections aren't
+  // dropped during a transient state.
+  if (newPortNames.length === 0) return currentInputs;
 
-  const cleanedInputs: Record<string, string> = {};
-  const oldUnmatchedPorts: Array<[string, string]> = [];
-
-  // First pass: keep connections whose port name exists in the new model.
-  // When newPortNames is empty (metadata not yet loaded), preserve everything
-  // as-is so connections aren't dropped during a transient state.
-  for (const [port, sourceId] of Object.entries(currentInputs)) {
-    if (port === PIPE_PORT_NAME) {
-      cleanedInputs[port] = sourceId;
-      continue;
-    }
-    if (newPortNames.length === 0 || newPortNames.includes(port)) {
-      cleanedInputs[port] = sourceId;
-    } else {
-      oldUnmatchedPorts.push([port, sourceId]);
-    }
-  }
-
-  // Second pass (positional matching): match unmatched old ports to new port
-  // names that haven't been claimed yet, in insertion order.
-  if (oldUnmatchedPorts.length > 0 && newPortNames.length > 0) {
-    const usedPortNames = new Set(Object.keys(cleanedInputs));
-    const unmatchedNewPorts = newPortNames.filter((p) => !usedPortNames.has(p));
-
-    for (let i = 0; i < Math.min(oldUnmatchedPorts.length, unmatchedNewPorts.length); i++) {
-      const [, sourceId] = oldUnmatchedPorts[i];
-      cleanedInputs[unmatchedNewPorts[i]] = sourceId;
-    }
-  }
-
-  return Object.keys(cleanedInputs).length > 0 ? cleanedInputs : undefined;
+  return remapInputsGeneric(
+    currentInputs,
+    (port) => newPortNames.includes(port),
+    (usedNames) => newPortNames.filter((p) => !usedNames.has(p)),
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -109,16 +149,12 @@ const getComfyWorkflowInputPortName = (workflowId: string, candidate: { id: stri
 export const getComfyInputPortName = (
   workflowId: string,
   candidate: { id: string },
-  existingPorts: Iterable<string> | Record<string, unknown> | undefined,
+  existingPortNames: readonly string[] | undefined,
   options: { allowSingleReservedPort?: boolean } = {},
 ): string => {
   const portName = getComfyWorkflowInputPortName(workflowId, candidate);
-  if (!existingPorts) return portName;
+  if (!existingPortNames || existingPortNames.length === 0) return portName;
 
-  const existingPortNames =
-    Symbol.iterator in Object(existingPorts)
-      ? [...(existingPorts as Iterable<string>)]
-      : Object.keys(existingPorts as Record<string, unknown>);
   if (existingPortNames.includes(portName)) return portName;
 
   const matchingExistingPort = existingPortNames.find(
@@ -153,46 +189,23 @@ export const remapInputsOnWorkflowChange = (
   newWorkflowId: string,
   newCandidates: Array<{ id: string }>,
 ): Record<string, string> | undefined => {
-  if (!currentInputs || newCandidates.length === 0) return undefined;
-
-  const cleanedInputs: Record<string, string> = {};
-
-  // Preserve pipe connection unchanged
-  if (currentInputs[PIPE_PORT_NAME]) {
-    cleanedInputs[PIPE_PORT_NAME] = currentInputs[PIPE_PORT_NAME];
-  }
+  if (!currentInputs) return undefined;
+  // Preserve existing connections when there are no input candidates yet.
+  // Prevents connections from being dropped when the workflow is cleared
+  // or switched to one without inputs.
+  if (newCandidates.length === 0) return currentInputs;
 
   const newCandidateIds = new Set(newCandidates.map((c) => c.id));
-  const oldUnmatchedComfyInputs: Array<[string, string]> = [];
-
-  // Separate comfy-input ports: those whose candidate ID is still present in
-  // the new workflow (will be found by getComfyInputPortName via suffix matching)
-  // from those that need positional remapping.
-  for (const [port, sourceId] of Object.entries(currentInputs)) {
-    if (port === PIPE_PORT_NAME) continue;
-    if (!port.startsWith('comfy-input:')) continue;
-
-    const candidateId = port.split(':').pop() ?? '';
-    if (newCandidateIds.has(candidateId)) {
-      // Keep it as-is — getComfyInputPortName will find it by ID suffix
-      cleanedInputs[port] = sourceId;
-    } else {
-      oldUnmatchedComfyInputs.push([port, sourceId]);
-    }
-  }
-
-  // Positional matching: assign unmatched old ports to unmatched new candidates
-  if (oldUnmatchedComfyInputs.length > 0) {
-    const usedPortNames = new Set(Object.keys(cleanedInputs));
-    const unmatchedNewPorts = newCandidates
-      .map((c) => getComfyWorkflowInputPortName(newWorkflowId, c))
-      .filter((p) => !usedPortNames.has(p));
-
-    for (let i = 0; i < Math.min(oldUnmatchedComfyInputs.length, unmatchedNewPorts.length); i++) {
-      const [, sourceId] = oldUnmatchedComfyInputs[i];
-      cleanedInputs[unmatchedNewPorts[i]] = sourceId;
-    }
-  }
-
-  return Object.keys(cleanedInputs).length > 0 ? cleanedInputs : undefined;
+  return remapInputsGeneric(
+    currentInputs,
+    // A port matches when it's a comfy-input: port whose candidate ID suffix
+    // still exists in the new workflow. Non-comfy ports (e.g. auto-connected
+    // 'image') and stale comfy-input ports go to unmatched for remapping.
+    (port) => port.startsWith('comfy-input:') && newCandidateIds.has(port.split(':').pop() ?? ''),
+    // Build new port names from candidates, skipping those already claimed.
+    (usedNames) =>
+      newCandidates
+        .map((c) => getComfyWorkflowInputPortName(newWorkflowId, c))
+        .filter((p) => !usedNames.has(p)),
+  );
 };

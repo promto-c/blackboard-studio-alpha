@@ -7,6 +7,11 @@ import type {
 } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
 import { getComfyControlKey, type ComfyWorkflowControlCandidate } from '../comfyControls';
+import {
+  getComfyOutputCandidateNodes,
+  getComfyOutputCandidateNodeType,
+  type ComfyOutputCandidateNode,
+} from '../comfyOutputCandidates';
 
 interface ComfyWorkflowOutputPickerProps {
   workflowOutputCandidates: ComfyWorkflowOutputCandidate[];
@@ -19,6 +24,7 @@ interface ComfyWorkflowOutputPickerProps {
   onToggleWorkflowOutputCandidate: (candidateId: string) => void;
   onUpdateWorkflowOutputField: (
     candidate: ComfyWorkflowOutputCandidate,
+    nodeId: string,
     inputName: string,
     value: ComfyWorkflowControlValue,
   ) => void;
@@ -62,24 +68,20 @@ const formatOutputOptionName = (key: string): string => {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 };
 
-const getCandidateOutputNodeType = (candidate: ComfyWorkflowOutputCandidate): string =>
-  candidate.syntheticOutputNodeType ?? candidate.nodeType;
-
-const getCandidateOutputNodeInputs = (
-  candidate: ComfyWorkflowOutputCandidate,
-): Record<string, unknown> =>
-  candidate.syntheticOutputNodeInputs ?? candidate.outputNodeInputs ?? {};
-
 const getCandidateOutputNodeMode = (candidate: ComfyWorkflowOutputCandidate): string => {
-  const inputs = getCandidateOutputNodeInputs(candidate);
-  const formatValue = inputs.file_format ?? inputs.format;
+  const formatValue = getComfyOutputCandidateNodes(candidate)
+    .map((node) => node.inputs.file_format ?? node.inputs.format)
+    .find((value) => typeof value === 'string' && value.trim());
   if (typeof formatValue === 'string' && formatValue.trim()) return formatValue;
   if (candidate.syntheticOutputFormat === 'exr_float') return 'EXR float';
   if (candidate.syntheticOutputFormat === 'preview') return 'Preview image';
+  if (candidate.syntheticOutputFormat === 'model_3d') return '3D model';
   return candidate.outputType ?? 'File output';
 };
 
 interface OutputOptionEntry {
+  nodeId: string;
+  nodeType: string;
   inputName: string;
   label: string;
   value: ComfyWorkflowControlValue;
@@ -111,11 +113,11 @@ const isDynamicOptionSelected = (optionKey: string | number, selectedValue: unkn
   optionKey === selectedValue || String(optionKey) === String(selectedValue);
 
 const getOutputOptionSources = (
-  candidate: ComfyWorkflowOutputCandidate,
+  node: ComfyOutputCandidateNode,
   controlsByKey: Map<string, ComfyWorkflowControl>,
 ): OutputOptionSource[] => {
-  const inputs = getCandidateOutputNodeInputs(candidate);
-  const dynamicOptions = candidate.outputNodeDynamicInputs ?? [];
+  const inputs = node.inputs;
+  const dynamicOptions = node.dynamicInputs ?? [];
   const dynamicFieldNames = new Set<string>();
 
   for (const option of dynamicOptions) {
@@ -133,9 +135,7 @@ const getOutputOptionSources = (
   const dynamicSources: OutputOptionSource[] = [];
   const parentInputNames = new Set(dynamicOptions.map((option) => option.parentInputName));
   for (const parentInputName of parentInputNames) {
-    const parentControl = controlsByKey.get(
-      getComfyControlKey(candidate.previewNodeId, parentInputName),
-    );
+    const parentControl = controlsByKey.get(getComfyControlKey(node.id, parentInputName));
     const selectedValue = parentControl?.value ?? inputs[parentInputName];
     const selectedOption = dynamicOptions.find(
       (option) =>
@@ -168,7 +168,14 @@ const getOutputOptionEntries = (
   controlsByKey: Map<string, ComfyWorkflowControl>,
   candidatesByKey: Map<string, ComfyWorkflowControlCandidate>,
 ): OutputOptionEntry[] => {
-  const entries = getOutputOptionSources(candidate, controlsByKey);
+  const entries = getComfyOutputCandidateNodes(candidate).flatMap((node, nodeIndex) =>
+    getOutputOptionSources(node, controlsByKey).map((entry) => ({
+      ...entry,
+      nodeId: node.id,
+      nodeType: node.nodeType,
+      nodeIndex,
+    })),
+  );
   const priority = new Map(preferredOutputOptionKeys.map((key, index) => [key, index]));
 
   return entries
@@ -176,17 +183,20 @@ const getOutputOptionEntries = (
       const leftPriority = priority.get(left.inputName) ?? Number.MAX_SAFE_INTEGER;
       const rightPriority = priority.get(right.inputName) ?? Number.MAX_SAFE_INTEGER;
       if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+      if (left.nodeIndex !== right.nodeIndex) return left.nodeIndex - right.nodeIndex;
       return left.inputName.localeCompare(right.inputName);
     })
     .slice(0, 5)
-    .flatMap(({ inputName, fallbackValue, options }) => {
-      const controlKey = getComfyControlKey(candidate.previewNodeId, inputName);
+    .flatMap(({ nodeId, nodeType, inputName, fallbackValue, options }) => {
+      const controlKey = getComfyControlKey(nodeId, inputName);
       const control = controlsByKey.get(controlKey);
       const controlCandidate = candidatesByKey.get(controlKey);
       const value = control?.value ?? fallbackValue;
       if (!isControlValue(value)) return [];
       return [
         {
+          nodeId,
+          nodeType,
           inputName,
           label: formatOutputOptionName(inputName),
           value,
@@ -205,6 +215,7 @@ function OutputFieldBadge({
   option: OutputOptionEntry;
   onUpdateWorkflowOutputField: (
     candidate: ComfyWorkflowOutputCandidate,
+    nodeId: string,
     inputName: string,
     value: ComfyWorkflowControlValue,
   ) => void;
@@ -222,7 +233,7 @@ function OutputFieldBadge({
   }, [isEditing]);
 
   const updateValue = (value: ComfyWorkflowControlValue) => {
-    onUpdateWorkflowOutputField(candidate, option.inputName, value);
+    onUpdateWorkflowOutputField(candidate, option.nodeId, option.inputName, value);
   };
 
   const badgeClassName =
@@ -243,7 +254,11 @@ function OutputFieldBadge({
         sideOffset={6}
         widthClass="w-44"
         trigger={
-          <button type="button" className={badgeClassName} title={`Set ${option.label}`}>
+          <button
+            type="button"
+            className={badgeClassName}
+            title={`${option.nodeType}: set ${option.label}`}
+          >
             {label}
             <span className="min-w-0 max-w-28 truncate font-mono text-gray-200">
               {String(option.value)}
@@ -290,7 +305,7 @@ function OutputFieldBadge({
           event.stopPropagation();
           updateValue(!option.value);
         }}
-        title={`Toggle ${option.label}`}
+        title={`${option.nodeType}: toggle ${option.label}`}
       >
         {label}
         <span className="font-mono text-gray-200">{option.value ? 'on' : 'off'}</span>
@@ -306,7 +321,7 @@ function OutputFieldBadge({
         event.stopPropagation();
         setIsEditing(true);
       }}
-      title={`Edit ${option.label}`}
+      title={`${option.nodeType}: edit ${option.label}`}
     >
       {label}
       {isEditing ? (
@@ -380,7 +395,7 @@ export function ComfyWorkflowOutputPicker({
         <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-gray-900/70 px-2.5 py-2 text-[11px]">
           <span className="min-w-0 truncate text-gray-400">
             {workflowOutputCandidates.length} output port
-            {workflowOutputCandidates.length === 1 ? '' : 's'} detected
+            {workflowOutputCandidates.length === 1 ? '' : 's'} available
           </span>
           <span
             className={`shrink-0 font-mono ${
@@ -395,8 +410,12 @@ export function ComfyWorkflowOutputPicker({
           {workflowOutputCandidates.map((candidate) => {
             const isSelected = selectedWorkflowOutputIdSet.has(candidate.id);
             const sourceLabel =
-              candidate.kind === 'synthetic' ? 'Studio output' : 'Workflow output';
-            const outputNodeType = getCandidateOutputNodeType(candidate);
+              candidate.scope === 'internal'
+                ? 'Internal output'
+                : candidate.kind === 'synthetic'
+                  ? 'Studio output'
+                  : 'Workflow output';
+            const outputNodeType = getComfyOutputCandidateNodeType(candidate);
             const outputNodeMode = getCandidateOutputNodeMode(candidate);
             const outputOptions = getOutputOptionEntries(candidate, controlsByKey, candidatesByKey);
             return (
@@ -447,7 +466,7 @@ export function ComfyWorkflowOutputPicker({
                   <div className="mt-1.5 flex flex-wrap gap-1 pl-6">
                     {outputOptions.map((option) => (
                       <OutputFieldBadge
-                        key={`${candidate.id}:${option.inputName}`}
+                        key={`${candidate.id}:${option.nodeId}:${option.inputName}`}
                         candidate={candidate}
                         option={option}
                         onUpdateWorkflowOutputField={onUpdateWorkflowOutputField}

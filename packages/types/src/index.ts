@@ -69,6 +69,7 @@ export type DirectoryImportModePreference = DirectoryImportMode | 'ask';
 export enum EditorTab {
   Tools = 'tools',
   Flow = 'flow',
+  Props = 'props',
   Gallery = 'gallery',
   Chats = 'chats',
   History = 'history',
@@ -142,7 +143,7 @@ export type Scene3DItemType =
   | 'splat'
   | 'empty';
 export type Scene3DAssetKind = 'mesh' | 'splat';
-export type Scene3DMeshAssetFormat = 'glb' | 'gltf' | 'obj' | 'usdz' | 'stl' | 'ply';
+export type Scene3DMeshAssetFormat = 'glb' | 'gltf' | 'fbx' | 'obj' | 'usdz' | 'stl' | 'ply';
 export type Scene3DSplatAssetFormat = 'ply' | 'spz' | 'splat' | 'ksplat' | 'sog' | 'rad';
 export type Scene3DAssetFormat = Scene3DMeshAssetFormat | Scene3DSplatAssetFormat;
 
@@ -1048,7 +1049,9 @@ export interface ComfyWorkflow {
   prompt: Record<string, unknown>;
   sourceGraph?: Record<string, unknown>;
   inputCandidates?: ComfyWorkflowInputCandidate[];
+  selectedInputIds?: string[];
   controlOptions?: ComfyWorkflowControlOptions[];
+  defaultControlKeys?: string[];
   outputCandidates?: ComfyWorkflowOutputCandidate[];
   selectedOutputIds?: string[];
   createdAt: number;
@@ -1062,6 +1065,8 @@ export interface ComfyWorkflowControlOptions {
 }
 
 export type ComfyWorkflowControlValue = string | number | boolean;
+
+export type ComfyWorkflowCandidateScope = 'top_level' | 'internal';
 
 export interface ComfyWorkflowDynamicInputField {
   inputName: string;
@@ -1082,7 +1087,14 @@ export interface ComfyWorkflowInputCandidate {
   nodeType: string;
   inputName: string;
   label: string;
+  scope?: ComfyWorkflowCandidateScope;
   promptTargets?: Array<{ nodeId: string; inputName: string }>;
+}
+
+export interface ComfyWorkflowSyntheticOutputNode {
+  id: string;
+  nodeType: string;
+  inputs: Record<string, unknown>;
 }
 
 export interface ComfyWorkflowOutputCandidate {
@@ -1094,13 +1106,13 @@ export interface ComfyWorkflowOutputCandidate {
   outputName: string;
   outputType?: string;
   label: string;
+  scope?: ComfyWorkflowCandidateScope;
   promptLink?: [string, number];
   previewNodeId: string;
   outputNodeInputs?: Record<string, unknown>;
   outputNodeDynamicInputs?: ComfyWorkflowDynamicInputOption[];
-  syntheticOutputNodeType?: string;
-  syntheticOutputNodeInputs?: Record<string, unknown>;
-  syntheticOutputFormat?: 'preview' | 'exr_float';
+  syntheticOutputNodes?: ComfyWorkflowSyntheticOutputNode[];
+  syntheticOutputFormat?: 'preview' | 'exr_float' | 'model_3d';
 }
 
 export type ComfyWorkflowControlRunMode = 'fixed' | 'randomize' | 'increment' | 'randomRange';
@@ -1131,7 +1143,8 @@ export interface ComfyWorkflowControl {
 export interface GeneratedOutput {
   id: string;
   src: string;
-  mediaKind?: 'image' | 'image_sequence' | 'video';
+  mediaKind?: 'image' | 'image_sequence' | 'video' | 'model_3d';
+  scene3dAsset?: Scene3DAssetReference;
   colorSpace?: OcioColorSpaceName;
   frames?: string[];
   width: number;
@@ -1203,11 +1216,18 @@ export interface ViewportPromptRegion {
   promptSuggestionPages?: string[][];
   promptSuggestionPageIndex?: number;
   promptSuggestionsVisible?: boolean;
+  regionInputAlphaMode?: 'opaque' | 'preserve';
 }
 
 export interface ViewportPromptRegionDefaults {
   prompt?: string;
   bindings?: FieldBinding[];
+  /**
+   * How to handle the alpha channel when rendering region input for Comfy.
+   * - `'opaque'` (default): alpha is set to fully opaque (ignored).
+   * - `'preserve'`: alpha from the app's rendered output is preserved.
+   */
+  regionInputAlphaMode?: 'opaque' | 'preserve';
 }
 
 export interface ComfyNode extends EffectNode {

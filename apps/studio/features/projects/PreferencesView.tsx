@@ -5,7 +5,6 @@ import {
   type BackgroundPrefetchMode,
   type CacheBudgetMode,
   type ReopenHistoryLimitPreference,
-  type RotoMotionBlurPreviewBackend,
   type UndoHistoryLimitPreference,
 } from '@/state/preferences';
 import { usePreferences } from '@/state/preferencesContext';
@@ -344,7 +343,6 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
     rotoMotionCueMode,
     rotoMotionCueScope,
     rotoMotionTrailFrames,
-    rotoMotionBlurPreviewBackend,
     rotoMotionBlurInteractivePreviewEnabled,
     rotoMotionBlurInteractivePreviewSamples,
     rotoPointWeightMode,
@@ -421,11 +419,6 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
   const rotoMotionScopeOptions = [
     { value: 'selected', label: 'Selected' },
     { value: 'all', label: 'All' },
-  ];
-
-  const rotoMotionBlurBackendOptions = [
-    { value: 'realtime_canvas', label: 'Canvas 2D' },
-    { value: 'gpu_float', label: 'WebGL2 (Half Float)' },
   ];
 
   const rotoPointWeightModeOptions = [
@@ -508,7 +501,7 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
     ],
     models: ['ONNX Runtime Web', 'Hugging Face import', 'WebGPU with WASM fallback'],
     rotoMotion: [
-      rotoMotionBlurPreviewBackend === 'gpu_float' ? 'GPU quality blur' : 'Realtime canvas blur',
+      'Float GPU feather',
       rotoPointWeightMode === 'local' ? 'Default local pull' : 'Default full pull',
       rotoMotionCueEnabled ? 'Cue overlay on' : 'Cue overlay off',
       rotoTrackingBackgroundEnabled ? 'Background tracking' : 'Inline tracking',
@@ -660,6 +653,21 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
               controlClassName="lg:max-w-[34rem]"
             >
               <div className="min-w-0 space-y-2">
+                {!ocio.isInitialized ? (
+                  <button
+                    type="button"
+                    onClick={() => void ocio.load()}
+                    disabled={ocio.isLoading}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-gray-100 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {ocio.isLoading ? (
+                      <Icons.RotateLoop className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Icons.ArrowDownTray className="h-4 w-4" />
+                    )}
+                    <span>{ocio.isLoading ? 'Loading OCIO runtime' : 'Load OCIO runtime'}</span>
+                  </button>
+                ) : null}
                 <StyledDropdown
                   value={ocioConfigName}
                   options={
@@ -694,16 +702,35 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
               description="Available display devices and view transforms from the active config."
               stacked
             >
-              <div className="grid gap-2 sm:grid-cols-2">
-                {ocio.displays.map((display) => (
-                  <div key={display} className="rounded-xl border border-white/10 bg-black/20 p-3">
-                    <div className="truncate text-sm font-medium text-gray-100">{display}</div>
-                    <div className="mt-1 text-xs text-gray-500">
-                      {ocio.getViews(display).length} views
+              {ocio.isInitialized ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {ocio.displays.map((display) => (
+                    <div
+                      key={display}
+                      className="rounded-xl border border-white/10 bg-black/20 p-3"
+                    >
+                      <div className="truncate text-sm font-medium text-gray-100">{display}</div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        {ocio.getViews(display).length} views
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void ocio.load()}
+                  disabled={ocio.isLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-gray-100 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {ocio.isLoading ? (
+                    <Icons.RotateLoop className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Icons.ArrowDownTray className="h-4 w-4" />
+                  )}
+                  <span>{ocio.isLoading ? 'Loading displays' : 'Load displays'}</span>
+                </button>
+              )}
             </SettingsRow>
           </SettingsGroup>
         );
@@ -914,21 +941,6 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
                   })
                 }
                 displayFormatter={(value) => value.toFixed(1)}
-              />
-            </SettingsRow>
-
-            <SettingsRow
-              title="Motion blur feather backend"
-              description="Use Canvas 2D for faster feedback. WebGL2 uses half-float accumulation for smoother feather blur."
-            >
-              <SegmentedControl
-                options={rotoMotionBlurBackendOptions}
-                value={rotoMotionBlurPreviewBackend}
-                onChange={(backend) =>
-                  setPreferences({
-                    rotoMotionBlurPreviewBackend: backend as RotoMotionBlurPreviewBackend,
-                  })
-                }
               />
             </SettingsRow>
 

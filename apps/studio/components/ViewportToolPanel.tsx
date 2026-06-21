@@ -1,6 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import * as Icons from '@blackboard/icons';
-import { ToggleSwitch } from '@blackboard/ui';
+import { ScrollArea, SplitterHandle, ToggleSwitch } from '@blackboard/ui';
+
+const VIEWPORT_TOOL_PANEL_DEFAULT_WIDTH = 320;
+const VIEWPORT_TOOL_PANEL_MIN_WIDTH = 240;
+const VIEWPORT_TOOL_PANEL_MAX_WIDTH = 480;
 
 type ViewportToolPanelHeaderToggle = {
   active: boolean;
@@ -72,17 +76,48 @@ export function ViewportToolPanelHeader({
   );
 }
 
-export function ViewportToolPanel({
-  children,
-  width = 'w-64',
-}: {
-  children: React.ReactNode;
-  width?: string;
-}) {
+export function ViewportToolPanelArea({ children }: { children: React.ReactNode }) {
+  const [width, setWidth] = useState(VIEWPORT_TOOL_PANEL_DEFAULT_WIDTH);
+
   return (
     <div
-      className={`glass-component ${width} bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-lg shadow-lg p-3 pointer-events-auto animate-[fadeIn_150ms_ease-out]`}
-      onMouseDown={(e) => e.stopPropagation()}
+      role="group"
+      aria-label="Viewport tool panels"
+      className="relative z-20 flex min-h-0 min-w-0 self-center pointer-events-none"
+      style={{
+        width,
+        maxWidth: 'calc(100% - 4.5rem)',
+        maxHeight: 'calc(100% - 2rem)',
+      }}
+    >
+      <ScrollArea
+        axis="y"
+        fadeEdges={{ backdropBlur: 16, size: 32 }}
+        rootClassName="pointer-events-auto max-h-full min-h-0 w-full"
+        viewportClassName="max-h-full min-h-0 overscroll-contain"
+        contentClassName="flex w-full flex-col gap-2 pr-1"
+      >
+        {children}
+      </ScrollArea>
+      <SplitterHandle
+        axis="x"
+        label="Tool panels"
+        title="Resize tool panels"
+        value={width}
+        min={VIEWPORT_TOOL_PANEL_MIN_WIDTH}
+        max={VIEWPORT_TOOL_PANEL_MAX_WIDTH}
+        defaultValue={VIEWPORT_TOOL_PANEL_DEFAULT_WIDTH}
+        onChange={setWidth}
+      />
+    </div>
+  );
+}
+
+export function ViewportToolPanel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="glass-component w-full flex-none bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-lg shadow-lg p-3 pointer-events-auto animate-[fadeIn_150ms_ease-out]"
+      onPointerDown={(event) => event.stopPropagation()}
     >
       {children}
     </div>

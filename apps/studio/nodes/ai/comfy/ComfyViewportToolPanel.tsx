@@ -17,13 +17,9 @@ function ComfyViewportToolPanel({
     null;
 
   return (
-    <ViewportToolPanel width="w-96">
+    <ViewportToolPanel>
       <ViewportToolPanelHeader title="Crop Region" onClose={() => onPanelClose('binding')} />
-      <ComfyRegionInspector
-        node={node}
-        selectedWorkflow={workflow}
-        className="max-h-[min(680px,calc(100dvh-9rem))] overflow-y-auto pr-1"
-      />
+      <ComfyRegionInspector node={node} selectedWorkflow={workflow} className="min-w-0" />
     </ViewportToolPanel>
   );
 }

@@ -23,7 +23,10 @@ import {
 } from '@/state/persist';
 import { getOrderedNodesFromFlow, replaceFlowNodes, getRootFlow } from '@/state/editor/flowModel';
 import { isComfyNode } from '@/nodes/helpers';
-import { getComfyGeneratedOutputsForActivation } from '@/nodes/ai/comfy/comfyOutputActivation';
+import {
+  getComfyGeneratedOutputsForActivation,
+  getComfyOutputActivationUpdates,
+} from '@/nodes/ai/comfy/comfyOutputActivation';
 import type { GetState, SetState } from '@/state/editor/slices/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 
@@ -147,6 +150,7 @@ export const createComfyGalleryEntries = ({
       source: 'Comfy' as const,
       assetId: output.src,
       mediaKind: output.mediaKind ?? 'image',
+      scene3dAsset: output.scene3dAsset,
       frames: output.frames,
       width: output.width,
       height: output.height,
@@ -276,20 +280,6 @@ export const protectGalleryGeneratedOutputs = (
 // ---------------------------------------------------------------------------
 // Comfy output activation / sync helpers
 // ---------------------------------------------------------------------------
-
-export const getComfyOutputActivationUpdates = (output: GeneratedOutput): Partial<ComfyNode> => ({
-  src: output.src,
-  mediaKind: output.mediaKind ?? 'image',
-  ...(output.colorSpace ? { colorSpace: output.colorSpace } : {}),
-  frames: output.frames,
-  duration: output.duration,
-  fps: output.fps,
-  width: output.width,
-  height: output.height,
-  activeGeneratedOutputId: output.id,
-  lastPromptId: output.promptId,
-  lastRunAt: output.createdAt,
-});
 
 export const syncComfyGeneratedOutputs = (
   node: ComfyNode,

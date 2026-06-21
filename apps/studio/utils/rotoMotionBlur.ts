@@ -11,7 +11,6 @@ export const DEFAULT_ROTO_MOTION_BLUR: ResolvedRotoMotionBlurSettings = {
   phase: 'centered',
 };
 
-const CANVAS_SAMPLE_WEIGHT_RANGE = 255;
 const MIN_SAMPLES = 2;
 const MAX_SAMPLES = 128;
 
@@ -66,25 +65,6 @@ export const getRotoMotionBlurSampleWeights = (sampleCount: number): number[] =>
   return Array.from({ length: safeSampleCount }, (_, index) =>
     index === 0 || index === safeSampleCount - 1 ? sampleStepWeight * 0.5 : sampleStepWeight,
   );
-};
-
-export const getRotoMotionBlurCanvasSampleWeights = (sampleWeights: number[]): number[] => {
-  const safeSampleWeights = sampleWeights.length > 0 ? sampleWeights : [1];
-  let previousCumulativeWeightByte = 0;
-  let cumulativeWeight = 0;
-
-  // Canvas accumulation happens in 8-bit channels, so distribute the rounding
-  // remainder across samples instead of repeating a single quantized 1 / N weight.
-  return safeSampleWeights.map((weight, index) => {
-    cumulativeWeight += weight;
-    const cumulativeWeightByte =
-      index === safeSampleWeights.length - 1
-        ? CANVAS_SAMPLE_WEIGHT_RANGE
-        : Math.round(cumulativeWeight * CANVAS_SAMPLE_WEIGHT_RANGE);
-    const weightByte = cumulativeWeightByte - previousCumulativeWeightByte;
-    previousCumulativeWeightByte = cumulativeWeightByte;
-    return weightByte / CANVAS_SAMPLE_WEIGHT_RANGE;
-  });
 };
 
 const getShutterIntervalStart = (shutter: number, phase: RotoMotionBlurPhase): number => {

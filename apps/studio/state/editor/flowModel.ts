@@ -14,6 +14,10 @@ import { buildNodeStacks } from '@/utils/nodeStacks';
 export const ROOT_FLOW_ID = 'root-flow';
 export const OUTPUT_NODE_ID = 'output';
 
+/** Returns every canonical node stored across the project's flows. */
+export const getAllProjectNodes = (flows: Record<FlowId, Flow>): AnyNode[] =>
+  Object.values(flows).flatMap((flow) => flow.nodes);
+
 export const isSceneNode = (node: AnyNode) =>
   (node.kind as string | undefined) === NodeKind.SCENE || node.type === NodeType.SCENE;
 

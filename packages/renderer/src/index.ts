@@ -10,6 +10,7 @@ export type {
   RendererColorManagement,
   ResolveOutputContext,
   PaintTextureBundle,
+  RendererMaskLayer,
   RendererInputPort,
   RendererOutputPort,
   RendererOcioGpuTexture,
@@ -38,7 +39,12 @@ export {
 export { createNodePredicates, hasStackedFlag } from './nodePredicates';
 
 // WebGL runtime helpers
-export { assertWebGL2Renderer, createStudioRenderer, createStudioShaderMaterial } from './webgl';
+export {
+  assertWebGL2Renderer,
+  assertFloatRenderTargetSupport,
+  createStudioRenderer,
+  createStudioShaderMaterial,
+} from './webgl';
 
 // Render pipeline
 export {
@@ -52,4 +58,5 @@ export {
   type ViewportPipelineOptions,
   type ViewportPipelineResult,
   isPromiseLike,
+  getSceneRenderTargetOptions,
 } from './pipeline';

@@ -1,14 +1,7 @@
 import { useEffect, type RefObject } from 'react';
 import { getMediaDescriptor, nodeFlags } from '@/nodes/helpers';
 import type { AnyNode } from '@blackboard/types';
-
-interface CacheEntry {
-  video?: HTMLVideoElement;
-}
-
-interface MediaTextureCacheReader {
-  get(id: string): CacheEntry | undefined;
-}
+import type { TextureCache } from '@/utils/textureCache';
 
 interface UseViewportVideoSyncParams {
   nodes: AnyNode[];
@@ -16,7 +9,7 @@ interface UseViewportVideoSyncParams {
   isPlaying: boolean;
   playbackDirection?: 1 | -1;
   fps: number;
-  textureCacheRef: RefObject<MediaTextureCacheReader>;
+  textureCacheRef: RefObject<Pick<TextureCache, 'get'>>;
 }
 
 /**

@@ -18,7 +18,12 @@ export {
   default as ResizableScrollTextarea,
   type ResizableScrollTextareaProps,
 } from './ResizableScrollTextarea';
-export { default as ScrollArea, type ScrollAreaAxis, type ScrollAreaProps } from './ScrollArea';
+export {
+  default as ScrollArea,
+  type ScrollAreaAxis,
+  type ScrollAreaEdgeFadeOptions,
+  type ScrollAreaProps,
+} from './ScrollArea';
 export { default as ShaderCodeModal } from './ShaderCodeModal';
 export { Spinner, type SpinnerProps } from './Spinner';
 export { default as Slider, type SliderProps } from './Slider';

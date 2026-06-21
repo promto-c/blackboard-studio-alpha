@@ -19,7 +19,9 @@ export interface ConnectedComfyWorkflowInput {
 interface ComfyWorkflowInputListProps {
   selectedWorkflow: ComfyWorkflow;
   workflowInputCandidates: ComfyWorkflowInputCandidate[];
+  selectedWorkflowInputIdSet: ReadonlySet<string>;
   connectedWorkflowInputs: ConnectedComfyWorkflowInput[];
+  onToggleWorkflowInputCandidate: (candidateId: string) => void;
   onImportWorkflowInputImage: (
     workflow: ComfyWorkflow,
     candidate: ComfyWorkflowInputCandidate,
@@ -34,7 +36,9 @@ interface ComfyWorkflowInputListProps {
 export function ComfyWorkflowInputList({
   selectedWorkflow,
   workflowInputCandidates,
+  selectedWorkflowInputIdSet,
   connectedWorkflowInputs,
+  onToggleWorkflowInputCandidate,
   onImportWorkflowInputImage,
   onClearWorkflowInputImage,
 }: ComfyWorkflowInputListProps) {
@@ -45,49 +49,71 @@ export function ComfyWorkflowInputList({
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-gray-900/70 px-2.5 py-2 text-[11px]">
           <span className="min-w-0 truncate text-gray-400">
-            {workflowInputCandidates.length} image input
-            {workflowInputCandidates.length === 1 ? '' : 's'} detected
+            {workflowInputCandidates.length} input port
+            {workflowInputCandidates.length === 1 ? '' : 's'} available
           </span>
           <span className="shrink-0 font-mono text-primary-100/70">
-            {connectedWorkflowInputs.filter((entry) => entry.sourceNode).length} connected ·{' '}
-            {connectedWorkflowInputs.filter((entry) => entry.inputImage).length} loaded
+            {selectedWorkflowInputIdSet.size} shown ·{' '}
+            {
+              connectedWorkflowInputs.filter(
+                (entry) =>
+                  selectedWorkflowInputIdSet.has(entry.candidate.id) &&
+                  (entry.sourceNode || entry.inputImage),
+              ).length
+            }{' '}
+            ready
           </span>
         </div>
 
         <div className="space-y-1">
           {connectedWorkflowInputs.map(({ candidate, sourceNode, inputImage }) => {
-            const hasInput = Boolean(sourceNode || inputImage);
-            const activeSourceLabel = sourceNode
-              ? sourceNode.name
-              : inputImage
-                ? inputImage.name
-                : 'Unconnected';
-            const activeSourceKind = sourceNode ? 'Port' : inputImage ? 'Loaded' : 'None';
+            const isSelected = selectedWorkflowInputIdSet.has(candidate.id);
+            const activeSourceLabel = !isSelected
+              ? 'Port hidden'
+              : sourceNode
+                ? sourceNode.name
+                : inputImage
+                  ? inputImage.name
+                  : 'Unconnected';
+            const activeSourceKind = !isSelected
+              ? 'Unchecked'
+              : sourceNode
+                ? 'Port'
+                : inputImage
+                  ? 'Loaded'
+                  : 'None';
 
             return (
               <div
                 key={candidate.id}
                 className={`flex w-full min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-left ${
-                  hasInput
+                  isSelected
                     ? 'border-primary-300/25 bg-primary-300/10 text-primary-50'
                     : 'border-white/10 bg-gray-950/40 text-gray-400'
                 }`}
               >
-                <span
+                <button
+                  type="button"
+                  onClick={() => onToggleWorkflowInputCandidate(candidate.id)}
+                  aria-pressed={isSelected}
+                  aria-label={`${isSelected ? 'Hide' : 'Show'} ${candidate.label} input port`}
                   className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                    hasInput
+                    isSelected
                       ? 'border-primary-300/50 bg-primary-300/10 text-primary-100'
                       : 'border-gray-700'
                   }`}
                 >
-                  {hasInput ? (
-                    <Icons.Check className="h-3 w-3" />
-                  ) : (
-                    <Icons.Photo className="h-3 w-3" />
-                  )}
-                </span>
+                  {isSelected ? <Icons.Check className="h-3 w-3" /> : null}
+                </button>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium">{candidate.label}</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-xs font-medium">{candidate.label}</span>
+                    {candidate.scope === 'internal' ? (
+                      <span className="shrink-0 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-semibold text-gray-500">
+                        Internal
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="mt-0.5 block truncate font-mono text-[10px] text-gray-500">
                     #{candidate.nodeId} · {candidate.inputName}
                   </span>
@@ -102,7 +128,11 @@ export function ComfyWorkflowInputList({
                 </span>
                 <div className="flex shrink-0 items-center gap-1">
                   <label
-                    className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 text-[11px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15"
+                    className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition ${
+                      isSelected
+                        ? 'cursor-pointer border-primary-300/20 bg-primary-300/10 text-primary-100 hover:border-primary-300/40 hover:bg-primary-300/15'
+                        : 'cursor-not-allowed border-white/5 text-gray-600'
+                    }`}
                     title={`Load image for ${candidate.label}`}
                   >
                     <Icons.ArrowUpTray className="h-3.5 w-3.5" />
@@ -111,6 +141,7 @@ export function ComfyWorkflowInputList({
                       type="file"
                       accept={IMAGE_IMPORT_ACCEPT}
                       className="hidden"
+                      disabled={!isSelected}
                       onChange={(event) =>
                         onImportWorkflowInputImage(selectedWorkflow, candidate, event)
                       }

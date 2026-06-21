@@ -1,3 +1,4 @@
+import type { Scene3DAssetReference } from '@blackboard/types';
 import { performTransaction, openDB } from './assetStorage';
 
 const GALLERY_STORE_NAME = 'gallery';
@@ -7,7 +8,8 @@ export interface GalleryEntry {
   id: string;
   source: 'Comfy';
   assetId: string;
-  mediaKind?: 'image' | 'image_sequence' | 'video';
+  mediaKind?: 'image' | 'image_sequence' | 'video' | 'model_3d';
+  scene3dAsset?: Scene3DAssetReference;
   frames?: string[];
   width: number;
   height: number;

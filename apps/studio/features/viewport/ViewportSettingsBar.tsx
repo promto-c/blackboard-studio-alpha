@@ -213,15 +213,16 @@ function ViewportSettingsBar() {
   const layout = getSettingsBarLayout(layoutWidth);
   const showAlphaInline = layout === 'full' || layout === 'comfortable';
   const showOverlayInline = layout !== 'narrow';
-  const showOcioInline = ocio.isInitialized && (layout === 'full' || layout === 'comfortable');
+  const showOcioInline = layout === 'full' || layout === 'comfortable';
   const showExposureInline = layout === 'full';
   const showViewerLabel = layout === 'full' || layout === 'comfortable';
   const showMoreButton =
-    !showAlphaInline ||
-    !showOverlayInline ||
-    (ocio.isInitialized && !showOcioInline) ||
-    !showExposureInline;
+    !showAlphaInline || !showOverlayInline || !showOcioInline || !showExposureInline;
   const barMaxWidth = Math.max(224, layoutWidth);
+
+  const handleLoadOcio = () => {
+    void ocio.load();
+  };
 
   const handleViewerSlotClick = (slot: ViewerSlot, event: React.MouseEvent) => {
     if ((event.metaKey || event.ctrlKey) && selectedViewerTargetId) {
@@ -402,60 +403,97 @@ function ViewportSettingsBar() {
                 onClick={() => {
                   if (!isBarVisible) setIsBarVisible(true);
                 }}
-                title={`Display: ${selectedOcioDisplay} / ${viewerSettings.ocioView}`}
+                title={
+                  ocio.isInitialized
+                    ? `Display: ${selectedOcioDisplay} / ${viewerSettings.ocioView}`
+                    : 'Load OCIO color management'
+                }
                 className="flex min-w-0 max-w-44 items-center gap-2 px-3 py-1 text-xs rounded-full transition-colors bg-transparent text-gray-300 hover:bg-white/10 data-[state=open]:bg-white/20 data-[state=open]:text-white"
               >
-                <Icons.ComputerDesktop className="h-4 w-4 shrink-0" />
-                <span className="min-w-0 truncate font-mono">{viewerSettings.ocioView}</span>
+                {ocio.isLoading ? (
+                  <Icons.RotateLoop className="h-4 w-4 shrink-0 animate-spin" />
+                ) : (
+                  <Icons.ComputerDesktop className="h-4 w-4 shrink-0" />
+                )}
+                <span className="min-w-0 truncate font-mono">
+                  {ocio.isInitialized ? viewerSettings.ocioView : 'OCIO'}
+                </span>
               </button>
             }
           >
             {(close) => (
               <div className="space-y-3">
-                <div className="space-y-1">
-                  <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
-                    Display
-                  </div>
-                  <ScrollArea axis="y" viewportClassName="max-h-32 pr-1">
-                    {availableDisplays.map((display) => (
-                      <button
-                        key={display}
-                        onClick={() => {
-                          setViewerSettings({
-                            ocioDisplay: display,
-                            ocioView: ocio.getDefaultView(display),
-                          });
-                        }}
-                        className={`w-full text-left text-sm px-3 py-1.5 rounded-lg transition-all duration-150 ${
-                          selectedOcioDisplay === display
-                            ? 'bg-primary-500/30 text-white ring-1 ring-inset ring-primary-400/50'
-                            : 'text-gray-300 hover:bg-white/10'
-                        }`}
-                      >
-                        {display}
-                      </button>
-                    ))}
-                  </ScrollArea>
-                </div>
-                <div className="space-y-1">
-                  <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
-                    View
-                  </div>
-                  <ScrollArea axis="y" viewportClassName="max-h-48 pr-1">
-                    {availableViews.map((view) => (
-                      <button
-                        key={view}
-                        onClick={() => {
-                          handleSettingChange('ocioView', view);
-                          close();
-                        }}
-                        className={`w-full text-left text-sm px-3 py-1.5 rounded-lg transition-all duration-150 ${viewerSettings.ocioView === view ? 'bg-primary-500/30 text-white ring-1 ring-inset ring-primary-400/50' : 'text-gray-300 hover:bg-white/10'}`}
-                      >
-                        {view}
-                      </button>
-                    ))}
-                  </ScrollArea>
-                </div>
+                {ocio.isInitialized ? (
+                  <>
+                    <div className="space-y-1">
+                      <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                        Display
+                      </div>
+                      <ScrollArea axis="y" viewportClassName="max-h-32 pr-1">
+                        {availableDisplays.map((display) => (
+                          <button
+                            key={display}
+                            onClick={() => {
+                              setViewerSettings({
+                                ocioDisplay: display,
+                                ocioView: ocio.getDefaultView(display),
+                              });
+                            }}
+                            className={`w-full text-left text-sm px-3 py-1.5 rounded-lg transition-all duration-150 ${
+                              selectedOcioDisplay === display
+                                ? 'bg-primary-500/30 text-white ring-1 ring-inset ring-primary-400/50'
+                                : 'text-gray-300 hover:bg-white/10'
+                            }`}
+                          >
+                            {display}
+                          </button>
+                        ))}
+                      </ScrollArea>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                        View
+                      </div>
+                      <ScrollArea axis="y" viewportClassName="max-h-48 pr-1">
+                        {availableViews.map((view) => (
+                          <button
+                            key={view}
+                            onClick={() => {
+                              handleSettingChange('ocioView', view);
+                              close();
+                            }}
+                            className={`w-full text-left text-sm px-3 py-1.5 rounded-lg transition-all duration-150 ${viewerSettings.ocioView === view ? 'bg-primary-500/30 text-white ring-1 ring-inset ring-primary-400/50' : 'text-gray-300 hover:bg-white/10'}`}
+                          >
+                            {view}
+                          </button>
+                        ))}
+                      </ScrollArea>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleLoadOcio}
+                      disabled={ocio.isLoading}
+                      className={`${menuButtonClass} justify-center disabled:cursor-wait disabled:opacity-60`}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        {ocio.isLoading ? (
+                          <Icons.RotateLoop className="h-4 w-4 shrink-0 animate-spin" />
+                        ) : (
+                          <Icons.ArrowDownTray className="h-4 w-4 shrink-0" />
+                        )}
+                        <span>{ocio.isLoading ? 'Loading OCIO' : 'Load OCIO / ACES'}</span>
+                      </span>
+                    </button>
+                    {ocio.error ? (
+                      <div className="rounded-lg border border-red-400/20 bg-red-500/10 p-3 text-xs leading-5 text-red-100">
+                        {ocio.error}
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </div>
             )}
           </Popover>
@@ -622,58 +660,88 @@ function ViewportSettingsBar() {
                   </div>
                 )}
 
-                {ocio.isInitialized && !showOcioInline && (
+                {!showOcioInline && (
                   <div className="space-y-3">
-                    <div className="space-y-1">
-                      <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
-                        Display
-                      </div>
-                      <ScrollArea axis="y" viewportClassName="max-h-40 pr-1">
-                        {availableDisplays.map((display) => (
-                          <button
-                            key={`more-ocio-display-${display}`}
-                            onClick={() => {
-                              setViewerSettings({
-                                ocioDisplay: display,
-                                ocioView: ocio.getDefaultView(display),
-                              });
-                            }}
-                            className={`${menuButtonClass} ${
-                              selectedOcioDisplay === display ? activeMenuButtonClass : ''
-                            }`}
-                            title={display}
-                          >
-                            <span className="min-w-0 truncate font-mono">{display}</span>
-                            {selectedOcioDisplay === display && (
-                              <Icons.Check className="h-4 w-4 shrink-0" />
-                            )}
-                          </button>
-                        ))}
-                      </ScrollArea>
-                    </div>
-                    <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
-                      View
-                    </div>
-                    <ScrollArea axis="y" viewportClassName="max-h-48 pr-1">
-                      {availableViews.map((view) => (
+                    {ocio.isInitialized ? (
+                      <>
+                        <div className="space-y-1">
+                          <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                            Display
+                          </div>
+                          <ScrollArea axis="y" viewportClassName="max-h-40 pr-1">
+                            {availableDisplays.map((display) => (
+                              <button
+                                key={`more-ocio-display-${display}`}
+                                onClick={() => {
+                                  setViewerSettings({
+                                    ocioDisplay: display,
+                                    ocioView: ocio.getDefaultView(display),
+                                  });
+                                }}
+                                className={`${menuButtonClass} ${
+                                  selectedOcioDisplay === display ? activeMenuButtonClass : ''
+                                }`}
+                                title={display}
+                              >
+                                <span className="min-w-0 truncate font-mono">{display}</span>
+                                {selectedOcioDisplay === display && (
+                                  <Icons.Check className="h-4 w-4 shrink-0" />
+                                )}
+                              </button>
+                            ))}
+                          </ScrollArea>
+                        </div>
+                        <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                          View
+                        </div>
+                        <ScrollArea axis="y" viewportClassName="max-h-48 pr-1">
+                          {availableViews.map((view) => (
+                            <button
+                              key={`more-ocio-${view}`}
+                              onClick={() => {
+                                handleSettingChange('ocioView', view);
+                                close();
+                              }}
+                              className={`${menuButtonClass} ${
+                                viewerSettings.ocioView === view ? activeMenuButtonClass : ''
+                              }`}
+                              title={view}
+                            >
+                              <span className="min-w-0 truncate font-mono">{view}</span>
+                              {viewerSettings.ocioView === view && (
+                                <Icons.Check className="h-4 w-4 shrink-0" />
+                              )}
+                            </button>
+                          ))}
+                        </ScrollArea>
+                      </>
+                    ) : (
+                      <>
+                        <div className="px-3 text-[10px] uppercase tracking-wider text-gray-500">
+                          Color
+                        </div>
                         <button
-                          key={`more-ocio-${view}`}
-                          onClick={() => {
-                            handleSettingChange('ocioView', view);
-                            close();
-                          }}
-                          className={`${menuButtonClass} ${
-                            viewerSettings.ocioView === view ? activeMenuButtonClass : ''
-                          }`}
-                          title={view}
+                          type="button"
+                          onClick={handleLoadOcio}
+                          disabled={ocio.isLoading}
+                          className={`${menuButtonClass} disabled:cursor-wait disabled:opacity-60`}
                         >
-                          <span className="min-w-0 truncate font-mono">{view}</span>
-                          {viewerSettings.ocioView === view && (
-                            <Icons.Check className="h-4 w-4 shrink-0" />
-                          )}
+                          <span className="inline-flex min-w-0 items-center gap-2">
+                            {ocio.isLoading ? (
+                              <Icons.RotateLoop className="h-4 w-4 shrink-0 animate-spin" />
+                            ) : (
+                              <Icons.ArrowDownTray className="h-4 w-4 shrink-0" />
+                            )}
+                            <span>{ocio.isLoading ? 'Loading OCIO' : 'Load OCIO / ACES'}</span>
+                          </span>
                         </button>
-                      ))}
-                    </ScrollArea>
+                        {ocio.error ? (
+                          <div className="rounded-lg border border-red-400/20 bg-red-500/10 p-3 text-xs leading-5 text-red-100">
+                            {ocio.error}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 )}
 

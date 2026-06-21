@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NodeType, type AiChatAttachment, type GradeNode } from '@blackboard/types';
 import {
+  enhancePrompt,
+  enhanceShaderPrompt,
   generateAssistantChatTurn,
+  generatePromptEnhancementResult,
   generateShaderCode,
   generateShaderChatTurn,
   isOllamaAuthenticationRequiredError,
@@ -23,6 +26,112 @@ const createNdjsonStreamResponse = (lines: Array<Record<string, unknown>>) => {
     },
   });
 };
+
+describe('prompt enhancement', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('surfaces Ollama request failures without retrying or returning the original prompt', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      text: vi
+        .fn()
+        .mockResolvedValue(JSON.stringify({ error: "model 'missing-model:latest' not found" })),
+    });
+
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    await expect(
+      generatePromptEnhancementResult('a rainy city street', {
+        provider: 'ollama',
+        ollamaEndpoint: 'http://localhost:11434',
+        ollamaModel: 'missing-model:latest',
+      }),
+    ).rejects.toThrow("Ollama request failed: model 'missing-model:latest' not found");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an unchanged Ollama response instead of presenting it as enhanced', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        model: 'image-local',
+        message: { content: 'a rainy city street' },
+      }),
+    });
+
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    await expect(
+      enhancePrompt('a rainy city street', {
+        provider: 'ollama',
+        ollamaEndpoint: 'http://localhost:11434',
+        ollamaModel: 'image-local',
+      }),
+    ).rejects.toThrow('Ollama did not enhance the prompt. The original prompt was left unchanged.');
+  });
+
+  it('parses distinct structured Ollama prompt options', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        model: 'image-local',
+        message: {
+          content: JSON.stringify({
+            message: 'Choose a cinematic or painterly direction.',
+            options: [
+              'A rain-soaked city street at blue hour, reflected neon, cinematic framing.',
+              'An expressive oil painting of a rainy city street beneath glowing signs.',
+            ],
+            suggestions: ['More cinematic', 'Oil painting'],
+          }),
+        },
+      }),
+    });
+
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const result = await generatePromptEnhancementResult('a rainy city street', {
+      provider: 'ollama',
+      ollamaEndpoint: 'http://localhost:11434',
+      ollamaModel: 'image-local',
+    });
+
+    expect(result).toEqual({
+      message: 'Choose a cinematic or painterly direction.',
+      options: [
+        'A rain-soaked city street at blue hour, reflected neon, cinematic framing.',
+        'An expressive oil painting of a rainy city street beneath glowing signs.',
+      ],
+      suggestions: ['More cinematic', 'Oil painting'],
+      provider: 'ollama',
+      model: 'image-local',
+    });
+  });
+
+  it('surfaces Ollama failures from shader prompt enhancement', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      text: vi.fn().mockResolvedValue(JSON.stringify({ error: "model 'shader-local' not found" })),
+    });
+
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    await expect(
+      enhanceShaderPrompt('soft bloom', {
+        provider: 'ollama',
+        ollamaEndpoint: 'http://localhost:11434',
+        ollamaModel: 'shader-local',
+      }),
+    ).rejects.toThrow("Ollama request failed: model 'shader-local' not found");
+  });
+});
 
 describe('generateShaderCode', () => {
   afterEach(() => {

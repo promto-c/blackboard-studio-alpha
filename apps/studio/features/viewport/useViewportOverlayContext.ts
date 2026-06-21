@@ -1,4 +1,4 @@
-import { useMemo, type RefObject } from 'react';
+import { useCallback, useMemo, useRef, type RefObject } from 'react';
 import type { AnyNode } from '@blackboard/types';
 import type {
   PaintOverlayContext,
@@ -8,7 +8,6 @@ import type {
 } from './overlays';
 import type { DataWindowRect } from './dataWindow';
 import type { ViewportAdapterContext } from './viewportAdapterContext';
-import { useEvent, useLatestRef } from '@/utils/useEvent';
 
 export interface UseViewportOverlayContextProps {
   rotoInteraction: ViewportAdapterContext['hooks']['roto'];
@@ -105,19 +104,22 @@ export function useViewportOverlayContext({
   activeViewportTool,
   showOverlays,
 }: UseViewportOverlayContextProps): UseViewportOverlayContextResult {
-  const onPaintStrokeSelect = useEvent((strokeId: string, shiftKey: boolean) => {
-    if (shiftKey) {
-      const ids = selectedPaintStrokeIds as string[];
-      setHierarchySelection(
-        selectedNodeId ?? '',
-        selectedPaintLayerIds,
-        ids.includes(strokeId) ? ids.filter((id) => id !== strokeId) : [...ids, strokeId],
-      );
-      return;
-    }
+  const onPaintStrokeSelect = useCallback(
+    (strokeId: string, shiftKey: boolean) => {
+      if (shiftKey) {
+        const ids = selectedPaintStrokeIds as string[];
+        setHierarchySelection(
+          selectedNodeId ?? '',
+          selectedPaintLayerIds,
+          ids.includes(strokeId) ? ids.filter((id) => id !== strokeId) : [...ids, strokeId],
+        );
+        return;
+      }
 
-    setHierarchySelection(selectedNodeId ?? '', [], [strokeId]);
-  });
+      setHierarchySelection(selectedNodeId ?? '', [], [strokeId]);
+    },
+    [selectedPaintStrokeIds, selectedPaintLayerIds, selectedNodeId, setHierarchySelection],
+  );
 
   const viewportContext = useMemo<ViewportOverlayViewportContext>(
     () => ({
@@ -235,7 +237,8 @@ export function useViewportOverlayContext({
     ],
   );
 
-  const overlayContextRef = useLatestRef(overlayContext);
+  const overlayContextRef = useRef(overlayContext);
+  overlayContextRef.current = overlayContext;
 
   return {
     overlayContext,

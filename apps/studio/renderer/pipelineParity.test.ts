@@ -11,7 +11,11 @@ import {
   renderViewportFrameWithSharedPipeline,
   renderWithSharedPipeline,
 } from '../../../packages/renderer/src/pipeline';
-import type { NodeRegistryLike, ViewportPipelineResources } from '../../../packages/renderer/src';
+import type {
+  NodeRegistryLike,
+  ResolveOutputContext,
+  ViewportPipelineResources,
+} from '../../../packages/renderer/src';
 
 class MockRenderer {
   capabilities = { isWebGL2: true };
@@ -190,6 +194,7 @@ const createRegistry = (): NodeRegistryLike =>
           vertical: 'void main() { }',
         }),
         getUniforms: () => ({ u_radius: { value: 12 } }),
+        renderScale: () => 0.5,
       },
     ],
     [
@@ -198,6 +203,27 @@ const createRegistry = (): NodeRegistryLike =>
         renderMode: 'mask',
         category: 'Effect',
         flags: { isRenderable: true },
+        renderOutput: (
+          node: AnyNode,
+          target: THREE.WebGLRenderTarget,
+          inputTexture: THREE.Texture | undefined,
+          context: ResolveOutputContext,
+        ) => {
+          const layer = context.getRotoMaskLayers?.(node.id)?.[0];
+          const sample = layer?.samples[0];
+          if (!sample) return false;
+          sample.prepare?.();
+          const material = context.getMaterial(node.id, 'void main() {}', {
+            u_tDiffuse: { value: inputTexture },
+            u_tMask: { value: sample.texture },
+            u_alphaMode: { value: context.getRotoAlphaMode?.(node.id) ?? 0 },
+          });
+          context.applyNoBlending(material);
+          context.quad.material = material;
+          context.renderer.setRenderTarget(target);
+          context.renderer.render(context.scene, context.camera);
+          return true;
+        },
       },
     ],
     [
@@ -240,9 +266,21 @@ const createResources = () => {
     quad,
     materials: new Map(),
     renderTargets: [
-      new THREE.WebGLRenderTarget(1920, 1080),
-      new THREE.WebGLRenderTarget(1920, 1080),
-      new THREE.WebGLRenderTarget(1920, 1080),
+      new THREE.WebGLRenderTarget(1920, 1080, {
+        type: THREE.HalfFloatType,
+        depthBuffer: false,
+        stencilBuffer: false,
+      }),
+      new THREE.WebGLRenderTarget(1920, 1080, {
+        type: THREE.HalfFloatType,
+        depthBuffer: false,
+        stencilBuffer: false,
+      }),
+      new THREE.WebGLRenderTarget(1920, 1080, {
+        type: THREE.HalfFloatType,
+        depthBuffer: false,
+        stencilBuffer: false,
+      }),
     ],
     utilityTargets: new Map(),
   };
@@ -259,6 +297,33 @@ const materialWithUniform = (
   material instanceof THREE.ShaderMaterial && uniformName in material.uniforms;
 
 describe('viewport/export render pipeline parity guards', () => {
+  it('rebuilds stale byte targets at the scene working precision', () => {
+    const { resources } = createResources();
+    resources.renderTargets.forEach((target) => target.dispose());
+    resources.renderTargets = [
+      new THREE.WebGLRenderTarget(1920, 1080),
+      new THREE.WebGLRenderTarget(1920, 1080),
+      new THREE.WebGLRenderTarget(1920, 1080),
+    ];
+    const staleTargets = [...resources.renderTargets];
+
+    const result = renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [createMediaNode()],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => new THREE.Texture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    expect(result.renderTargets).not.toEqual(staleTargets);
+    expect(
+      result.renderTargets.every((target) => target.texture.type === THREE.HalfFloatType),
+    ).toBe(true);
+  });
+
   it('keeps the viewport render target pool stable when rendering global multipass nodes', () => {
     const { resources } = createResources();
     const initialTargets = [...resources.renderTargets];
@@ -276,6 +341,19 @@ describe('viewport/export render pipeline parity guards', () => {
 
     expect(result.renderTargets).toHaveLength(3);
     expect(result.renderTargets).toEqual(initialTargets);
+    expect(resources.materials.get('global-blur_ds')?.fragmentShader).toContain(
+      'texture(u_tDiffuse, v_uv)',
+    );
+    expect(resources.materials.get('global-blur_blur_h')?.uniforms.u_radius.value).toBe(6);
+    expect(resources.materials.get('global-blur_blur_h')?.uniforms).not.toHaveProperty(
+      'u_input_premultiplied',
+    );
+    expect(resources.materials.get('global-blur_blur_v')?.uniforms).not.toHaveProperty(
+      'u_output_premultiplied',
+    );
+    expect(resources.materials.get('global-blur_us')?.fragmentShader).not.toContain(
+      'color.rgb /= color.a',
+    );
   });
 
   it('composites stacked multipass output from the stack write target', () => {
@@ -303,8 +381,6 @@ describe('viewport/export render pipeline parity guards', () => {
     const { resources } = createResources();
     const [, , auxBuffer] = resources.renderTargets;
     const maskTexture = createTexture();
-    const addMaskTexture = createTexture();
-    const subMaskTexture = createTexture();
 
     const result = renderViewportFrameWithSharedPipeline({
       resources,
@@ -314,9 +390,14 @@ describe('viewport/export render pipeline parity guards', () => {
       viewerSettings: createViewerSettings(),
       getMediaTexture: () => createTexture(),
       getTextTexture: () => undefined,
-      getRotoMaskTexture: () => maskTexture,
-      getRotoAddMaskTexture: () => addMaskTexture,
-      getRotoSubMaskTexture: () => subMaskTexture,
+      getRotoMaskLayers: () => [
+        {
+          samples: [{ texture: maskTexture, weight: 1 }],
+          feather: 0,
+          opacity: 1,
+          operation: 'add',
+        },
+      ],
       getRotoAlphaMode: () => 1,
       nodeRegistry: createRegistry(),
     });
@@ -326,8 +407,6 @@ describe('viewport/export render pipeline parity guards', () => {
 
     expect(result.renderTargets).toHaveLength(3);
     expect(maskMaterial?.uniforms.u_tMask.value).toBe(maskTexture);
-    expect(maskMaterial?.uniforms.u_tAddMask.value).toBe(addMaskTexture);
-    expect(maskMaterial?.uniforms.u_tSubMask.value).toBe(subMaskTexture);
     expect(maskMaterial?.uniforms.u_alphaMode.value).toBe(1);
     expect(compositeMaterial?.uniforms.u_tDiffuse.value).toBe(auxBuffer.texture);
   });
@@ -459,7 +538,14 @@ describe('viewport/export render pipeline parity guards', () => {
       height: sceneNode.height,
       finalColorSpace: 'raw_texture',
       getAsset: async () => new Blob(['asset']),
-      getRotoMaskTexture: () => maskTexture,
+      getRotoMaskLayers: () => [
+        {
+          samples: [{ texture: maskTexture, weight: 1 }],
+          feather: 0,
+          opacity: 1,
+          operation: 'add',
+        },
+      ],
       nodeRegistry: createRegistry(),
       loadAssetTexture: async () => createTexture(),
     });
@@ -497,7 +583,14 @@ describe('viewport/export render pipeline parity guards', () => {
       height: sceneNode.height,
       finalColorSpace: 'raw_texture',
       getAsset: async () => new Blob(['asset']),
-      getRotoMaskTexture: () => maskTexture,
+      getRotoMaskLayers: () => [
+        {
+          samples: [{ texture: maskTexture, weight: 1 }],
+          feather: 0,
+          opacity: 1,
+          operation: 'add',
+        },
+      ],
       nodeRegistry: createRegistry(),
       loadAssetTexture: async () => createTexture(),
     });

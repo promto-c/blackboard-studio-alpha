@@ -78,7 +78,7 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
   );
 
   const activeMedia = useMemo<AssetViewerMedia | null>(() => {
-    if (!activeEntry) return null;
+    if (!activeEntry || activeEntry.mediaKind === 'model_3d') return null;
     return {
       id: activeEntry.id,
       assetId: activeEntry.assetId,

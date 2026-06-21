@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ComfyNode, NodeType } from '@blackboard/types';
+import { ComfyNode, EditorTab, NodeType } from '@blackboard/types';
 import { ScrollArea } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 
@@ -13,9 +13,12 @@ import {
 } from '@/nodes/ai/comfy/comfyWorkflowImport';
 import {
   getComfyGeneratedOutputsForGalleryActivation,
+  getComfyOutputActivationUpdates,
   getComfyOutputActivationRegionId,
 } from '@/nodes/ai/comfy/comfyOutputActivation';
+import { getComfyGeneratedOutputsForGalleryScope } from '@/nodes/ai/comfy/comfyOutputLayers';
 import { getComfyOutputTransform } from '@/nodes/ai/comfy/comfyOutputTransform';
+import { createScene3DSettingsWithAsset } from '@/nodes/builtin/scene_3d/scene3d';
 import {
   type GalleryEntry,
   type GallerySelection,
@@ -30,9 +33,9 @@ import {
   permanentDeleteGalleryEntries,
 } from '@blackboard/project-store';
 
-type GalleryScope = 'app' | 'project' | 'branch' | 'node' | 'recycle';
+type GalleryScope = 'app' | 'project' | 'branch' | 'node' | 'region' | 'recycle';
 
-const scopeOptions: { value: GalleryScope; label: string }[] = [
+const baseScopeOptions: { value: GalleryScope; label: string }[] = [
   { value: 'app', label: 'App' },
   { value: 'project', label: 'Project' },
   { value: 'branch', label: 'Branch' },
@@ -56,20 +59,57 @@ function GalleryTab() {
   const galleryUpdatedAt = useEditorSelector((state) => state.galleryUpdatedAt);
   const selectedNodeId = useEditorSelector((state) => state.selectedNodeId);
   const nodes = useEditorSelector((state) => state.nodes);
+  const hierarchySelection = useEditorSelector((state) =>
+    selectedNodeId ? state.hierarchySelections[selectedNodeId] : undefined,
+  );
   const sceneNode = useEditorSelector((state) =>
     state.nodes.find((node) => node.type === NodeType.SCENE),
   );
   const {
     selectNode,
+    addNodeWithProps,
     updateNode,
+    setActiveTab,
+    setSubPanelVisible,
     switchProjectBranch,
     syncComfyGeneratedOutputsWithGalleryEntries,
   } = useEditorActions();
   const { comfyEndpoint } = usePreferences();
 
+  const selectedComfyNode = nodes.find(
+    (node): node is ComfyNode => node.id === selectedNodeId && node.type === NodeType.COMFY,
+  );
+  const selectedGalleryRegionId =
+    selectedComfyNode &&
+    hierarchySelection?.layerIds.length === 1 &&
+    hierarchySelection.itemIds.length === 0 &&
+    selectedComfyNode.viewportPromptRegions?.some(
+      (region) => region.id === hierarchySelection.layerIds[0],
+    )
+      ? hierarchySelection.layerIds[0]
+      : null;
+  const regionOutputIds = useMemo(
+    () =>
+      new Set(
+        selectedComfyNode
+          ? getComfyGeneratedOutputsForGalleryScope(selectedComfyNode, selectedGalleryRegionId).map(
+              (output) => output.id,
+            )
+          : [],
+      ),
+    [selectedComfyNode, selectedGalleryRegionId],
+  );
+  const scopeOptions = useMemo(
+    () => [
+      ...baseScopeOptions,
+      ...(selectedGalleryRegionId ? [{ value: 'region' as const, label: 'Region' }] : []),
+    ],
+    [selectedGalleryRegionId],
+  );
+
   const [allEntries, setAllEntries] = useState<GalleryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [scope, setScope] = useState<GalleryScope>('project');
+  const [scope, setScope] = useState<GalleryScope>(selectedGalleryRegionId ? 'region' : 'project');
   const [selection, setSelection] = useState<GallerySelection>(() => new Map());
   const selectionAnchorIdRef = useRef<string | null>(null);
   const [paramsImportEntryId, setParamsImportEntryId] = useState<string | null>(null);
@@ -93,6 +133,13 @@ function GalleryTab() {
     if (galleryUpdatedAt > 0) void loadEntries();
   }, [galleryUpdatedAt, loadEntries]);
 
+  useEffect(() => {
+    setScope((currentScope) => {
+      if (selectedGalleryRegionId) return 'region';
+      return currentScope === 'region' ? 'node' : currentScope;
+    });
+  }, [selectedGalleryRegionId]);
+
   const projectTag = projectId ? `project:${projectId}` : null;
   const branchTag = activeProjectBranchId ? `branch:${activeProjectBranchId}` : null;
 
@@ -114,11 +161,25 @@ function GalleryTab() {
         );
       } else if (scope === 'node' && selectedNodeId) {
         filtered = filtered.filter((e) => hasTag(e.tags, `node:${selectedNodeId}`));
+      } else if (scope === 'region' && selectedNodeId && selectedGalleryRegionId) {
+        filtered = filtered.filter(
+          (entry) =>
+            hasTag(entry.tags, `node:${selectedNodeId}`) &&
+            Boolean(entry.outputId && regionOutputIds.has(entry.outputId)),
+        );
       }
     }
 
     return filtered;
-  }, [allEntries, scope, projectTag, branchTag, selectedNodeId]);
+  }, [
+    allEntries,
+    scope,
+    projectTag,
+    branchTag,
+    selectedNodeId,
+    selectedGalleryRegionId,
+    regionOutputIds,
+  ]);
 
   const selectableEntries = useMemo(
     () => visibleEntries.filter((entry) => !!entry.assetId),
@@ -296,6 +357,22 @@ function GalleryTab() {
       await switchProjectBranch(entryBranchId);
     }
 
+    if (entry.mediaKind === 'model_3d' && entry.scene3dAsset) {
+      addNodeWithProps(
+        NodeType.SCENE_3D,
+        {
+          viewportMode: 'scene3d',
+          scene3d: createScene3DSettingsWithAsset(
+            entry.scene3dAsset,
+            sceneNode?.width,
+            sceneNode?.height,
+          ),
+        },
+        { name: entry.label || entry.scene3dAsset.fileName },
+      );
+      return;
+    }
+
     const node = nodes.find((candidate) => candidate.id === nodeId);
     if (!node) return;
 
@@ -317,20 +394,10 @@ function GalleryTab() {
       updateNode(
         nodeId,
         {
-          src: output.src,
-          mediaKind: output.mediaKind ?? 'image',
-          colorSpace: output.colorSpace ?? comfyNode.colorSpace,
-          frames: output.frames,
-          duration: output.duration,
-          fps: output.fps,
-          width: output.width,
-          height: output.height,
+          ...getComfyOutputActivationUpdates(output),
           transform,
           generatedOutputs: nextGeneratedOutputs,
-          activeGeneratedOutputId: output.id,
           selectedViewportPromptRegionId: getComfyOutputActivationRegionId(comfyNode, output),
-          lastPromptId: output.promptId,
-          lastRunAt: output.createdAt,
         },
         true,
       );
@@ -398,6 +465,8 @@ function GalleryTab() {
         true,
       );
       selectNode(node.id);
+      setActiveTab(EditorTab.Props);
+      setSubPanelVisible(true);
       setGalleryNotice({
         tone: 'info',
         message: `Loaded params from ${entry.label || 'Comfy output'}.`,

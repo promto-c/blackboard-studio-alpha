@@ -38,7 +38,7 @@ interface PanelProps {
   isMobilePortrait: boolean;
 }
 
-type DesktopSubPanelTab = EditorTab.Flow | EditorTab.Gallery | EditorTab.Chats | EditorTab.History;
+type DesktopSubPanelTab = EditorTab.Props | EditorTab.Gallery | EditorTab.Chats | EditorTab.History;
 type DesktopPanelTabItem = {
   tab: DesktopSubPanelTab;
   label: string;
@@ -54,7 +54,7 @@ const FLOW_BREADCRUMB_CLASS =
 const FLOW_BREADCRUMB_BUTTON_CLASS =
   'inline-flex min-w-0 items-center gap-1 rounded px-1 py-1 transition-colors';
 const DESKTOP_PANEL_TABS: DesktopPanelTabItem[] = [
-  { tab: EditorTab.Flow, label: 'Props', Icon: Icons.Cog },
+  { tab: EditorTab.Props, label: 'Props', Icon: Icons.Cog },
   { tab: EditorTab.Chats, label: 'Chats', Icon: Icons.ChatBubble },
   { tab: EditorTab.Gallery, label: 'Gallery', Icon: Icons.Photo },
   { tab: EditorTab.History, label: 'History', Icon: Icons.RotateLoop },
@@ -544,7 +544,7 @@ function Panel({ isMobilePortrait }: PanelProps) {
     if (tab === EditorTab.History) return EditorTab.History;
     if (tab === EditorTab.Chats) return EditorTab.Chats;
     if (tab === EditorTab.Gallery) return EditorTab.Gallery;
-    return EditorTab.Flow;
+    return EditorTab.Props;
   }, []);
   useAutoSyncRotoInspectorLevel({
     selectedNode,
@@ -682,7 +682,7 @@ function Panel({ isMobilePortrait }: PanelProps) {
         return <ChatsTab />;
       case EditorTab.Gallery:
         return <GalleryTab />;
-      case EditorTab.Flow:
+      case EditorTab.Props:
       default:
         return (
           <PropertiesTab
@@ -860,7 +860,7 @@ function Panel({ isMobilePortrait }: PanelProps) {
             ? 'Gallery'
             : 'Inspector';
     const subPanelContent =
-      desktopSubPanelTab === EditorTab.Flow &&
+      desktopSubPanelTab === EditorTab.Props &&
       selectedNode &&
       getNodeItemsComponent(selectedNode) ? (
         <div

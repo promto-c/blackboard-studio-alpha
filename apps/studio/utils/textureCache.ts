@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-interface CacheEntry {
+export interface TextureCacheEntry {
   id: string;
   texture: THREE.Texture;
   video?: HTMLVideoElement;
@@ -11,7 +11,7 @@ interface CacheEntry {
 }
 
 export class TextureCache {
-  private cache = new Map<string, CacheEntry>();
+  private cache = new Map<string, TextureCacheEntry>();
   private memoryUsage = 0;
   private memoryLimit = 512 * 1024 * 1024; // 512 MB default limit
   private frameLimit: number | null = null;
@@ -21,7 +21,7 @@ export class TextureCache {
     this.frameLimit = typeof frameLimit === 'number' && frameLimit >= 0 ? frameLimit : null;
   }
 
-  public get(id: string): CacheEntry | undefined {
+  public get(id: string): TextureCacheEntry | undefined {
     const entry = this.cache.get(id);
     if (entry) {
       entry.lastAccess = performance.now();
@@ -34,7 +34,7 @@ export class TextureCache {
     return this.cache.has(id);
   }
 
-  public entries(): IterableIterator<[string, CacheEntry]> {
+  public entries(): IterableIterator<[string, TextureCacheEntry]> {
     return this.cache.entries();
   }
 
@@ -58,7 +58,7 @@ export class TextureCache {
     // Ensure we have space
     this.ensureSpace(sizeBytes);
 
-    const entry: CacheEntry = {
+    const entry: TextureCacheEntry = {
       id,
       texture,
       video,

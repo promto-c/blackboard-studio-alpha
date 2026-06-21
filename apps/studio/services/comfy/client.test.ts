@@ -9,6 +9,7 @@ import {
   extractComfyWorkflowFromImage,
   parseComfyProgressMessage,
   queueComfyPrompt,
+  selectComfyOutputFiles,
   selectComfyPromptOutputs,
   testComfyConnection,
 } from './client';
@@ -183,9 +184,14 @@ describe('Comfy workflow conversion', () => {
     const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
 
     expect(extracted.outputCandidates[0]).toMatchObject({
-      syntheticOutputNodeType: 'SaveImageAdvanced',
       syntheticOutputFormat: 'exr_float',
       previewNodeId: 'blackboard_exr_7_0',
+      syntheticOutputNodes: [
+        {
+          id: 'blackboard_exr_7_0',
+          nodeType: 'SaveImageAdvanced',
+        },
+      ],
       outputNodeDynamicInputs: [
         {
           parentInputName: 'format',
@@ -377,6 +383,137 @@ describe('Comfy workflow conversion', () => {
         },
       },
     });
+  });
+
+  it('keeps connected PreviewAny nodes when expanding nested subgraphs', () => {
+    const workflow = {
+      nodes: [
+        {
+          id: 76,
+          type: 'outer-subgraph',
+          inputs: [],
+          outputs: [{ name: 'STRING', type: 'STRING', links: [] }],
+        },
+      ],
+      links: [],
+      definitions: {
+        subgraphs: [
+          {
+            id: 'outer-subgraph',
+            nodes: [
+              {
+                id: 54,
+                type: 'CustomCombo',
+                inputs: [],
+                outputs: [
+                  { name: 'STRING', type: 'STRING', links: [] },
+                  { name: 'INDEX', type: 'INT', links: [135] },
+                ],
+                widgets_values: ['Image Editing'],
+              },
+              {
+                id: 57,
+                type: 'select-line-subgraph',
+                inputs: [{ name: 'index', type: 'INT', link: 135 }],
+                outputs: [{ name: 'selected_line', type: 'STRING', links: [20] }],
+              },
+            ],
+            links: [
+              [135, 54, 1, 57, 0, 'INT'],
+              [20, 57, 0, -20, 0, 'STRING'],
+            ],
+            outputs: [{ linkIds: [20] }],
+          },
+          {
+            id: 'select-line-subgraph',
+            inputs: [
+              { name: 'text_per_line', type: 'STRING', linkIds: [13] },
+              { name: 'index', type: 'INT', linkIds: [14] },
+            ],
+            nodes: [
+              {
+                id: 56,
+                type: 'PrimitiveInt',
+                inputs: [{ name: 'value', type: 'INT', link: 14 }],
+                outputs: [{ name: 'INT', type: 'INT', links: [1] }],
+                widgets_values: [3, 'fixed'],
+              },
+              {
+                id: 2,
+                type: 'RegexExtract',
+                inputs: [{ name: 'string', type: 'STRING', link: 13 }],
+                outputs: [{ name: 'STRING', type: 'STRING', links: [] }],
+                widgets_values: ['line one\nline two'],
+              },
+              {
+                id: 1,
+                type: 'PreviewAny',
+                inputs: [{ name: 'source', type: '*', link: 1 }],
+                outputs: [{ name: 'STRING', type: 'STRING', links: [6] }],
+              },
+              {
+                id: 8,
+                type: 'StringReplace',
+                inputs: [{ name: 'replace', type: 'STRING', link: 6 }],
+                outputs: [{ name: 'STRING', type: 'STRING', links: [10] }],
+              },
+            ],
+            links: [
+              [13, -10, 0, 2, 0, 'STRING'],
+              [14, -10, 1, 56, 0, 'INT'],
+              [1, 56, 0, 1, 0, 'INT'],
+              [6, 1, 0, 8, 0, 'STRING'],
+              [10, 8, 0, -20, 0, 'STRING'],
+            ],
+            outputs: [{ linkIds: [10] }],
+          },
+        ],
+      },
+    };
+    const objectInfo = {
+      CustomCombo: {
+        input: { required: { choice: ['COMBO'] } },
+        output: ['STRING', 'INT'],
+      },
+      PrimitiveInt: {
+        input: { required: { value: ['INT'] } },
+        output: ['INT'],
+      },
+      PreviewAny: {
+        input: { required: { source: ['*'] } },
+        output: ['STRING'],
+        output_node: true,
+      },
+      StringReplace: {
+        input: { required: { replace: ['STRING'] } },
+        output: ['STRING'],
+      },
+      RegexExtract: {
+        input: { required: { string: ['STRING'] } },
+        output: ['STRING'],
+      },
+    };
+
+    const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
+    const prompt = extracted.prompt;
+
+    expect(prompt['76_57_1']).toEqual({
+      class_type: 'PreviewAny',
+      inputs: { source: ['76_57_56', 0] },
+    });
+    expect(prompt['76_57_8']).toEqual({
+      class_type: 'StringReplace',
+      inputs: { replace: ['76_57_1', 0] },
+    });
+    expect(prompt['76_57_2']).toEqual({
+      class_type: 'RegexExtract',
+      inputs: { string: 'line one\nline two' },
+    });
+    expect(prompt['76_57_56']).toEqual({
+      class_type: 'PrimitiveInt',
+      inputs: { value: ['76_54', 1] },
+    });
+    expect(extracted.outputCandidates).toEqual([]);
   });
 
   it('exposes multiple detected image output ports and can select more than one', () => {
@@ -901,7 +1038,7 @@ describe('Comfy workflow conversion', () => {
     ]);
   });
 
-  it('does not expose media inputs from inside subgraphs as workflow input candidates', () => {
+  it('keeps media inputs from inside subgraphs available unchecked', () => {
     const workflow = {
       nodes: [
         {
@@ -961,7 +1098,19 @@ describe('Comfy workflow conversion', () => {
       },
     };
 
-    expect(extractComfyPromptWithOutputs(workflow, objectInfo).inputCandidates).toEqual([]);
+    const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
+
+    expect(extracted.inputCandidates).toEqual([
+      {
+        id: '10_4:image',
+        nodeId: '10_4',
+        nodeType: 'ImageScale',
+        inputName: 'image',
+        label: 'ImageScale #10_4',
+        scope: 'internal',
+      },
+    ]);
+    expect(extracted.selectedInputIds).toEqual([]);
   });
 
   it('falls back to an embedded API prompt when graph conversion needs unavailable node types', () => {
@@ -1286,6 +1435,74 @@ describe('Comfy workflow conversion', () => {
     ]);
   });
 
+  it('exposes wrapper fields without leaking internal subgraph fields', () => {
+    const workflow = {
+      nodes: [
+        {
+          id: 10,
+          type: 'public-subgraph',
+          inputs: [
+            {
+              name: 'strength',
+              type: 'FLOAT',
+              link: null,
+              widget: { name: 'strength' },
+            },
+          ],
+          outputs: [{ name: 'IMAGE', type: 'IMAGE', links: [] }],
+        },
+      ],
+      links: [],
+      definitions: {
+        subgraphs: [
+          {
+            id: 'public-subgraph',
+            nodes: [
+              {
+                id: 1,
+                type: 'InternalProcessor',
+                inputs: [
+                  { name: 'strength', type: 'FLOAT', link: 20 },
+                  { name: 'hidden_steps', type: 'INT', link: null },
+                ],
+                outputs: [{ name: 'IMAGE', type: 'IMAGE', links: [10] }],
+                widgets_values: [0.75, 42],
+              },
+            ],
+            links: [
+              [20, -10, 0, 1, 0, 'FLOAT'],
+              [10, 1, 0, -20, 0, 'IMAGE'],
+            ],
+            inputs: [{ name: 'strength', type: 'FLOAT', linkIds: [20] }],
+            outputs: [{ name: 'IMAGE', type: 'IMAGE', linkIds: [10] }],
+          },
+        ],
+      },
+    };
+    const objectInfo = {
+      InternalProcessor: {
+        input: {
+          required: {
+            strength: ['FLOAT'],
+            hidden_steps: ['INT'],
+          },
+        },
+        output: ['IMAGE'],
+      },
+      PreviewImage: {
+        input: { required: { images: ['IMAGE'] } },
+        output_node: true,
+      },
+    };
+
+    const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
+
+    expect(extracted.prompt['10_1']).toMatchObject({
+      inputs: { strength: 0.75, hidden_steps: 42 },
+    });
+    expect(extracted.defaultControlKeys).toEqual(['10_1:strength']);
+  });
+
   it('exposes top-level image list and video media inputs as input candidates', () => {
     const workflow = {
       nodes: [
@@ -1608,6 +1825,349 @@ describe('Comfy workflow conversion', () => {
       },
     ]);
     expect(extracted.selectedOutputIds).toEqual(['12']);
+  });
+
+  it('exposes ComfyUI SaveGLB nodes as selectable 3D outputs', () => {
+    const prompt = {
+      '92': {
+        class_type: 'SplatToFile3D',
+        inputs: { splat: ['88', 0], format: 'spz' },
+      },
+      '51': {
+        class_type: 'SaveGLB',
+        inputs: { mesh: ['92', 0], filename_prefix: '3d/ComfyUI_TripoSplat' },
+      },
+    };
+    const objectInfo = {
+      SplatToFile3D: {
+        input: { required: { splat: ['SPLAT'], format: [['ply', 'ksplat', 'spz']] } },
+        output: ['FILE_3D_SPLAT_ANY'],
+      },
+      SaveGLB: {
+        input: {
+          required: {
+            mesh: ['FILE_3D'],
+            filename_prefix: ['STRING'],
+          },
+        },
+        output_node: true,
+      },
+    };
+
+    const extracted = extractComfyPromptWithOutputs(prompt, objectInfo);
+
+    expect(extracted.outputCandidates).toEqual([
+      expect.objectContaining({
+        id: '51',
+        nodeType: 'SaveGLB',
+        kind: 'existing',
+        outputName: '3d',
+        outputType: 'FILE_3D',
+        promptLink: ['92', 0],
+      }),
+    ]);
+    expect(extracted.selectedOutputIds).toEqual(['51']);
+  });
+
+  it('creates a selectable export pipeline for an unconnected SPLAT output port', () => {
+    const workflow = {
+      nodes: [
+        {
+          id: 88,
+          type: 'ImageToSplat',
+          inputs: [],
+          outputs: [{ name: 'splat', type: 'SPLAT', links: null }],
+        },
+      ],
+      links: [],
+    };
+    const objectInfo = {
+      ImageToSplat: { input: { required: {} }, output: ['SPLAT'] },
+      SplatToFile3D: {
+        input: {
+          required: {
+            splat: ['SPLAT'],
+            format: [['ply', 'ksplat', 'spz'], { default: 'ply' }],
+          },
+        },
+        output: ['FILE_3D_SPLAT_ANY'],
+      },
+      SaveGLB: {
+        input: {
+          required: {
+            mesh: ['MESH,FILE_3D'],
+            filename_prefix: ['STRING', { default: '3d/ComfyUI' }],
+          },
+        },
+        output_node: true,
+      },
+    };
+
+    const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
+
+    expect(extracted.outputCandidates).toEqual([
+      expect.objectContaining({
+        id: '88:0',
+        nodeId: '88',
+        kind: 'synthetic',
+        outputName: 'splat',
+        outputType: 'SPLAT',
+        previewNodeId: 'blackboard_3d_88_0_save',
+        syntheticOutputFormat: 'model_3d',
+        syntheticOutputNodes: [
+          {
+            id: 'blackboard_3d_88_0_serialize',
+            nodeType: 'SplatToFile3D',
+            inputs: { format: 'spz', splat: ['88', 0] },
+          },
+          {
+            id: 'blackboard_3d_88_0_save',
+            nodeType: 'SaveGLB',
+            inputs: {
+              filename_prefix: 'blackboard/3d/88_0',
+              mesh: ['blackboard_3d_88_0_serialize', 0],
+            },
+          },
+        ],
+      }),
+    ]);
+    expect(extracted.selectedOutputIds).toEqual(['88:0']);
+    expect(extracted.controlOptions).toContainEqual({
+      nodeId: 'blackboard_3d_88_0_serialize',
+      inputName: 'format',
+      options: ['ply', 'ksplat', 'spz'],
+    });
+    expect(extracted.prompt).toEqual({
+      '88': { class_type: 'ImageToSplat', inputs: {} },
+      blackboard_3d_88_0_serialize: {
+        class_type: 'SplatToFile3D',
+        inputs: { format: 'spz', splat: ['88', 0] },
+      },
+      blackboard_3d_88_0_save: {
+        class_type: 'SaveGLB',
+        inputs: {
+          filename_prefix: 'blackboard/3d/88_0',
+          mesh: ['blackboard_3d_88_0_serialize', 0],
+        },
+      },
+    });
+
+    expect(
+      selectComfyPromptOutputs({
+        prompt: extracted.prompt,
+        outputCandidates: extracted.outputCandidates,
+        selectedOutputIds: [],
+      }),
+    ).toEqual({ '88': { class_type: 'ImageToSplat', inputs: {} } });
+  });
+
+  it('detects an unconnected SPLAT port exposed by a top-level subgraph wrapper', () => {
+    const workflow = {
+      nodes: [
+        {
+          id: 88,
+          type: 'triposplat-subgraph',
+          inputs: [],
+          outputs: [{ name: 'splat', type: 'SPLAT', links: null }],
+        },
+      ],
+      links: [],
+      definitions: {
+        subgraphs: [
+          {
+            id: 'triposplat-subgraph',
+            nodes: [
+              {
+                id: 55,
+                type: 'ImageToSplat',
+                inputs: [],
+                outputs: [{ name: 'splat', type: 'SPLAT', links: [156] }],
+              },
+            ],
+            links: [
+              {
+                id: 156,
+                origin_id: 55,
+                origin_slot: 0,
+                target_id: -20,
+                target_slot: 0,
+                type: 'SPLAT',
+              },
+            ],
+            inputs: [],
+            outputs: [{ name: 'splat', type: 'SPLAT', linkIds: [156, 156] }],
+          },
+        ],
+      },
+    };
+    const objectInfo = {
+      ImageToSplat: { input: { required: {} }, output: ['SPLAT'] },
+      SplatToFile3D: {
+        input: {
+          required: {
+            splat: ['SPLAT'],
+            format: [['ply', 'ksplat', 'spz'], { default: 'ply' }],
+          },
+        },
+        output: ['FILE_3D_SPLAT_ANY'],
+      },
+      SaveGLB: {
+        input: {
+          required: {
+            mesh: ['MESH,FILE_3D'],
+            filename_prefix: ['STRING', { default: '3d/ComfyUI' }],
+          },
+        },
+        output_node: true,
+      },
+    };
+
+    const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
+
+    expect(extracted.outputCandidates[0]).toMatchObject({
+      nodeId: '88',
+      outputName: 'splat',
+      outputType: 'SPLAT',
+      previewNodeId: 'blackboard_3d_88_0_save',
+    });
+    expect(extracted.prompt.blackboard_3d_88_0_serialize).toEqual({
+      class_type: 'SplatToFile3D',
+      inputs: { format: 'spz', splat: ['88_55', 0] },
+    });
+  });
+
+  it('selects an exposed SPLAT while keeping an internal PreviewImage available unchecked', () => {
+    const workflow = {
+      nodes: [
+        {
+          id: 88,
+          type: 'triposplat-subgraph',
+          inputs: [],
+          outputs: [{ name: 'splat', type: 'SPLAT', links: [] }],
+        },
+      ],
+      links: [],
+      definitions: {
+        subgraphs: [
+          {
+            id: 'triposplat-subgraph',
+            nodes: [
+              {
+                id: 55,
+                type: 'ImageToSplat',
+                inputs: [],
+                outputs: [{ name: 'splat', type: 'SPLAT', links: [156] }],
+              },
+              {
+                id: 56,
+                type: 'PreviewSource',
+                inputs: [],
+                outputs: [{ name: 'image', type: 'IMAGE', links: [157] }],
+              },
+              {
+                id: 57,
+                type: 'PreviewImage',
+                inputs: [{ name: 'images', type: 'IMAGE', link: 157 }],
+                outputs: [],
+              },
+            ],
+            links: [
+              [156, 55, 0, -20, 0, 'SPLAT'],
+              [157, 56, 0, 57, 0, 'IMAGE'],
+            ],
+            inputs: [],
+            outputs: [{ name: 'splat', type: 'SPLAT', linkIds: [156] }],
+          },
+        ],
+      },
+    };
+    const objectInfo = {
+      ImageToSplat: { input: { required: {} }, output: ['SPLAT'] },
+      PreviewSource: { input: { required: {} }, output: ['IMAGE'] },
+      PreviewImage: {
+        input: { required: { images: ['IMAGE'] } },
+        output_node: true,
+      },
+      SplatToFile3D: {
+        input: {
+          required: {
+            splat: ['SPLAT'],
+            format: [['ply', 'ksplat', 'spz'], { default: 'ply' }],
+          },
+        },
+        output: ['FILE_3D_SPLAT_ANY'],
+      },
+      SaveGLB: {
+        input: {
+          required: {
+            mesh: ['MESH,FILE_3D'],
+            filename_prefix: ['STRING', { default: '3d/ComfyUI' }],
+          },
+        },
+        output_node: true,
+      },
+    };
+
+    const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
+
+    expect(
+      extracted.outputCandidates.map((candidate) => [
+        candidate.id,
+        candidate.kind,
+        candidate.scope,
+      ]),
+    ).toEqual([
+      ['88:0', 'synthetic', undefined],
+      ['88_57', 'existing', 'internal'],
+    ]);
+    expect(extracted.selectedOutputIds).toEqual(['88:0']);
+    expect(extracted.prompt.blackboard_3d_88_0_serialize).toMatchObject({
+      class_type: 'SplatToFile3D',
+      inputs: { splat: ['88_55', 0], format: 'spz' },
+    });
+  });
+
+  it('connects an unconnected MESH output directly to a synthetic SaveGLB node', () => {
+    const workflow = {
+      nodes: [
+        {
+          id: 12,
+          type: 'MeshGenerator',
+          inputs: [],
+          outputs: [{ name: 'mesh', type: 'MESH', links: null }],
+        },
+      ],
+      links: [],
+    };
+    const objectInfo = {
+      MeshGenerator: { input: { required: {} }, output: ['MESH'] },
+      SaveGLB: {
+        input: {
+          required: {
+            mesh: ['MESH,FILE_3D'],
+            filename_prefix: ['STRING', { default: '3d/ComfyUI' }],
+          },
+        },
+        output_node: true,
+      },
+    };
+
+    const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
+
+    expect(extracted.outputCandidates[0]).toMatchObject({
+      outputType: 'MESH',
+      previewNodeId: 'blackboard_3d_12_0_save',
+      syntheticOutputNodes: [
+        {
+          id: 'blackboard_3d_12_0_save',
+          nodeType: 'SaveGLB',
+          inputs: {
+            filename_prefix: 'blackboard/3d/12_0',
+            mesh: ['12', 0],
+          },
+        },
+      ],
+    });
   });
 
   it('does not append a PreviewImage output when the workflow already has an output node', () => {
@@ -2223,6 +2783,45 @@ describe('Comfy prompt queue', () => {
 });
 
 describe('Comfy output history', () => {
+  it('keeps files only from selected public output nodes', () => {
+    const files = [
+      { nodeId: 'internal-preview', kind: 'image' as const, filename: 'preview.png' },
+      { nodeId: 'public-splat', kind: '3d' as const, filename: 'result.spz' },
+      { nodeId: 'public-image', kind: 'image' as const, filename: 'result.png' },
+    ];
+
+    expect(selectComfyOutputFiles(files, ['public-image', 'public-splat'])).toEqual([
+      files[2],
+      files[1],
+    ]);
+  });
+
+  it('returns 3D model and splat outputs from ComfyUI history', () => {
+    expect(
+      collectComfyHistoryOutputFiles({
+        outputs: {
+          '51': {
+            '3d': [
+              {
+                filename: '3d/ComfyUI_TripoSplat_00060_.spz',
+                subfolder: '',
+                type: 'output',
+              },
+            ],
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        nodeId: '51',
+        kind: '3d',
+        filename: '3d/ComfyUI_TripoSplat_00060_.spz',
+        subfolder: '',
+        type: 'output',
+      },
+    ]);
+  });
+
   it('returns video outputs from ComfyUI history', () => {
     expect(
       collectComfyHistoryOutputFiles({

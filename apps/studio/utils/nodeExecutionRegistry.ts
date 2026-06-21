@@ -3,6 +3,7 @@ type NodeExecutionSource = 'nodeAction' | 'properties' | 'viewportTool';
 export interface NodeExecutionContext {
   source?: NodeExecutionSource;
   runCount?: number;
+  regionId?: string;
 }
 
 export type NodeExecutionHandler = (context?: NodeExecutionContext) => void | Promise<void>;

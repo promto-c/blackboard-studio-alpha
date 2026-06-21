@@ -65,7 +65,11 @@ export { UniformRenderer, type UniformRendererProps } from './UniformRenderer';
 export { ToolButton } from './ToolButton';
 export { ViewerSlotBadges } from './ViewerSlotBadges';
 export { ViewportToolButton } from './ViewportToolButton';
-export { ViewportToolPanel, ViewportToolPanelHeader } from './ViewportToolPanel';
+export {
+  ViewportToolPanel,
+  ViewportToolPanelArea,
+  ViewportToolPanelHeader,
+} from './ViewportToolPanel';
 export { ViewportToolsRenderer } from './ViewportToolsRenderer';
 export { FlowViewModeControls, type FlowViewModeControlsProps } from './FlowViewModeControls';
 export { InspectorStack, type InspectorStackProps } from './InspectorStack';

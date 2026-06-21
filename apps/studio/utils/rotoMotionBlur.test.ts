@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   clampRotoMotionBlurSamples,
-  getRotoMotionBlurCanvasSampleWeights,
   getRotoMotionBlurSampleFrames,
   getRotoMotionBlurSampleWeights,
   resolveRotoMotionBlurPreviewSamples,
@@ -121,50 +120,6 @@ describe('getRotoMotionBlurSampleWeights', () => {
       expect(weights.reduce((total, weight) => total + weight, 0)).toBeCloseTo(1, 10);
       expect(weights[0]).toBeCloseTo(interiorWeight * 0.5, 10);
       expect(weights[weights.length - 1]).toBeCloseTo(interiorWeight * 0.5, 10);
-    }
-  });
-});
-
-describe('getRotoMotionBlurCanvasSampleWeights', () => {
-  it('distributes 8-bit sample weights so they sum to a full-strength mask', () => {
-    for (let samples = 1; samples <= 64; samples += 1) {
-      const weightBytes = getRotoMotionBlurCanvasSampleWeights(
-        getRotoMotionBlurSampleWeights(samples),
-      ).map((weight) => Math.round(weight * 255));
-
-      expect(weightBytes).toHaveLength(samples);
-      expect(weightBytes.reduce((total, weight) => total + weight, 0)).toBe(255);
-    }
-  });
-
-  it('uses only the nearest byte weights for a given sample count', () => {
-    const samples = 63;
-    const idealWeights = getRotoMotionBlurSampleWeights(samples).map((weight) => weight * 255);
-    const weightBytes = getRotoMotionBlurCanvasSampleWeights(
-      getRotoMotionBlurSampleWeights(samples),
-    ).map((weight) => Math.round(weight * 255));
-
-    expect(
-      weightBytes.every((weight, index) => {
-        const floorWeight = Math.floor(idealWeights[index]);
-        const ceilWeight = Math.ceil(idealWeights[index]);
-        return weight === floorWeight || weight === ceilWeight;
-      }),
-    ).toBe(true);
-  });
-
-  it('keeps static fully covered pixels at 1.0 across sample counts', () => {
-    for (let samples = 1; samples <= 64; samples += 1) {
-      let alphaByte = 0;
-      const weightBytes = getRotoMotionBlurCanvasSampleWeights(
-        getRotoMotionBlurSampleWeights(samples),
-      ).map((weight) => Math.round(weight * 255));
-
-      for (const weightByte of weightBytes) {
-        alphaByte = Math.min(255, alphaByte + weightByte);
-      }
-
-      expect(alphaByte / 255).toBe(1);
     }
   });
 });

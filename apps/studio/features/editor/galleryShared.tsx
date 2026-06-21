@@ -44,10 +44,12 @@ export function GalleryCard({
 }) {
   const isVideo = entry.mediaKind === 'video';
   const isSequence = entry.mediaKind === 'image_sequence';
-  const imageUrl = useAssetPreviewUrl(!isVideo ? (entry.assetId ?? '') : '', 512);
+  const isModel3D = entry.mediaKind === 'model_3d';
+  const imageUrl = useAssetPreviewUrl(!isVideo && !isModel3D ? (entry.assetId ?? '') : '', 512);
   const videoUrl = useAssetObjectUrl(isVideo ? (entry.assetId ?? null) : null);
   const dimensions = entry.width && entry.height ? `${entry.width} x ${entry.height}` : null;
-  const canLoadParams = entry.source === 'Comfy' && !!entry.assetId && !entry.deletedAt;
+  const canLoadParams =
+    entry.source === 'Comfy' && !!entry.assetId && !entry.deletedAt && !isModel3D;
 
   return (
     <div
@@ -58,11 +60,22 @@ export function GalleryCard({
             ? 'border-rose-300/20 opacity-60'
             : 'border-white/10 hover:border-white/25 hover:bg-white/[0.04]'
       }`}
-      title={entry.detail || entry.prompt || entry.label || entry.nodeName}
+      title={
+        isModel3D
+          ? `Open ${entry.label || entry.scene3dAsset?.fileName || '3D output'} in Scene 3D`
+          : entry.detail || entry.prompt || entry.label || entry.nodeName
+      }
     >
       <button type="button" onClick={onCardClick} className="block w-full text-left">
         <div className="relative aspect-square bg-gray-800">
-          {videoUrl && isVideo ? (
+          {isModel3D ? (
+            <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-cyan-950/70 via-gray-900 to-gray-950 text-cyan-200">
+              <Icons.CubeTransparent className="h-10 w-10" />
+              <span className="mt-2 rounded bg-black/30 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-cyan-100/70">
+                {entry.scene3dAsset?.format ?? '3D model'}
+              </span>
+            </div>
+          ) : videoUrl && isVideo ? (
             <video src={videoUrl} className="h-full w-full object-cover" muted playsInline />
           ) : imageUrl ? (
             <img src={imageUrl} alt="" className="h-full w-full object-cover" />
@@ -79,9 +92,11 @@ export function GalleryCard({
               Bin
             </div>
           ) : null}
-          {isVideo || isSequence ? (
+          {isVideo || isSequence || isModel3D ? (
             <span className="absolute bottom-1.5 left-1.5 rounded bg-black/70 p-1 text-gray-100">
-              {isVideo ? (
+              {isModel3D ? (
+                <Icons.CubeTransparent className="h-3 w-3" />
+              ) : isVideo ? (
                 <Icons.Video className="h-3 w-3" />
               ) : (
                 <Icons.FolderOpen className="h-3 w-3" />

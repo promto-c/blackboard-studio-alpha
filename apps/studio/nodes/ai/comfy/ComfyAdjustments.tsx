@@ -40,7 +40,10 @@ import {
   prepareComfyWorkflowControlsForRun,
   supportsComfyWorkflowControlRunMode,
 } from './comfyControls';
-import { getComfyWorkflowInputCandidates } from './comfyInputs';
+import {
+  getComfyWorkflowInputCandidates,
+  getSelectedComfyWorkflowInputCandidates,
+} from './comfyInputs';
 import { getComfyInputPortName, remapInputsOnWorkflowChange } from '../../portMapping';
 import {
   createComfyWorkflowFromJson,
@@ -49,9 +52,9 @@ import {
   hashComfyWorkflowSource,
   isComfyWorkflowImageFile,
   readComfyWorkflowFile,
+  refreshComfyWorkflowFromSource,
 } from './comfyWorkflowImport';
 import { getAiTaskRouteError, resolveAiTaskRoute } from '@/utils/aiRouting';
-import { isBackgroundJobActive } from '@/state/editor/services/backgroundJobs';
 import { registerBackgroundJobCancelHandler } from '@/state/editor/services/backgroundJobExecutor';
 import { useNodeExecutionHandler } from '@/hooks/useNodeExecutionHandler';
 import type { NodeExecutionContext } from '@/utils/nodeExecutionRegistry';
@@ -73,8 +76,8 @@ import {
   getWorkflowNameFromPath,
 } from './comfyWorkflowDisplay';
 import { createGeneratedOutputsFromComfyFiles } from './comfyGeneratedOutputs';
+import { createScene3DSettingsWithAsset } from '@/nodes/builtin/scene_3d/scene3d';
 import {
-  clampPixelRect,
   renderNodeInputFrameToPngBlob,
   renderNodeInputRegionToPngBlob,
 } from '@/utils/nodeInputFrame';
@@ -99,10 +102,21 @@ import {
   shouldUseComfyWorkflowInputSource,
 } from './comfyViewportBindings';
 import { getComfyOutputTransform } from './comfyOutputTransform';
+import { isComfyRunShortcut } from './comfyRunShortcut';
+import { getActiveComfyOutputJobs, getPendingComfyOutputSlots } from './comfyOutputGallery';
+import { getComfyGeneratedOutputsForGalleryScope } from './comfyOutputLayers';
 import {
   getComfyGeneratedOutputsForGalleryActivation,
+  getComfyMediaOutput,
   getComfyOutputActivationRegionId,
-} from './comfyOutputLayers';
+  getComfyOutputActivationUpdates,
+  isComfy3DGeneratedOutput,
+} from './comfyOutputActivation';
+import {
+  getComfyOutputCandidateInputs,
+  getComfyOutputCandidateNodes,
+  updateComfyOutputCandidateInputs,
+} from './comfyOutputCandidates';
 
 type RunState = 'idle' | 'queueing' | 'running' | 'downloading' | 'complete' | 'error';
 type WorkflowBrowserState = 'idle' | 'loading' | 'importing' | 'error';
@@ -219,11 +233,6 @@ const getSelectedWorkflowOutputCandidates = (
   return (workflow.outputCandidates ?? []).filter((candidate) => selectedIds.has(candidate.id));
 };
 
-const getComfyOutputCandidateInputs = (
-  candidate: ComfyWorkflowOutputCandidate,
-): Record<string, unknown> =>
-  candidate.syntheticOutputNodeInputs ?? candidate.outputNodeInputs ?? {};
-
 const isMatchingComfyDynamicOption = (
   optionKey: string | number,
   selectedValue: unknown,
@@ -231,8 +240,10 @@ const isMatchingComfyDynamicOption = (
 
 const getComfyOutputDynamicNestedInputNames = (
   candidate: ComfyWorkflowOutputCandidate,
+  nodeId: string,
 ): Set<string> => {
   const names = new Set<string>();
+  if (nodeId !== candidate.previewNodeId) return names;
   for (const option of candidate.outputNodeDynamicInputs ?? []) {
     for (const field of option.fields) {
       names.add(field.inputName);
@@ -244,11 +255,13 @@ const getComfyOutputDynamicNestedInputNames = (
 
 const getNextComfyOutputCandidateInputs = (
   candidate: ComfyWorkflowOutputCandidate,
+  nodeId: string,
   inputName: string,
   value: ComfyWorkflowControl['value'],
 ): Record<string, unknown> => {
-  const inputs = { ...getComfyOutputCandidateInputs(candidate), [inputName]: value };
-  const dynamicOptions = candidate.outputNodeDynamicInputs ?? [];
+  const inputs = { ...getComfyOutputCandidateInputs(candidate, nodeId), [inputName]: value };
+  const dynamicOptions =
+    nodeId === candidate.previewNodeId ? (candidate.outputNodeDynamicInputs ?? []) : [];
   const changedParentNames = new Set(
     dynamicOptions
       .filter((option) => option.parentInputName === inputName)
@@ -370,56 +383,82 @@ const cropImageBlobToRegion = async ({
   blob,
   region,
   sceneNode,
+  alphaMode,
 }: {
   blob: Blob;
   region: ViewportPromptRegion;
   sceneNode: Pick<SceneNode, 'width' | 'height'>;
+  alphaMode: 'opaque' | 'preserve';
 }): Promise<Blob> => {
   const bitmap = await createImageBitmap(blob);
 
   try {
-    const cropRect = clampPixelRect(
-      {
-        x: (region.rect.x / sceneNode.width) * bitmap.width,
-        y: (region.rect.y / sceneNode.height) * bitmap.height,
-        width: (region.rect.width / sceneNode.width) * bitmap.width,
-        height: (region.rect.height / sceneNode.height) * bitmap.height,
-      },
-      bitmap,
-    );
+    // Scale the region rect from scene coords to the bitmap's pixel coords
+    const regionBmpX = (region.rect.x / sceneNode.width) * bitmap.width;
+    const regionBmpY = (region.rect.y / sceneNode.height) * bitmap.height;
+    const regionBmpW = (region.rect.width / sceneNode.width) * bitmap.width;
+    const regionBmpH = (region.rect.height / sceneNode.height) * bitmap.height;
 
-    if (!cropRect) {
-      throw new Error('Selected Comfy region is outside the loaded input image.');
-    }
+    // Compute pixel-aligned bounds consistently with floor/ceil
+    const pixelLeft = Math.floor(Math.min(regionBmpX, regionBmpX + regionBmpW));
+    const pixelTop = Math.floor(Math.min(regionBmpY, regionBmpY + regionBmpH));
+    const pixelRight = Math.ceil(Math.max(regionBmpX, regionBmpX + regionBmpW));
+    const pixelBottom = Math.ceil(Math.max(regionBmpY, regionBmpY + regionBmpH));
+    const outputWidth = Math.max(1, Math.abs(pixelRight - pixelLeft));
+    const outputHeight = Math.max(1, Math.abs(pixelBottom - pixelTop));
 
     const canvas = document.createElement('canvas');
-    canvas.width = cropRect.width;
-    canvas.height = cropRect.height;
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
     const context = canvas.getContext('2d');
     if (!context) {
       throw new Error('Could not create a canvas for cropped Comfy input image.');
     }
 
-    context.drawImage(
-      bitmap,
-      cropRect.x,
-      cropRect.y,
-      cropRect.width,
-      cropRect.height,
-      0,
-      0,
-      cropRect.width,
-      cropRect.height,
-    );
+    // Calculate the overlap between the pixel-aligned rect and the bitmap bounds
+    const overlapLeft = Math.max(0, pixelLeft);
+    const overlapTop = Math.max(0, pixelTop);
+    const overlapRight = Math.min(bitmap.width, pixelRight);
+    const overlapBottom = Math.min(bitmap.height, pixelBottom);
+    const overlapWidth = overlapRight - overlapLeft;
+    const overlapHeight = overlapBottom - overlapTop;
+
+    if (alphaMode === 'opaque') {
+      // Fill with opaque black — areas not covered by the image become
+      // opaque black (the default, most Comfy models expect opaque input).
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, outputWidth, outputHeight);
+    } else {
+      // Fill with transparent pixels to preserve alpha.
+      context.clearRect(0, 0, outputWidth, outputHeight);
+    }
+
+    if (overlapWidth > 0 && overlapHeight > 0) {
+      // Where the overlap sits within the output canvas.
+      const canvasOffsetX = overlapLeft - pixelLeft;
+      const canvasOffsetY = overlapTop - pixelTop;
+
+      if (canvasOffsetX >= 0 && canvasOffsetY >= 0) {
+        context.drawImage(
+          bitmap,
+          overlapLeft,
+          overlapTop,
+          overlapWidth,
+          overlapHeight,
+          canvasOffsetX,
+          canvasOffsetY,
+          overlapWidth,
+          overlapHeight,
+        );
+      }
+    }
+    // If there is no overlap and alphaMode is 'opaque', the canvas stays opaque black.
 
     return encodeCanvasToPngBlob(canvas);
   } finally {
     bitmap.close();
   }
 };
-
-const isRunShortcut = (event: React.KeyboardEvent<HTMLElement>): boolean =>
-  event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.altKey;
 
 const getRunInputContext = (context?: NodeExecutionContext): ComfyRunInputContext =>
   context?.source === 'viewportTool' ? 'viewportTool' : 'props';
@@ -435,6 +474,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     finishBackgroundJob,
     requestBackgroundJobCancel,
     applyComfyNodeRunResult,
+    addNodeWithProps,
   } = useEditorActions();
   const {
     comfyEndpoint,
@@ -467,16 +507,12 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
   const backgroundJobs = useEditorSelector((state) => state.backgroundJobs);
   const activeNodeComfyJobs = useMemo(
     () =>
-      backgroundJobs
-        .filter(
-          (job) =>
-            job.type === 'comfy' &&
-            job.source?.nodeId === node.id &&
-            (!job.source.projectId || job.source.projectId === projectId) &&
-            (!job.source.branchId || job.source.branchId === activeProjectBranchId) &&
-            isBackgroundJobActive(job),
-        )
-        .sort((a, b) => a.startedAt - b.startedAt),
+      getActiveComfyOutputJobs({
+        jobs: backgroundJobs,
+        nodeId: node.id,
+        projectId,
+        branchId: activeProjectBranchId,
+      }),
     [activeProjectBranchId, backgroundJobs, node.id, projectId],
   );
   const activeNodeComfyJob = activeNodeComfyJobs[0] ?? null;
@@ -485,6 +521,10 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
   const pasteTextareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const generatedOutputsRef = useRef<GeneratedOutput[]>(node.generatedOutputs ?? []);
+  const workflowsRef = useRef(node.workflows);
+  const workflowControlsRef = useRef(node.workflowControls ?? []);
+  const refreshedWorkflowMetadataKeysRef = useRef(new Set<string>());
+  const refreshingWorkflowMetadataKeysRef = useRef(new Set<string>());
   const hasStepProgressRef = useRef(false);
   const [runState, setRunState] = useState<RunState>('idle');
   const [runProgress, setRunProgress] = useState<RunProgress | null>(null);
@@ -561,40 +601,13 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     [node.workflowControls],
   );
   const recentGeneratedOutputs = useMemo(
-    () => [...(node.generatedOutputs ?? [])].filter((output) => !output.deletedAt).reverse(),
-    [node.generatedOutputs],
+    () => getComfyGeneratedOutputsForGalleryScope(node, selectedRegionForProps?.id).reverse(),
+    [node, selectedRegionForProps?.id],
   );
-  const pendingGeneratedOutputSlots = useMemo(() => {
-    return activeNodeComfyJobs.flatMap((job, jobIndex) => {
-      const source = job.source;
-      const runCount = source?.runCount ?? 0;
-      if (runCount <= 0) return [];
-
-      const runIndex = Math.max(1, Math.min(runCount, source?.runIndex ?? 1));
-      const completedCount = Math.max(
-        0,
-        Math.min(runCount, source?.completedCount ?? runIndex - 1),
-      );
-      const remainingCount = Math.max(0, runCount - completedCount);
-      const queuedJobNumber = jobIndex + 1;
-
-      return Array.from({ length: remainingCount }, (_, index) => {
-        const slot = completedCount + index + 1;
-        const isActiveSlot = slot === runIndex && job.status !== 'queued';
-        return {
-          id: `${job.id}:${slot}`,
-          slot,
-          label: isActiveSlot
-            ? 'Generating'
-            : queuedJobNumber > 1
-              ? `Queued ${queuedJobNumber}`
-              : `Queued ${slot}`,
-          detail: runCount > 1 ? `Run ${slot}/${runCount}` : job.detail,
-          active: isActiveSlot,
-        };
-      });
-    });
-  }, [activeNodeComfyJobs]);
+  const pendingGeneratedOutputSlots = useMemo(
+    () => getPendingComfyOutputSlots(activeNodeComfyJobs, selectedRegionForProps?.id),
+    [activeNodeComfyJobs, selectedRegionForProps?.id],
+  );
 
   const activeWorkflowControls = useMemo(
     () =>
@@ -704,6 +717,14 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     () => getComfyWorkflowInputCandidates(selectedWorkflow),
     [selectedWorkflow],
   );
+  const selectedWorkflowInputCandidates = useMemo(
+    () => getSelectedComfyWorkflowInputCandidates(selectedWorkflow),
+    [selectedWorkflow],
+  );
+  const selectedWorkflowInputIdSet = useMemo(
+    () => new Set(selectedWorkflowInputCandidates.map((candidate) => candidate.id)),
+    [selectedWorkflowInputCandidates],
+  );
   const getWorkflowInputPortName = useCallback(
     (workflow: ComfyWorkflow, candidate: ComfyWorkflowInputCandidate): string =>
       getComfyInputPortName(
@@ -711,10 +732,12 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         candidate,
         [...Object.keys(node.inputs ?? {}), ...Object.keys(node.workflowInputImages ?? {})],
         {
-          allowSingleReservedPort: getComfyWorkflowInputCandidates(workflow).length === 1,
+          allowSingleReservedPort:
+            selectedWorkflowInputIdSet.has(candidate.id) &&
+            getSelectedComfyWorkflowInputCandidates(workflow).length === 1,
         },
       ),
-    [node.inputs, node.workflowInputImages],
+    [node.inputs, node.workflowInputImages, selectedWorkflowInputIdSet],
   );
   const connectedWorkflowInputs = useMemo(() => {
     if (!selectedWorkflow) return [];
@@ -781,16 +804,19 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       keys.add(getComfyControlKey(candidate.nodeId, candidate.inputName));
     }
     for (const candidate of workflowOutputCandidates) {
-      const inputs = candidate.syntheticOutputNodeInputs ?? candidate.outputNodeInputs ?? {};
-      for (const [inputName, value] of Object.entries(inputs)) {
-        if (
-          ['images', 'image', 'video'].includes(inputName.toLowerCase()) ||
-          Array.isArray(value) ||
-          !['string', 'number', 'boolean'].includes(typeof value)
-        ) {
-          continue;
+      for (const outputNode of getComfyOutputCandidateNodes(candidate)) {
+        for (const [inputName, value] of Object.entries(outputNode.inputs)) {
+          if (
+            ['images', 'image', 'video', 'mesh', 'splat', 'model_3d'].includes(
+              inputName.toLowerCase(),
+            ) ||
+            Array.isArray(value) ||
+            !['string', 'number', 'boolean'].includes(typeof value)
+          ) {
+            continue;
+          }
+          keys.add(getComfyControlKey(outputNode.id, inputName));
         }
-        keys.add(getComfyControlKey(candidate.previewNodeId, inputName));
       }
     }
     return keys;
@@ -821,14 +847,14 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
 
   const activeControlKeys = useMemo(() => new Set(activeControlKeyList), [activeControlKeyList]);
 
-  const defaultControlKeyList = useMemo(
+  const availableControlKeyList = useMemo(
     () => visibleControlCandidates.map((candidate) => candidate.key).sort(),
     [visibleControlCandidates],
   );
 
   const getDefaultPendingControlKeys = useCallback(
-    () => new Set(activeControlKeyList.length > 0 ? activeControlKeyList : defaultControlKeyList),
-    [activeControlKeyList, defaultControlKeyList],
+    () => new Set(activeControlKeyList),
+    [activeControlKeyList],
   );
 
   const activeControlKeySignature = useMemo(
@@ -836,9 +862,9 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     [activeControlKeyList],
   );
 
-  const defaultControlKeySignature = useMemo(
-    () => defaultControlKeyList.join('\n'),
-    [defaultControlKeyList],
+  const availableControlKeySignature = useMemo(
+    () => availableControlKeyList.join('\n'),
+    [availableControlKeyList],
   );
 
   useEffect(() => {
@@ -848,6 +874,70 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
   useEffect(() => {
     generatedOutputsRef.current = node.generatedOutputs ?? [];
   }, [node.generatedOutputs]);
+
+  useEffect(() => {
+    workflowsRef.current = node.workflows;
+    workflowControlsRef.current = node.workflowControls ?? [];
+  }, [node.workflowControls, node.workflows]);
+
+  useEffect(() => {
+    if (!selectedWorkflow?.sourceGraph) return;
+    const refreshKey = [
+      endpoint,
+      selectedWorkflow.id,
+      selectedWorkflow.updatedAt ?? selectedWorkflow.createdAt,
+    ].join('\u0000');
+    if (
+      refreshedWorkflowMetadataKeysRef.current.has(refreshKey) ||
+      refreshingWorkflowMetadataKeysRef.current.has(refreshKey)
+    ) {
+      return;
+    }
+    refreshingWorkflowMetadataKeysRef.current.add(refreshKey);
+
+    void refreshComfyWorkflowFromSource(endpoint, selectedWorkflow)
+      .then((refreshedWorkflow) => {
+        refreshedWorkflowMetadataKeysRef.current.add(refreshKey);
+        const existingControls = workflowControlsRef.current;
+        const existingControlKeys = new Set(
+          existingControls
+            .filter((control) => control.workflowId === refreshedWorkflow.id)
+            .map((control) => getComfyControlKey(control.nodeId, control.inputName)),
+        );
+        const missingControls = createDefaultComfyWorkflowControls(refreshedWorkflow).filter(
+          (control) =>
+            !existingControlKeys.has(getComfyControlKey(control.nodeId, control.inputName)),
+        );
+        const discoveredOutputCount = refreshedWorkflow.outputCandidates?.length ?? 0;
+        const hadNoOutputCandidates = (selectedWorkflow.outputCandidates?.length ?? 0) === 0;
+
+        updateNode(
+          node.id,
+          {
+            workflows: workflowsRef.current.map((workflow) =>
+              workflow.id === refreshedWorkflow.id ? refreshedWorkflow : workflow,
+            ),
+            workflowControls:
+              missingControls.length > 0
+                ? [...existingControls, ...missingControls]
+                : existingControls,
+          },
+          false,
+        );
+
+        if (hadNoOutputCandidates && discoveredOutputCount > 0) {
+          setStatusMessage(
+            `Detected ${discoveredOutputCount} workflow output port${discoveredOutputCount === 1 ? '' : 's'}.`,
+          );
+        }
+      })
+      .catch(() => {
+        refreshedWorkflowMetadataKeysRef.current.delete(refreshKey);
+      })
+      .finally(() => {
+        refreshingWorkflowMetadataKeysRef.current.delete(refreshKey);
+      });
+  }, [endpoint, node.id, selectedWorkflow, updateNode]);
 
   useEffect(() => {
     if (!selectedWorkflow) return;
@@ -872,7 +962,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     setPendingControlKeys(getDefaultPendingControlKeys());
   }, [
     activeControlKeySignature,
-    defaultControlKeySignature,
+    availableControlKeySignature,
     getDefaultPendingControlKeys,
     selectedWorkflow?.id,
   ]);
@@ -899,6 +989,22 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
   };
 
   const handleActivateGeneratedOutput = (output: GeneratedOutput) => {
+    if (isComfy3DGeneratedOutput(output) && output.scene3dAsset) {
+      addNodeWithProps(
+        NodeType.SCENE_3D,
+        {
+          viewportMode: 'scene3d',
+          scene3d: createScene3DSettingsWithAsset(
+            output.scene3dAsset,
+            sceneNode?.width,
+            sceneNode?.height,
+          ),
+        },
+        { name: output.label || output.scene3dAsset.fileName },
+      );
+      return;
+    }
+
     const transform = getComfyOutputTransform({ node, output, sceneNode });
     const nextGeneratedOutputs = getComfyGeneratedOutputsForGalleryActivation(node, output);
     generatedOutputsRef.current = nextGeneratedOutputs;
@@ -906,20 +1012,10 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     updateNode(
       node.id,
       {
-        src: output.src,
-        mediaKind: output.mediaKind ?? 'image',
-        colorSpace: output.colorSpace ?? node.colorSpace,
-        frames: output.frames,
-        duration: output.duration,
-        fps: output.fps,
-        width: output.width,
-        height: output.height,
+        ...getComfyOutputActivationUpdates(output),
         transform,
         generatedOutputs: nextGeneratedOutputs,
-        activeGeneratedOutputId: output.id,
         selectedViewportPromptRegionId: getComfyOutputActivationRegionId(node, output),
-        lastPromptId: output.promptId,
-        lastRunAt: output.createdAt,
       },
       true,
     );
@@ -936,7 +1032,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
 
     try {
       const workflow = await readComfyWorkflowFile(file, endpoint);
-      const inputCandidates = getComfyWorkflowInputCandidates(workflow);
+      const inputCandidates = getSelectedComfyWorkflowInputCandidates(workflow);
       const remappedInputs = remapInputsOnWorkflowChange(node.inputs, workflow.id, inputCandidates);
       const defaultWorkflowControls = createDefaultComfyWorkflowControls(workflow);
       const importedAt = Date.now();
@@ -1152,7 +1248,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         createdAt: modifiedAt,
         updatedAt: modifiedAt,
       });
-      const inputCandidates = getComfyWorkflowInputCandidates(workflow);
+      const inputCandidates = getSelectedComfyWorkflowInputCandidates(workflow);
       const remappedInputs = remapInputsOnWorkflowChange(node.inputs, workflow.id, inputCandidates);
       const hasExistingWorkflowControls = workflowControls.some(
         (control) => control.workflowId === workflow.id,
@@ -1219,7 +1315,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         value: parsed,
         createdAt: Date.now(),
       });
-      const inputCandidates = getComfyWorkflowInputCandidates(workflow);
+      const inputCandidates = getSelectedComfyWorkflowInputCandidates(workflow);
       const remappedInputs = remapInputsOnWorkflowChange(node.inputs, workflow.id, inputCandidates);
       const defaultWorkflowControls = createDefaultComfyWorkflowControls(workflow);
 
@@ -1253,7 +1349,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
 
   const handleSelectWorkflow = (workflowId: string) => {
     const workflow = node.workflows.find((candidate) => candidate.id === workflowId) ?? null;
-    const inputCandidates = getComfyWorkflowInputCandidates(workflow);
+    const inputCandidates = getSelectedComfyWorkflowInputCandidates(workflow);
     const remappedInputs = remapInputsOnWorkflowChange(node.inputs, workflowId, inputCandidates);
     updateNode(
       node.id,
@@ -1272,10 +1368,10 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     if (!selectedWorkflow) return;
     const workflows = node.workflows.filter((workflow) => workflow.id !== selectedWorkflow.id);
     const nextWorkflow = workflows[0] ?? null;
-    const inputCandidates = getComfyWorkflowInputCandidates(nextWorkflow);
+    const inputCandidates = getSelectedComfyWorkflowInputCandidates(nextWorkflow);
     const remappedInputs = nextWorkflow
       ? remapInputsOnWorkflowChange(node.inputs, nextWorkflow.id, inputCandidates)
-      : undefined;
+      : node.inputs;
     updateNode(
       node.id,
       {
@@ -1303,6 +1399,41 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         workflows: node.workflows.map((workflow) =>
           workflow.id === selectedWorkflow.id ? { ...workflow, selectedOutputIds } : workflow,
         ),
+        lastError: undefined,
+      },
+      true,
+    );
+    setLocalError(null);
+  };
+
+  const handleToggleWorkflowInputCandidate = (candidateId: string) => {
+    if (!selectedWorkflow) return;
+    const candidate = workflowInputCandidates.find((entry) => entry.id === candidateId);
+    if (!candidate) return;
+
+    const isSelected = selectedWorkflowInputIdSet.has(candidateId);
+    const selectedInputIds = isSelected
+      ? selectedWorkflowInputCandidates
+          .filter((entry) => entry.id !== candidateId)
+          .map((entry) => entry.id)
+      : [...selectedWorkflowInputCandidates.map((entry) => entry.id), candidateId];
+    const nextInputs = { ...(node.inputs ?? {}) };
+    const nextInputImages = { ...(node.workflowInputImages ?? {}) };
+
+    if (isSelected) {
+      const portName = getWorkflowInputPortName(selectedWorkflow, candidate);
+      delete nextInputs[portName];
+      delete nextInputImages[portName];
+    }
+
+    updateNode(
+      node.id,
+      {
+        workflows: node.workflows.map((workflow) =>
+          workflow.id === selectedWorkflow.id ? { ...workflow, selectedInputIds } : workflow,
+        ),
+        inputs: Object.keys(nextInputs).length > 0 ? nextInputs : undefined,
+        workflowInputImages: nextInputImages,
         lastError: undefined,
       },
       true,
@@ -1446,29 +1577,37 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
 
   const handleUpdateWorkflowOutputField = (
     candidate: ComfyWorkflowOutputCandidate,
+    outputNodeId: string,
     inputName: string,
     value: ComfyWorkflowControl['value'],
   ) => {
     if (!selectedWorkflow) return;
 
-    const nextCandidateInputs = getNextComfyOutputCandidateInputs(candidate, inputName, value);
-    const dynamicNestedInputNames = getComfyOutputDynamicNestedInputNames(candidate);
+    const nextCandidateInputs = getNextComfyOutputCandidateInputs(
+      candidate,
+      outputNodeId,
+      inputName,
+      value,
+    );
+    const dynamicNestedInputNames = getComfyOutputDynamicNestedInputNames(candidate, outputNodeId);
+    const dynamicOptions =
+      outputNodeId === candidate.previewNodeId ? (candidate.outputNodeDynamicInputs ?? []) : [];
     const resetDynamicControlKeys = new Set(
-      (candidate.outputNodeDynamicInputs ?? [])
+      dynamicOptions
         .filter((option) => option.parentInputName === inputName)
         .flatMap((option) =>
           option.fields.flatMap((field) => [
-            getComfyControlKey(candidate.previewNodeId, field.inputName),
-            getComfyControlKey(candidate.previewNodeId, field.dottedInputName),
+            getComfyControlKey(outputNodeId, field.inputName),
+            getComfyControlKey(outputNodeId, field.dottedInputName),
           ]),
         ),
     );
     const removedDynamicControlKeys = new Set(
       [...dynamicNestedInputNames]
         .filter((dynamicInputName) => !(dynamicInputName in nextCandidateInputs))
-        .map((dynamicInputName) => getComfyControlKey(candidate.previewNodeId, dynamicInputName)),
+        .map((dynamicInputName) => getComfyControlKey(outputNodeId, dynamicInputName)),
     );
-    const controlKey = getComfyControlKey(candidate.previewNodeId, inputName);
+    const controlKey = getComfyControlKey(outputNodeId, inputName);
     const existingControl = activeWorkflowControls.find(
       (control) => getComfyControlKey(control.nodeId, control.inputName) === controlKey,
     );
@@ -1493,10 +1632,10 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     const nextWorkflows = node.workflows.map((workflow) => {
       if (workflow.id !== selectedWorkflow.id) return workflow;
       const nextPrompt = { ...workflow.prompt };
-      const promptNode = nextPrompt[candidate.previewNodeId];
+      const promptNode = nextPrompt[outputNodeId];
       if (promptNode && typeof promptNode === 'object' && !Array.isArray(promptNode)) {
         const promptNodeObject = promptNode as Record<string, unknown>;
-        nextPrompt[candidate.previewNodeId] = {
+        nextPrompt[outputNodeId] = {
           ...promptNodeObject,
           inputs: nextCandidateInputs,
         };
@@ -1507,12 +1646,11 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         prompt: nextPrompt,
         outputCandidates: (workflow.outputCandidates ?? []).map((outputCandidate) => {
           if (outputCandidate.id !== candidate.id) return outputCandidate;
-          const inputKey =
-            outputCandidate.kind === 'synthetic' ? 'syntheticOutputNodeInputs' : 'outputNodeInputs';
-          return {
-            ...outputCandidate,
-            [inputKey]: nextCandidateInputs,
-          };
+          return updateComfyOutputCandidateInputs(
+            outputCandidate,
+            outputNodeId,
+            nextCandidateInputs,
+          );
         }),
       };
     });
@@ -1584,17 +1722,28 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     workflow: ComfyWorkflow,
     signal: AbortSignal,
     inputContext: ComfyRunInputContext,
+    selectedRegionOverride?: ViewportPromptRegion | null,
   ): Promise<Array<{ candidate: ComfyWorkflowInputCandidate; imageName: string }>> => {
     const uploads: Array<{ candidate: ComfyWorkflowInputCandidate; imageName: string }> = [];
     const selectedRegion =
-      inputContext === 'viewportTool' ? getExplicitSelectedComfyViewportPromptRegion(node) : null;
+      inputContext === 'viewportTool'
+        ? (selectedRegionOverride ?? getExplicitSelectedComfyViewportPromptRegion(node))
+        : null;
 
     if (selectedRegion && !sceneNode) {
       throw new Error('Scene node not found for Comfy region input rendering.');
     }
 
-    for (const candidate of getComfyWorkflowInputCandidates(workflow)) {
-      if (!shouldUseComfyWorkflowInputSource({ node, workflow, candidate, inputContext })) {
+    for (const candidate of getSelectedComfyWorkflowInputCandidates(workflow)) {
+      if (
+        !shouldUseComfyWorkflowInputSource({
+          node,
+          workflow,
+          candidate,
+          inputContext,
+          regionId: selectedRegion?.id,
+        })
+      ) {
         continue;
       }
 
@@ -1616,6 +1765,10 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         const nativeSourceImage = selectedRegion
           ? null
           : await readNativeWorkflowSourceImage(sourceNode, currentFrame);
+        const regionAlphaMode =
+          selectedRegion?.regionInputAlphaMode ??
+          node.viewportPromptRegionDefaults?.regionInputAlphaMode ??
+          'opaque';
         const blob =
           selectedRegion && sceneNode
             ? await renderNodeInputRegionToPngBlob({
@@ -1626,6 +1779,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
                 frame: currentFrame,
                 regionRect: selectedRegion.rect,
                 finalColorSpace: sceneNode.colorSpace === 'Linear' ? 'srgb' : 'raw_texture',
+                regionInputAlphaMode: regionAlphaMode,
               })
             : (nativeSourceImage?.blob ??
               (await renderNodeInputFrameToPngBlob({
@@ -1661,9 +1815,18 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       if (!isImageFileLike(blob, inputImage.name)) {
         throw new Error(`${inputImage.name} is not an image asset ComfyUI can load.`);
       }
+      const regionAlphaMode =
+        selectedRegion?.regionInputAlphaMode ??
+        node.viewportPromptRegionDefaults?.regionInputAlphaMode ??
+        'opaque';
       const uploadBlob =
         selectedRegion && sceneNode
-          ? await cropImageBlobToRegion({ blob, region: selectedRegion, sceneNode })
+          ? await cropImageBlobToRegion({
+              blob,
+              region: selectedRegion,
+              sceneNode,
+              alphaMode: regionAlphaMode,
+            })
           : blob;
       const imageName = await uploadComfyInputImage({
         endpoint,
@@ -1683,13 +1846,42 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     return uploads;
   };
 
-  const handleRunWorkflow = async (runCount = 1, inputContext: ComfyRunInputContext = 'props') => {
+  const handleRunWorkflow = async (
+    runCount = 1,
+    inputContext: ComfyRunInputContext = 'props',
+    requestedRegionId?: string,
+  ) => {
     if (!selectedWorkflow) {
       setRunState('error');
       setNodeError('Import and select a ComfyUI workflow before running.');
       return;
     }
-    const missingOptions = getMissingWorkflowControlOptions(workflowControls, selectedWorkflow);
+
+    let workflowForRun: ComfyWorkflow;
+    try {
+      workflowForRun = await refreshComfyWorkflowFromSource(endpoint, selectedWorkflow);
+      if (workflowForRun !== selectedWorkflow) {
+        updateNode(
+          node.id,
+          {
+            workflows: node.workflows.map((workflow) =>
+              workflow.id === workflowForRun.id ? workflowForRun : workflow,
+            ),
+          },
+          false,
+        );
+      }
+    } catch (error) {
+      setRunState('error');
+      setNodeError(
+        error instanceof Error
+          ? `Could not refresh the ComfyUI workflow: ${error.message}`
+          : 'Could not refresh the ComfyUI workflow.',
+      );
+      return;
+    }
+
+    const missingOptions = getMissingWorkflowControlOptions(workflowControls, workflowForRun);
     if (missingOptions.length > 0) {
       const firstMissing = missingOptions[0];
       setRunState('error');
@@ -1699,9 +1891,16 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       return;
     }
 
-    const selectedOutputCandidates = getSelectedWorkflowOutputCandidates(selectedWorkflow);
+    const selectedOutputCandidates = getSelectedWorkflowOutputCandidates(workflowForRun);
+    if (workflowForRun.sourceGraph && (workflowForRun.outputCandidates ?? []).length === 0) {
+      setRunState('error');
+      setNodeError(
+        'Expose an IMAGE, MESH, SPLAT, or FILE_3D output at the top level of the ComfyUI workflow before running.',
+      );
+      return;
+    }
     if (
-      (selectedWorkflow.outputCandidates ?? []).length > 0 &&
+      (workflowForRun.outputCandidates ?? []).length > 0 &&
       selectedOutputCandidates.length === 0
     ) {
       setRunState('error');
@@ -1716,7 +1915,13 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       (candidate) => candidate.previewNodeId,
     );
     const selectedRunRegion =
-      inputContext === 'viewportTool' ? getExplicitSelectedComfyViewportPromptRegion(node) : null;
+      inputContext === 'viewportTool'
+        ? requestedRegionId
+          ? ((node.viewportPromptRegions ?? []).find(
+              (region) => region.id === requestedRegionId && region.visible !== false,
+            ) ?? null)
+          : getExplicitSelectedComfyViewportPromptRegion(node)
+        : null;
     if (inputContext === 'viewportTool' && !selectedRunRegion) {
       setRunState('error');
       setNodeError('Select a Comfy region before running from the viewport.');
@@ -1725,7 +1930,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     const viewportRect = selectedRunRegion?.rect ?? null;
     const selectedRunRegionId = selectedRunRegion?.id ?? null;
     const getRunSource = (runIndex: number, totalRuns = runCount, promptId?: string | null) => ({
-      ...getComfyBatchSource(originProjectId, node.id, selectedWorkflow.id, runIndex, totalRuns),
+      ...getComfyBatchSource(originProjectId, node.id, workflowForRun.id, runIndex, totalRuns),
       ...(originBranchId ? { branchId: originBranchId } : {}),
       ...(originHistoryEntryId ? { historyId: originHistoryEntryId } : {}),
       ...(promptId ? { promptId } : {}),
@@ -1738,7 +1943,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
 
     const jobId = startBackgroundJob({
       type: 'comfy',
-      title: runCount > 1 ? `${selectedWorkflow.name} x${runCount}` : selectedWorkflow.name,
+      title: runCount > 1 ? `${workflowForRun.name} x${runCount}` : workflowForRun.name,
       subtitle: node.name,
       detail: runCount > 1 ? `${runCount} queued runs` : 'Queueing prompt',
       status: 'queued',
@@ -1822,10 +2027,10 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
             });
 
             const clientId = defaultComfyRunCoordinator.createClientId();
-            await triggerRunRollAnimation(currentWorkflowControls, selectedWorkflow.id);
+            await triggerRunRollAnimation(currentWorkflowControls, workflowForRun.id);
             const preparedControls = prepareComfyWorkflowControlsForRun(
               currentWorkflowControls,
-              selectedWorkflow.id,
+              workflowForRun.id,
             );
             currentWorkflowControls = preparedControls.nextControls;
             if (preparedControls.changed) {
@@ -1833,29 +2038,30 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
             }
 
             const promptWithSelectedOutputs = selectComfyPromptOutputs({
-              prompt: selectedWorkflow.prompt,
-              outputCandidates: selectedWorkflow.outputCandidates,
-              selectedOutputIds: getSelectedWorkflowOutputIds(selectedWorkflow),
+              prompt: workflowForRun.prompt,
+              outputCandidates: workflowForRun.outputCandidates,
+              selectedOutputIds: getSelectedWorkflowOutputIds(workflowForRun),
             });
             const promptWithControls = applyComfyWorkflowControls(
               promptWithSelectedOutputs,
               preparedControls.promptControls,
-              selectedWorkflow.id,
+              workflowForRun.id,
             );
             const promptWithRootBindings =
               inputContext === 'props'
-                ? applyComfyRootBindings(promptWithControls, node, sceneNode, selectedWorkflow)
+                ? applyComfyRootBindings(promptWithControls, node, sceneNode, workflowForRun)
                 : promptWithControls;
             const promptWithViewportBindings = applyComfyViewportPromptRegionBindings(
               promptWithRootBindings,
               node,
-              selectedWorkflow,
-              { inputContext },
+              workflowForRun,
+              { inputContext, regionId: selectedRunRegionId ?? undefined },
             );
             const inputImages = await uploadConnectedWorkflowInputs(
-              selectedWorkflow,
+              workflowForRun,
               abortController.signal,
               inputContext,
+              selectedRunRegion,
             );
             const prompt =
               inputImages.length > 0
@@ -1865,7 +2071,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               endpoint,
               prompt,
               clientId,
-              extraData: createComfyPromptExtraData(selectedWorkflow, prompt),
+              extraData: createComfyPromptExtraData(workflowForRun, prompt),
             });
             jobPromptRef = {
               promptId: queued.promptId,
@@ -1878,7 +2084,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               clientId,
               promptSummary: getOutputPromptSummary(
                 preparedControls.promptControls,
-                selectedWorkflow.id,
+                workflowForRun.id,
               ),
             });
 
@@ -2173,7 +2379,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
             const generatedOutputs = await createGeneratedOutputsFromComfyFiles({
               endpoint,
               files: outputFiles,
-              workflow: selectedWorkflow,
+              workflow: workflowForRun,
               promptId,
               promptSummary,
               signal: abortController.signal,
@@ -2181,7 +2387,8 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
             const generatedOutputsWithRegion = selectedRunRegionId
               ? generatedOutputs.map((o) => ({ ...o, regionId: selectedRunRegionId }))
               : generatedOutputs;
-            const activeGeneratedOutput = generatedOutputsWithRegion[0];
+            const activeGeneratedOutput =
+              getComfyMediaOutput(generatedOutputsWithRegion) ?? generatedOutputsWithRegion[0];
             if (!activeGeneratedOutput) {
               throw new Error('ComfyUI completed the workflow, but no output file was found.');
             }
@@ -2190,30 +2397,18 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               ...generatedOutputsRef.current,
               ...generatedOutputsWithRegion,
             ];
-            const transform = getComfyOutputTransform({
-              node,
-              output: activeGeneratedOutput,
-              sceneNode,
-            });
+            const transform = isComfy3DGeneratedOutput(activeGeneratedOutput)
+              ? undefined
+              : getComfyOutputTransform({ node, output: activeGeneratedOutput, sceneNode });
 
             const applyTarget = await applyComfyNodeRunResult({
               projectId: originProjectId,
               branchId: originBranchId,
               nodeId: node.id,
               updates: {
-                src: activeGeneratedOutput.src,
-                mediaKind: activeGeneratedOutput.mediaKind ?? 'image',
-                colorSpace: activeGeneratedOutput.colorSpace ?? node.colorSpace,
-                frames: activeGeneratedOutput.frames,
-                duration: activeGeneratedOutput.duration,
-                fps: activeGeneratedOutput.fps,
-                width: activeGeneratedOutput.width,
-                height: activeGeneratedOutput.height,
-                transform,
-                activeGeneratedOutputId: activeGeneratedOutput.id,
+                ...getComfyOutputActivationUpdates(activeGeneratedOutput),
+                ...(transform ? { transform } : {}),
                 selectedViewportPromptRegionId: activeGeneratedOutput.regionId,
-                lastPromptId: promptId,
-                lastRunAt: activeGeneratedOutput.createdAt,
                 lastError: undefined,
               },
               newGeneratedOutputs: generatedOutputsWithRegion,
@@ -2370,10 +2565,10 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
 
           const clientId = defaultComfyRunCoordinator.createClientId();
           let queuedPromptId: string | null = null;
-          await triggerRunRollAnimation(currentWorkflowControls, selectedWorkflow.id);
+          await triggerRunRollAnimation(currentWorkflowControls, workflowForRun.id);
           const preparedControls = prepareComfyWorkflowControlsForRun(
             currentWorkflowControls,
-            selectedWorkflow.id,
+            workflowForRun.id,
           );
           currentWorkflowControls = preparedControls.nextControls;
           if (preparedControls.changed) {
@@ -2518,29 +2713,30 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
 
           try {
             const promptWithSelectedOutputs = selectComfyPromptOutputs({
-              prompt: selectedWorkflow.prompt,
-              outputCandidates: selectedWorkflow.outputCandidates,
-              selectedOutputIds: getSelectedWorkflowOutputIds(selectedWorkflow),
+              prompt: workflowForRun.prompt,
+              outputCandidates: workflowForRun.outputCandidates,
+              selectedOutputIds: getSelectedWorkflowOutputIds(workflowForRun),
             });
             const promptWithControls = applyComfyWorkflowControls(
               promptWithSelectedOutputs,
               preparedControls.promptControls,
-              selectedWorkflow.id,
+              workflowForRun.id,
             );
             const promptWithRootBindings =
               inputContext === 'props'
-                ? applyComfyRootBindings(promptWithControls, node, sceneNode, selectedWorkflow)
+                ? applyComfyRootBindings(promptWithControls, node, sceneNode, workflowForRun)
                 : promptWithControls;
             const promptWithViewportBindings = applyComfyViewportPromptRegionBindings(
               promptWithRootBindings,
               node,
-              selectedWorkflow,
-              { inputContext },
+              workflowForRun,
+              { inputContext, regionId: selectedRunRegionId ?? undefined },
             );
             const inputImages = await uploadConnectedWorkflowInputs(
-              selectedWorkflow,
+              workflowForRun,
               abortController.signal,
               inputContext,
+              selectedRunRegion,
             );
             const prompt =
               inputImages.length > 0
@@ -2550,7 +2746,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               endpoint,
               prompt,
               clientId,
-              extraData: createComfyPromptExtraData(selectedWorkflow, prompt),
+              extraData: createComfyPromptExtraData(workflowForRun, prompt),
             });
             queuedPromptId = queued.promptId;
             jobPromptRef = {
@@ -2643,15 +2839,16 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
             const generatedOutputs = await createGeneratedOutputsFromComfyFiles({
               endpoint,
               files: outputFiles,
-              workflow: selectedWorkflow,
+              workflow: workflowForRun,
               promptId: queued.promptId,
-              promptSummary: getOutputPromptSummary(currentWorkflowControls, selectedWorkflow.id),
+              promptSummary: getOutputPromptSummary(currentWorkflowControls, workflowForRun.id),
               signal: abortController.signal,
             });
             const generatedOutputsWithRegion = selectedRunRegionId
               ? generatedOutputs.map((o) => ({ ...o, regionId: selectedRunRegionId }))
               : generatedOutputs;
-            const activeGeneratedOutput = generatedOutputsWithRegion[0];
+            const activeGeneratedOutput =
+              getComfyMediaOutput(generatedOutputsWithRegion) ?? generatedOutputsWithRegion[0];
             if (!activeGeneratedOutput) {
               throw new Error('ComfyUI completed the workflow, but no output file was found.');
             }
@@ -2659,30 +2856,18 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               ...generatedOutputsRef.current,
               ...generatedOutputsWithRegion,
             ];
-            const transform = getComfyOutputTransform({
-              node,
-              output: activeGeneratedOutput,
-              sceneNode,
-            });
+            const transform = isComfy3DGeneratedOutput(activeGeneratedOutput)
+              ? undefined
+              : getComfyOutputTransform({ node, output: activeGeneratedOutput, sceneNode });
 
             const applyTarget = await applyComfyNodeRunResult({
               projectId: originProjectId,
               branchId: originBranchId,
               nodeId: node.id,
               updates: {
-                src: activeGeneratedOutput.src,
-                mediaKind: activeGeneratedOutput.mediaKind ?? 'image',
-                colorSpace: activeGeneratedOutput.colorSpace ?? node.colorSpace,
-                frames: activeGeneratedOutput.frames,
-                duration: activeGeneratedOutput.duration,
-                fps: activeGeneratedOutput.fps,
-                width: activeGeneratedOutput.width,
-                height: activeGeneratedOutput.height,
-                transform,
-                activeGeneratedOutputId: activeGeneratedOutput.id,
+                ...getComfyOutputActivationUpdates(activeGeneratedOutput),
+                ...(transform ? { transform } : {}),
                 selectedViewportPromptRegionId: activeGeneratedOutput.regionId,
-                lastPromptId: queued.promptId,
-                lastRunAt: activeGeneratedOutput.createdAt,
                 lastError: undefined,
               },
               newGeneratedOutputs: generatedOutputsWithRegion,
@@ -2813,13 +2998,13 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       typeof context?.runCount === 'number' && Number.isFinite(context.runCount)
         ? Math.max(1, Math.floor(context.runCount))
         : 1;
-    void handleRunWorkflow(requestedRunCount, getRunInputContext(context));
+    void handleRunWorkflow(requestedRunCount, getRunInputContext(context), context?.regionId);
   });
   const handleRunSingleWorkflow = () => {
     void handleRunWorkflow(1, inspectorInputContext);
   };
   const handleWorkflowPropsKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!isRunShortcut(event)) return;
+    if (!isComfyRunShortcut(event)) return;
     if (!selectedWorkflow || hasNoSelectedWorkflowOutputs || isWorkflowControlBuilderOpen) return;
 
     const field = (event.target as HTMLElement | null)?.closest('input, textarea, select');
@@ -2932,7 +3117,9 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               <ComfyWorkflowInputList
                 selectedWorkflow={selectedWorkflow}
                 workflowInputCandidates={workflowInputCandidates}
+                selectedWorkflowInputIdSet={selectedWorkflowInputIdSet}
                 connectedWorkflowInputs={connectedWorkflowInputs}
+                onToggleWorkflowInputCandidate={handleToggleWorkflowInputCandidate}
                 onImportWorkflowInputImage={handleImportWorkflowInputImage}
                 onClearWorkflowInputImage={handleClearWorkflowInputImage}
               />
@@ -2960,6 +3147,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         outputApplyNoticeId={outputApplyNotice?.id}
         pendingGeneratedOutputSlots={pendingGeneratedOutputSlots}
         recentGeneratedOutputs={recentGeneratedOutputs}
+        outputGalleryLabel={selectedRegionForProps ? 'Region outputs' : 'Outputs'}
         isRunActionDisabled={isRunActionDisabled}
         runShortcutHint={runShortcutHint}
         localError={localError}

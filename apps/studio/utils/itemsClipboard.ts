@@ -1,3 +1,5 @@
+import { deepClone } from './deepClone';
+
 interface ItemsClipboardRecord<TKind extends string = string, TPayload = unknown> {
   kind: TKind;
   version: 1;
@@ -6,18 +8,10 @@ interface ItemsClipboardRecord<TKind extends string = string, TPayload = unknown
 
 let currentItemsClipboard: ItemsClipboardRecord<string, unknown> | null = null;
 
-const cloneClipboardValue = <T>(value: T): T => {
-  if (typeof structuredClone === 'function') {
-    return structuredClone(value);
-  }
-
-  return JSON.parse(JSON.stringify(value)) as T;
-};
-
 export const writeItemsClipboard = <TKind extends string, TPayload>(
   record: ItemsClipboardRecord<TKind, TPayload>,
 ): void => {
-  currentItemsClipboard = cloneClipboardValue(record) as ItemsClipboardRecord<string, unknown>;
+  currentItemsClipboard = deepClone(record) as ItemsClipboardRecord<string, unknown>;
 };
 
 export const readItemsClipboard = <TKind extends string, TPayload>(
@@ -27,5 +21,5 @@ export const readItemsClipboard = <TKind extends string, TPayload>(
     return null;
   }
 
-  return cloneClipboardValue(currentItemsClipboard as ItemsClipboardRecord<TKind, TPayload>);
+  return deepClone(currentItemsClipboard as ItemsClipboardRecord<TKind, TPayload>);
 };

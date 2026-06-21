@@ -25,6 +25,8 @@ interface PixelRect {
 
 interface RenderNodeInputRegionOptions extends RenderNodeInputOptions {
   regionRect: PixelRect;
+  /** 'opaque' = output has alpha=255 everywhere, 'preserve' = keep alpha from render */
+  regionInputAlphaMode?: 'opaque' | 'preserve';
 }
 
 let sharedRenderer: THREE.WebGLRenderer | null = null;
@@ -172,34 +174,95 @@ export const renderNodeInputFrameToPngBlob = async (
   options: RenderNodeInputOptions,
 ): Promise<Blob> => floatInputToPngBlob(await renderNodeInputFrameToFloat(options));
 
-export const cropFloatInputToPngBlob = (input: FloatInput, rect: PixelRect): Promise<Blob> => {
+/**
+ * Crop a region from a float input, padding with zeros for areas outside the input bounds.
+ * @param alphaMode - `'opaque'` forces alpha=1 everywhere (ignores scene alpha);
+ *                    `'preserve'` keeps alpha from the source.
+ */
+export const cropFloatInputToPngBlob = (
+  input: FloatInput,
+  rect: PixelRect,
+  alphaMode: 'opaque' | 'preserve' = 'opaque',
+): Promise<Blob> => {
   if (input.channels !== 4) {
     throw new Error('Comfy input crop expects RGBA pixel data.');
   }
 
-  const cropRect = clampPixelRect(rect, input);
-  if (!cropRect) {
-    throw new Error('Selected Comfy region is outside the rendered input frame.');
-  }
+  const channels = input.channels;
 
-  const output = new Float32Array(cropRect.width * cropRect.height * input.channels);
+  // Compute pixel-aligned bounds for the full requested rect.
+  // Using floor/ceil consistently so output dimensions and the overlap
+  // region never disagree on pixel boundaries.
+  const pixelLeft = Math.floor(Math.min(rect.x, rect.x + rect.width));
+  const pixelTop = Math.floor(Math.min(rect.y, rect.y + rect.height));
+  const pixelRight = Math.ceil(Math.max(rect.x, rect.x + rect.width));
+  const pixelBottom = Math.ceil(Math.max(rect.y, rect.y + rect.height));
+  const outputWidth = Math.max(1, Math.abs(pixelRight - pixelLeft));
+  const outputHeight = Math.max(1, Math.abs(pixelBottom - pixelTop));
 
-  for (let row = 0; row < cropRect.height; row += 1) {
-    const sourceStart = ((cropRect.y + row) * input.width + cropRect.x) * input.channels;
-    const sourceEnd = sourceStart + cropRect.width * input.channels;
-    const targetStart = row * cropRect.width * input.channels;
-    output.set(input.data.subarray(sourceStart, sourceEnd), targetStart);
+  // Create a zeroed buffer at the full requested size.
+  // For outpainting the region can extend beyond the input bounds;
+  // we want the output to be the full region size with the overlapping
+  // portion of the scene placed at the correct offset and the rest
+  // filled with transparent (zero) pixels.
+  const output = new Float32Array(outputWidth * outputHeight * channels);
+
+  // Calculate overlap between the pixel-aligned rect and the input bounds
+  const overlapLeft = Math.max(0, pixelLeft);
+  const overlapTop = Math.max(0, pixelTop);
+  const overlapRight = Math.min(input.width, pixelRight);
+  const overlapBottom = Math.min(input.height, pixelBottom);
+  const overlapWidth = overlapRight - overlapLeft;
+  const overlapHeight = overlapBottom - overlapTop;
+
+  if (overlapWidth > 0 && overlapHeight > 0) {
+    // Where the overlap sits within the output rect.
+    // When the rect starts at a negative x (outpainting left), pixelLeft < 0
+    // and overlapLeft = 0, so outputOffsetX = -pixelLeft > 0.
+    // When the rect starts inside the scene, pixelLeft >= 0 and
+    // overlapLeft = pixelLeft, so outputOffsetX = 0.
+    const outputOffsetX = overlapLeft - pixelLeft;
+    const outputOffsetY = overlapTop - pixelTop;
+
+    // Sanity-check: the overlap must fit inside the output at this offset.
+    // This is guaranteed by the pixel-aligned approach, but guard against
+    // off-by-one rounding edge cases.
+    const copyWidth = Math.min(overlapWidth, outputWidth - outputOffsetX);
+    const copyHeight = Math.min(overlapHeight, outputHeight - outputOffsetY);
+
+    if (copyWidth > 0 && copyHeight > 0 && outputOffsetX >= 0 && outputOffsetY >= 0) {
+      for (let row = 0; row < copyHeight; row += 1) {
+        const sourceStart = ((overlapTop + row) * input.width + overlapLeft) * channels;
+        const sourceEnd = sourceStart + copyWidth * channels;
+        const targetStart = ((outputOffsetY + row) * outputWidth + outputOffsetX) * channels;
+        output.set(input.data.subarray(sourceStart, sourceEnd), targetStart);
+      }
+    }
   }
+  // If there is no overlap the output stays all zeros.
+
+  // In opaque mode, set all alpha values to 1.0 so the PNG has no transparency.
+  // This is the default because most Comfy models expect fully opaque input.
+  if (alphaMode === 'opaque') {
+    for (let i = 3; i < output.length; i += channels) {
+      output[i] = 1.0;
+    }
+  }
+  // In preserve mode, alpha values from the source are kept as-is.
 
   return floatInputToPngBlob({
     data: output,
-    width: cropRect.width,
-    height: cropRect.height,
-    channels: input.channels,
+    width: outputWidth,
+    height: outputHeight,
+    channels,
   });
 };
 
 export const renderNodeInputRegionToPngBlob = async (
   options: RenderNodeInputRegionOptions,
 ): Promise<Blob> =>
-  cropFloatInputToPngBlob(await renderNodeInputFrameToFloat(options), options.regionRect);
+  cropFloatInputToPngBlob(
+    await renderNodeInputFrameToFloat(options),
+    options.regionRect,
+    options.regionInputAlphaMode,
+  );

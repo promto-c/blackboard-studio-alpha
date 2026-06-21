@@ -10,6 +10,7 @@ import { ToggleButton } from '@blackboard/ui';
 import {
   ViewportToolButton,
   ViewportToolPanel,
+  ViewportToolPanelArea,
   ViewportToolPanelHeader,
   ViewportToolsRenderer,
 } from '@/components';
@@ -224,7 +225,7 @@ function ViewportToolbar() {
   const showPanelColumn = showEffectPanel || showStabilizePanel;
 
   return (
-    <div className="absolute inset-y-0 left-4 z-20 pointer-events-none flex flex-row items-center gap-2">
+    <div className="absolute inset-y-0 left-4 right-4 z-20 pointer-events-none flex flex-row items-center gap-2">
       {/* Main tool icon strip — always vertically centered */}
       {(hasTools || hasStabilize) && (
         <div className="relative z-30 self-center pointer-events-auto overflow-visible glass-component flex flex-col items-center gap-1 bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-lg shadow-lg p-1.5 ring-1 ring-inset ring-white/20 animate-[fadeIn_150ms_ease-out]">
@@ -257,9 +258,9 @@ function ViewportToolbar() {
         </div>
       )}
 
-      {/* Per-tool side panels — stacked vertically, can span full height */}
+      {/* Per-tool side panels share one bounded, resizable column. */}
       {showPanelColumn && (
-        <div className="relative z-20 self-stretch pointer-events-auto flex flex-col gap-2 justify-center">
+        <ViewportToolPanelArea>
           {showEffectPanel && ToolPanelComponent && (
             <ToolPanelComponent
               node={selectedNode}
@@ -269,7 +270,7 @@ function ViewportToolbar() {
             />
           )}
           {showStabilizePanel && <StabilizePanel onClose={() => handlePanelClose('stabilize')} />}
-        </div>
+        </ViewportToolPanelArea>
       )}
     </div>
   );

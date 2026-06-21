@@ -12,7 +12,7 @@ import { WarpViewportInteraction } from './warpViewportInteraction';
 import { SpatialViewportInteraction } from './spatialViewportInteraction';
 import { BokehViewportInteraction } from './bokehViewportInteraction';
 import { ComfyViewportInteraction } from './comfyViewportInteraction';
-import { noopViewportInteraction } from './noopViewportInteraction';
+import { noopViewportInteraction } from './BaseViewportInteraction';
 
 export { noopViewportInteraction };
 

@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyledDropdown } from '@blackboard/ui';
+import * as Icons from '@blackboard/icons';
 import { useOcio } from '@/state/ocioContext';
 
 interface OcioColorSpaceDropdownProps {
@@ -75,7 +76,7 @@ export function OcioColorSpaceDropdown({
     return mapped;
   }, [canonicalValue, includeData, ocio, resolvedValue]);
 
-  return (
+  const dropdown = (
     <StyledDropdown
       value={
         options.some((option) => option.value === canonicalValue) ? canonicalValue : resolvedValue
@@ -86,5 +87,26 @@ export function OcioColorSpaceDropdown({
       popoverWidthClass={popoverWidthClass}
       searchable
     />
+  );
+
+  if (ocio.isInitialized) return dropdown;
+
+  return (
+    <div className="space-y-2">
+      {dropdown}
+      <button
+        type="button"
+        onClick={() => void ocio.load()}
+        disabled={ocio.isLoading}
+        className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60"
+      >
+        {ocio.isLoading ? (
+          <Icons.RotateLoop className="h-4 w-4 animate-spin" />
+        ) : (
+          <Icons.ArrowDownTray className="h-4 w-4" />
+        )}
+        <span>{ocio.isLoading ? 'Loading OCIO' : 'Load OCIO color spaces'}</span>
+      </button>
+    </div>
   );
 }

@@ -21,12 +21,18 @@ import type {
   RendererOcioGpuTexture,
   RendererOcioGpuUniform,
   RendererOcioShaderInfo,
+  RendererMaskLayer,
   ResolveOutputContext,
 } from './types';
 import { RendererShader } from './glsl';
 import { getValueAtFrame } from './animation';
 import { createNodePredicates } from './nodePredicates';
-import { assertWebGL2Renderer, createStudioRenderer, createStudioShaderMaterial } from './webgl';
+import {
+  assertFloatRenderTargetSupport,
+  assertWebGL2Renderer,
+  createStudioRenderer,
+  createStudioShaderMaterial,
+} from './webgl';
 
 type MediaNode = MediaSourceNode | ImageSequenceNode;
 
@@ -149,9 +155,7 @@ export interface RenderPipelineOptions {
   preserveAlpha?: boolean;
   nodeRegistry: NodeRegistryLike;
   getAsset: (id: string) => Promise<Blob | null>;
-  getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
   loadAssetTexture?: (params: {
     assetId: string;
@@ -168,13 +172,13 @@ export interface RenderPipelineResult {
   dispose: () => void;
 }
 
-const getSceneRenderTargetOptions = (sceneNode: SceneNode): THREE.RenderTargetOptions => {
-  const targetType =
-    sceneNode.bitDepth === 32
-      ? THREE.FloatType
-      : sceneNode.bitDepth === 16
-        ? THREE.HalfFloatType
-        : THREE.UnsignedByteType;
+export const getSceneRenderTargetOptions = (
+  sceneNode: Pick<SceneNode, 'bitDepth'>,
+): THREE.RenderTargetOptions => {
+  // Compositing is always floating point. An 8-bit scene describes delivery
+  // precision, not an 8-bit working buffer; quantizing every node creates
+  // visible banding and destroys values outside display range.
+  const targetType = sceneNode.bitDepth === 32 ? THREE.FloatType : THREE.HalfFloatType;
 
   return {
     type: targetType,
@@ -204,6 +208,14 @@ interface RenderFormatSize {
   width: number;
   height: number;
 }
+
+const renderTargetMatchesOptions = (
+  target: THREE.WebGLRenderTarget,
+  options: THREE.RenderTargetOptions,
+): boolean =>
+  target.texture.type === options.type &&
+  target.texture.format === options.format &&
+  target.texture.colorSpace === options.colorSpace;
 
 const getPositiveIntegerDimension = (value: unknown): number | null => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
@@ -899,9 +911,10 @@ function renderScaledMultipass(
       renderer.render(scene, camera);
 
       // Horizontal pass at scaled resolution
+      const scaledRadius = radius * renderScale;
       const hPass = getMaterial(hMatId, shaders.horizontal, {
         u_tDiffuse: { value: scaledRT1.texture },
-        u_radius: { value: radius },
+        u_radius: { value: scaledRadius },
         u_resolution_x: { value: sW },
       });
       quad.material = hPass;
@@ -911,7 +924,7 @@ function renderScaledMultipass(
       // Vertical pass at scaled resolution
       const vPass = getMaterial(vMatId, shaders.vertical, {
         u_tDiffuse: { value: scaledRT2.texture },
-        u_radius: { value: radius },
+        u_radius: { value: scaledRadius },
         u_resolution_y: { value: sH },
       });
       quad.material = vPass;
@@ -1097,10 +1110,9 @@ interface AdjustmentRenderOptions {
   fallbackSourceNode?: AnyNode | null;
   getInputTextureForNode: (nodeId: string, targetFrame: number) => THREE.Texture | undefined;
   getPaintTextures: (node: AnyNode) => MaybePromise<PaintTextureBundle | null | undefined>;
-  getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
+  getScratchRenderTarget?: (key: string) => THREE.WebGLRenderTarget;
   /** Optional custom material ID for shader/warp render modes. */
   shaderId?: string;
 }
@@ -1125,10 +1137,9 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
     fallbackSourceNode,
     getInputTextureForNode,
     getPaintTextures,
-    getRotoMaskTexture,
-    getRotoAddMaskTexture,
-    getRotoSubMaskTexture,
+    getRotoMaskLayers,
     getRotoAlphaMode,
+    getScratchRenderTarget,
     shaderId,
   } = options;
   const renderMode = getRenderMode(node, nodeRegistry);
@@ -1183,7 +1194,10 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
     const roCtx: ResolveOutputContext = {
       frame: renderContext.frame,
       nodes: renderContext.nodes as AnyNode[],
-      sceneNode: { colorSpace: sceneColorSpace } as SceneNode,
+      sceneNode: {
+        ...renderContext.scene,
+        colorSpace: sceneColorSpace,
+      } as SceneNode,
       renderer,
       scene,
       camera,
@@ -1192,9 +1206,7 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
       resolveOutput: (nodeId) => getInputTextureForNode(nodeId, renderContext.frame) ?? undefined,
       compositeBuffer: outputTarget,
       getMediaTexture: (n, f) => getInputTextureForNode(n.id, f) ?? undefined,
-      getRotoMaskTexture,
-      getRotoAddMaskTexture,
-      getRotoSubMaskTexture,
+      getRotoMaskLayers,
       getRotoAlphaMode,
       getPaintTextures: (_nId) => {
         const ptResult = getPaintTextures(node);
@@ -1207,6 +1219,7 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
       getInputSourcePort,
       getChannelIndex: (ch, fallback) => getChannelIndex(ch, (fallback || 'r') as ChannelPort),
       getTransparentInputTexture,
+      getScratchRenderTarget,
     };
     const roResult = renderOutputDef(node, outputTarget, inputTexture, roCtx);
     if (roResult) {
@@ -1431,9 +1444,7 @@ interface NodeOutputResolveContext {
     textureSize?: { width: number; height: number },
   ) => void;
   getCachedMediaTexture: (node: AnyNode, frame: number) => THREE.Texture | undefined;
-  getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
   onAsyncInSync?: () => never;
 }
@@ -1487,9 +1498,7 @@ function resolveNodeOutputTexture(
             resolveOutput,
             compositeBuffer: ctx.compositeBuffer,
             getMediaTexture: (n, f) => ctx.getCachedMediaTexture(n, f),
-            getRotoMaskTexture: ctx.getRotoMaskTexture,
-            getRotoAddMaskTexture: ctx.getRotoAddMaskTexture,
-            getRotoSubMaskTexture: ctx.getRotoSubMaskTexture,
+            getRotoMaskLayers: ctx.getRotoMaskLayers,
             getRotoAlphaMode: ctx.getRotoAlphaMode,
             getPaintTextures: (_nId) => {
               const ptResult = ctx.getPaintTextures(node);
@@ -1506,6 +1515,7 @@ function resolveNodeOutputTexture(
             getChannelIndex: (ch, fallback) =>
               getChannelIndex(ch, (fallback || 'r') as ChannelPort),
             getTransparentInputTexture,
+            getScratchRenderTarget: (key) => ctx.getUtilityOutputTarget(`__scratch:${key}`),
           };
           const roResult = renderOutputDef(node, target, undefined, roCtx, sourcePortName);
           if (roResult) {
@@ -1585,9 +1595,7 @@ function resolveNodeOutputTexture(
             resolveOutput,
             compositeBuffer: ctx.compositeBuffer,
             getMediaTexture: (n, f) => ctx.getCachedMediaTexture(n, f),
-            getRotoMaskTexture: ctx.getRotoMaskTexture,
-            getRotoAddMaskTexture: ctx.getRotoAddMaskTexture,
-            getRotoSubMaskTexture: ctx.getRotoSubMaskTexture,
+            getRotoMaskLayers: ctx.getRotoMaskLayers,
             getRotoAlphaMode: ctx.getRotoAlphaMode,
             getPaintTextures: (_nId) => {
               const ptResult = ctx.getPaintTextures(node);
@@ -1605,6 +1613,7 @@ function resolveNodeOutputTexture(
             getChannelIndex: (ch, fallback) =>
               getChannelIndex(ch, (fallback || 'r') as ChannelPort),
             getTransparentInputTexture,
+            getScratchRenderTarget: (key) => ctx.getUtilityOutputTarget(`__scratch:${key}`),
           };
           const roResult = renderOutputDef(node, target, inputTex, roCtx, sourcePortName);
           if (roResult) {
@@ -1651,10 +1660,9 @@ function resolveNodeOutputTexture(
               return undefined;
             },
             getPaintTextures: ctx.getPaintTextures,
-            getRotoMaskTexture: ctx.getRotoMaskTexture,
-            getRotoAddMaskTexture: ctx.getRotoAddMaskTexture,
-            getRotoSubMaskTexture: ctx.getRotoSubMaskTexture,
+            getRotoMaskLayers: ctx.getRotoMaskLayers,
             getRotoAlphaMode: ctx.getRotoAlphaMode,
+            getScratchRenderTarget: (key) => ctx.getUtilityOutputTarget(`__scratch:${key}`),
           }) as MaybePromise<boolean>;
           const adjThen = (ok: boolean): THREE.Texture | undefined =>
             ok ? target.texture : undefined;
@@ -1721,6 +1729,7 @@ export const renderWithSharedPipeline = async (
       premultipliedAlpha: false,
     });
   assertWebGL2Renderer(renderer);
+  assertFloatRenderTargetSupport(renderer);
   renderer.setSize(options.width, options.height);
   renderer.autoClear = false;
 
@@ -2303,9 +2312,7 @@ export const renderWithSharedPipeline = async (
           }
           return undefined;
         },
-        getRotoMaskTexture: options.getRotoMaskTexture,
-        getRotoAddMaskTexture: options.getRotoAddMaskTexture,
-        getRotoSubMaskTexture: options.getRotoSubMaskTexture,
+        getRotoMaskLayers: options.getRotoMaskLayers,
         getRotoAlphaMode: options.getRotoAlphaMode,
       };
       const result = resolveNodeOutputTexture(
@@ -2499,10 +2506,9 @@ export const renderWithSharedPipeline = async (
                 return undefined;
               },
               getPaintTextures: loadPaintTextures,
-              getRotoMaskTexture: options.getRotoMaskTexture,
-              getRotoAddMaskTexture: options.getRotoAddMaskTexture,
-              getRotoSubMaskTexture: options.getRotoSubMaskTexture,
+              getRotoMaskLayers: options.getRotoMaskLayers,
               getRotoAlphaMode: options.getRotoAlphaMode,
+              getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
             });
 
             if (shouldSwap) {
@@ -2645,10 +2651,9 @@ export const renderWithSharedPipeline = async (
             return undefined;
           },
           getPaintTextures: loadPaintTextures,
-          getRotoMaskTexture: options.getRotoMaskTexture,
-          getRotoAddMaskTexture: options.getRotoAddMaskTexture,
-          getRotoSubMaskTexture: options.getRotoSubMaskTexture,
+          getRotoMaskLayers: options.getRotoMaskLayers,
           getRotoAlphaMode: options.getRotoAlphaMode,
+          getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
           shaderId: `${baseNode.id}_global`,
         });
 
@@ -2783,9 +2788,7 @@ export interface ViewportPipelineOptions {
   getTextTexture: (
     node: TextNode,
   ) => { texture: THREE.Texture; width: number; height: number } | undefined;
-  getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
   getPaintTextures?: (nodeId: string) => { color: THREE.Texture; alpha: THREE.Texture } | undefined;
   nodeRegistry: NodeRegistryLike;
@@ -2809,9 +2812,7 @@ export const renderViewportFrameWithSharedPipeline = (
     getMediaTexture,
     getMediaTextureByKey,
     getTextTexture,
-    getRotoMaskTexture,
-    getRotoAddMaskTexture,
-    getRotoSubMaskTexture,
+    getRotoMaskLayers,
     getRotoAlphaMode,
     getPaintTextures,
     nodeRegistry,
@@ -2835,30 +2836,18 @@ export const renderViewportFrameWithSharedPipeline = (
   const renderer = resources.renderer;
   resources.ocioTextures ??= new Map<string, THREE.Texture>();
   assertWebGL2Renderer(renderer);
+  assertFloatRenderTargetSupport(renderer);
   renderer.setSize(sceneNode.width, sceneNode.height);
   renderer.autoClear = false;
 
-  const targetType =
-    sceneNode.bitDepth === 32
-      ? THREE.FloatType
-      : sceneNode.bitDepth === 16
-        ? THREE.HalfFloatType
-        : THREE.UnsignedByteType;
-  const renderTargetOptions = {
-    type: targetType,
-    minFilter: THREE.LinearFilter,
-    magFilter: THREE.LinearFilter,
-    format: THREE.RGBAFormat,
-    colorSpace: THREE.NoColorSpace,
-    depthBuffer: false,
-    stencilBuffer: false,
-  };
+  const renderTargetOptions = getSceneRenderTargetOptions(sceneNode);
 
   let renderTargets = resources.renderTargets;
   if (
     renderTargets.length === 0 ||
     renderTargets[0].width !== currentSceneSize.width ||
-    renderTargets[0].height !== currentSceneSize.height
+    renderTargets[0].height !== currentSceneSize.height ||
+    !renderTargetMatchesOptions(renderTargets[0], renderTargetOptions)
   ) {
     renderTargets.forEach((target) => target.dispose());
     resources.utilityTargets?.forEach((target) => target.dispose());
@@ -3111,9 +3100,7 @@ export const renderViewportFrameWithSharedPipeline = (
       renderCompositeMediaToTarget: renderCompositeMediaLayersToTarget,
       renderFullFrameTextureToTarget,
       getCachedMediaTexture: (n, f) => getMediaTexture(n as MediaNode, f),
-      getRotoMaskTexture,
-      getRotoAddMaskTexture,
-      getRotoSubMaskTexture,
+      getRotoMaskLayers,
       getRotoAlphaMode,
       onAsyncInSync: () => {
         throw new Error('Viewport renderNodeOutputTexture must remain synchronous.');
@@ -3315,10 +3302,9 @@ export const renderViewportFrameWithSharedPipeline = (
               return undefined;
             },
             getPaintTextures: (node) => getPaintTextures?.(node.id),
-            getRotoMaskTexture,
-            getRotoAddMaskTexture,
-            getRotoSubMaskTexture,
+            getRotoMaskLayers,
             getRotoAlphaMode,
+            getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
           });
 
           if (isPromiseLike(shouldSwap)) {
@@ -3459,10 +3445,9 @@ export const renderViewportFrameWithSharedPipeline = (
           return undefined;
         },
         getPaintTextures: (node) => getPaintTextures?.(node.id),
-        getRotoMaskTexture,
-        getRotoAddMaskTexture,
-        getRotoSubMaskTexture,
+        getRotoMaskLayers,
         getRotoAlphaMode,
+        getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
       });
 
       if (isPromiseLike(rendered)) {

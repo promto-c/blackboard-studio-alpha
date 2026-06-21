@@ -10,6 +10,13 @@ export const assertWebGL2Renderer = (renderer: THREE.WebGLRenderer): void => {
   }
 };
 
+export const assertFloatRenderTargetSupport = (renderer: THREE.WebGLRenderer): void => {
+  const extensions = renderer.extensions as THREE.WebGLExtensions | undefined;
+  if (extensions && !extensions.has('EXT_color_buffer_float')) {
+    throw new Error('Blackboard Studio requires floating-point render target support.');
+  }
+};
+
 export const createStudioRenderer = (parameters: StudioRendererParameters): THREE.WebGLRenderer => {
   const canvas = parameters.canvas ?? document.createElement('canvas');
   const { pixelRatio = 1, ...rendererParameters } = parameters;

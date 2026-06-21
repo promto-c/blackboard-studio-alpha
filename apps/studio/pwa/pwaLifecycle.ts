@@ -1,6 +1,8 @@
 type InstallOutcome = 'accepted' | 'dismissed' | null;
 type ServiceWorkerState = 'disabled' | 'error' | 'ready' | 'registering' | 'unsupported';
 type PwaUpdatePhase = 'applying' | 'checking' | 'downloading' | 'error' | 'idle' | 'ready';
+type PwaAssetOperation = 'install' | 'remove';
+type PwaAssetOperationPhase = 'downloading' | 'error' | 'idle' | 'removing';
 
 interface BeforeInstallPromptChoice {
   outcome: 'accepted' | 'dismissed';
@@ -19,6 +21,42 @@ interface ServiceWorkerVersionMessage {
   appVersion: string;
   cacheVersion: string;
   assetCount: number;
+  precacheAssetCount?: number;
+  runtimeAssetCount?: number;
+  precacheBytes?: number;
+  runtimeBytes?: number;
+  runtimeAssetGroups?: PwaAssetGroupSnapshot[];
+}
+
+export interface PwaAssetGroupSnapshot {
+  id: string;
+  label: string;
+  description: string;
+  source: 'bundle' | 'marketplace';
+  removable: boolean;
+  assetCount: number;
+  size: number;
+  cachedAssetCount: number;
+  cachedBytes: number;
+}
+
+interface PwaCacheStatusMessage extends Omit<ServiceWorkerVersionMessage, 'type'> {
+  type: 'BLACKBOARD_STUDIO_SW_CACHE_STATUS';
+  precacheCachedAssetCount?: number;
+  precacheCachedBytes?: number;
+  runtimeCachedAssetCount?: number;
+  runtimeCachedBytes?: number;
+  totalCachedBytes?: number;
+  error?: string;
+}
+
+interface PwaCacheResultMessage {
+  type: 'BLACKBOARD_STUDIO_SW_CACHE_RESULT';
+  ok: boolean;
+  operation?: PwaAssetOperation;
+  groupId: string | null;
+  cacheStatus?: PwaCacheStatusMessage;
+  error?: string;
 }
 
 export interface PwaSnapshot {
@@ -43,6 +81,17 @@ export interface PwaSnapshot {
   updatePhase: PwaUpdatePhase;
   lastCheckedAt: number | null;
   lastUpdateFoundAt: number | null;
+  cachedBytes: number | null;
+  offlineAssetCount: number | null;
+  offlineBytes: number | null;
+  onDemandAssetCount: number | null;
+  onDemandBytes: number | null;
+  onDemandCachedAssetCount: number | null;
+  onDemandCachedBytes: number | null;
+  onDemandAssetGroups: PwaAssetGroupSnapshot[];
+  assetOperationPhase: PwaAssetOperationPhase;
+  operatingAssetGroupId: string | null;
+  assetOperationError: string | null;
   error: string | null;
 }
 
@@ -51,6 +100,8 @@ type PwaListener = (snapshot: PwaSnapshot) => void;
 const AUTO_UPDATE_CHECK_DELAY_MS = 8_000;
 const AUTO_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 const VERSION_RESPONSE_TIMEOUT_MS = 1_000;
+const CACHE_STATUS_RESPONSE_TIMEOUT_MS = 2_500;
+const CACHE_DOWNLOAD_RESPONSE_TIMEOUT_MS = 15 * 60 * 1_000;
 
 let installPromptEvent: BeforeInstallPromptEvent | null = null;
 let registrationPromise: Promise<void> | null = null;
@@ -123,6 +174,17 @@ let snapshot: PwaSnapshot = {
   updatePhase: 'idle',
   lastCheckedAt: null,
   lastUpdateFoundAt: null,
+  cachedBytes: null,
+  offlineAssetCount: null,
+  offlineBytes: null,
+  onDemandAssetCount: null,
+  onDemandBytes: null,
+  onDemandCachedAssetCount: null,
+  onDemandCachedBytes: null,
+  onDemandAssetGroups: [],
+  assetOperationPhase: 'idle',
+  operatingAssetGroupId: null,
+  assetOperationError: null,
   error: null,
 };
 
@@ -148,7 +210,11 @@ const patchSnapshot = (updates: Partial<PwaSnapshot>) => {
 const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error && error.message ? error.message : fallback;
 
-const readWorkerVersion = (worker: ServiceWorker): Promise<ServiceWorkerVersionMessage | null> =>
+const requestWorkerMessage = <T>(
+  worker: ServiceWorker,
+  message: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<T | null> =>
   new Promise((resolve) => {
     if (!canUseDom()) {
       resolve(null);
@@ -159,16 +225,141 @@ const readWorkerVersion = (worker: ServiceWorker): Promise<ServiceWorkerVersionM
     const timeoutId = window.setTimeout(() => {
       channel.port1.close();
       resolve(null);
-    }, VERSION_RESPONSE_TIMEOUT_MS);
+    }, timeoutMs);
 
-    channel.port1.onmessage = (event: MessageEvent<ServiceWorkerVersionMessage>) => {
+    channel.port1.onmessage = (event: MessageEvent<T>) => {
       window.clearTimeout(timeoutId);
       channel.port1.close();
-      resolve(event.data?.type === 'BLACKBOARD_STUDIO_SW_VERSION' ? event.data : null);
+      resolve(event.data ?? null);
     };
 
-    worker.postMessage({ type: 'BLACKBOARD_STUDIO_GET_VERSION' }, [channel.port2]);
+    worker.postMessage(message, [channel.port2]);
   });
+
+const readWorkerVersion = (worker: ServiceWorker): Promise<ServiceWorkerVersionMessage | null> =>
+  requestWorkerMessage<ServiceWorkerVersionMessage>(
+    worker,
+    { type: 'BLACKBOARD_STUDIO_GET_VERSION' },
+    VERSION_RESPONSE_TIMEOUT_MS,
+  ).then((message) => (message?.type === 'BLACKBOARD_STUDIO_SW_VERSION' ? message : null));
+
+const isFiniteSize = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+const normalizeAssetGroups = (groups: unknown): PwaAssetGroupSnapshot[] => {
+  if (!Array.isArray(groups)) return [];
+
+  return groups
+    .map((group) => {
+      if (!group || typeof group !== 'object') return null;
+      const candidate = group as Partial<PwaAssetGroupSnapshot>;
+      if (
+        typeof candidate.id !== 'string' ||
+        typeof candidate.label !== 'string' ||
+        !isFiniteSize(candidate.assetCount) ||
+        !isFiniteSize(candidate.size)
+      ) {
+        return null;
+      }
+
+      return {
+        id: candidate.id,
+        label: candidate.label,
+        description:
+          typeof candidate.description === 'string' && candidate.description.trim()
+            ? candidate.description
+            : 'Optional files cached when the related feature is used.',
+        source:
+          candidate.source === 'bundle' || candidate.source === 'marketplace'
+            ? candidate.source
+            : 'bundle',
+        removable: candidate.removable !== false,
+        assetCount: candidate.assetCount,
+        size: candidate.size,
+        cachedAssetCount: isFiniteSize(candidate.cachedAssetCount) ? candidate.cachedAssetCount : 0,
+        cachedBytes: isFiniteSize(candidate.cachedBytes) ? candidate.cachedBytes : 0,
+      };
+    })
+    .filter((group): group is PwaAssetGroupSnapshot => Boolean(group));
+};
+
+const applyVersionMetadata = (version: ServiceWorkerVersionMessage | null) => {
+  if (!version) return;
+
+  patchSnapshot({
+    offlineAssetCount: isFiniteSize(version.precacheAssetCount)
+      ? version.precacheAssetCount
+      : isFiniteSize(version.assetCount)
+        ? version.assetCount
+        : snapshot.offlineAssetCount,
+    offlineBytes: isFiniteSize(version.precacheBytes) ? version.precacheBytes : null,
+    onDemandAssetCount: isFiniteSize(version.runtimeAssetCount) ? version.runtimeAssetCount : null,
+    onDemandBytes: isFiniteSize(version.runtimeBytes) ? version.runtimeBytes : null,
+    onDemandAssetGroups: normalizeAssetGroups(version.runtimeAssetGroups),
+  });
+};
+
+const applyCacheStatus = (status: PwaCacheStatusMessage | null) => {
+  if (!status || status.type !== 'BLACKBOARD_STUDIO_SW_CACHE_STATUS') return;
+  if (status.error) {
+    patchSnapshot({ assetOperationError: status.error });
+    return;
+  }
+
+  applyVersionMetadata({
+    ...status,
+    type: 'BLACKBOARD_STUDIO_SW_VERSION',
+  });
+
+  patchSnapshot({
+    cachedBytes: isFiniteSize(status.totalCachedBytes) ? status.totalCachedBytes : null,
+    offlineAssetCount: isFiniteSize(status.precacheCachedAssetCount)
+      ? status.precacheCachedAssetCount
+      : snapshot.offlineAssetCount,
+    offlineBytes: isFiniteSize(status.precacheCachedBytes)
+      ? status.precacheCachedBytes
+      : snapshot.offlineBytes,
+    onDemandCachedAssetCount: isFiniteSize(status.runtimeCachedAssetCount)
+      ? status.runtimeCachedAssetCount
+      : null,
+    onDemandCachedBytes: isFiniteSize(status.runtimeCachedBytes) ? status.runtimeCachedBytes : null,
+    onDemandAssetGroups: normalizeAssetGroups(status.runtimeAssetGroups),
+  });
+};
+
+const getActiveServiceWorker = (): ServiceWorker | null =>
+  serviceWorkerRegistration?.active ?? navigator.serviceWorker.controller ?? null;
+
+const refreshPwaCacheStatusInternal = async ({
+  silent = true,
+}: { silent?: boolean } = {}): Promise<void> => {
+  if (!canUseDom() || !getServiceWorkerSupport()) return;
+
+  const worker = getActiveServiceWorker();
+  if (!worker) {
+    if (!silent) {
+      patchSnapshot({
+        assetOperationError: 'Offline app support is still starting.',
+      });
+    }
+    return;
+  }
+
+  try {
+    const status = await requestWorkerMessage<PwaCacheStatusMessage>(
+      worker,
+      { type: 'BLACKBOARD_STUDIO_GET_CACHE_STATUS' },
+      CACHE_STATUS_RESPONSE_TIMEOUT_MS,
+    );
+    applyCacheStatus(status);
+  } catch (error) {
+    if (!silent) {
+      patchSnapshot({
+        assetOperationError: getErrorMessage(error, 'Could not read offline asset storage.'),
+      });
+    }
+  }
+};
 
 const markUpdateReady = (worker: ServiceWorker) => {
   waitingWorker = worker;
@@ -186,6 +377,7 @@ const markUpdateReady = (worker: ServiceWorker) => {
 
   void readWorkerVersion(worker).then((version) => {
     if (!version || waitingWorker !== worker) return;
+    applyVersionMetadata(version);
     patchSnapshot({
       availableVersion: version.appVersion,
       availableBuildId: version.cacheVersion,
@@ -254,6 +446,8 @@ const watchRegistration = (registration: ServiceWorkerRegistration) => {
 
   if (registration.active) {
     markOfflineReady();
+    void readWorkerVersion(registration.active).then(applyVersionMetadata);
+    void refreshPwaCacheStatusInternal();
   }
 };
 
@@ -297,6 +491,7 @@ const attachLifecycleListeners = () => {
   window.addEventListener('online', () => {
     patchSnapshot({ error: null });
     void checkForPwaUpdate({ silent: true });
+    void refreshPwaCacheStatusInternal();
   });
 
   window.addEventListener('offline', () => {
@@ -319,6 +514,10 @@ const attachLifecycleListeners = () => {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       markOfflineReady();
+      if (navigator.serviceWorker.controller) {
+        void readWorkerVersion(navigator.serviceWorker.controller).then(applyVersionMetadata);
+        void refreshPwaCacheStatusInternal();
+      }
       if (reloadWhenControllerChanges) {
         reloadWhenControllerChanges = false;
         window.location.reload();
@@ -327,8 +526,13 @@ const attachLifecycleListeners = () => {
 
     navigator.serviceWorker.addEventListener(
       'message',
-      (event: MessageEvent<ServiceWorkerVersionMessage>) => {
+      (event: MessageEvent<ServiceWorkerVersionMessage | PwaCacheStatusMessage>) => {
+        if (event.data?.type === 'BLACKBOARD_STUDIO_SW_CACHE_STATUS') {
+          applyCacheStatus(event.data);
+          return;
+        }
         if (event.data?.type !== 'BLACKBOARD_STUDIO_SW_VERSION') return;
+        applyVersionMetadata(event.data);
         patchSnapshot({
           offlineReady: true,
           serviceWorkerState: 'ready',
@@ -356,7 +560,11 @@ const registerServiceWorker = async () => {
       error: null,
     });
 
-    void navigator.serviceWorker.ready.then(() => markOfflineReady());
+    void navigator.serviceWorker.ready.then((readyRegistration) => {
+      serviceWorkerRegistration = readyRegistration;
+      markOfflineReady();
+      void refreshPwaCacheStatusInternal();
+    });
     scheduleAutoUpdateChecks();
   } catch (error) {
     patchSnapshot({
@@ -418,6 +626,108 @@ export const registerPwa = () => {
   });
   registrationPromise = registerServiceWorker();
 };
+
+export const refreshPwaCacheStatus = async ({ silent = false }: { silent?: boolean } = {}) => {
+  registerPwa();
+  await refreshPwaCacheStatusInternal({ silent });
+};
+
+const getPwaAssetOperationMessageType = (operation: PwaAssetOperation) =>
+  operation === 'remove'
+    ? 'BLACKBOARD_STUDIO_DELETE_RUNTIME_ASSETS'
+    : 'BLACKBOARD_STUDIO_CACHE_RUNTIME_ASSETS';
+
+const getPwaAssetOperationFallback = (operation: PwaAssetOperation) =>
+  operation === 'remove'
+    ? 'Could not remove offline assets.'
+    : 'Could not download offline assets.';
+
+const runPwaAssetGroupOperation = async (
+  operation: PwaAssetOperation,
+  groupId?: string,
+): Promise<boolean> => {
+  registerPwa();
+
+  if (!canUseDom() || !getServiceWorkerSupport()) {
+    patchSnapshot({
+      assetOperationPhase: 'error',
+      operatingAssetGroupId: null,
+      assetOperationError: 'Offline pack management is unavailable in this browser.',
+    });
+    return false;
+  }
+
+  if (operation === 'install' && !navigator.onLine) {
+    patchSnapshot({
+      assetOperationPhase: 'error',
+      operatingAssetGroupId: null,
+      assetOperationError: 'Download offline packs when the network is online.',
+    });
+    return false;
+  }
+
+  const worker = getActiveServiceWorker();
+  if (!worker) {
+    patchSnapshot({
+      assetOperationPhase: 'error',
+      operatingAssetGroupId: null,
+      assetOperationError: 'Offline app support is still starting.',
+    });
+    return false;
+  }
+
+  const targetGroupId = groupId ?? 'all';
+  patchSnapshot({
+    assetOperationPhase: operation === 'remove' ? 'removing' : 'downloading',
+    operatingAssetGroupId: targetGroupId,
+    assetOperationError: null,
+    error: null,
+  });
+
+  try {
+    const fallback = getPwaAssetOperationFallback(operation);
+    const result = await requestWorkerMessage<PwaCacheResultMessage>(
+      worker,
+      {
+        type: getPwaAssetOperationMessageType(operation),
+        groupId,
+      },
+      CACHE_DOWNLOAD_RESPONSE_TIMEOUT_MS,
+    );
+
+    if (!result || result.type !== 'BLACKBOARD_STUDIO_SW_CACHE_RESULT') {
+      throw new Error(
+        operation === 'remove'
+          ? 'Offline asset removal did not respond.'
+          : 'Offline asset download did not respond.',
+      );
+    }
+    if (!result.ok) {
+      throw new Error(result.error || fallback);
+    }
+
+    applyCacheStatus(result.cacheStatus ?? null);
+    patchSnapshot({
+      assetOperationPhase: 'idle',
+      operatingAssetGroupId: null,
+      assetOperationError: null,
+    });
+    return true;
+  } catch (error) {
+    patchSnapshot({
+      assetOperationPhase: 'error',
+      operatingAssetGroupId: null,
+      assetOperationError: getErrorMessage(error, getPwaAssetOperationFallback(operation)),
+    });
+    return false;
+  }
+};
+
+export const downloadPwaAssetGroup = async (groupId?: string): Promise<boolean> =>
+  runPwaAssetGroupOperation('install', groupId);
+
+export const removePwaAssetGroup = async (groupId?: string): Promise<boolean> =>
+  runPwaAssetGroupOperation('remove', groupId);
 
 export const requestPwaInstall = async (): Promise<InstallOutcome> => {
   registerPwa();

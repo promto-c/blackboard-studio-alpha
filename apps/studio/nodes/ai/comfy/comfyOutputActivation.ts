@@ -1,5 +1,34 @@
 import type { ComfyNode, GeneratedOutput } from '@blackboard/types';
 
+export const isComfy3DGeneratedOutput = (output: Pick<GeneratedOutput, 'mediaKind'>): boolean =>
+  output.mediaKind === 'model_3d';
+
+export const getComfyMediaOutput = (
+  outputs: readonly GeneratedOutput[],
+): GeneratedOutput | undefined => outputs.find((output) => !isComfy3DGeneratedOutput(output));
+
+export const getComfyOutputActivationUpdates = (output: GeneratedOutput): Partial<ComfyNode> => {
+  const common = {
+    activeGeneratedOutputId: output.id,
+    lastPromptId: output.promptId,
+    lastRunAt: output.createdAt,
+  } satisfies Partial<ComfyNode>;
+
+  if (isComfy3DGeneratedOutput(output)) return common;
+
+  return {
+    ...common,
+    src: output.src,
+    mediaKind: output.mediaKind === 'model_3d' ? 'image' : (output.mediaKind ?? 'image'),
+    ...(output.colorSpace ? { colorSpace: output.colorSpace } : {}),
+    frames: output.frames,
+    duration: output.duration,
+    fps: output.fps,
+    width: output.width,
+    height: output.height,
+  };
+};
+
 const getLiveRegionIdSet = (node: Pick<ComfyNode, 'viewportPromptRegions'>): Set<string> =>
   new Set((node.viewportPromptRegions ?? []).map((region) => region.id));
 
@@ -25,6 +54,7 @@ export const getComfyGeneratedOutputsForActivation = ({
   outputs?: readonly GeneratedOutput[];
   activatedOutput: GeneratedOutput;
 }): GeneratedOutput[] => {
+  if (isComfy3DGeneratedOutput(activatedOutput)) return [...outputs];
   const activatedBucketId = getComfyOutputActivationBucketId(node, activatedOutput);
 
   return outputs.map((output) => {

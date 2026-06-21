@@ -90,7 +90,6 @@ export const DEFAULT_PAINT_BRUSH_SETTINGS: PaintBrushSettings = {
 // ─── Exported types ─────────────────────────────────────────────
 
 export type ThumbnailMode = 'live' | 'static' | 'off';
-export type RotoMotionBlurPreviewBackend = 'realtime_canvas' | 'gpu_float';
 export type BackgroundPrefetchMode = 'on_demand' | 'auto' | 'forward' | 'bidirectional';
 export type CacheBudgetMode = 'auto_memory' | 'manual_memory' | 'frame_count';
 export type IntegrationConnectionProviderId = 'gemini' | 'openai' | 'ollama' | 'comfy';
@@ -145,7 +144,6 @@ export interface Preferences {
   rotoMotionPathVisible: boolean;
   rotoMotionBlurPathVisible: boolean;
   rotoMotionTrailFrames: number;
-  rotoMotionBlurPreviewBackend: RotoMotionBlurPreviewBackend;
   rotoMotionBlurInteractivePreviewEnabled: boolean;
   rotoMotionBlurInteractivePreviewSamples: number;
   rotoPointWeightMode: RotoPointWeightMode;
@@ -225,9 +223,6 @@ const isUndoHistoryLimitPreference = (value: unknown): value is UndoHistoryLimit
 
 const isReopenHistoryLimitPreference = (value: unknown): value is ReopenHistoryLimitPreference =>
   value === 0 || value === 20 || value === 50 || value === 100;
-
-const isRotoMotionBlurPreviewBackend = (value: unknown): value is RotoMotionBlurPreviewBackend =>
-  value === 'realtime_canvas' || value === 'gpu_float';
 
 const isBackgroundPrefetchMode = (value: unknown): value is BackgroundPrefetchMode =>
   value === 'on_demand' || value === 'auto' || value === 'forward' || value === 'bidirectional';
@@ -507,10 +502,6 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
   rotoMotionPathVisible: boolField(true),
   rotoMotionBlurPathVisible: boolField(true),
   rotoMotionTrailFrames: customField(RotoTrailFrames.DEFAULT, (v) => clampRotoTrailFrames(v)),
-  rotoMotionBlurPreviewBackend: customField(
-    'realtime_canvas' as RotoMotionBlurPreviewBackend,
-    (v) => (isRotoMotionBlurPreviewBackend(v) ? v : 'realtime_canvas'),
-  ),
   rotoMotionBlurInteractivePreviewEnabled: boolField(true),
   rotoMotionBlurInteractivePreviewSamples: customField(
     ROTO_MOTION_BLUR_INTERACTIVE_DEFAULT_SAMPLES,

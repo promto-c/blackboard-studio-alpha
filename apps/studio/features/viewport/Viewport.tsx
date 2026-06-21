@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { PixelInspector } from '@blackboard/ui';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { colors } from '@/utils/colors';
@@ -22,13 +22,12 @@ import * as THREE from 'three';
 import { simplifyPath, resamplePath } from '@/utils/bspline';
 import FreehandSmoothnessControl from '@/nodes/builtin/roto/FreehandSmoothnessControl';
 import { ViewportOverlayRenderer, resolveOverlayVisibility } from './overlays';
-import type { MediaCacheContext } from '@/nodes/NodeDefinition';
 import { nodeRegistry } from '@/nodes/registry';
 import { useViewportInteractions } from './useViewportInteractions';
 import { useViewportOverlayContext } from './useViewportOverlayContext';
 import { getDataWindowProjection } from './dataWindow';
 import { useViewportRenderer } from '@/hooks/viewport/useViewportRenderer';
-import { useViewportMediaCache } from '@/hooks/viewport/useViewportMediaCache';
+import { useViewportMediaResources } from '@/hooks/viewport/useViewportMediaResources';
 import { useViewportTextTextures } from '@/hooks/viewport/useViewportTextTextures';
 import { useViewportPaintTextures } from '@/hooks/viewport/useViewportPaintTextures';
 import { useViewportRotoMasks } from '@/hooks/viewport/useViewportRotoMasks';
@@ -50,7 +49,7 @@ import {
   type HotkeyBinding,
   type HotkeyCommand,
 } from '@/hotkeys';
-import { hasRenderableNodes, nodeFlags, getMediaDescriptor } from '@/nodes/helpers';
+import { hasRenderableNodes, nodeFlags } from '@/nodes/helpers';
 import { getMediaFileKind } from '@/utils/mediaFiles';
 import { getNodeInputRenderNodes, getViewportRenderNodes } from '@/utils/viewerSlots';
 import { expandGroupNodesForRender } from '@/utils/groupRenderProjection';
@@ -61,6 +60,7 @@ import {
   createStandardClipboardHotkeyCommands,
 } from '@/utils/standardClipboardHotkeys';
 import { stabilizePoint } from '@/utils/rotoTracking';
+import { getAllProjectNodes } from '@/state/editor/flowModel';
 
 type ViewportMouseEvent = MouseEvent | React.MouseEvent<HTMLDivElement>;
 
@@ -169,7 +169,6 @@ function Viewport() {
     rotoMotionPathVisible,
     rotoMotionBlurPathVisible,
     rotoMotionTrailFrames,
-    rotoMotionBlurPreviewBackend,
     rotoMotionBlurInteractivePreviewEnabled,
     rotoMotionBlurInteractivePreviewSamples,
     rotoPointWeightMode,
@@ -231,6 +230,7 @@ function Viewport() {
     );
   }, [activeFlow, activeScene3DNode, flows, nodes]);
   const renderNodes = scene3DBackdropNodes ?? viewportNodes;
+  const cacheRetentionNodes = useMemo(() => getAllProjectNodes(flows), [flows]);
   const renderSceneNode = useMemo(
     () => renderNodes.find((node): node is SceneNode => node.type === NodeType.SCENE) ?? sceneNode,
     [renderNodes, sceneNode],
@@ -335,50 +335,22 @@ function Viewport() {
     };
   }, [threeStuff]);
 
-  const { textureCacheRef, mediaUpdateTrigger, bumpMediaUpdateTrigger } = useViewportMediaCache({
-    nodes: renderNodes,
+  const {
+    textureCacheRef,
+    mediaUpdateTrigger,
+    bumpMediaUpdateTrigger,
+    visualFrame,
+    isRenderReady,
+    isLoading,
+  } = useViewportMediaResources({
+    activeNodes: renderNodes,
+    retentionNodes: cacheRetentionNodes,
     currentFrame,
     selectedNode,
     maxFrames,
     updateCacheStatus,
     fps,
   });
-
-  const checkFrameReady = useCallback(
-    (frame: number) => {
-      if (!renderNodes || renderNodes.length === 0) return true;
-
-      const enabledNodes = renderNodes.filter((node) => node.enabled);
-
-      for (const node of enabledNodes) {
-        const desc = getMediaDescriptor(node.type);
-        if (desc) {
-          const caches: MediaCacheContext = {
-            imageCache: textureCacheRef.current,
-            videoElements: new Map<string, HTMLVideoElement>(
-              Array.from(textureCacheRef.current.entries())
-                .filter(([, v]) => v?.video)
-                .map(([k, v]) => [k, v.video!]),
-            ),
-            sequenceCache: textureCacheRef.current,
-          };
-          if (!desc.checkFrameReady(node, frame, caches)) return false;
-        }
-      }
-      return true;
-    },
-    [renderNodes, textureCacheRef],
-  );
-
-  const [visualFrame, setVisualFrame] = useState(currentFrame);
-
-  useLayoutEffect(() => {
-    if (checkFrameReady(currentFrame)) {
-      setVisualFrame(currentFrame);
-    }
-  }, [currentFrame, mediaUpdateTrigger, checkFrameReady]);
-
-  const isLoading = visualFrame !== currentFrame;
   const dataWindowProjection = useMemo(
     () => (sceneNode ? getDataWindowProjection(sceneNode, viewportNodes, visualFrame) : null),
     [sceneNode, viewportNodes, visualFrame],
@@ -494,7 +466,6 @@ function Viewport() {
     nodes: renderNodes,
     sceneNode: renderSceneNode,
     currentFrame: visualFrame,
-    motionBlurPreviewBackend: rotoMotionBlurPreviewBackend,
     interactiveMotionBlurPreviewEnabled: rotoMotionBlurInteractivePreviewEnabled,
     interactiveMotionBlurPreviewActive: isInteractiveRotoPreviewActive,
     interactiveMotionBlurPreviewSamples: rotoMotionBlurInteractivePreviewSamples,
@@ -515,8 +486,6 @@ function Viewport() {
     rotoMaskTexturesRef.current.forEach((entry) => {
       if (entry?.dispose) {
         entry.dispose();
-      } else {
-        entry?.texture?.dispose();
       }
     });
 
@@ -556,6 +525,7 @@ function Viewport() {
     viewerSettings,
     alphaOverlayStyle,
     hasRenderableNodes: hasRenderableOutput,
+    isRenderReady,
     mediaUpdateTrigger,
     threeStuff,
     textureCacheRef,

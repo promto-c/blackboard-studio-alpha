@@ -35,7 +35,7 @@ import { resolveRotoMotionBlurSettings } from '@/utils/rotoMotionBlur';
 function NudgePanel({ onClose }: { onClose: () => void }) {
   const { nudgeRadius, setPreferences } = usePreferences();
   return (
-    <Panel width="w-44">
+    <Panel>
       <PanelHeader title="Nudge" onClose={onClose} />
       <p className="text-[10px] text-gray-400 text-center mb-1">Ctrl/Cmd + Drag to resize</p>
       <p className="text-[10px] text-gray-400 text-center mb-2">Shift for uniform strength</p>
@@ -407,7 +407,7 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
   };
 
   return (
-    <Panel width="w-80">
+    <Panel>
       <PanelHeader title="Track" onClose={onClose} />
       <div className="space-y-2.5">
         <TrackingSection
@@ -866,7 +866,7 @@ function MotionCuePanel({ node, onClose }: { node: RotoNode; onClose: () => void
   );
 
   return (
-    <Panel width="w-72">
+    <Panel>
       <PanelHeader
         title="Motion Cue"
         onClose={onClose}

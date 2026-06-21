@@ -1,25 +1,42 @@
-import { useMemo, useState } from 'react';
-import type { ComfyNode, ComfyWorkflow, ViewportPromptRegion } from '@blackboard/types';
-import { useEditorActions } from '@/state/editorContext';
+import { useMemo, useState, type KeyboardEvent } from 'react';
+import {
+  EditorTab,
+  type ComfyNode,
+  type ComfyWorkflow,
+  type GeneratedOutput,
+  type ViewportPromptRegion,
+} from '@blackboard/types';
+import { PromptTextField } from '@blackboard/ui';
+import { ecc } from '@/features/viewport/overlays';
+import type { ViewportOverlayProps } from '@/nodes/NodeDefinition';
+import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import { enhancePrompt, getPromptSuggestions } from '@/utils/ai';
 import { getAiTaskRouteError, resolveAiTaskRoute } from '@/utils/aiRouting';
 import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
 import {
+  getComfyGeneratedOutputsForGalleryActivation,
+  getComfyOutputActivationRegionId,
+} from './comfyOutputActivation';
+import { getComfyGeneratedOutputsForGalleryScope } from './comfyOutputLayers';
+import { getComfyOutputTransform } from './comfyOutputTransform';
+import { getActiveComfyOutputJobs, getPendingComfyOutputSlots } from './comfyOutputGallery';
+import { isComfyRunShortcut } from './comfyRunShortcut';
+import {
+  COMFY_CROP_VIEWPORT_TOOL,
   getExplicitSelectedComfyViewportPromptRegion,
   getComfyViewportPromptRegionLabel,
   mergeComfyViewportBindings,
 } from './comfyViewportBindings';
+import { ComfyOutputGalleryStrip } from './components/ComfyOutputGalleryStrip';
 import { ComfyRunButtonGroup } from './components/ComfyRunButtonGroup';
-import { PromptTextField } from '@blackboard/ui';
-import { ecc } from '@/features/viewport/overlays';
-import type { ViewportOverlayProps } from '@/nodes/NodeDefinition';
 
 const HANDLE_SIZE = 7;
 const PROMPT_PANEL_MARGIN = 12;
 const PROMPT_PANEL_MIN_WIDTH = 260;
 const PROMPT_PANEL_MAX_WIDTH = 380;
 const PROMPT_PANEL_ESTIMATED_HEIGHT = 132;
+const PROMPT_PANEL_WITH_GALLERY_ESTIMATED_HEIGHT = 230;
 
 const getSelectedWorkflowOutputIds = (workflow: ComfyWorkflow): string[] => {
   const candidateIds = new Set((workflow.outputCandidates ?? []).map((candidate) => candidate.id));
@@ -46,10 +63,74 @@ export function ComfyCropSvgOverlay(props: ViewportOverlayProps) {
   const regions = node.viewportPromptRegions ?? [];
   const visibleRegions = regions.filter((region) => region.visible !== false);
 
+  const ctx = ecc(props);
+  const mouseScenePos = ctx.viewport.mouseScenePos;
+  const activeViewportTool = ctx.viewport.activeViewportTool;
+  const isRegionToolActive =
+    activeViewportTool === COMFY_CROP_VIEWPORT_TOOL || activeViewportTool === 'select';
+
+  // Compute which region the mouse is hovering over using the same
+  // hit-testing approach as the interaction hook.
+  // mouseScenePos is in centered coords (origin at scene center), but
+  // region rects are in top-left scene coords (matching the SVG viewBox).
+  // Convert by adding half the scene dimensions, same as toScenePixel().
+  const hoverHalfSize = useMemo(
+    () => ({ hw: sceneSize.width / 2, hh: sceneSize.height / 2 }),
+    [sceneSize.width, sceneSize.height],
+  );
+  // Build a top-left hover point from the centered mouseScenePos.
+  const hoverPoint = useMemo<{ x: number; y: number } | null>(
+    () =>
+      mouseScenePos
+        ? { x: mouseScenePos.x + hoverHalfSize.hw, y: mouseScenePos.y + hoverHalfSize.hh }
+        : null,
+    [mouseScenePos, hoverHalfSize],
+  );
+
+  const hoveredRegionId = useMemo<string | null>(() => {
+    if (!hoverPoint || !isRegionToolActive) return null;
+    const tolerance = 10 / Math.max(zoom, 0.1);
+    for (let i = visibleRegions.length - 1; i >= 0; i--) {
+      const r = visibleRegions[i];
+      const { x, y, width, height } = r.rect;
+      const inside =
+        hoverPoint.x >= x - tolerance &&
+        hoverPoint.x <= x + width + tolerance &&
+        hoverPoint.y >= y - tolerance &&
+        hoverPoint.y <= y + height + tolerance;
+      if (inside) return r.id;
+    }
+    return null;
+  }, [hoverPoint, visibleRegions, isRegionToolActive, zoom]);
+
+  // Compute which corner handle (0–3 on the selected region) the mouse is
+  // hovering near, using the same hit-tolerance as the interaction hook.
+  const hoveredHandleIndex = useMemo<number | null>(() => {
+    if (!hoverPoint || !selectedRegionId || !isRegionToolActive) return null;
+    const selRegion = visibleRegions.find((r) => r.id === selectedRegionId);
+    if (!selRegion) return null;
+    const { x, y, width, height } = selRegion.rect;
+    const corners = [
+      [x, y],
+      [x + width, y],
+      [x, y + height],
+      [x + width, y + height],
+    ];
+    const tolerance = 10 / Math.max(zoom, 0.1);
+    for (let i = 0; i < corners.length; i++) {
+      const [cx, cy] = corners[i];
+      if (Math.abs(hoverPoint.x - cx) <= tolerance && Math.abs(hoverPoint.y - cy) <= tolerance) {
+        return i;
+      }
+    }
+    return null;
+  }, [hoverPoint, selectedRegionId, visibleRegions, isRegionToolActive, zoom]);
+
   return (
     <>
       {visibleRegions.map((region) => {
         const isSelected = region.id === selectedRegionId;
+        const isHovered = region.id === hoveredRegionId && !isSelected;
         const rect = region.rect;
         const label = getComfyViewportPromptRegionLabel(regions, region.id);
         const handleSize = HANDLE_SIZE / zoom;
@@ -59,58 +140,87 @@ export function ComfyCropSvgOverlay(props: ViewportOverlayProps) {
           [rect.x, rect.y + rect.height],
           [rect.x + rect.width, rect.y + rect.height],
         ];
-        const clampHandleX = (x: number) =>
-          Math.max(0, Math.min(x - handleSize / 2, sceneSize.width - handleSize));
-        const clampHandleY = (y: number) =>
-          Math.max(0, Math.min(y - handleSize / 2, sceneSize.height - handleSize));
+        // Allow handles outside scene bounds (outpainting support)
+        const unclampedHandleX = (x: number) => x - handleSize / 2;
+        const unclampedHandleY = (y: number) => y - handleSize / 2;
+        const clampHandleX = unclampedHandleX;
+        const clampHandleY = unclampedHandleY;
 
         return (
           <g key={region.id} pointerEvents="none">
+            {/* Hover fill highlight */}
+            {isHovered && (
+              <rect
+                x={rect.x}
+                y={rect.y}
+                width={rect.width}
+                height={rect.height}
+                fill="rgba(125, 211, 252, 0.08)"
+                rx={1}
+              />
+            )}
             <rect
               x={rect.x}
               y={rect.y}
               width={rect.width}
               height={rect.height}
-              fill={isSelected ? 'rgba(45, 212, 191, 0.08)' : 'rgba(148, 163, 184, 0.06)'}
-              stroke={isSelected ? 'rgba(94, 234, 212, 0.95)' : 'rgba(203, 213, 225, 0.65)'}
+              fill="none"
+              stroke={
+                isSelected
+                  ? 'rgba(125, 211, 252, 0.95)'
+                  : isHovered
+                    ? 'rgba(125, 211, 252, 0.7)'
+                    : 'rgba(203, 213, 225, 0.55)'
+              }
               strokeWidth={Math.max(1, 2 / zoom)}
               strokeDasharray={`${6 / zoom} ${4 / zoom}`}
             />
-            <text
-              x={rect.x + 8 / zoom}
-              y={rect.y + 18 / zoom}
-              fill="rgba(240, 253, 250, 0.9)"
-              fontSize={11 / zoom}
-              fontWeight={600}
-            >
-              {label}
-            </text>
             {isSelected && (
               <text
-                x={rect.x + rect.width / 2}
-                y={rect.y + rect.height / 2}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fill="rgba(240, 253, 250, 0.85)"
-                fontSize={12 / zoom}
+                x={rect.x + 8 / zoom}
+                y={rect.y + 18 / zoom}
+                fill="rgba(240, 249, 255, 0.95)"
+                stroke="rgba(8, 47, 73, 0.9)"
+                strokeWidth={2.5 / zoom}
+                paintOrder="stroke"
+                fontSize={11 / zoom}
                 fontWeight={600}
               >
-                Selected Region
+                {`${label}  ${Math.round(rect.width)} x ${Math.round(rect.height)}`}
               </text>
             )}
             {isSelected &&
-              handles.map(([x, y]) => (
-                <rect
-                  key={`${x}:${y}`}
-                  x={clampHandleX(x)}
-                  y={clampHandleY(y)}
-                  width={handleSize}
-                  height={handleSize}
-                  fill="rgb(94, 234, 212)"
-                  stroke="rgb(15, 23, 42)"
-                  strokeWidth={1 / zoom}
-                />
-              ))}
+              handles.map(([x, y], index) => {
+                const isHandleHovered = index === hoveredHandleIndex;
+                const hiSize = isHandleHovered ? handleSize * 1.6 : handleSize;
+                const hiCenterX = x;
+                const hiCenterY = y;
+                return (
+                  <g key={`${x}:${y}`}>
+                    {/* Glow ring behind hovered handle */}
+                    {isHandleHovered && (
+                      <rect
+                        x={clampHandleX(hiCenterX - handleSize * 0.3)}
+                        y={clampHandleY(hiCenterY - handleSize * 0.3)}
+                        width={handleSize * 1.6}
+                        height={handleSize * 1.6}
+                        fill="rgba(125, 211, 252, 0.25)"
+                        rx={2 / zoom}
+                      />
+                    )}
+                    <rect
+                      x={clampHandleX(hiCenterX - (hiSize - handleSize) / 2)}
+                      y={clampHandleY(hiCenterY - (hiSize - handleSize) / 2)}
+                      width={hiSize}
+                      height={hiSize}
+                      fill={isHandleHovered ? 'rgba(255, 255, 255, 0.95)' : 'rgb(125, 211, 252)'}
+                      stroke={isHandleHovered ? 'rgb(125, 211, 252)' : 'rgb(15, 23, 42)'}
+                      strokeWidth={1.5 / zoom}
+                      rx={1.5 / zoom}
+                    />
+                  </g>
+                );
+              })}
           </g>
         );
       })}
@@ -127,7 +237,10 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
   const sceneSize = { width: props.scene.width, height: props.scene.height };
   const zoom = props.zoom;
   const pan = props.pan;
-  const { updateNode } = useEditorActions();
+  const { updateNode, setActiveTab, setSubPanelVisible } = useEditorActions();
+  const backgroundJobs = useEditorSelector((state) => state.backgroundJobs);
+  const projectId = useEditorSelector((state) => state.projectId);
+  const activeProjectBranchId = useEditorSelector((state) => state.activeProjectBranchId);
   const {
     geminiApiKey,
     openAiApiKey,
@@ -168,6 +281,24 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
     const index = Math.min(Math.max(0, region?.promptSuggestionPageIndex ?? 0), pages.length - 1);
     return pages[index] ?? [];
   }, [region?.promptSuggestionPageIndex, region?.promptSuggestionPages]);
+  const regionOutputs = useMemo(
+    () => (region ? [...getComfyGeneratedOutputsForGalleryScope(node, region.id)].reverse() : []),
+    [node, region],
+  );
+  const activeNodeComfyJobs = useMemo(
+    () =>
+      getActiveComfyOutputJobs({
+        jobs: backgroundJobs,
+        nodeId: node.id,
+        projectId,
+        branchId: activeProjectBranchId,
+      }),
+    [activeProjectBranchId, backgroundJobs, node.id, projectId],
+  );
+  const pendingOutputSlots = useMemo(
+    () => getPendingComfyOutputSlots(activeNodeComfyJobs, region?.id),
+    [activeNodeComfyJobs, region?.id],
+  );
 
   if (
     cropInteraction.dragState ||
@@ -185,6 +316,10 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
     (workflow.outputCandidates ?? []).length > 0 &&
     getSelectedWorkflowOutputIds(workflow).length === 0;
   const isRunDisabled = !workflow || hasNoSelectedWorkflowOutputs;
+  const showRegionGallery = regionOutputs.length > 0 || pendingOutputSlots.length > 0;
+  const promptPanelEstimatedHeight = showRegionGallery
+    ? PROMPT_PANEL_WITH_GALLERY_ESTIMATED_HEIGHT
+    : PROMPT_PANEL_ESTIMATED_HEIGHT;
 
   const writeRegion = (nextRegion: ViewportPromptRegion, withHistory = false) => {
     updateNode(
@@ -239,7 +374,52 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
   };
 
   const requestRun = (runCount = 1) => {
-    requestRegisteredNodeExecution(node.id, { source: 'viewportTool', runCount });
+    requestRegisteredNodeExecution(node.id, {
+      source: 'viewportTool',
+      runCount,
+      regionId: region.id,
+    });
+  };
+
+  const handlePromptKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!isComfyRunShortcut(event)) return;
+
+    const field = (event.target as HTMLElement | null)?.closest('textarea');
+    if (!(field instanceof HTMLElement)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (document.activeElement === field) field.blur();
+
+    window.setTimeout(() => requestRun(1), 0);
+  };
+
+  const handleActivateOutput = (output: GeneratedOutput) => {
+    updateNode(
+      node.id,
+      {
+        src: output.src,
+        mediaKind: output.mediaKind ?? 'image',
+        colorSpace: output.colorSpace ?? node.colorSpace,
+        frames: output.frames,
+        duration: output.duration,
+        fps: output.fps,
+        width: output.width,
+        height: output.height,
+        transform: getComfyOutputTransform({ node, output, sceneNode: props.scene }),
+        generatedOutputs: getComfyGeneratedOutputsForGalleryActivation(node, output),
+        activeGeneratedOutputId: output.id,
+        selectedViewportPromptRegionId: getComfyOutputActivationRegionId(node, output),
+        lastPromptId: output.promptId,
+        lastRunAt: output.createdAt,
+      },
+      true,
+    );
+  };
+
+  const openGallery = () => {
+    setSubPanelVisible(true);
+    setActiveTab(EditorTab.Gallery);
   };
 
   const regionScreenRect = {
@@ -266,9 +446,9 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
     Math.min(unclampedLeft, viewportSize.width - panelWidth - PROMPT_PANEL_MARGIN),
   );
   const belowTop = regionScreenRect.bottom + 10;
-  const aboveTop = regionScreenRect.top - PROMPT_PANEL_ESTIMATED_HEIGHT - 10;
+  const aboveTop = regionScreenRect.top - promptPanelEstimatedHeight - 10;
   const top =
-    belowTop + PROMPT_PANEL_ESTIMATED_HEIGHT <= viewportSize.height - PROMPT_PANEL_MARGIN
+    belowTop + promptPanelEstimatedHeight <= viewportSize.height - PROMPT_PANEL_MARGIN
       ? belowTop
       : aboveTop >= PROMPT_PANEL_MARGIN
         ? aboveTop
@@ -276,7 +456,7 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
             PROMPT_PANEL_MARGIN,
             Math.min(
               belowTop,
-              viewportSize.height - PROMPT_PANEL_ESTIMATED_HEIGHT - PROMPT_PANEL_MARGIN,
+              viewportSize.height - promptPanelEstimatedHeight - PROMPT_PANEL_MARGIN,
             ),
           );
   const canUsePromptTools = Boolean(promptRoute);
@@ -292,6 +472,7 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
       onMouseDown={(event) => event.stopPropagation()}
       onMouseMove={(event) => event.stopPropagation()}
       onMouseUp={(event) => event.stopPropagation()}
+      onKeyDown={handlePromptKeyDown}
     >
       <div className="rounded-lg border border-white/15 bg-gray-950/70 p-2 shadow-2xl shadow-black/45 backdrop-blur-xl ring-1 ring-white/10">
         <PromptTextField
@@ -368,6 +549,19 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
           resetTooltip="Reset prompt"
         />
         {error ? <p className="mt-1 text-[10px] text-red-300">{error}</p> : null}
+        {showRegionGallery ? (
+          <div className="mt-2 rounded-md border border-white/10 bg-gray-950/35 p-2">
+            <ComfyOutputGalleryStrip
+              label={`${regionLabel} outputs`}
+              outputs={regionOutputs}
+              pendingSlots={pendingOutputSlots}
+              activeOutputId={node.activeGeneratedOutputId}
+              fallbackActiveSrc={node.src}
+              onActivateOutput={handleActivateOutput}
+              onOpenGallery={openGallery}
+            />
+          </div>
+        ) : null}
         <div className="mt-2 flex items-center gap-1">
           <ComfyRunButtonGroup
             disabled={isRunDisabled}

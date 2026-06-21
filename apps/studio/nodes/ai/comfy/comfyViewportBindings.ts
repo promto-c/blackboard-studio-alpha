@@ -11,14 +11,17 @@ import type {
   ViewportPromptRegion,
   ViewportPromptRegionDefaults,
 } from '@blackboard/types';
-import { getComfyWorkflowInputCandidates } from './comfyInputs';
+import { getSelectedComfyWorkflowInputCandidates } from './comfyInputs';
 import {
+  getComfyControlDescription,
   getComfyControlKey,
   getComfyWorkflowControlCandidates,
   isPromptLikeComfyTextInput,
+  type ComfyWorkflowControlCandidate,
 } from './comfyControls';
 import { isJsonObject } from '@/utils/guards';
 import { normalizeComfyType } from '@/utils/comfyUtils';
+import { collectComfyGraphExposedFields } from '@/services/comfy/client';
 
 export const COMFY_CROP_VIEWPORT_TOOL = 'comfy_crop';
 
@@ -90,8 +93,21 @@ const targetFromPromptInput = (entry: {
   nodeId: entry.nodeId,
   inputName: entry.inputName,
   classType: entry.classType,
-  label: `${entry.classType}.${entry.inputName}`,
+  label: getComfyControlDescription(entry),
 });
+
+const isSameComfyBindingTarget = (
+  left: ComfyWorkflowFieldTarget,
+  right: ComfyWorkflowFieldTarget,
+): boolean => {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'workflowInput' && right.kind === 'workflowInput') {
+    if (left.inputCandidateId && right.inputCandidateId) {
+      return left.inputCandidateId === right.inputCandidateId;
+    }
+  }
+  return left.nodeId === right.nodeId && left.inputName === right.inputName;
+};
 
 const numericInputScore = (
   field: Extract<ComfyViewportBindingField, 'width' | 'height' | 'x' | 'y'>,
@@ -142,7 +158,7 @@ export const getComfyViewportBindingTargetOptions = (
   if (!workflow) return [];
 
   if (field === 'image' || field === 'mask') {
-    return getComfyWorkflowInputCandidates(workflow)
+    return getSelectedComfyWorkflowInputCandidates(workflow)
       .filter((candidate) => {
         const input = normalizeComfyType(candidate.inputName);
         const type = normalizeComfyType(candidate.nodeType);
@@ -161,7 +177,28 @@ export const getComfyViewportBindingTargetOptions = (
   }
 
   if (field === 'prompt') {
-    return getComfyWorkflowControlCandidates(workflow)
+    const controlCandidates = getComfyWorkflowControlCandidates(workflow);
+    const controlCandidatesByKey = new Map(
+      controlCandidates.map((candidate) => [candidate.key, candidate]),
+    );
+    const exposedPromptTargets = collectComfyGraphExposedFields(workflow.sourceGraph)
+      .filter((entry) =>
+        isPromptLikeComfyTextInput({
+          inputName: entry.inputName,
+          label: entry.label,
+          classType: entry.nodeType,
+        }),
+      )
+      .flatMap((entry) => entry.promptTargets)
+      .map((target) =>
+        controlCandidatesByKey.get(getComfyControlKey(target.nodeId, target.inputName)),
+      )
+      .filter((candidate): candidate is ComfyWorkflowControlCandidate => candidate !== undefined)
+      .map(targetFromPromptInput);
+
+    if (exposedPromptTargets.length > 0) return exposedPromptTargets;
+
+    return controlCandidates
       .filter((candidate) =>
         isPromptLikeComfyTextInput({
           inputName: candidate.inputName,
@@ -217,10 +254,20 @@ const mergeComfyViewportBindingList = (
   return COMFY_VIEWPORT_BINDING_FIELDS.map((field) => {
     const existing = existingByField.get(field);
     const fallback = createComfyViewportFieldBinding(workflow, field);
+    const existingTarget = existing?.target;
+    const target = existingTarget
+      ? getComfyViewportBindingTargetOptions(workflow, field).some((candidate) =>
+          isSameComfyBindingTarget(candidate, existingTarget),
+        )
+        ? existingTarget
+        : fallback.target
+      : existing
+        ? undefined
+        : fallback.target;
     return {
       id: existing?.id ?? fallback.id,
       field,
-      target: existing ? existing.target : fallback.target,
+      target,
     };
   });
 };
@@ -248,6 +295,7 @@ export const createComfyViewportPromptRegion = (
   rect,
   prompt: defaults?.prompt ?? '',
   bindings: mergeComfyViewportBindingList(workflow, defaults?.bindings),
+  regionInputAlphaMode: defaults?.regionInputAlphaMode,
 });
 
 export const getSelectedComfyViewportPromptRegion = (
@@ -475,13 +523,17 @@ export const shouldUseComfyWorkflowInputSource = ({
   workflow,
   candidate,
   inputContext,
+  regionId,
 }: {
   node: ComfyNode;
   workflow: ComfyWorkflow;
   candidate: ComfyWorkflowInputCandidate;
   inputContext: ComfyRunInputContext;
+  regionId?: string;
 }): boolean => {
-  const region = getSelectedComfyViewportPromptRegion(node);
+  const region = regionId
+    ? ((node.viewportPromptRegions ?? []).find((candidate) => candidate.id === regionId) ?? null)
+    : getSelectedComfyViewportPromptRegion(node);
   if (!region) return true;
 
   const matchingBindings = mergeComfyViewportBindings(workflow, region.bindings).filter((binding) =>
@@ -530,11 +582,15 @@ export const applyComfyViewportPromptRegionBindings = (
   prompt: Record<string, unknown>,
   node: ComfyNode,
   workflow: ComfyWorkflow,
-  options: { inputContext?: ComfyRunInputContext } = {},
+  options: { inputContext?: ComfyRunInputContext; regionId?: string } = {},
 ): Record<string, unknown> => {
   const region =
     (options.inputContext ?? 'viewportTool') === 'viewportTool'
-      ? getExplicitSelectedComfyViewportPromptRegion(node)
+      ? options.regionId
+        ? ((node.viewportPromptRegions ?? []).find(
+            (candidate) => candidate.id === options.regionId && candidate.visible !== false,
+          ) ?? null)
+        : getExplicitSelectedComfyViewportPromptRegion(node)
       : getSelectedComfyViewportPromptRegion(node);
   if (!region) return prompt;
 

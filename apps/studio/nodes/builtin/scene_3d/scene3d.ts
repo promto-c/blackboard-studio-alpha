@@ -464,3 +464,15 @@ export const createScene3DAssetItem = (
   color: asset.kind === 'splat' ? '#67e8f9' : '#e5e7eb',
   asset,
 });
+
+export const createScene3DSettingsWithAsset = (
+  asset: Scene3DAssetReference,
+  width = 1920,
+  height = 1080,
+): Scene3DSettings => {
+  const settings = createDefaultScene3DSettings(width, height);
+  return {
+    ...settings,
+    items: [...settings.items, createScene3DAssetItem(settings, asset)],
+  };
+};

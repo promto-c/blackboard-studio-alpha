@@ -6,6 +6,7 @@ import {
   CustomShaderNode,
 } from '@blackboard/types';
 import type { GenerateAssistantChatOptions } from '@/utils/ai';
+import { resolveTextAiProvider } from '@/utils/aiProviders';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                             */
@@ -77,8 +78,7 @@ export const getLastPendingAssistantMessageIndex = (messages: AiChatMessage[]) =
 
 export const getResolvedAiProvider = (
   provider: GenerateAssistantChatOptions['provider'],
-): 'gemini' | 'ollama' | 'openai' =>
-  provider === 'ollama' ? 'ollama' : provider === 'openai' ? 'openai' : 'gemini';
+): 'gemini' | 'ollama' | 'openai' => resolveTextAiProvider(provider);
 
 export const getResolvedAiModel = (
   options: Pick<

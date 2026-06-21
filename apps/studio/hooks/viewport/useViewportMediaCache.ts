@@ -20,7 +20,7 @@ import { type BackgroundPrefetchMode, getRecommendedCacheSizeMB } from '@/state/
 import { usePreferences } from '@/state/preferencesContext';
 import { getInputPorts, getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
 
-interface CacheStatus {
+export interface ViewportCacheStatus {
   memoryUsed: number;
   memoryLimit: number;
   cachedFrames: boolean[];
@@ -50,12 +50,13 @@ interface VideoFrameRequestOptions {
   priority?: VideoFrameRequestPriority;
 }
 
-interface UseViewportMediaCacheOptions {
+export interface UseViewportMediaCacheOptions {
   nodes: AnyNode[];
+  retentionNodes?: AnyNode[];
   currentFrame: number;
   selectedNode?: AnyNode;
   maxFrames: number;
-  updateCacheStatus: (status: CacheStatus) => void;
+  updateCacheStatus: (status: ViewportCacheStatus) => void;
   fps?: number;
 }
 
@@ -209,6 +210,7 @@ const disposeVideoDecodeSession = (session: VideoDecodeSession) => {
 
 export const useViewportMediaCache = ({
   nodes,
+  retentionNodes = nodes,
   currentFrame,
   selectedNode,
   maxFrames,
@@ -266,7 +268,7 @@ export const useViewportMediaCache = ({
     bumpMediaUpdateTrigger();
   }, [bumpMediaUpdateTrigger, effectiveFrameLimit, effectiveMaxCacheSizeMB]);
 
-  const videoSrcsInProject = useMemo(() => {
+  const activeVideoSrcs = useMemo(() => {
     const srcs = new Set<string>();
     nodes.forEach((node) => {
       if (!isVideoFileNode(node)) return;
@@ -275,13 +277,22 @@ export const useViewportMediaCache = ({
     return srcs;
   }, [nodes]);
 
+  const retainedVideoSrcs = useMemo(() => {
+    const srcs = new Set<string>();
+    retentionNodes.forEach((node) => {
+      if (!isVideoFileNode(node)) return;
+      getNodeAssetIds(node).forEach((id) => srcs.add(id));
+    });
+    return srcs;
+  }, [retentionNodes]);
+
   const assetIdsInProject = useMemo(() => {
     const ids = new Set<string>();
-    nodes.forEach((node) => {
+    retentionNodes.forEach((node) => {
       getNodeAssetIds(node).forEach((id) => ids.add(id));
     });
     return ids;
-  }, [nodes]);
+  }, [retentionNodes]);
 
   const sequenceNodes = useMemo(() => {
     return nodes.filter((node) => node.type === NodeType.IMAGE_SEQUENCE) as ImageSequenceNode[];
@@ -829,12 +840,12 @@ export const useViewportMediaCache = ({
   }, [sequenceNodes, currentFrame, getSequenceFrameIndex, loadAsset]);
 
   useEffect(() => {
-    if (videoSrcsInProject.size === 0) return;
+    if (activeVideoSrcs.size === 0) return;
     const frame = Math.max(0, Math.round(currentFrame));
-    videoSrcsInProject.forEach((src) => {
+    activeVideoSrcs.forEach((src) => {
       void requestVideoFrame(src, frame, { priority: 'required' });
     });
-  }, [currentFrame, requestVideoFrame, videoSrcsInProject]);
+  }, [activeVideoSrcs, currentFrame, requestVideoFrame]);
 
   useEffect(() => {
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -1050,36 +1061,29 @@ export const useViewportMediaCache = ({
   useEffect(() => {
     textureCacheRef.current.prune(assetIdsInProject, (cacheKey) => {
       const source = getVideoFrameCacheSource(cacheKey);
-      return source !== null && videoSrcsInProject.has(source);
+      return source !== null && retainedVideoSrcs.has(source);
     });
-  }, [assetIdsInProject, videoSrcsInProject]);
+  }, [assetIdsInProject, retainedVideoSrcs]);
 
   useEffect(() => {
-    const dynamicVideoSrcs = nodes
-      .filter((node) => node.type !== NodeType.MEDIA_SOURCE && isVideoFileNode(node))
-      .flatMap((node) => getNodeAssetIds(node));
-    const activeVideoSrcs = new Set([
-      ...videoNodes.map((node) => node.src).filter(Boolean),
-      ...dynamicVideoSrcs,
-    ]);
     let changed = false;
 
     pendingVideoFrameKeysBySrcRef.current.forEach((frameKeys, src) => {
-      if (activeVideoSrcs.has(src)) return;
+      if (retainedVideoSrcs.has(src)) return;
       pendingVideoFrameKeysBySrcRef.current.delete(src);
       frameKeys.forEach((frameKey) => pendingVideoFramesRef.current.delete(frameKey));
       changed = true;
     });
 
     videoDecodeSessionsRef.current.forEach((session, src) => {
-      if (activeVideoSrcs.has(src)) return;
+      if (retainedVideoSrcs.has(src)) return;
       disposeVideoDecodeSession(session);
       videoDecodeSessionsRef.current.delete(src);
       changed = true;
     });
 
     queuedVideoDecodeWindowsRef.current.forEach((queuedWindow, requestId) => {
-      if (activeVideoSrcs.has(queuedWindow.src)) return;
+      if (retainedVideoSrcs.has(queuedWindow.src)) return;
       cancelQueuedVideoWindow(requestId, queuedWindow);
       changed = true;
     });
@@ -1087,7 +1091,7 @@ export const useViewportMediaCache = ({
     if (changed) {
       bumpMediaUpdateTrigger();
     }
-  }, [bumpMediaUpdateTrigger, cancelQueuedVideoWindow, nodes, videoNodes]);
+  }, [bumpMediaUpdateTrigger, cancelQueuedVideoWindow, retainedVideoSrcs]);
 
   useEffect(() => {
     const sessions = videoDecodeSessionsRef.current;

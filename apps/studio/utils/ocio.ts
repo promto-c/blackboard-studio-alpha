@@ -10,16 +10,24 @@ import type {
   RoleInfo,
   ViewInfo,
 } from '@bb-studio/ocio';
-import { ACES_CG_V4_CONFIG, createOCIO } from '@bb-studio/ocio';
 
 export const OcioDefaults = {
-  CONFIG: ACES_CG_V4_CONFIG,
+  CONFIG: 'ocio://cg-config-v4.0.0_aces-v2.0_ocio-v2.5',
   DISPLAY: 'sRGB - Display',
   VIEW: 'ACES 2.0 - SDR 100 nits (Rec.709)',
   WORKING_SPACE: 'ACEScg',
   TEXTURE_SPACE: 'sRGB Encoded Rec.709 (sRGB)',
   DATA_SPACE: 'Raw',
 } as const;
+
+type OcioModule = typeof import('@bb-studio/ocio');
+
+let ocioModulePromise: Promise<OcioModule> | null = null;
+
+const loadOcioModule = (): Promise<OcioModule> => {
+  ocioModulePromise ??= import('@bb-studio/ocio');
+  return ocioModulePromise;
+};
 
 export interface OcioRuntimeSnapshot {
   isInitialized: boolean;
@@ -289,6 +297,7 @@ class OcioManager {
       this.disposeConfig();
 
       if (!this.ocio) {
+        const { createOCIO } = await loadOcioModule();
         this.ocio = await createOCIO();
       }
 

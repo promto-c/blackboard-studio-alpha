@@ -9,6 +9,7 @@ import type {
 export const SCENE_3D_ASSET_ACCEPT = [
   '.glb',
   '.gltf',
+  '.fbx',
   '.obj',
   '.usdz',
   '.stl',
@@ -26,6 +27,7 @@ export const SCENE_3D_ASSET_ACCEPT = [
 const EXTENSION_TO_MESH_FORMAT: Record<string, Scene3DMeshAssetFormat> = {
   glb: 'glb',
   gltf: 'gltf',
+  fbx: 'fbx',
   obj: 'obj',
   usdz: 'usdz',
   stl: 'stl',

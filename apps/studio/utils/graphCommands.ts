@@ -62,6 +62,7 @@ import {
   type NodeClipboardPayload,
 } from '@/utils/nodeClipboard';
 import { createUniqueItemNameAssigner } from '@/utils/uniqueItemName';
+import { deepClone } from '@/utils/deepClone';
 import type { InputPortDescriptor } from '@/nodes/NodeDefinition';
 
 // ---------------------------------------------------------------------------
@@ -1044,14 +1045,6 @@ export interface PasteNodesOptions {
 const PASTE_OFFSET = { x: 48, y: 48 };
 const POSITION_COLLISION_EPSILON = 4;
 
-const cloneGraphValue = <T>(value: T): T => {
-  if (typeof structuredClone === 'function') {
-    return structuredClone(value);
-  }
-
-  return JSON.parse(JSON.stringify(value)) as T;
-};
-
 const sanitizeIdSegment = (value: string): string =>
   value.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+/, '') || 'node';
 
@@ -1131,7 +1124,7 @@ const collectGroupFlows = (
     const childFlow = flows[childFlowId];
     if (!childFlow) continue;
 
-    collectedFlows[childFlowId] = cloneGraphValue(childFlow);
+    collectedFlows[childFlowId] = deepClone(childFlow);
     collectGroupFlows(childFlow.nodes, flows, collectedFlows);
   }
 };
@@ -1182,7 +1175,7 @@ export function createNodeClipboardPayload(state: GraphCommandState): NodeClipbo
     kind: NODE_CLIPBOARD_KIND,
     version: NODE_CLIPBOARD_VERSION,
     createdAt: Date.now(),
-    nodes: cloneGraphValue(selectedNodes),
+    nodes: deepClone(selectedNodes),
     edges: activeFlow.edges
       .filter(
         (edge) =>
@@ -1361,7 +1354,7 @@ const cloneNodeForPaste = ({
 }): AnyNode => {
   const mappedId = nodeIdMap.get(node.id) ?? node.id;
   const { inputs, inputSourcePorts, droppedPorts } = remapNodeInputs(node, nodeIdMap, edges);
-  const baseNode = cloneGraphValue({
+  const baseNode = deepClone({
     ...node,
     id: mappedId,
     ...(nameAssigner ? { name: nameAssigner(node.name) } : {}),

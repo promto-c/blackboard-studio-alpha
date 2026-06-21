@@ -195,6 +195,18 @@ export interface PaintTextureBundle {
   alpha: THREE.Texture;
 }
 
+/** One hard-edged matte layer, composited and feathered by the GPU pipeline. */
+export interface RendererMaskLayer {
+  samples: readonly {
+    texture: THREE.Texture;
+    weight: number;
+    prepare?: () => void;
+  }[];
+  feather: number;
+  opacity: number;
+  operation: 'add' | 'subtract';
+}
+
 /**
  * Context provided to resolveOutput() and node renderOutput() handlers.
  * Provides all the rendering primitives and callbacks needed to render
@@ -214,9 +226,7 @@ export interface ResolveOutputContext {
   /** The current composite buffer (implicit pipeline input). Undefined outside main loop. */
   compositeBuffer?: THREE.WebGLRenderTarget;
   getMediaTexture: (node: AnyNode, frame: number) => THREE.Texture | undefined;
-  getRotoMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoAddMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
-  getRotoSubMaskTexture?: (nodeId: string) => THREE.Texture | undefined;
+  getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
   getPaintTextures?: (nodeId: string) => PaintTextureBundle | undefined;
   nodeRegistry: NodeRegistryLike;
@@ -228,6 +238,8 @@ export interface ResolveOutputContext {
   getChannelIndex: (channel: string | undefined, fallback: string) => number;
   /** Get transparent fallback texture. */
   getTransparentInputTexture: () => THREE.Texture;
+  /** Returns a reusable full-frame target with the scene working precision. */
+  getScratchRenderTarget?: (key: string) => THREE.WebGLRenderTarget;
 }
 
 /**

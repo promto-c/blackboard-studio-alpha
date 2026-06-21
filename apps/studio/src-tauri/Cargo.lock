@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "blackboard-studio-desktop"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "tauri",
  "tauri-build",

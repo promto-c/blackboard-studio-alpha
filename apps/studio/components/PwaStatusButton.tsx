@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import * as Icons from '@blackboard/icons';
 import { Popover } from '@blackboard/ui';
 import { usePwa } from '@/pwa/usePwa';
@@ -17,14 +17,6 @@ interface StatusView {
   Icon: React.ComponentType<{ className?: string }>;
 }
 
-const toneClassName: Record<StatusTone, string> = {
-  amber: 'border-amber-300/30 bg-amber-300/15 text-amber-100',
-  cyan: 'border-cyan-300/30 bg-cyan-300/15 text-cyan-100',
-  emerald: 'border-emerald-300/30 bg-emerald-300/15 text-emerald-100',
-  gray: 'border-white/10 bg-white/10 text-gray-200',
-  red: 'border-red-300/30 bg-red-500/15 text-red-100',
-};
-
 const formatVersion = (version: string | null) => (version ? `v${version}` : 'New version');
 
 const formatCheckedTime = (timestamp: number | null) => {
@@ -33,6 +25,17 @@ const formatCheckedTime = (timestamp: number | null) => {
     hour: 'numeric',
     minute: '2-digit',
   }).format(timestamp);
+};
+
+const formatBytes = (bytes: number | null) => {
+  if (bytes === null) return 'Pending';
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const unitIndex = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / 1024 ** unitIndex;
+  const rounded = value >= 10 || unitIndex === 0 ? Math.round(value) : Math.round(value * 10) / 10;
+  return `${rounded} ${units[unitIndex]}`;
 };
 
 const getStatusView = (snapshot: PwaSnapshot): StatusView => {
@@ -56,8 +59,8 @@ const getStatusView = (snapshot: PwaSnapshot): StatusView => {
 
   if (snapshot.canInstall) {
     return {
-      title: 'Install App',
-      subtitle: 'Desktop mode available',
+      title: 'Desktop App Available',
+      subtitle: 'Install once, launch anytime',
       tone: 'cyan',
       Icon: Icons.ArrowDownTray,
     };
@@ -75,7 +78,7 @@ const getStatusView = (snapshot: PwaSnapshot): StatusView => {
   if (snapshot.offlineReady) {
     return {
       title: 'Offline Ready',
-      subtitle: formatVersion(snapshot.appVersion),
+      subtitle: 'Core app cached',
       tone: 'emerald',
       Icon: snapshot.isStandalone ? Icons.ComputerDesktop : Icons.Check,
     };
@@ -101,10 +104,23 @@ const shouldRenderButton = (snapshot: PwaSnapshot) =>
   !snapshot.isOnline;
 
 export function PwaStatusButton({ className = '' }: PwaStatusButtonProps) {
-  const { snapshot, install, checkForUpdate, applyUpdate } = usePwa();
+  const {
+    snapshot,
+    install,
+    checkForUpdate,
+    applyUpdate,
+    refreshCacheStatus,
+    downloadAssetGroup,
+    removeAssetGroup,
+  } = usePwa();
   const [isOpen, setIsOpen] = useState(false);
   const status = getStatusView(snapshot);
   const Icon = status.Icon;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void refreshCacheStatus({ silent: true });
+  }, [isOpen, refreshCacheStatus]);
 
   if (!shouldRenderButton(snapshot)) return null;
 
@@ -120,12 +136,100 @@ export function PwaStatusButton({ className = '' }: PwaStatusButtonProps) {
     void install();
   };
 
+  const runDownloadAll = () => {
+    void downloadAssetGroup();
+  };
+
+  const runRemoveAll = () => {
+    void removeAssetGroup();
+  };
+
+  const runDownloadGroup = (groupId: string) => {
+    void downloadAssetGroup(groupId);
+  };
+
+  const runRemoveGroup = (groupId: string) => {
+    void removeAssetGroup(groupId);
+  };
+
+  const isDownloadingAssets = snapshot.assetOperationPhase === 'downloading';
+  const isRemovingAssets = snapshot.assetOperationPhase === 'removing';
+  const isOperatingAssets = isDownloadingAssets || isRemovingAssets;
+  const isDownloadingAll = isDownloadingAssets && snapshot.operatingAssetGroupId === 'all';
+  const isRemovingAll = isRemovingAssets && snapshot.operatingAssetGroupId === 'all';
+  const canDownloadAssets =
+    snapshot.serviceWorkerEnabled &&
+    snapshot.offlineReady &&
+    snapshot.isOnline &&
+    !isOperatingAssets;
+  const canRemoveAssets =
+    snapshot.serviceWorkerEnabled && snapshot.offlineReady && !isOperatingAssets;
+  const allOptionalCached =
+    snapshot.onDemandBytes !== null &&
+    snapshot.onDemandCachedBytes !== null &&
+    snapshot.onDemandBytes > 0 &&
+    snapshot.onDemandCachedBytes >= snapshot.onDemandBytes;
+  const hasCachedOptionalAssets =
+    snapshot.onDemandCachedBytes !== null && snapshot.onDemandCachedBytes > 0;
+  const allButtonRemoves = allOptionalCached && hasCachedOptionalAssets;
+  const allButtonIconOnly = allOptionalCached || isRemovingAll;
+  const allOptionalCachedPercent =
+    snapshot.onDemandBytes !== null &&
+    snapshot.onDemandCachedBytes !== null &&
+    snapshot.onDemandBytes > 0
+      ? Math.min(100, Math.round((snapshot.onDemandCachedBytes / snapshot.onDemandBytes) * 100))
+      : 0;
+  const hasOfflinePacks = snapshot.onDemandAssetGroups.length > 0;
+  const headerMeta = [
+    snapshot.isStandalone ? 'Installed' : 'Browser',
+    `Checked ${formatCheckedTime(snapshot.lastCheckedAt)}`,
+  ].join(' · ');
+  const canCheckUpdates =
+    !snapshot.checkingForUpdate &&
+    !snapshot.updateInstalling &&
+    !snapshot.applyingUpdate &&
+    !snapshot.updateReady &&
+    snapshot.isOnline &&
+    snapshot.serviceWorkerEnabled;
+  const detailBlocks = [
+    {
+      title: 'Connection',
+      rows: [
+        {
+          label: 'Network',
+          value: snapshot.isOnline ? 'Online' : 'Offline',
+          valueClassName: snapshot.isOnline ? 'text-emerald-200' : 'text-red-200',
+        },
+        {
+          label: 'Offline',
+          value: snapshot.offlineReady ? 'Ready' : 'Preparing',
+          valueClassName: snapshot.offlineReady ? 'text-emerald-200' : 'text-gray-300',
+        },
+      ],
+    },
+    {
+      title: 'Storage',
+      rows: [
+        {
+          label: 'Stored',
+          value: formatBytes(snapshot.cachedBytes),
+          valueClassName: 'text-gray-200',
+        },
+        {
+          label: 'Shell',
+          value: formatBytes(snapshot.offlineBytes),
+          valueClassName: 'text-gray-200',
+        },
+      ],
+    },
+  ];
+
   return (
     <Popover
       isOpen={isOpen}
       onOpenChange={setIsOpen}
       align="end"
-      widthClass="w-80 max-w-[calc(100vw-2rem)]"
+      widthClass="w-96 max-w-[calc(100vw-2rem)]"
       trigger={
         <button
           type="button"
@@ -153,92 +257,266 @@ export function PwaStatusButton({ className = '' }: PwaStatusButtonProps) {
       }
     >
       {() => (
-        <div className="space-y-3" data-text-selection-scope>
-          <div className="flex items-start gap-3">
-            <div
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${toneClassName[status.tone]}`}
-            >
-              <Icon
-                className={`h-[18px] w-[18px] ${
-                  snapshot.checkingForUpdate || snapshot.updateInstalling ? 'animate-spin' : ''
-                }`}
-              />
+        <div className="space-y-2.5" data-text-selection-scope>
+          <div className="min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="truncate text-xs font-semibold text-gray-100">{status.title}</p>
+                {snapshot.updateReady ? (
+                  <button
+                    type="button"
+                    onClick={applyUpdate}
+                    disabled={snapshot.applyingUpdate}
+                    title={snapshot.applyingUpdate ? 'Restarting app' : 'Restart to update'}
+                    aria-label={snapshot.applyingUpdate ? 'Restarting app' : 'Restart to update'}
+                    className="flex h-6 shrink-0 items-center gap-1 rounded-md border border-amber-300/35 bg-amber-300/10 px-1.5 text-[10px] font-medium text-amber-100 transition hover:border-amber-200/50 hover:bg-amber-300/15 disabled:cursor-wait disabled:opacity-70"
+                  >
+                    <Icons.Power className="h-3.5 w-3.5" />
+                    {snapshot.applyingUpdate ? 'Restartinga' : 'Restart'}
+                  </button>
+                ) : null}
+                {snapshot.canInstall ? (
+                  <button
+                    type="button"
+                    onClick={runInstall}
+                    disabled={snapshot.isInstalling}
+                    title={snapshot.isInstalling ? 'Installing app' : 'Install app'}
+                    aria-label={snapshot.isInstalling ? 'Installing app' : 'Install app'}
+                    className="flex h-6 shrink-0 items-center gap-1 rounded-md border border-cyan-300/30 bg-cyan-300/10 px-1.5 text-[10px] font-medium text-cyan-100 transition hover:border-cyan-200/50 hover:bg-cyan-300/15 disabled:cursor-wait disabled:opacity-70"
+                  >
+                    <Icons.ArrowDownTray className="h-3.5 w-3.5" />
+                    {snapshot.isInstalling ? 'Installing' : 'Install'}
+                  </button>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 items-center overflow-hidden rounded-md border border-white/10 bg-black/20">
+                <span className="px-1.5 py-1 font-mono text-[10px] text-gray-500">
+                  v{snapshot.appVersion}
+                </span>
+                {!snapshot.updateReady ? (
+                  <button
+                    type="button"
+                    onClick={runCheck}
+                    disabled={!canCheckUpdates}
+                    title={snapshot.checkingForUpdate ? 'Checking for updates' : 'Check updates'}
+                    aria-label={
+                      snapshot.checkingForUpdate ? 'Checking for updates' : 'Check updates'
+                    }
+                    className="flex h-6 w-6 items-center justify-center border-l border-white/10 text-gray-500 transition hover:bg-white/[0.06] hover:text-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Icons.RotateLoop
+                      className={`h-3.5 w-3.5 ${snapshot.checkingForUpdate ? 'animate-spin' : ''}`}
+                    />
+                  </button>
+                ) : null}
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-semibold text-gray-100">{status.title}</p>
-              <p className="mt-0.5 truncate text-[11px] text-gray-500">{status.subtitle}</p>
-            </div>
-            <span className="shrink-0 rounded-md border border-white/10 bg-black/20 px-1.5 py-1 font-mono text-[10px] text-gray-400">
-              v{snapshot.appVersion}
-            </span>
-          </div>
-
-          <div className="space-y-2">
-            {snapshot.updateReady ? (
-              <button
-                type="button"
-                onClick={applyUpdate}
-                disabled={snapshot.applyingUpdate}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-300/30 bg-amber-300/15 px-3 py-2 text-xs font-semibold text-amber-50 transition hover:border-amber-200/50 hover:bg-amber-300/20 disabled:cursor-wait disabled:opacity-70"
-              >
-                <Icons.Power className="h-4 w-4" />
-                {snapshot.applyingUpdate ? 'Restarting...' : 'Restart to Update'}
-              </button>
-            ) : null}
-
-            {snapshot.canInstall ? (
-              <button
-                type="button"
-                onClick={runInstall}
-                disabled={snapshot.isInstalling}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-300/30 bg-cyan-300/15 px-3 py-2 text-xs font-semibold text-cyan-50 transition hover:border-cyan-200/50 hover:bg-cyan-300/20 disabled:cursor-wait disabled:opacity-70"
-              >
-                <Icons.ArrowDownTray className="h-4 w-4" />
-                {snapshot.isInstalling ? 'Installing...' : 'Install App'}
-              </button>
-            ) : null}
-
-            <button
-              type="button"
-              onClick={runCheck}
-              disabled={
-                snapshot.checkingForUpdate ||
-                snapshot.updateInstalling ||
-                snapshot.applyingUpdate ||
-                !snapshot.isOnline ||
-                !snapshot.serviceWorkerEnabled
-              }
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Icons.RotateLoop
-                className={`h-4 w-4 ${snapshot.checkingForUpdate ? 'animate-spin' : ''}`}
-              />
-              {snapshot.checkingForUpdate ? 'Checking...' : 'Check for Updates'}
-            </button>
+            <p className="mt-0.5 truncate text-[11px] text-gray-500">{headerMeta}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-[11px]">
-            <div className="rounded-lg border border-white/10 bg-black/20 px-2 py-2">
-              <p className="text-gray-500">Network</p>
-              <p className={snapshot.isOnline ? 'text-emerald-200' : 'text-red-200'}>
-                {snapshot.isOnline ? 'Online' : 'Offline'}
-              </p>
-            </div>
-            <div className="rounded-lg border border-white/10 bg-black/20 px-2 py-2">
-              <p className="text-gray-500">Offline</p>
-              <p className={snapshot.offlineReady ? 'text-emerald-200' : 'text-gray-300'}>
-                {snapshot.offlineReady ? 'Ready' : 'Preparing'}
-              </p>
-            </div>
-            <div className="rounded-lg border border-white/10 bg-black/20 px-2 py-2">
-              <p className="text-gray-500">Mode</p>
-              <p className="text-gray-200">{snapshot.isStandalone ? 'Installed' : 'Browser'}</p>
-            </div>
-            <div className="rounded-lg border border-white/10 bg-black/20 px-2 py-2">
-              <p className="text-gray-500">Checked</p>
-              <p className="text-gray-200">{formatCheckedTime(snapshot.lastCheckedAt)}</p>
-            </div>
+            {detailBlocks.map((block) => (
+              <div
+                key={block.title}
+                className="rounded-lg border border-white/10 bg-black/20 px-2.5 py-2"
+              >
+                <p className="text-[10px] font-medium text-gray-500">{block.title}</p>
+                <div className="mt-1.5 space-y-1">
+                  {block.rows.map((row) => (
+                    <div key={row.label} className="flex items-center justify-between gap-2">
+                      <p className="text-gray-500">{row.label}</p>
+                      <p className={`truncate text-right ${row.valueClassName}`}>{row.value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
+
+          {hasOfflinePacks ? (
+            <div className="overflow-hidden rounded-lg border border-white/10 bg-black/20">
+              <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-white/[0.035] px-2.5 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-cyan-300/20 bg-cyan-300/10 text-cyan-100">
+                    <Icons.Bundle className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium text-gray-200">Optional packs</p>
+                    <p className="truncate text-[10px] text-gray-500">
+                      {formatBytes(snapshot.onDemandCachedBytes)} /{' '}
+                      {formatBytes(snapshot.onDemandBytes)} cached
+                    </p>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={allButtonRemoves ? runRemoveAll : runDownloadAll}
+                    disabled={
+                      allButtonRemoves ? !canRemoveAssets : allOptionalCached || !canDownloadAssets
+                    }
+                    title={
+                      allButtonRemoves
+                        ? 'Remove cached offline packs'
+                        : allOptionalCached
+                          ? 'Offline packs ready'
+                          : 'Download offline packs'
+                    }
+                    aria-label={
+                      allButtonRemoves
+                        ? 'Remove cached offline packs'
+                        : allOptionalCached
+                          ? 'Offline packs ready'
+                          : 'Download offline packs'
+                    }
+                    className={`group relative flex h-7 items-center justify-center gap-1.5 overflow-hidden rounded-md border border-white/10 bg-white/[0.04] text-[10px] font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50 disabled:cursor-not-allowed disabled:opacity-50 ${
+                      allButtonIconOnly ? 'w-7 px-0' : 'px-2'
+                    } ${
+                      allButtonRemoves
+                        ? 'hover:border-red-300/30 hover:bg-red-500/10 hover:text-red-100 focus:border-red-300/30 focus:bg-red-500/10 focus:text-red-100'
+                        : ''
+                    }`}
+                  >
+                    {isDownloadingAll ? (
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-y-0 left-0 bg-emerald-300/15 transition-[width]"
+                        style={{ width: `${allOptionalCachedPercent}%` }}
+                      />
+                    ) : null}
+                    {isRemovingAll ? (
+                      <Icons.RotateLoop className="relative z-10 h-3.5 w-3.5 animate-spin" />
+                    ) : isDownloadingAll ? (
+                      <Icons.RotateLoop className="relative z-10 h-3.5 w-3.5 animate-spin" />
+                    ) : allButtonRemoves ? (
+                      <>
+                        <Icons.Check className="relative z-10 h-3.5 w-3.5 group-hover:hidden group-focus:hidden" />
+                        <Icons.Trash className="relative z-10 hidden h-3.5 w-3.5 group-hover:block group-focus:block" />
+                      </>
+                    ) : allOptionalCached ? (
+                      <Icons.Check className="relative z-10 h-3.5 w-3.5" />
+                    ) : (
+                      <Icons.ArrowDownTray className="relative z-10 h-3.5 w-3.5" />
+                    )}
+                    {!allButtonIconOnly ? (
+                      <span className="relative z-10">
+                        {isDownloadingAll ? 'Downloading' : 'Download all'}
+                      </span>
+                    ) : null}
+                  </button>
+                </div>
+              </div>
+              <div className="divide-y divide-white/10">
+                {snapshot.onDemandAssetGroups.map((group) => {
+                  const groupComplete = group.size > 0 && group.cachedBytes >= group.size;
+                  const groupCached = group.cachedBytes > 0 || group.cachedAssetCount > 0;
+                  const groupDownloading =
+                    isDownloadingAssets &&
+                    (snapshot.operatingAssetGroupId === group.id ||
+                      snapshot.operatingAssetGroupId === 'all');
+                  const groupRemoving =
+                    isRemovingAssets &&
+                    (snapshot.operatingAssetGroupId === group.id ||
+                      snapshot.operatingAssetGroupId === 'all');
+                  const cachedPercent =
+                    group.size > 0
+                      ? Math.min(100, Math.round((group.cachedBytes / group.size) * 100))
+                      : 0;
+                  const groupButtonRemoves = groupComplete && group.removable && groupCached;
+                  const groupButtonIconOnly = groupComplete || groupRemoving;
+                  return (
+                    <div key={group.id} className="px-2.5 py-2 transition hover:bg-white/[0.025]">
+                      <div className="space-y-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <p className="text-[11px] font-medium text-gray-200">{group.label}</p>
+                              <span className="rounded border border-white/10 bg-white/[0.04] px-1 py-0.5 text-[9px] text-gray-500">
+                                {group.source === 'marketplace' ? 'Marketplace' : 'Bundled'}
+                              </span>
+                              <p className="text-[10px] text-gray-500">
+                                {formatBytes(group.cachedBytes)} / {formatBytes(group.size)}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                groupButtonRemoves
+                                  ? runRemoveGroup(group.id)
+                                  : runDownloadGroup(group.id)
+                              }
+                              disabled={
+                                groupButtonRemoves
+                                  ? !canRemoveAssets
+                                  : !canDownloadAssets || groupComplete
+                              }
+                              title={
+                                groupButtonRemoves
+                                  ? `Remove ${group.label}`
+                                  : groupComplete
+                                    ? `${group.label} ready`
+                                    : `Download ${group.label}`
+                              }
+                              aria-label={
+                                groupButtonRemoves
+                                  ? `Remove ${group.label}`
+                                  : groupComplete
+                                    ? `${group.label} ready`
+                                    : `Download ${group.label}`
+                              }
+                              className={`group relative flex h-7 items-center justify-center gap-1.5 overflow-hidden rounded-md border border-white/10 bg-white/[0.04] text-[10px] font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50 disabled:cursor-not-allowed disabled:opacity-50 ${
+                                groupButtonIconOnly ? 'w-7 px-0' : 'min-w-[5.75rem] px-2'
+                              } ${
+                                groupButtonRemoves
+                                  ? 'hover:border-red-300/30 hover:bg-red-500/10 hover:text-red-100 focus:border-red-300/30 focus:bg-red-500/10 focus:text-red-100'
+                                  : ''
+                              }`}
+                            >
+                              {groupDownloading ? (
+                                <span
+                                  aria-hidden="true"
+                                  className="absolute inset-y-0 left-0 bg-emerald-300/15 transition-[width]"
+                                  style={{ width: `${cachedPercent}%` }}
+                                />
+                              ) : null}
+                              {groupRemoving ? (
+                                <Icons.RotateLoop className="relative z-10 h-3.5 w-3.5 animate-spin" />
+                              ) : groupDownloading ? (
+                                <Icons.RotateLoop className="relative z-10 h-3.5 w-3.5 animate-spin" />
+                              ) : groupButtonRemoves ? (
+                                <>
+                                  <Icons.Check className="relative z-10 h-3.5 w-3.5 group-hover:hidden group-focus:hidden" />
+                                  <Icons.Trash className="relative z-10 hidden h-3.5 w-3.5 group-hover:block group-focus:block" />
+                                </>
+                              ) : groupComplete ? (
+                                <Icons.Check className="relative z-10 h-3.5 w-3.5" />
+                              ) : (
+                                <Icons.ArrowDownTray className="relative z-10 h-3.5 w-3.5" />
+                              )}
+                              {!groupButtonIconOnly ? (
+                                <span className="relative z-10">
+                                  {groupDownloading ? 'Downloading' : 'Download'}
+                                </span>
+                              ) : null}
+                            </button>
+                          </div>
+                        </div>
+                        <p className="text-[10px] leading-4 text-gray-500">{group.description}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {snapshot.assetOperationError ? (
+            <div className="rounded-lg border border-amber-300/25 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100">
+              {snapshot.assetOperationError}
+            </div>
+          ) : null}
 
           {snapshot.error ? (
             <div className="rounded-lg border border-red-300/25 bg-red-500/10 px-2.5 py-2 text-[11px] text-red-100">

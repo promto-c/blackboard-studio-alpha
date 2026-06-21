@@ -3,6 +3,7 @@ import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useOcio } from '@/state/ocioContext';
 import { ViewerSettings } from '@blackboard/types';
 import { CollapsibleSection, StyledDropdown } from '@blackboard/ui';
+import * as Icons from '@blackboard/icons';
 import { Slider, SegmentedControl, HotkeyBadge } from '@/components';
 
 function DisplayAdjustments() {
@@ -48,8 +49,8 @@ function DisplayAdjustments() {
 
   return (
     <div className="space-y-4">
-      {ocio.isInitialized && (
-        <CollapsibleSection title="Color Management (OCIO)" defaultOpen>
+      <CollapsibleSection title="Color Management (OCIO)" defaultOpen>
+        {ocio.isInitialized ? (
           <div className="space-y-4">
             <div className="space-y-2">
               <label className="text-xs font-medium text-gray-400">Display</label>
@@ -75,8 +76,29 @@ function DisplayAdjustments() {
               />
             </div>
           </div>
-        </CollapsibleSection>
-      )}
+        ) : (
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={() => void ocio.load()}
+              disabled={ocio.isLoading}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60"
+            >
+              {ocio.isLoading ? (
+                <Icons.RotateLoop className="h-4 w-4 animate-spin" />
+              ) : (
+                <Icons.ArrowDownTray className="h-4 w-4" />
+              )}
+              <span>{ocio.isLoading ? 'Loading OCIO' : 'Load OCIO / ACES'}</span>
+            </button>
+            {ocio.error ? (
+              <div className="rounded-lg border border-red-400/20 bg-red-500/10 p-3 text-xs leading-5 text-red-100">
+                {ocio.error}
+              </div>
+            ) : null}
+          </div>
+        )}
+      </CollapsibleSection>
 
       <CollapsibleSection title="Exposure & Color" defaultOpen>
         <div className="space-y-4">

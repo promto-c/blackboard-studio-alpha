@@ -2,19 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { USDZLoader } from 'three/examples/jsm/loaders/USDZLoader.js';
-import { SparkRenderer, SplatFileType, SplatMesh, getSplatFileType } from '@sparkjsdev/spark';
-import type {
-  Pan,
-  Scene3DAssetFormat,
-  Scene3DItem,
-  Scene3DNode,
-  Scene3DVector3,
-  SceneNode,
-} from '@blackboard/types';
+import type { Pan, Scene3DItem, Scene3DNode, Scene3DVector3, SceneNode } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
 import { normalizeScene3DSettings } from '@/nodes/builtin/scene_3d/scene3d';
 import { getAsset } from '@/state/assetStorage';
@@ -59,23 +52,16 @@ const applyItemTransform = (object: THREE.Object3D, item: Scene3DItem, pixelScal
   object.scale.set(item.transform.scale.x, item.transform.scale.y, item.transform.scale.z);
 };
 
-const SPLAT_FILE_TYPE_BY_FORMAT: Partial<Record<Scene3DAssetFormat, SplatFileType>> = {
-  ply: SplatFileType.PLY,
-  spz: SplatFileType.SPZ,
-  splat: SplatFileType.SPLAT,
-  ksplat: SplatFileType.KSPLAT,
-  sog: SplatFileType.PCSOGSZIP,
-  rad: SplatFileType.RAD,
-};
-
 const isScene3DSplatItem = (item: Scene3DItem): boolean =>
   item.type === 'splat' || item.asset?.kind === 'splat';
 
-const getSparkSplatFileType = (
-  format: Scene3DAssetFormat | undefined,
-  fileBytes: Uint8Array,
-): SplatFileType | undefined =>
-  (format ? SPLAT_FILE_TYPE_BY_FORMAT[format] : undefined) ?? getSplatFileType(fileBytes);
+type Scene3DSplatRuntimeModule = typeof import('./scene3dSplatRuntime');
+type LoadScene3DSplatRuntime = () => Promise<Scene3DSplatRuntimeModule>;
+
+interface LoadedScene3DAssetObject {
+  object: THREE.Object3D;
+  usesSplatRenderer: boolean;
+}
 
 const disposeObject = (object: THREE.Object3D) => {
   object.traverse((child) => {
@@ -177,6 +163,10 @@ const loadScene3DMeshAssetObject = async (
       const result = await new OBJLoader().loadAsync(objectUrl);
       return prepareLoadedObject(result, item);
     }
+    case 'fbx': {
+      const result = await new FBXLoader().loadAsync(objectUrl);
+      return prepareLoadedObject(result, item);
+    }
     case 'usdz': {
       const result = await new USDZLoader().loadAsync(objectUrl);
       return prepareLoadedObject(result, item);
@@ -194,26 +184,19 @@ const loadScene3DMeshAssetObject = async (
   }
 };
 
-const loadScene3DSplatAssetObject = async (item: Scene3DItem, blob: Blob): Promise<SplatMesh> => {
-  const fileBytes = new Uint8Array(await blob.arrayBuffer());
-  const fileType = getSparkSplatFileType(item.asset?.format, fileBytes);
-  const mesh = new SplatMesh({
-    fileBytes,
-    fileType,
-    fileName: item.asset?.fileName,
-  });
-  await mesh.initialized;
-  return mesh;
-};
-
 const loadScene3DAssetObject = async (
   item: Scene3DItem,
   blob: Blob,
   objectUrls: string[],
-): Promise<THREE.Object3D> => {
+  loadSplatRuntime: LoadScene3DSplatRuntime,
+): Promise<LoadedScene3DAssetObject> => {
   if (isScene3DSplatItem(item)) {
     try {
-      return await loadScene3DSplatAssetObject(item, blob);
+      const runtime = await loadSplatRuntime();
+      return {
+        object: await runtime.loadScene3DSplatAssetObject(item, blob),
+        usesSplatRenderer: true,
+      };
     } catch (error) {
       if (item.asset?.format !== 'ply') throw error;
       console.warn('Failed to load PLY as a Gaussian splat; falling back to mesh loading.', error);
@@ -222,7 +205,10 @@ const loadScene3DAssetObject = async (
 
   const objectUrl = URL.createObjectURL(blob);
   objectUrls.push(objectUrl);
-  return loadScene3DMeshAssetObject(item, objectUrl);
+  return {
+    object: await loadScene3DMeshAssetObject(item, objectUrl),
+    usesSplatRenderer: false,
+  };
 };
 
 const getImportedObjectBox = (object: THREE.Object3D, applyWorldTransform = false): THREE.Box3 => {
@@ -469,10 +455,20 @@ function Scene3DViewport({
 
     const scene = new THREE.Scene();
     scene.background = initialBackdropColor;
-    const sparkRenderer = new SparkRenderer({ renderer });
-    scene.add(sparkRenderer);
     const objectUrls: string[] = [];
     let disposed = false;
+    let splatRuntimePromise: Promise<Scene3DSplatRuntimeModule> | null = null;
+    let sparkRenderer: THREE.Object3D | null = null;
+    const loadSplatRuntime: LoadScene3DSplatRuntime = () => {
+      splatRuntimePromise ??= import('./scene3dSplatRuntime');
+      return splatRuntimePromise;
+    };
+    const ensureSplatRenderer = async () => {
+      const runtime = await loadSplatRuntime();
+      if (sparkRenderer || disposed) return;
+      sparkRenderer = runtime.createScene3DSplatRenderer(renderer);
+      scene.add(sparkRenderer);
+    };
     const bindings = new Map<string, SceneItemBinding>();
     sceneContextRef.current = { scene, renderer, bindings };
 
@@ -781,11 +777,27 @@ function Scene3DViewport({
         if (!item.asset?.assetId) continue;
 
         void (async () => {
+          let loadedAsset: LoadedScene3DAssetObject | null = null;
           try {
             const blob = await getAsset(item.asset.assetId);
             if (!blob || disposed) return;
 
-            const importedObject = await loadScene3DAssetObject(item, blob, objectUrls);
+            loadedAsset = await loadScene3DAssetObject(item, blob, objectUrls, loadSplatRuntime);
+            if (disposed) {
+              disposeObject(loadedAsset.object);
+              return;
+            }
+
+            if (loadedAsset.usesSplatRenderer) {
+              await ensureSplatRenderer();
+              if (disposed) {
+                disposeObject(loadedAsset.object);
+                return;
+              }
+            }
+
+            const importedObject = loadedAsset.object;
+            loadedAsset = null;
             if (disposed) {
               disposeObject(importedObject);
               return;
@@ -809,6 +821,9 @@ function Scene3DViewport({
               assetBinding.assetHelper = helper;
             }
           } catch (error) {
+            if (loadedAsset) {
+              disposeObject(loadedAsset.object);
+            }
             console.error(`Failed to load 3D asset ${item.asset?.fileName ?? item.name}`, error);
             const errorMarker = createLineBox(
               item.size ?? { x: 120, y: 120, z: 120 },

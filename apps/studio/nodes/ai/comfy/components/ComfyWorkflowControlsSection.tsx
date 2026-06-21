@@ -412,8 +412,13 @@ export function ComfyWorkflowControlsSection({
                           {isPending && <Icons.Check className="h-3 w-3" />}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs font-medium">
-                            {candidate.label}
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="truncate text-xs font-medium">{candidate.label}</span>
+                            {!candidate.defaultVisible ? (
+                              <span className="shrink-0 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-semibold text-gray-500">
+                                Internal
+                              </span>
+                            ) : null}
                           </span>
                           <span className="mt-0.5 block truncate text-[11px] text-gray-500">
                             {candidate.classType} · #{candidate.nodeId} · {candidate.inputName}

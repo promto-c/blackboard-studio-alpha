@@ -12,6 +12,7 @@ vi.mock('./RotoTool', () => ({ RotoTool: {} }));
 vi.mock('./RotoViewportTools', () => ({ default: {} }));
 vi.mock('./RotoToolPanels', () => ({ default: {} }));
 vi.mock('./RotoIcon', () => ({ RotoIcon: {} }));
+vi.mock('./RotoOverlay', () => ({ default: {} }));
 
 import {
   NodeType,

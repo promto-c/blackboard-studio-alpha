@@ -1,29 +1,45 @@
 import * as THREE from 'three';
-import { getValueAtFrame } from '@blackboard/renderer';
+import { getValueAtFrame, type RendererMaskLayer } from '@blackboard/renderer';
 import {
   NodeType,
-  RotoDrawMode,
   RotoPathBlend,
-  RotoShapeType,
   type AnyNode,
   type RotoNode,
   type SceneNode,
 } from '@blackboard/types';
-import { drawBSplineOnCanvas } from '@/utils/bspline';
 import {
   getRotoLayerMap,
   getRotoPathParentLayerId,
   getVisibleRotoPaths,
 } from '@/utils/rotoHierarchy';
-import { resolveRotoPathPointsAtFrame } from '@/utils/rotoTracking';
-import { DEFAULT_ROTO_POINT_WEIGHT_MODE } from '@/utils/rotoPointWeights';
+import { drawRotoPathGeometry } from '@/utils/rotoMaskRaster';
+import {
+  getRotoMotionBlurSampleFrames,
+  getRotoMotionBlurSampleWeights,
+  resolveRotoMotionBlurSettings,
+} from '@/utils/rotoMotionBlur';
 
 interface RotoMaskTextureBundle {
-  textures: Map<string, THREE.CanvasTexture>;
-  addTextures: Map<string, THREE.CanvasTexture>;
-  subTextures: Map<string, THREE.CanvasTexture>;
+  layers: Map<string, RendererMaskLayer[]>;
   dispose: () => void;
 }
+
+const drawHardPathMask = (
+  node: RotoNode,
+  path: RotoNode['paths'][number],
+  frame: number,
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+): void => {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.filter = 'none';
+  ctx.fillStyle = 'white';
+  ctx.strokeStyle = 'white';
+  drawRotoPathGeometry(ctx, node, path, frame, canvas.width, canvas.height);
+};
 
 export const createMaskCanvas = (
   node: RotoNode,
@@ -52,8 +68,6 @@ export const createMaskCanvas = (
     const opacity = getValueAtFrame(path.opacity, frame);
     if (opacity <= 0) continue;
 
-    const { mode, strokeWidth } = path.style;
-    const strokeWidthAtFrame = getValueAtFrame(strokeWidth, frame);
     const feather = getValueAtFrame(path.feather, frame);
     const blend = getBlendForPath(path);
 
@@ -74,162 +88,11 @@ export const createMaskCanvas = (
       ctx.filter = `blur(${feather}px)`;
     }
 
-    ctx.beginPath();
-    if (path.points.length > 0) {
-      const sceneCenterX = canvas.width / 2;
-      const sceneCenterY = canvas.height / 2;
-      const resolvedPoints = resolveRotoPathPointsAtFrame(node, path, frame);
-      const translatedPoints = resolvedPoints.map((point) => ({
-        x: point.x + sceneCenterX,
-        y: point.y + sceneCenterY,
-      }));
-
-      if (path.shapeType === RotoShapeType.BSPLINE) {
-        drawBSplineOnCanvas(
-          ctx,
-          translatedPoints,
-          path.closed,
-          path.pointWeights,
-          DEFAULT_ROTO_POINT_WEIGHT_MODE,
-          path.pointTypes,
-          path.pointWeightModes,
-        );
-      } else {
-        ctx.moveTo(translatedPoints[0].x, translatedPoints[0].y);
-        for (let pointIndex = 1; pointIndex < translatedPoints.length; pointIndex += 1) {
-          ctx.lineTo(translatedPoints[pointIndex].x, translatedPoints[pointIndex].y);
-        }
-      }
-    }
-
-    if (path.closed) ctx.closePath();
-    ctx.lineWidth = strokeWidthAtFrame;
-    if (mode === RotoDrawMode.FILL) {
-      if (path.closed) ctx.fill();
-    } else if (mode === RotoDrawMode.STROKE) {
-      ctx.stroke();
-    } else if (mode === RotoDrawMode.FILL_AND_STROKE) {
-      if (path.closed) ctx.fill();
-      ctx.stroke();
-    }
+    drawRotoPathGeometry(ctx, node, path, frame, canvas.width, canvas.height);
     ctx.restore();
   }
 
   return canvas;
-};
-
-const createFilteredMaskCanvas = (
-  node: RotoNode,
-  sceneNode: SceneNode,
-  frame: number,
-  blendFilter: (blend: RotoPathBlend) => boolean,
-): HTMLCanvasElement | null => {
-  const canvas = document.createElement('canvas');
-  canvas.width = sceneNode.width;
-  canvas.height = sceneNode.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-
-  const layerMap = getRotoLayerMap(node);
-  const getBlendForPath = (path: RotoNode['paths'][number]) => {
-    const parentLayerId = getRotoPathParentLayerId(node, path);
-    const layer = parentLayerId ? layerMap.get(parentLayerId) : undefined;
-    return layer?.blend ?? path.blend;
-  };
-
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  for (const path of getVisibleRotoPaths(node)) {
-    const blend = getBlendForPath(path);
-    if (!blendFilter(blend)) continue;
-
-    const opacity = getValueAtFrame(path.opacity, frame);
-    if (opacity <= 0) continue;
-
-    const { mode, strokeWidth } = path.style;
-    const strokeWidthAtFrame = getValueAtFrame(strokeWidth, frame);
-    const feather = getValueAtFrame(path.feather, frame);
-
-    ctx.save();
-    ctx.globalAlpha = opacity / 100;
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'white';
-    ctx.strokeStyle = 'white';
-    if (feather > 0) {
-      ctx.filter = `blur(${feather}px)`;
-    }
-
-    ctx.beginPath();
-    if (path.points.length > 0) {
-      const sceneCenterX = canvas.width / 2;
-      const sceneCenterY = canvas.height / 2;
-      const resolvedPoints = resolveRotoPathPointsAtFrame(node, path, frame);
-      const translatedPoints = resolvedPoints.map((point) => ({
-        x: point.x + sceneCenterX,
-        y: point.y + sceneCenterY,
-      }));
-
-      if (path.shapeType === RotoShapeType.BSPLINE) {
-        drawBSplineOnCanvas(
-          ctx,
-          translatedPoints,
-          path.closed,
-          path.pointWeights,
-          DEFAULT_ROTO_POINT_WEIGHT_MODE,
-          path.pointTypes,
-          path.pointWeightModes,
-        );
-      } else {
-        ctx.moveTo(translatedPoints[0].x, translatedPoints[0].y);
-        for (let pointIndex = 1; pointIndex < translatedPoints.length; pointIndex += 1) {
-          ctx.lineTo(translatedPoints[pointIndex].x, translatedPoints[pointIndex].y);
-        }
-      }
-    }
-
-    if (path.closed) ctx.closePath();
-    ctx.lineWidth = strokeWidthAtFrame;
-    if (mode === RotoDrawMode.FILL) {
-      if (path.closed) ctx.fill();
-    } else if (mode === RotoDrawMode.STROKE) {
-      ctx.stroke();
-    } else if (mode === RotoDrawMode.FILL_AND_STROKE) {
-      if (path.closed) ctx.fill();
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  return canvas;
-};
-
-const createAddSubMaskCanvases = (
-  node: RotoNode,
-  sceneNode: SceneNode,
-  frame: number,
-): { addCanvas: HTMLCanvasElement | null; subCanvas: HTMLCanvasElement | null } => {
-  if (node.invert) {
-    return {
-      addCanvas: createFilteredMaskCanvas(
-        node,
-        sceneNode,
-        frame,
-        (b) => b === RotoPathBlend.SUBTRACT,
-      ),
-      subCanvas: createFilteredMaskCanvas(node, sceneNode, frame, (b) => b === RotoPathBlend.ADD),
-    };
-  }
-  return {
-    addCanvas: createFilteredMaskCanvas(node, sceneNode, frame, (b) => b === RotoPathBlend.ADD),
-    subCanvas: createFilteredMaskCanvas(
-      node,
-      sceneNode,
-      frame,
-      (b) => b === RotoPathBlend.SUBTRACT,
-    ),
-  };
 };
 
 export const createRotoMaskTextureBundle = (
@@ -237,51 +100,82 @@ export const createRotoMaskTextureBundle = (
   sceneNode: SceneNode,
   frame: number,
 ): RotoMaskTextureBundle => {
-  const textures = new Map<string, THREE.CanvasTexture>();
-  const addTextures = new Map<string, THREE.CanvasTexture>();
-  const subTextures = new Map<string, THREE.CanvasTexture>();
-
-  const addTexture = (
-    canvas: HTMLCanvasElement | null,
-    map: Map<string, THREE.CanvasTexture>,
-    id: string,
-  ) => {
-    if (!canvas) return;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.generateMipmaps = false;
-    texture.colorSpace = THREE.NoColorSpace;
-    texture.needsUpdate = true;
-    map.set(id, texture);
-  };
+  const layers = new Map<string, RendererMaskLayer[]>();
 
   nodes.forEach((node) => {
     if (node.type !== NodeType.ROTO || !node.enabled) return;
 
     const rotoNode = node as RotoNode;
-    const canvas = createMaskCanvas(rotoNode, sceneNode, frame);
-    if (!canvas) return;
-
-    addTexture(canvas, textures, node.id);
-
-    const { addCanvas, subCanvas } = createAddSubMaskCanvases(rotoNode, sceneNode, frame);
-    addTexture(addCanvas, addTextures, node.id);
-    addTexture(subCanvas, subTextures, node.id);
+    {
+      const layerMap = getRotoLayerMap(rotoNode);
+      const motionBlur = resolveRotoMotionBlurSettings(rotoNode.motionBlur);
+      const motionBlurEnabled = motionBlur.enabled && motionBlur.shutter > 0;
+      const sampleFrames = motionBlurEnabled
+        ? getRotoMotionBlurSampleFrames(
+            frame,
+            motionBlur.shutter,
+            motionBlur.samples,
+            motionBlur.phase,
+          )
+        : [frame];
+      const sampleWeights = getRotoMotionBlurSampleWeights(sampleFrames.length);
+      const maskLayers = getVisibleRotoPaths(rotoNode).flatMap((path) => {
+        const pathCanvas = document.createElement('canvas');
+        pathCanvas.width = sceneNode.width;
+        pathCanvas.height = sceneNode.height;
+        const pathContext = pathCanvas.getContext('2d');
+        if (!pathContext) return [];
+        const texture = new THREE.CanvasTexture(pathCanvas);
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false;
+        texture.colorSpace = THREE.NoColorSpace;
+        const samples = sampleFrames.flatMap((sampleFrame, sampleIndex) => {
+          const clampedFrame = Math.max(0, Math.min(sceneNode.maxFrames, sampleFrame));
+          const opacity = Math.max(
+            0,
+            Math.min(1, getValueAtFrame(path.opacity, clampedFrame) / 100),
+          );
+          if (opacity <= 0) return [];
+          return [
+            {
+              texture,
+              weight: sampleWeights[sampleIndex] * opacity,
+              prepare: () => {
+                drawHardPathMask(rotoNode, path, clampedFrame, pathCanvas, pathContext);
+                texture.needsUpdate = true;
+              },
+            },
+          ];
+        });
+        if (samples.length === 0) {
+          texture.dispose();
+          return [];
+        }
+        const parentLayerId = getRotoPathParentLayerId(rotoNode, path);
+        const blend =
+          (parentLayerId ? layerMap.get(parentLayerId)?.blend : undefined) ?? path.blend;
+        return [
+          {
+            samples,
+            feather: Math.max(0, getValueAtFrame(path.feather, frame)),
+            opacity: 1,
+            operation: blend === RotoPathBlend.SUBTRACT ? ('subtract' as const) : ('add' as const),
+          },
+        ];
+      });
+      layers.set(node.id, maskLayers);
+    }
   });
 
-  const disposeAll = (map: Map<string, THREE.CanvasTexture>) => {
-    map.forEach((texture) => texture.dispose());
-  };
-
   return {
-    textures,
-    addTextures,
-    subTextures,
+    layers,
     dispose: () => {
-      disposeAll(textures);
-      disposeAll(addTextures);
-      disposeAll(subTextures);
+      layers.forEach((maskLayers) =>
+        new Set(
+          maskLayers.flatMap((layer) => layer.samples.map((sample) => sample.texture)),
+        ).forEach((texture) => texture.dispose()),
+      );
     },
   };
 };

@@ -1,31 +1,21 @@
 import { useLayoutEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { createStudioRenderer, createStudioShaderMaterial } from '@blackboard/renderer';
+import type { RendererMaskLayer } from '@blackboard/renderer';
 import {
   NodeType,
   RotoPathBlend,
-  RotoShapeType,
-  RotoDrawMode,
   type AnyNode,
   type RotoNode,
   type SceneNode,
 } from '@blackboard/types';
-import type { RotoMotionBlurPreviewBackend } from '@/state/preferences';
 import { getValueAtFrame } from '@blackboard/renderer';
-import { drawBSplineOnCanvas } from '@/utils/bspline';
-import {
-  getCanvasStorageColorTypeForBitDepth,
-  resolveCanvasStorageColorType,
-  type CanvasStorageColorType,
-} from '@/utils/canvasColorType';
 import {
   getVisibleRotoPaths,
   getRotoLayerMap,
   getRotoPathParentLayerId,
 } from '@/utils/rotoHierarchy';
-import { resolveRotoPathPointsAtFrame } from '@/utils/rotoTracking';
+import { drawRotoPathGeometry } from '@/utils/rotoMaskRaster';
 import {
-  getRotoMotionBlurCanvasSampleWeights,
   getRotoMotionBlurSampleFrames,
   getRotoMotionBlurSampleWeights,
   resolveRotoMotionBlurPreviewSamples,
@@ -34,21 +24,9 @@ import {
 import { DEFAULT_ROTO_POINT_WEIGHT_MODE, type RotoPointWeightMode } from '@/utils/rotoPointWeights';
 
 interface RotoMaskEntry {
-  texture: THREE.Texture;
-  canvasTexture: THREE.CanvasTexture;
-  canvas: HTMLCanvasElement;
-  ctx: CanvasRenderingContext2D;
-  sampleCanvas: HTMLCanvasElement;
-  sampleCtx: CanvasRenderingContext2D;
-  requestedCanvasColorType: CanvasStorageColorType;
-  accCanvas?: HTMLCanvasElement;
-  accCtx?: CanvasRenderingContext2D;
-  gpuSampleTexture?: THREE.CanvasTexture;
-  gpuTarget?: THREE.WebGLRenderTarget;
-  addCanvas?: HTMLCanvasElement;
-  subCanvas?: HTMLCanvasElement;
-  addCanvasTexture?: THREE.CanvasTexture;
-  subCanvasTexture?: THREE.CanvasTexture;
+  width: number;
+  height: number;
+  maskLayers?: RendererMaskLayer[];
   dispose: () => void;
 }
 
@@ -56,7 +34,6 @@ interface UseViewportRotoMasksOptions {
   nodes: AnyNode[];
   sceneNode?: SceneNode;
   currentFrame: number;
-  motionBlurPreviewBackend: RotoMotionBlurPreviewBackend;
   interactiveMotionBlurPreviewEnabled: boolean;
   interactiveMotionBlurPreviewActive: boolean;
   interactiveMotionBlurPreviewSamples: number;
@@ -65,229 +42,21 @@ interface UseViewportRotoMasksOptions {
   bumpMediaUpdate: () => void;
 }
 
-interface RotoMaskGpuCompositor {
-  renderer: THREE.WebGLRenderer;
-  scene: THREE.Scene;
-  camera: THREE.OrthographicCamera;
-  accumulationMaterial: THREE.ShaderMaterial;
-  copyMaterial: THREE.ShaderMaterial;
-  quad: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial | THREE.MeshBasicMaterial>;
-}
-
-const MASK_ACCUMULATION_VERTEX_SHADER = `
-in vec3 position;
-in vec2 uv;
-out vec2 v_uv;
-
-void main() {
-  v_uv = uv;
-  gl_Position = vec4(position, 1.0);
-}
-`;
-
-const MASK_ACCUMULATION_FRAGMENT_SHADER = `
-precision highp float;
-
-uniform sampler2D u_tMask;
-uniform float u_weight;
-in vec2 v_uv;
-out vec4 fragColor;
-
-void main() {
-  float mask = texture(u_tMask, v_uv).r * u_weight;
-  fragColor = vec4(mask, mask, mask, 1.0);
-}
-`;
-
-const MASK_COPY_FRAGMENT_SHADER = `
-precision highp float;
-
-uniform sampler2D u_tMask;
-in vec2 v_uv;
-out vec4 fragColor;
-
-void main() {
-  float mask = texture(u_tMask, v_uv).r;
-  fragColor = vec4(mask, mask, mask, 1.0);
-}
-`;
+const disposeMaskLayers = (layers: readonly RendererMaskLayer[] | undefined): void => {
+  const textures = new Set(
+    layers?.flatMap((layer) => layer.samples.map((sample) => sample.texture)),
+  );
+  textures.forEach((texture) => texture.dispose());
+};
 
 const disposeMaskEntry = (entry: RotoMaskEntry): void => {
-  entry.canvasTexture.dispose();
-  entry.gpuSampleTexture?.dispose();
-  entry.gpuTarget?.dispose();
-  entry.addCanvasTexture?.dispose();
-  entry.subCanvasTexture?.dispose();
-};
-
-const createGpuCompositor = (): RotoMaskGpuCompositor | null => {
-  try {
-    const renderer = createStudioRenderer({
-      canvas: document.createElement('canvas'),
-      antialias: false,
-      alpha: false,
-      depth: false,
-      stencil: false,
-      premultipliedAlpha: false,
-      preserveDrawingBuffer: false,
-      powerPreference: 'high-performance',
-      pixelRatio: 1,
-    });
-
-    const hasGpuFloatSupport = renderer.extensions.has('EXT_color_buffer_float');
-    if (!hasGpuFloatSupport) {
-      renderer.dispose();
-      return null;
-    }
-
-    renderer.autoClear = false;
-    renderer.setClearColor(0x000000, 1);
-
-    const scene = new THREE.Scene();
-    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    camera.position.z = 1;
-
-    const accumulationMaterial = createStudioShaderMaterial({
-      vertexShader: MASK_ACCUMULATION_VERTEX_SHADER,
-      fragmentShader: MASK_ACCUMULATION_FRAGMENT_SHADER,
-      uniforms: {
-        u_tMask: { value: null },
-        u_weight: { value: 1 },
-      },
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthTest: false,
-      depthWrite: false,
-    });
-
-    const copyMaterial = createStudioShaderMaterial({
-      vertexShader: MASK_ACCUMULATION_VERTEX_SHADER,
-      fragmentShader: MASK_COPY_FRAGMENT_SHADER,
-      uniforms: {
-        u_tMask: { value: null },
-      },
-      blending: THREE.NoBlending,
-      depthTest: false,
-      depthWrite: false,
-    });
-
-    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), accumulationMaterial);
-    scene.add(quad);
-
-    return { renderer, scene, camera, accumulationMaterial, copyMaterial, quad };
-  } catch {
-    return null;
-  }
-};
-
-const disposeGpuCompositor = (compositor: RotoMaskGpuCompositor): void => {
-  compositor.quad.geometry.dispose();
-  compositor.accumulationMaterial.dispose();
-  compositor.copyMaterial.dispose();
-  compositor.renderer.dispose();
-  compositor.renderer.forceContextLoss?.();
-};
-
-const ensureGpuTarget = (
-  entry: RotoMaskEntry,
-  width: number,
-  height: number,
-): THREE.WebGLRenderTarget | null => {
-  if (entry.gpuTarget && entry.gpuTarget.width === width && entry.gpuTarget.height === height) {
-    return entry.gpuTarget;
-  }
-
-  entry.gpuTarget?.dispose();
-
-  try {
-    const target = new THREE.WebGLRenderTarget(width, height, {
-      type: THREE.HalfFloatType,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.NoColorSpace,
-      depthBuffer: false,
-      stencilBuffer: false,
-    });
-    target.texture.generateMipmaps = false;
-    target.texture.colorSpace = THREE.NoColorSpace;
-    entry.gpuTarget = target;
-    return target;
-  } catch {
-    entry.gpuTarget = undefined;
-    return null;
-  }
-};
-
-const ensureGpuSampleTexture = (entry: RotoMaskEntry): THREE.CanvasTexture => {
-  if (entry.gpuSampleTexture) {
-    return entry.gpuSampleTexture;
-  }
-
-  const sampleTexture = new THREE.CanvasTexture(entry.sampleCanvas);
-  sampleTexture.minFilter = THREE.LinearFilter;
-  sampleTexture.magFilter = THREE.LinearFilter;
-  sampleTexture.generateMipmaps = false;
-  sampleTexture.colorSpace = THREE.NoColorSpace;
-  entry.gpuSampleTexture = sampleTexture;
-  return sampleTexture;
-};
-
-const ensureAccCanvas = (
-  entry: RotoMaskEntry,
-  width: number,
-  height: number,
-): { accCanvas: HTMLCanvasElement; accCtx: CanvasRenderingContext2D } | null => {
-  if (
-    entry.accCanvas &&
-    entry.accCtx &&
-    entry.accCanvas.width === width &&
-    entry.accCanvas.height === height
-  ) {
-    return { accCanvas: entry.accCanvas, accCtx: entry.accCtx };
-  }
-
-  const accCanvas = document.createElement('canvas');
-  accCanvas.width = width;
-  accCanvas.height = height;
-  const accCtx = getCanvas2dContext(accCanvas, entry.requestedCanvasColorType);
-  if (!accCtx) return null;
-
-  entry.accCanvas = accCanvas;
-  entry.accCtx = accCtx.ctx;
-  return { accCanvas, accCtx: accCtx.ctx };
-};
-
-const getCanvas2dContext = (
-  canvas: HTMLCanvasElement,
-  requestedColorType: CanvasStorageColorType,
-): { ctx: CanvasRenderingContext2D; actualColorType: CanvasStorageColorType } | null => {
-  const requestedOptions =
-    requestedColorType === 'float16'
-      ? ({ colorType: 'float16' } as CanvasRenderingContext2DSettings)
-      : undefined;
-  const ctx = requestedOptions
-    ? ((canvas.getContext('2d', requestedOptions) as CanvasRenderingContext2D | null) ??
-      canvas.getContext('2d'))
-    : canvas.getContext('2d');
-  if (!ctx) return null;
-
-  const attributes =
-    typeof ctx.getContextAttributes === 'function'
-      ? (ctx.getContextAttributes() as { colorType?: unknown } | null)
-      : null;
-
-  return {
-    ctx,
-    actualColorType: resolveCanvasStorageColorType(attributes),
-  };
+  disposeMaskLayers(entry.maskLayers);
 };
 
 export const useViewportRotoMasks = ({
   nodes,
   sceneNode,
   currentFrame,
-  motionBlurPreviewBackend,
   interactiveMotionBlurPreviewEnabled,
   interactiveMotionBlurPreviewActive,
   interactiveMotionBlurPreviewSamples,
@@ -296,8 +65,6 @@ export const useViewportRotoMasks = ({
   bumpMediaUpdate,
 }: UseViewportRotoMasksOptions) => {
   const rotoMaskTexturesRef = useRef<Map<string, RotoMaskEntry>>(new Map());
-  const gpuCompositorRef = useRef<RotoMaskGpuCompositor | null | 'unavailable'>(null);
-  const previousBackendRef = useRef<RotoMotionBlurPreviewBackend | null>(null);
   const previousPointWeightModeRef = useRef<RotoPointWeightMode>(DEFAULT_ROTO_POINT_WEIGHT_MODE);
   const previousInteractivePreviewRef = useRef<{
     enabled: boolean;
@@ -308,34 +75,12 @@ export const useViewportRotoMasks = ({
   useLayoutEffect(() => {
     if (!sceneNode) return;
 
-    const getGpuCompositor = (): RotoMaskGpuCompositor | null => {
-      if (gpuCompositorRef.current === 'unavailable') return null;
-      if (gpuCompositorRef.current) return gpuCompositorRef.current;
-
-      const compositor = createGpuCompositor();
-      if (!compositor) {
-        gpuCompositorRef.current = 'unavailable';
-        return null;
-      }
-
-      gpuCompositorRef.current = compositor;
-      return compositor;
-    };
-
     const rotoNodes = nodes.filter(
       (node) => node.type === NodeType.ROTO && node.enabled,
     ) as RotoNode[];
     const nextMasks = new Map<string, RotoMaskEntry>();
     let didUpdate = false;
 
-    if (
-      previousBackendRef.current !== null &&
-      previousBackendRef.current !== motionBlurPreviewBackend &&
-      !suspendMaskUpdatesWhileEditing
-    ) {
-      didUpdate = true;
-    }
-    previousBackendRef.current = motionBlurPreviewBackend;
     if (
       previousPointWeightModeRef.current !== rotoPointWeightMode &&
       !suspendMaskUpdatesWhileEditing
@@ -362,23 +107,15 @@ export const useViewportRotoMasks = ({
 
     rotoNodes.forEach((node) => {
       const visiblePaths = getVisibleRotoPaths(node);
-      const getActivePathsAtFrame = (frame: number) =>
-        visiblePaths.filter((path) => getValueAtFrame(path.opacity, frame) > 0);
       const layerMap = getRotoLayerMap(node);
       const getBlendForPath = (path: RotoNode['paths'][number]) => {
         const parentLayerId = getRotoPathParentLayerId(node, path);
         const layer = parentLayerId ? layerMap.get(parentLayerId) : undefined;
         return layer?.blend ?? path.blend;
       };
-      const requestedCanvasColorType = getCanvasStorageColorTypeForBitDepth(sceneNode.bitDepth);
       let entry = rotoMaskTexturesRef.current.get(node.id);
       const needsResize =
-        !entry ||
-        entry.canvas.width !== sceneNode.width ||
-        entry.canvas.height !== sceneNode.height ||
-        entry.sampleCanvas.width !== sceneNode.width ||
-        entry.sampleCanvas.height !== sceneNode.height ||
-        entry.requestedCanvasColorType !== requestedCanvasColorType;
+        !entry || entry.width !== sceneNode.width || entry.height !== sceneNode.height;
       // When the viewer is ignoring alpha entirely, keep the last matte texture
       // until the interaction ends instead of burning time on invisible updates.
       const shouldReuseFrozenMask = suspendMaskUpdatesWhileEditing && !!entry && !needsResize;
@@ -393,32 +130,9 @@ export const useViewportRotoMasks = ({
           disposeMaskEntry(entry);
         }
 
-        const canvas = document.createElement('canvas');
-        canvas.width = sceneNode.width;
-        canvas.height = sceneNode.height;
-        const canvasContext = getCanvas2dContext(canvas, requestedCanvasColorType);
-        if (!canvasContext) return;
-
-        const sampleCanvas = document.createElement('canvas');
-        sampleCanvas.width = sceneNode.width;
-        sampleCanvas.height = sceneNode.height;
-        const sampleContext = getCanvas2dContext(sampleCanvas, requestedCanvasColorType);
-        if (!sampleContext) return;
-
-        const canvasTexture = new THREE.CanvasTexture(canvas);
-        canvasTexture.minFilter = THREE.LinearFilter;
-        canvasTexture.magFilter = THREE.LinearFilter;
-        canvasTexture.generateMipmaps = false;
-        canvasTexture.colorSpace = THREE.NoColorSpace;
-
         const nextEntry: RotoMaskEntry = {
-          texture: canvasTexture,
-          canvasTexture,
-          canvas,
-          ctx: canvasContext.ctx,
-          sampleCanvas,
-          sampleCtx: sampleContext.ctx,
-          requestedCanvasColorType,
+          width: sceneNode.width,
+          height: sceneNode.height,
           dispose: () => {
             disposeMaskEntry(nextEntry);
           },
@@ -427,394 +141,87 @@ export const useViewportRotoMasks = ({
         didUpdate = true;
       }
 
-      const { canvas, ctx, canvasTexture, sampleCanvas, sampleCtx } = entry;
-
-      const drawPathGeometry = (
-        targetCtx: CanvasRenderingContext2D,
-        path: RotoNode['paths'][number],
-        frame: number,
-      ) => {
-        const { mode, strokeWidth } = path.style;
-        const strokeWidthAtFrame = getValueAtFrame(strokeWidth, frame);
-
-        targetCtx.save();
-        targetCtx.globalCompositeOperation = 'source-over';
-        targetCtx.fillStyle = 'white';
-        targetCtx.strokeStyle = 'white';
-
-        targetCtx.beginPath();
-        if (path.points.length > 0) {
-          const sceneCenterX = canvas.width / 2;
-          const sceneCenterY = canvas.height / 2;
-          const resolvedPoints = resolveRotoPathPointsAtFrame(node, path, frame);
-          const translatedPoints = resolvedPoints.map((p) => ({
-            x: p.x + sceneCenterX,
-            y: p.y + sceneCenterY,
-          }));
-          if (path.shapeType === RotoShapeType.BSPLINE) {
-            drawBSplineOnCanvas(
-              targetCtx,
-              translatedPoints,
-              path.closed,
-              path.pointWeights,
-              rotoPointWeightMode,
-              path.pointTypes,
-              path.pointWeightModes,
-            );
-          } else {
-            targetCtx.moveTo(translatedPoints[0].x, translatedPoints[0].y);
-            for (let i = 1; i < translatedPoints.length; i += 1) {
-              targetCtx.lineTo(translatedPoints[i].x, translatedPoints[i].y);
-            }
-          }
-        }
-
-        if (path.closed) targetCtx.closePath();
-        targetCtx.lineWidth = strokeWidthAtFrame;
-        if (mode === RotoDrawMode.FILL) {
-          if (path.closed) targetCtx.fill();
-        } else if (mode === RotoDrawMode.STROKE) {
-          targetCtx.stroke();
-        } else if (mode === RotoDrawMode.FILL_AND_STROKE) {
-          if (path.closed) targetCtx.fill();
-          targetCtx.stroke();
-        }
-        targetCtx.restore();
-      };
-
-      const drawPathAtFrame = (
-        targetCtx: CanvasRenderingContext2D,
-        path: RotoNode['paths'][number],
-        frame: number,
-        skipFeather?: boolean,
-      ) => {
-        const feather = getValueAtFrame(path.feather, frame);
-        const opacity = getValueAtFrame(path.opacity, frame);
-        const { mode, strokeWidth } = path.style;
-        const strokeWidthAtFrame = getValueAtFrame(strokeWidth, frame);
-
-        targetCtx.save();
-        targetCtx.globalAlpha = opacity / 100.0;
-        const blend = getBlendForPath(path);
-        if (node.invert) {
-          targetCtx.globalCompositeOperation =
-            blend === RotoPathBlend.ADD ? 'destination-out' : 'destination-in';
-          targetCtx.fillStyle = 'black';
-          targetCtx.strokeStyle = 'black';
-        } else {
-          targetCtx.globalCompositeOperation =
-            blend === RotoPathBlend.SUBTRACT ? 'destination-out' : 'source-over';
-          targetCtx.fillStyle = 'white';
-          targetCtx.strokeStyle = 'white';
-        }
-        if (!skipFeather && feather > 0) targetCtx.filter = `blur(${feather}px)`;
-
-        targetCtx.beginPath();
-        if (path.points.length > 0) {
-          const sceneCenterX = canvas.width / 2;
-          const sceneCenterY = canvas.height / 2;
-          const resolvedPoints = resolveRotoPathPointsAtFrame(node, path, frame);
-          const translatedPoints = resolvedPoints.map((p) => ({
-            x: p.x + sceneCenterX,
-            y: p.y + sceneCenterY,
-          }));
-          if (path.shapeType === RotoShapeType.BSPLINE) {
-            drawBSplineOnCanvas(
-              targetCtx,
-              translatedPoints,
-              path.closed,
-              path.pointWeights,
-              rotoPointWeightMode,
-              path.pointTypes,
-              path.pointWeightModes,
-            );
-          } else {
-            targetCtx.moveTo(translatedPoints[0].x, translatedPoints[0].y);
-            for (let i = 1; i < translatedPoints.length; i += 1) {
-              targetCtx.lineTo(translatedPoints[i].x, translatedPoints[i].y);
-            }
-          }
-        }
-
-        if (path.closed) targetCtx.closePath();
-        targetCtx.lineWidth = strokeWidthAtFrame;
-        if (mode === RotoDrawMode.FILL) {
-          if (path.closed) targetCtx.fill();
-        } else if (mode === RotoDrawMode.STROKE) {
-          targetCtx.stroke();
-        } else if (mode === RotoDrawMode.FILL_AND_STROKE) {
-          if (path.closed) targetCtx.fill();
-          targetCtx.stroke();
-        }
-        targetCtx.restore();
-      };
-
-      const clearMask = (targetCtx: CanvasRenderingContext2D, invert: boolean) => {
-        targetCtx.setTransform(1, 0, 0, 1, 0, 0);
-        targetCtx.clearRect(0, 0, canvas.width, canvas.height);
-        targetCtx.fillStyle = invert ? 'white' : 'black';
-        targetCtx.fillRect(0, 0, canvas.width, canvas.height);
-      };
-
-      const renderMaskAtFrame = (
-        targetCtx: CanvasRenderingContext2D,
-        frame: number,
-        skipFeather?: boolean,
-      ) => {
-        clearMask(targetCtx, node.invert);
-        for (const path of getActivePathsAtFrame(frame)) {
-          drawPathAtFrame(targetCtx, path, frame, skipFeather);
-        }
-      };
-
       const motionBlur = resolveRotoMotionBlurSettings(node.motionBlur);
       const motionBlurEnabled = motionBlur.enabled && motionBlur.shutter > 0;
       const maxFrame = Math.max(0, sceneNode.maxFrames ?? 0);
-      const previousTexture = entry.texture;
 
-      if (motionBlurEnabled) {
-        const previewSamples = resolveRotoMotionBlurPreviewSamples(motionBlur.samples, {
-          interactivePreviewEnabled: interactiveMotionBlurPreviewEnabled,
-          interactivePreviewActive: interactiveMotionBlurPreviewActive,
-          interactivePreviewSamples: interactiveMotionBlurPreviewSamples,
-        });
-        const sampleFrames = getRotoMotionBlurSampleFrames(
-          currentFrame,
-          motionBlur.shutter,
-          previewSamples,
-          motionBlur.phase,
-        );
-        const sampleWeights = getRotoMotionBlurSampleWeights(sampleFrames.length);
-        const canvasSampleWeights = getRotoMotionBlurCanvasSampleWeights(sampleWeights);
-
-        const shouldUseGpu = motionBlurPreviewBackend === 'gpu_float';
-        let usedGpu = false;
-
-        if (shouldUseGpu) {
-          const compositor = getGpuCompositor();
-          const target = compositor ? ensureGpuTarget(entry, canvas.width, canvas.height) : null;
-
-          if (compositor && target) {
-            const sampleTexture = ensureGpuSampleTexture(entry);
-            compositor.renderer.setSize(canvas.width, canvas.height, false);
-            compositor.renderer.setRenderTarget(target);
-            compositor.renderer.clear();
-
-            compositor.quad.material = compositor.accumulationMaterial;
-            compositor.accumulationMaterial.uniforms.u_tMask.value = sampleTexture;
-
-            for (let sampleIndex = 0; sampleIndex < sampleFrames.length; sampleIndex += 1) {
-              const sampleFrame = sampleFrames[sampleIndex];
-              const clampedFrame = Math.max(0, Math.min(maxFrame, sampleFrame));
-              compositor.accumulationMaterial.uniforms.u_weight.value = sampleWeights[sampleIndex];
-              renderMaskAtFrame(sampleCtx, clampedFrame);
-              sampleTexture.needsUpdate = true;
-              compositor.renderer.render(compositor.scene, compositor.camera);
-            }
-
-            // Copy float-accumulated mask to a CPU-shareable canvas texture for the main renderer.
-            compositor.quad.material = compositor.copyMaterial;
-            compositor.copyMaterial.uniforms.u_tMask.value = target.texture;
-            compositor.renderer.setRenderTarget(null);
-            compositor.renderer.clear();
-            compositor.renderer.render(compositor.scene, compositor.camera);
-
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(compositor.renderer.domElement, 0, 0, canvas.width, canvas.height);
-            canvasTexture.needsUpdate = true;
-            entry.texture = canvasTexture;
-            usedGpu = true;
-          }
-        }
-
-        if (!usedGpu) {
-          const activePathsAtCurrentFrame = getActivePathsAtFrame(currentFrame);
-          // Check if any path has feather at the current frame.
-          const hasFeather = activePathsAtCurrentFrame.some(
-            (p) => getValueAtFrame(p.feather, currentFrame) > 0,
+      disposeMaskLayers(entry.maskLayers);
+      const descriptorSampleCount = motionBlurEnabled
+        ? resolveRotoMotionBlurPreviewSamples(motionBlur.samples, {
+            interactivePreviewEnabled: interactiveMotionBlurPreviewEnabled,
+            interactivePreviewActive: interactiveMotionBlurPreviewActive,
+            interactivePreviewSamples: interactiveMotionBlurPreviewSamples,
+          })
+        : 1;
+      const descriptorFrames = motionBlurEnabled
+        ? getRotoMotionBlurSampleFrames(
+            currentFrame,
+            motionBlur.shutter,
+            descriptorSampleCount,
+            motionBlur.phase,
+          )
+        : [currentFrame];
+      const descriptorWeights = getRotoMotionBlurSampleWeights(descriptorFrames.length);
+      entry.maskLayers = visiblePaths.flatMap((path) => {
+        const pathCanvas = document.createElement('canvas');
+        pathCanvas.width = sceneNode.width;
+        pathCanvas.height = sceneNode.height;
+        const pathContext = pathCanvas.getContext('2d');
+        if (!pathContext) return [];
+        const texture = new THREE.CanvasTexture(pathCanvas);
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false;
+        texture.colorSpace = THREE.NoColorSpace;
+        const samples = descriptorFrames.flatMap((sampleFrame, sampleIndex) => {
+          const clampedFrame = Math.max(0, Math.min(maxFrame, sampleFrame));
+          const opacity = Math.max(
+            0,
+            Math.min(1, getValueAtFrame(path.opacity, clampedFrame) / 100),
           );
-
-          if (hasFeather) {
-            // Per-path post-process feather: accumulate each path's motion
-            // blur samples without feather, then apply that path's own feather
-            // as a single blur pass. This avoids the 8-bit quantization banding
-            // that occurs when per-sample 1/N-weighted draws are individually
-            // blurred before additive accumulation into an 8-bit canvas.
-            const acc = ensureAccCanvas(entry, canvas.width, canvas.height);
-            if (!acc) {
-              // Fallback: render without post-process feather optimisation.
-              clearMask(ctx, false);
-              for (let sampleIndex = 0; sampleIndex < sampleFrames.length; sampleIndex += 1) {
-                const sampleFrame = sampleFrames[sampleIndex];
-                const clampedFrame = Math.max(0, Math.min(maxFrame, sampleFrame));
-                renderMaskAtFrame(sampleCtx, clampedFrame);
-                ctx.save();
-                ctx.globalCompositeOperation = 'lighter';
-                ctx.globalAlpha = canvasSampleWeights[sampleIndex];
-                ctx.drawImage(sampleCanvas, 0, 0);
-                ctx.restore();
-              }
-            } else {
-              const { accCanvas: accCvs, accCtx: accC } = acc;
-              const w = canvas.width;
-              const h = canvas.height;
-
-              clearMask(ctx, node.invert);
-
-              for (const path of activePathsAtCurrentFrame) {
-                const feather = getValueAtFrame(path.feather, currentFrame);
-                const opacity = getValueAtFrame(path.opacity, currentFrame);
-
-                // Accumulate this path's motion blur (raw shape, no feather).
-                accC.setTransform(1, 0, 0, 1, 0, 0);
-                accC.clearRect(0, 0, w, h);
-
-                for (let sampleIndex = 0; sampleIndex < sampleFrames.length; sampleIndex += 1) {
-                  const sampleFrame = sampleFrames[sampleIndex];
-                  const clampedFrame = Math.max(0, Math.min(maxFrame, sampleFrame));
-                  sampleCtx.setTransform(1, 0, 0, 1, 0, 0);
-                  sampleCtx.clearRect(0, 0, w, h);
-                  drawPathGeometry(sampleCtx, path, clampedFrame);
-
-                  accC.save();
-                  accC.globalCompositeOperation = 'lighter';
-                  accC.globalAlpha = canvasSampleWeights[sampleIndex];
-                  accC.drawImage(sampleCanvas, 0, 0);
-                  accC.restore();
-                }
-
-                // Apply this path's feather as a post-process blur.
-                if (feather > 0) {
-                  sampleCtx.setTransform(1, 0, 0, 1, 0, 0);
-                  sampleCtx.clearRect(0, 0, w, h);
-                  sampleCtx.drawImage(accCvs, 0, 0);
-
-                  accC.setTransform(1, 0, 0, 1, 0, 0);
-                  accC.clearRect(0, 0, w, h);
-                  accC.save();
-                  accC.filter = `blur(${feather}px)`;
-                  accC.drawImage(sampleCanvas, 0, 0);
-                  accC.restore();
-                }
-
-                // Composite this path onto the final mask.
-                ctx.save();
-                ctx.globalAlpha = opacity / 100.0;
-                const blend = getBlendForPath(path);
-                if (node.invert) {
-                  ctx.globalCompositeOperation =
-                    blend === RotoPathBlend.ADD ? 'destination-out' : 'destination-in';
-                } else {
-                  ctx.globalCompositeOperation =
-                    blend === RotoPathBlend.SUBTRACT ? 'destination-out' : 'source-over';
-                }
-                ctx.drawImage(accCvs, 0, 0);
-                ctx.restore();
-              }
-            }
-          } else {
-            // No feather — accumulate directly (original fast path).
-            clearMask(ctx, false);
-            for (let sampleIndex = 0; sampleIndex < sampleFrames.length; sampleIndex += 1) {
-              const sampleFrame = sampleFrames[sampleIndex];
-              const clampedFrame = Math.max(0, Math.min(maxFrame, sampleFrame));
-              renderMaskAtFrame(sampleCtx, clampedFrame);
-
-              ctx.save();
-              ctx.globalCompositeOperation = 'lighter';
-              ctx.globalAlpha = canvasSampleWeights[sampleIndex];
-              ctx.drawImage(sampleCanvas, 0, 0);
-              ctx.restore();
-            }
-          }
-
-          canvasTexture.needsUpdate = true;
-          entry.texture = canvasTexture;
+          if (opacity <= 0) return [];
+          return [
+            {
+              texture,
+              weight: descriptorWeights[sampleIndex] * opacity,
+              prepare: () => {
+                pathContext.setTransform(1, 0, 0, 1, 0, 0);
+                pathContext.clearRect(0, 0, pathCanvas.width, pathCanvas.height);
+                pathContext.globalAlpha = 1;
+                pathContext.globalCompositeOperation = 'source-over';
+                pathContext.filter = 'none';
+                pathContext.fillStyle = 'white';
+                pathContext.strokeStyle = 'white';
+                drawRotoPathGeometry(
+                  pathContext,
+                  node,
+                  path,
+                  clampedFrame,
+                  pathCanvas.width,
+                  pathCanvas.height,
+                  rotoPointWeightMode,
+                );
+                texture.needsUpdate = true;
+              },
+            },
+          ];
+        });
+        if (samples.length === 0) {
+          texture.dispose();
+          return [];
         }
-      } else {
-        renderMaskAtFrame(ctx, currentFrame);
-        canvasTexture.needsUpdate = true;
-        entry.texture = canvasTexture;
-      }
-
-      // --- add/sub masks for Add alpha mode ---
-      {
-        const isAddPath = (b: RotoPathBlend) => b === RotoPathBlend.ADD;
-        const isSubPath = (b: RotoPathBlend) => b === RotoPathBlend.SUBTRACT;
-
-        const ensureAddSubCanvas = (key: 'addCanvas' | 'subCanvas') => {
-          if (
-            !entry[key] ||
-            entry[key]!.width !== sceneNode.width ||
-            entry[key]!.height !== sceneNode.height
-          ) {
-            const c = document.createElement('canvas');
-            c.width = sceneNode.width;
-            c.height = sceneNode.height;
-            entry[key] = c;
-          }
-          return entry[key]!;
-        };
-
-        const renderAddSubMask = (
-          targetCtx: CanvasRenderingContext2D,
-          blendFilter: (b: RotoPathBlend) => boolean,
-        ) => {
-          const w = sceneNode.width;
-          const h = sceneNode.height;
-          targetCtx.setTransform(1, 0, 0, 1, 0, 0);
-          targetCtx.clearRect(0, 0, w, h);
-          targetCtx.fillRect(0, 0, w, h);
-          for (const path of getActivePathsAtFrame(currentFrame)) {
-            if (!blendFilter(getBlendForPath(path))) continue;
-            const opacity = getValueAtFrame(path.opacity, currentFrame);
-            if (opacity <= 0) continue;
-            const feather = getValueAtFrame(path.feather, currentFrame);
-            targetCtx.save();
-            targetCtx.globalAlpha = opacity / 100;
-            targetCtx.filter = feather > 0 ? `blur(${feather}px)` : 'none';
-            drawPathGeometry(targetCtx, path, currentFrame);
-            targetCtx.restore();
-          }
-        };
-
-        const addCvs = ensureAddSubCanvas('addCanvas');
-        const subCvs = ensureAddSubCanvas('subCanvas');
-        const addCtx = addCvs.getContext('2d');
-        const subCtx = subCvs.getContext('2d');
-
-        if (node.invert) {
-          renderAddSubMask(addCtx!, isSubPath);
-          renderAddSubMask(subCtx!, isAddPath);
-        } else {
-          renderAddSubMask(addCtx!, isAddPath);
-          renderAddSubMask(subCtx!, isSubPath);
-        }
-
-        if (!entry.addCanvasTexture || entry.addCanvasTexture.image !== addCvs) {
-          entry.addCanvasTexture?.dispose();
-          entry.addCanvasTexture = new THREE.CanvasTexture(addCvs);
-          entry.addCanvasTexture.minFilter = THREE.LinearFilter;
-          entry.addCanvasTexture.magFilter = THREE.LinearFilter;
-          entry.addCanvasTexture.generateMipmaps = false;
-          entry.addCanvasTexture.colorSpace = THREE.NoColorSpace;
-        }
-        if (!entry.subCanvasTexture || entry.subCanvasTexture.image !== subCvs) {
-          entry.subCanvasTexture?.dispose();
-          entry.subCanvasTexture = new THREE.CanvasTexture(subCvs);
-          entry.subCanvasTexture.minFilter = THREE.LinearFilter;
-          entry.subCanvasTexture.magFilter = THREE.LinearFilter;
-          entry.subCanvasTexture.generateMipmaps = false;
-          entry.subCanvasTexture.colorSpace = THREE.NoColorSpace;
-        }
-        entry.addCanvasTexture.needsUpdate = true;
-        entry.subCanvasTexture.needsUpdate = true;
-      }
-
-      if (entry.texture !== previousTexture) {
-        didUpdate = true;
-      }
+        return [
+          {
+            samples,
+            feather: Math.max(0, getValueAtFrame(path.feather, currentFrame)),
+            opacity: 1,
+            operation:
+              getBlendForPath(path) === RotoPathBlend.SUBTRACT
+                ? ('subtract' as const)
+                : ('add' as const),
+          },
+        ];
+      });
 
       nextMasks.set(node.id, entry);
     });
@@ -832,7 +239,6 @@ export const useViewportRotoMasks = ({
     nodes,
     currentFrame,
     sceneNode,
-    motionBlurPreviewBackend,
     interactiveMotionBlurPreviewEnabled,
     interactiveMotionBlurPreviewActive,
     interactiveMotionBlurPreviewSamples,
@@ -847,11 +253,6 @@ export const useViewportRotoMasks = ({
         entry.dispose();
       });
       rotoMaskTexturesRef.current.clear();
-
-      if (gpuCompositorRef.current && gpuCompositorRef.current !== 'unavailable') {
-        disposeGpuCompositor(gpuCompositorRef.current);
-      }
-      gpuCompositorRef.current = null;
     };
   }, []);
 
