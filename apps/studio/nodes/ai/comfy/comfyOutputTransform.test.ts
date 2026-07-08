@@ -105,6 +105,20 @@ describe('Comfy output transform', () => {
     });
   });
 
+  it('preserves explicit per-output offsets when fit mode is custom', () => {
+    const transform = getComfyOutputTransform({
+      node: makeComfyNode(),
+      output: {
+        width: 960,
+        height: 540,
+        transform: { x: 18, y: -12, scaleX: 1.5, scaleY: 1.25, fitMode: ImageFitMode.CUSTOM },
+      },
+      sceneNode,
+    });
+
+    expect(transform).toMatchObject({ x: 18, y: -12, scaleX: 1.5, scaleY: 1.25 });
+  });
+
   describe('region position offset', () => {
     const regionNode = (
       regionId: string,
@@ -219,6 +233,28 @@ describe('Comfy output transform', () => {
       expect(result.y).toBe(40);
       expect(result.scaleX).toBe(1);
       expect(result.scaleY).toBe(1);
+    });
+
+    it('adds explicit custom offsets relative to the output region', () => {
+      const node = regionNode('r1', { x: 200, y: 100, width: 300, height: 200 });
+      const output = {
+        width: 600,
+        height: 400,
+        regionId: 'r1',
+        transform: {
+          x: 8,
+          y: -6,
+          scaleX: 0.5,
+          scaleY: 0.5,
+          fitMode: ImageFitMode.CUSTOM,
+        },
+      };
+      const result = getComfyOutputTransform({ node, output, sceneNode });
+
+      expect(result.x).toBe(-602);
+      expect(result.y).toBe(334);
+      expect(result.scaleX).toBe(0.5);
+      expect(result.scaleY).toBe(0.5);
     });
   });
 });

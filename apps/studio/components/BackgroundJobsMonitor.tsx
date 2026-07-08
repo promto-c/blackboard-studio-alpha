@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { EditorTab, type AiChatThread, type AnyNode } from '@blackboard/types';
-import { Popover } from '@blackboard/ui';
+import { Badge, Popover } from '@blackboard/ui';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import {
   isBackgroundJobActive,
@@ -31,6 +31,15 @@ interface MonitorJob {
   updatedAt: number;
   source?: BackgroundJob['source'];
   isDerived?: boolean;
+  childJobIds?: string[];
+  batchSlots?: MonitorBatchSlot[];
+}
+
+interface MonitorBatchSlot {
+  slot: number;
+  status: BackgroundJobStatus;
+  jobId?: string;
+  cancellable?: boolean;
 }
 
 const ACTIVE_STATUSES = new Set<BackgroundJobStatus>(['queued', 'running', 'cancelling']);
@@ -100,16 +109,22 @@ const statusActionTone: Record<BackgroundJobStatus, string> = {
     'border-gray-400/20 text-gray-200/70 hover:border-gray-300/35 hover:bg-gray-300/10 hover:text-gray-100',
 };
 
-const batchSlotTone: Record<'complete' | 'running' | 'queued', string> = {
+const batchSlotTone: Record<BackgroundJobStatus, string> = {
   complete: 'border-emerald-300/25 bg-emerald-300/12 text-emerald-50',
   running: 'border-cyan-300/35 bg-cyan-300/15 text-cyan-50',
+  cancelling: 'border-amber-300/35 bg-amber-300/15 text-amber-50',
   queued: 'border-amber-300/20 bg-amber-300/[0.08] text-amber-100/70',
+  error: 'border-red-300/30 bg-red-400/15 text-red-50',
+  cancelled: 'border-gray-400/20 bg-gray-300/10 text-gray-200/70',
 };
 
 const clampProgress = (value: number | undefined): number =>
   Math.max(0, Math.min(100, Number.isFinite(value) ? (value ?? 0) : 0));
 
-const getBatchSlots = (source: BackgroundJob['source'], status: BackgroundJobStatus) => {
+const getBatchSlots = (
+  source: BackgroundJob['source'],
+  status: BackgroundJobStatus,
+): MonitorBatchSlot[] => {
   const runCount = source?.runCount ?? 0;
   if (runCount <= 1) return [];
 
@@ -124,6 +139,22 @@ const getBatchSlots = (source: BackgroundJob['source'], status: BackgroundJobSta
     }
     return { slot, status: 'queued' as const };
   });
+};
+
+const getBatchSlotLabel = (slot: MonitorBatchSlot): string | number => {
+  switch (slot.status) {
+    case 'complete':
+      return 'OK';
+    case 'running':
+    case 'cancelling':
+      return '...';
+    case 'error':
+      return '!';
+    case 'cancelled':
+      return 'X';
+    case 'queued':
+      return slot.slot;
+  }
 };
 
 const getNodeLabel = (nodes: AnyNode[], nodeId: string | undefined): string | undefined =>
@@ -156,6 +187,107 @@ const buildAiChatJobs = (
       isDerived: true,
     }));
 
+const getComfyBatchTitle = (title: string): string =>
+  title.replace(/\s+·\s+Run\s+\d+\/\d+$/i, '').replace(/\s+x\d+$/i, '');
+
+const getMonitorBatchStatus = (jobs: BackgroundJob[]): BackgroundJobStatus => {
+  if (jobs.some((job) => job.status === 'running')) return 'running';
+  if (jobs.some((job) => job.status === 'cancelling')) return 'cancelling';
+  if (jobs.some((job) => job.status === 'queued')) return 'queued';
+  if (jobs.some((job) => job.status === 'error')) return 'error';
+  if (jobs.every((job) => job.status === 'cancelled')) return 'cancelled';
+  if (jobs.every((job) => job.status === 'complete')) return 'complete';
+  return 'complete';
+};
+
+const getJobRunIndex = (job: Pick<MonitorJob, 'source'>, fallback: number): number =>
+  Math.max(1, job.source?.runIndex ?? fallback);
+
+const getMonitorBatchProgress = (jobs: BackgroundJob[], runCount: number): number => {
+  if (runCount <= 0) return 0;
+
+  const progressByRun = new Map<number, number>();
+  jobs.forEach((job, index) => {
+    const runIndex = getJobRunIndex(job, index + 1);
+    progressByRun.set(runIndex, job.status === 'complete' ? 100 : clampProgress(job.progress));
+  });
+
+  const total = Array.from(
+    { length: runCount },
+    (_, index) => progressByRun.get(index + 1) ?? 0,
+  ).reduce((sum, progress) => sum + progress, 0);
+  return total / runCount;
+};
+
+const createComfyBatchMonitorJob = (batchId: string, jobs: BackgroundJob[]): MonitorJob => {
+  const sortedJobs = [...jobs].sort(
+    (a, b) => getJobRunIndex(a, 1) - getJobRunIndex(b, 1) || a.startedAt - b.startedAt,
+  );
+  const firstJob = sortedJobs[0];
+  const activeJob = sortedJobs.find(isBackgroundJobActive);
+  const detailJob = activeJob ?? sortedJobs.find((job) => job.detail) ?? firstJob;
+  const runCount = Math.max(
+    sortedJobs.length,
+    ...sortedJobs.map((job) => job.source?.runCount ?? 1),
+  );
+  const activeRunIndex = detailJob ? getJobRunIndex(detailJob, 1) : 1;
+  const status = getMonitorBatchStatus(sortedJobs);
+  const completedCount = sortedJobs.filter((job) => job.status === 'complete').length;
+  const source = {
+    ...(detailJob?.source ?? firstJob.source ?? {}),
+    batchId,
+    runCount,
+    runIndex: activeRunIndex,
+    completedCount,
+  };
+
+  return {
+    id: `comfy-batch:${batchId}`,
+    type: 'comfy',
+    title: getComfyBatchTitle(firstJob.title),
+    subtitle: firstJob.subtitle,
+    detail: detailJob?.detail
+      ? `Run ${activeRunIndex}/${runCount}: ${detailJob.detail}`
+      : undefined,
+    status,
+    progress: getMonitorBatchProgress(sortedJobs, runCount),
+    indeterminate: sortedJobs.some((job) => isBackgroundJobActive(job) && job.indeterminate),
+    cancellable: sortedJobs.some((job) => isBackgroundJobActive(job) && job.cancellable),
+    startedAt: Math.min(...sortedJobs.map((job) => job.startedAt)),
+    updatedAt: Math.max(...sortedJobs.map((job) => job.updatedAt)),
+    source,
+    childJobIds: sortedJobs.map((job) => job.id),
+    batchSlots: sortedJobs.map((job, index) => ({
+      slot: getJobRunIndex(job, index + 1),
+      status: job.status,
+      jobId: job.id,
+      cancellable: isBackgroundJobActive(job) && job.cancellable,
+    })),
+  };
+};
+
+const buildExplicitMonitorJobs = (jobs: BackgroundJob[]): MonitorJob[] => {
+  const ungroupedJobs: MonitorJob[] = [];
+  const comfyBatchJobs = new Map<string, BackgroundJob[]>();
+
+  jobs.forEach((job) => {
+    const batchId =
+      job.type === 'comfy' && (job.source?.runCount ?? 1) > 1 ? job.source?.batchId : undefined;
+    if (!batchId) {
+      ungroupedJobs.push(job);
+      return;
+    }
+    comfyBatchJobs.set(batchId, [...(comfyBatchJobs.get(batchId) ?? []), job]);
+  });
+
+  return [
+    ...ungroupedJobs,
+    ...Array.from(comfyBatchJobs.entries()).map(([batchId, batchJobs]) =>
+      createComfyBatchMonitorJob(batchId, batchJobs),
+    ),
+  ];
+};
+
 const sortJobs = (jobs: MonitorJob[]): MonitorJob[] =>
   [...jobs].sort((a, b) => {
     const aActive = ACTIVE_STATUSES.has(a.status);
@@ -164,11 +296,7 @@ const sortJobs = (jobs: MonitorJob[]): MonitorJob[] =>
     return b.updatedAt - a.updatedAt;
   });
 
-const isJobInProject = (
-  job: MonitorJob,
-  projectId: string | null,
-  _projectNodeIds: Set<string>,
-): boolean => {
+const isJobInProject = (job: MonitorJob, projectId: string | null): boolean => {
   if (!projectId) return true;
   return job.source?.projectId === projectId;
 };
@@ -229,13 +357,17 @@ export function BackgroundJobsMonitor({
   const projectNodeIds = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
 
   const allJobs = useMemo(
-    () => sortJobs([...explicitJobs, ...buildAiChatJobs(aiChats, nodes, projectId)]),
+    () =>
+      sortJobs([
+        ...buildExplicitMonitorJobs(explicitJobs),
+        ...buildAiChatJobs(aiChats, nodes, projectId),
+      ]),
     [aiChats, explicitJobs, nodes, projectId],
   );
 
   const projectJobs = useMemo(
-    () => allJobs.filter((job) => isJobInProject(job, projectId, projectNodeIds)),
-    [allJobs, projectId, projectNodeIds],
+    () => allJobs.filter((job) => isJobInProject(job, projectId)),
+    [allJobs, projectId],
   );
 
   const canFilterByProject = !!projectId;
@@ -288,7 +420,19 @@ export function BackgroundJobsMonitor({
       stopAiChat(job.source.chatId);
       return;
     }
+    const jobIds =
+      job.batchSlots
+        ?.filter((slot) => slot.cancellable && slot.jobId)
+        .map((slot) => slot.jobId as string) ?? [];
+    if (jobIds.length > 0) {
+      jobIds.forEach((jobId) => requestBackgroundJobCancel(jobId));
+      return;
+    }
     requestBackgroundJobCancel(job.id);
+  };
+
+  const dismissJob = (job: MonitorJob) => {
+    (job.childJobIds ?? [job.id]).forEach((jobId) => dismissBackgroundJob(jobId));
   };
 
   const handleOpenContext = async (job: MonitorJob) => {
@@ -438,7 +582,7 @@ export function BackgroundJobsMonitor({
                               projectId,
                               jobIds: filteredJobs
                                 .filter((job) => !isBackgroundJobActive(job) && !job.isDerived)
-                                .map((job) => job.id),
+                                .flatMap((job) => job.childJobIds ?? [job.id]),
                             }
                           : undefined,
                       )
@@ -471,7 +615,7 @@ export function BackgroundJobsMonitor({
                 const progress = clampProgress(job.progress);
                 const canDismiss = !isActive && !job.isDerived;
                 const canCancel = isActive && job.cancellable;
-                const batchSlots = getBatchSlots(job.source, job.status);
+                const batchSlots = job.batchSlots ?? getBatchSlots(job.source, job.status);
                 const contextLabel = getJobContextLabel(job);
                 const jobScopeLabel = getJobScopeLabel(job, projectId);
                 const showJobScopeCue = canFilterByProject && jobScope === 'all';
@@ -500,17 +644,23 @@ export function BackgroundJobsMonitor({
                           <span className="min-w-0 truncate text-xs font-medium text-current">
                             {job.title}
                           </span>
-                          <span className="shrink-0 rounded-full bg-black/20 px-1.5 py-0.5 text-[10px] uppercase text-current/70">
+                          <Badge
+                            size="sm"
+                            uppercase
+                            className="bg-black/20 text-current/70 border-0"
+                          >
                             {statusLabel[job.status]}
-                          </span>
+                          </Badge>
                           {showJobScopeCue && (
-                            <span
-                              className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${
+                            <Badge
+                              size="sm"
+                              uppercase
+                              className={`font-semibold ${
                                 jobScopeLabel === 'Elsewhere'
                                   ? isActive
-                                    ? 'border-amber-200/30 bg-amber-300/15 text-amber-50'
-                                    : 'border-white/10 bg-black/15 text-current/55'
-                                  : 'border-white/10 bg-black/15 text-current/55'
+                                    ? '!border-amber-200/30 !bg-amber-300/15 !text-amber-50'
+                                    : '!border-white/10 !bg-black/15 !text-current/55'
+                                  : '!border-white/10 !bg-black/15 !text-current/55'
                               }`}
                               title={
                                 jobScopeLabel === 'Elsewhere'
@@ -519,13 +669,18 @@ export function BackgroundJobsMonitor({
                               }
                             >
                               {jobScopeLabel}
-                            </span>
+                            </Badge>
                           )}
                           {job.type === 'tracking' &&
                             isTrackingJobInvalidated(job, projectNodeIds) && (
-                              <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-100">
+                              <Badge
+                                size="sm"
+                                variant="warning"
+                                uppercase
+                                className="font-semibold"
+                              >
                                 Stale
-                              </span>
+                              </Badge>
                             )}
                         </div>
                         {job.subtitle && (
@@ -540,19 +695,37 @@ export function BackgroundJobsMonitor({
                         )}
                         {batchSlots.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1">
-                            {batchSlots.map((slot) => (
-                              <span
-                                key={slot.slot}
-                                className={`inline-flex h-5 min-w-5 items-center justify-center rounded border px-1 text-[10px] font-semibold ${batchSlotTone[slot.status]}`}
-                                title={`Run ${slot.slot} ${slot.status}`}
-                              >
-                                {slot.status === 'complete'
-                                  ? 'OK'
-                                  : slot.status === 'running'
-                                    ? '...'
-                                    : slot.slot}
-                              </span>
-                            ))}
+                            {batchSlots.map((slot) => {
+                              const slotLabel = getBatchSlotLabel(slot);
+                              const slotClassName = `inline-flex h-5 min-w-5 items-center justify-center rounded border px-1 text-[10px] font-semibold ${batchSlotTone[slot.status]}`;
+                              if (slot.cancellable && slot.jobId) {
+                                return (
+                                  <button
+                                    key={slot.slot}
+                                    type="button"
+                                    className={`${slotClassName} transition hover:border-red-200/50 hover:bg-red-400/15 hover:text-red-50`}
+                                    title={`Cancel run ${slot.slot}`}
+                                    aria-label={`Cancel run ${slot.slot}`}
+                                    onKeyDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      requestBackgroundJobCancel(slot.jobId as string);
+                                    }}
+                                  >
+                                    {slotLabel}
+                                  </button>
+                                );
+                              }
+                              return (
+                                <span
+                                  key={slot.slot}
+                                  className={slotClassName}
+                                  title={`Run ${slot.slot} ${slot.status}`}
+                                >
+                                  {slotLabel}
+                                </span>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -565,7 +738,7 @@ export function BackgroundJobsMonitor({
                             if (canCancel) {
                               handleCancel(job);
                             } else {
-                              dismissBackgroundJob(job.id);
+                              dismissJob(job);
                             }
                           }}
                           className={`shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium transition ${statusActionTone[job.status]}`}

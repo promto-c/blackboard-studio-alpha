@@ -1,5 +1,4 @@
 import type { AiProvider } from '@blackboard/types';
-import { hasGeminiApiKey, hasOpenAiApiKey } from '@/utils/ai';
 
 export type AiRouteTask =
   | 'assistantChat'
@@ -15,15 +14,6 @@ interface AiTaskRoute {
 
 export type AiTaskRoutes = Record<AiRouteTask, AiTaskRoute>;
 
-interface AiRoutingPreferencesLike {
-  aiTaskRoutes: AiTaskRoutes;
-  integrationConnections?: AiRoutingConnection[];
-  geminiApiKey: string;
-  openAiApiKey: string;
-  openAiBaseUrl: string;
-  ollamaEndpoint: string;
-}
-
 interface AiRoutingConnection {
   id: string;
   provider: AiProvider | 'comfy';
@@ -35,6 +25,7 @@ interface AiRoutingConnection {
 }
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
 
 export const normalizeOpenAiBaseUrl = (value: string): string => {
   const trimmed = value.trim() || DEFAULT_OPENAI_BASE_URL;
@@ -42,7 +33,7 @@ export const normalizeOpenAiBaseUrl = (value: string): string => {
 };
 
 const isAiProvider = (value: unknown): value is AiProvider =>
-  value === 'gemini' || value === 'ollama' || value === 'openai';
+  value === 'ollama' || value === 'openai';
 
 const isSameModel = (first: string, second: string): boolean =>
   first.trim().toLowerCase() === second.trim().toLowerCase();
@@ -65,10 +56,10 @@ const normalizeAiTaskRoute = (value: unknown, fallback: AiTaskRoute): AiTaskRout
 };
 
 export const DEFAULT_AI_TASK_ROUTES: AiTaskRoutes = {
-  assistantChat: { provider: 'gemini', model: 'gemini-2.5-flash' },
-  shaderGeneration: { provider: 'gemini', model: 'gemini-2.5-flash' },
-  shaderPromptTools: { provider: 'gemini', model: 'gemini-2.5-flash' },
-  imagePromptTools: { provider: 'gemini', model: 'gemini-2.5-flash' },
+  assistantChat: { provider: 'ollama', model: '' },
+  shaderGeneration: { provider: 'ollama', model: '' },
+  shaderPromptTools: { provider: 'ollama', model: '' },
+  imagePromptTools: { provider: 'ollama', model: '' },
 };
 
 export const normalizeAiTaskRoutes = (
@@ -95,14 +86,23 @@ export interface ResolvedAiTextRoute {
   provider: AiProvider;
   model: string;
   connectionId?: string;
-  geminiApiKey?: string;
-  geminiModel?: string;
   openAiApiKey?: string;
   openAiBaseUrl?: string;
   openAiModel?: string;
   ollamaEndpoint?: string;
   ollamaModel?: string;
 }
+
+interface AiRoutingPreferencesLike {
+  aiTaskRoutes: AiTaskRoutes;
+  integrationConnections?: AiRoutingConnection[];
+}
+
+const getDefaultProviderConnection = (
+  provider: AiProvider,
+  preferences: AiRoutingPreferencesLike,
+): AiRoutingConnection | undefined =>
+  preferences.integrationConnections?.find((connection) => connection.provider === provider);
 
 const getRouteConnection = (
   route: AiTaskRoute,
@@ -113,18 +113,23 @@ const getRouteConnection = (
         (connection) =>
           connection.id === route.connectionId && connection.provider === route.provider,
       )
-    : undefined;
+    : getDefaultProviderConnection(route.provider, preferences);
 
-const getOpenAiRouteBaseUrl = (route: AiTaskRoute, preferences: AiRoutingPreferencesLike): string =>
-  normalizeOpenAiBaseUrl(
-    getRouteConnection(route, preferences)?.baseUrl ?? preferences.openAiBaseUrl,
-  );
+const getOpenAiRouteBaseUrl = (
+  route: AiTaskRoute,
+  preferences: AiRoutingPreferencesLike,
+): string => {
+  const connection = getRouteConnection(route, preferences);
+  const baseUrl = connection?.baseUrl || connection?.endpoint || undefined;
+  return normalizeOpenAiBaseUrl(baseUrl ?? DEFAULT_OPENAI_BASE_URL);
+};
 
 const hasOpenAiRouteAuth = (route: AiTaskRoute, preferences: AiRoutingPreferencesLike): boolean => {
   const connection = getRouteConnection(route, preferences);
-  const apiKey = connection?.apiKey ?? preferences.openAiApiKey;
-  const baseUrl = normalizeOpenAiBaseUrl(connection?.baseUrl ?? preferences.openAiBaseUrl);
-  return hasOpenAiApiKey(apiKey) || baseUrl !== DEFAULT_OPENAI_BASE_URL;
+  // Also search for a default OpenAI connection when no specific one is linked
+  const apiKey = connection?.apiKey ?? getDefaultProviderConnection('openai', preferences)?.apiKey;
+  const baseUrl = getOpenAiRouteBaseUrl(route, preferences);
+  return Boolean(apiKey?.trim()) || baseUrl !== DEFAULT_OPENAI_BASE_URL;
 };
 
 export const getAiTaskRouteError = (
@@ -142,13 +147,6 @@ export const getAiTaskRouteError = (
     return 'Enable this model in Preferences > Integrations or choose another model.';
   }
 
-  if (route.provider === 'gemini') {
-    const connection = getRouteConnection(route, preferences);
-    return hasGeminiApiKey(connection?.apiKey ?? preferences.geminiApiKey)
-      ? null
-      : 'Set a Gemini API key in Preferences > Integrations.';
-  }
-
   if (route.provider === 'openai') {
     return hasOpenAiRouteAuth(route, preferences)
       ? null
@@ -156,7 +154,7 @@ export const getAiTaskRouteError = (
   }
 
   const connection = getRouteConnection(route, preferences);
-  return (connection?.endpoint ?? preferences.ollamaEndpoint).trim()
+  return (connection?.endpoint ?? connection?.baseUrl ?? DEFAULT_OLLAMA_ENDPOINT).trim()
     ? null
     : 'Set an Ollama endpoint in Preferences > Integrations.';
 };
@@ -171,24 +169,17 @@ export const resolveAiTaskRoute = (
     throw new Error(error);
   }
 
-  if (route.provider === 'gemini') {
-    const connection = getRouteConnection(route, preferences);
-    return {
-      provider: 'gemini',
-      model: route.model.trim(),
-      ...(route.connectionId ? { connectionId: route.connectionId } : {}),
-      geminiApiKey: connection?.apiKey ?? preferences.geminiApiKey,
-      geminiModel: route.model.trim(),
-    };
-  }
-
   if (route.provider === 'openai') {
     const connection = getRouteConnection(route, preferences);
     return {
       provider: 'openai',
       model: route.model.trim(),
       ...(route.connectionId ? { connectionId: route.connectionId } : {}),
-      openAiApiKey: (connection?.apiKey ?? preferences.openAiApiKey).trim(),
+      openAiApiKey: (
+        connection?.apiKey ??
+        getDefaultProviderConnection('openai', preferences)?.apiKey ??
+        ''
+      ).trim(),
       openAiBaseUrl: getOpenAiRouteBaseUrl(route, preferences),
       openAiModel: route.model.trim(),
     };
@@ -199,7 +190,18 @@ export const resolveAiTaskRoute = (
     provider: 'ollama',
     model: route.model.trim(),
     ...(route.connectionId ? { connectionId: route.connectionId } : {}),
-    ollamaEndpoint: (connection?.endpoint ?? preferences.ollamaEndpoint).trim(),
+    ollamaEndpoint: (connection?.endpoint ?? DEFAULT_OLLAMA_ENDPOINT).trim(),
     ollamaModel: route.model.trim(),
   };
+};
+
+/**
+ * Get the ComfyUI endpoint from the first comfy connection in preferences.
+ * Falls back to the default endpoint when no comfy connection is configured.
+ */
+export const getComfyEndpoint = (prefs: {
+  integrationConnections?: Array<{ provider: string; endpoint?: string }>;
+}): string => {
+  const connection = prefs.integrationConnections?.find((c) => c.provider === 'comfy');
+  return connection?.endpoint?.trim() || 'http://127.0.0.1:8188';
 };

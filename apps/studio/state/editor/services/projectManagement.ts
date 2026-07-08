@@ -1,4 +1,4 @@
-import { type AnyNode, EditorTab } from '@blackboard/types';
+import { type AnyNode, EditorTab, type ProjectColorManagement } from '@blackboard/types';
 import {
   SCHEMA_VERSION,
   saveProject,
@@ -13,6 +13,9 @@ import {
   ensureProjectBranches,
   setActiveProjectBranchId,
   deleteProjectBranchRecords,
+  createProjectBranchRecord,
+  createScopedProjectBranchName,
+  upsertProjectBranch,
 } from '@/state/persist';
 import { saveAsset, deleteAssets } from '@/state/assetStorage';
 import { buildProjectInitState } from '@/state/editor/actions';
@@ -20,6 +23,7 @@ import { getInitialState, getInitialHistoryEntry } from '@/state/editor/initialS
 import { exportProjectBundle, importProjectBundle } from '@/state/projectTransfer';
 import {
   buildPersistedProjectState,
+  restorePersistedProjectHistoryEntry,
   type StoredProjectState,
 } from '@/state/editor/projectSnapshots';
 import {
@@ -31,8 +35,11 @@ import {
   persistSequenceAssets,
   collectNodeAssetIds,
 } from '@/state/editor/utils';
-import { getMediaFileKind } from '@/utils/mediaFiles';
-import { getImportedImageColorSpace } from '@/utils/mediaFiles';
+import { getImportedImageColorManagement, getMediaFileKind } from '@/utils/mediaFiles';
+import {
+  createBrowserDecodedVideoColorManagement,
+  getMediaSourceColorSpace,
+} from '@/color-management';
 import { readVideoMetadata, triggerDownload } from '@/utils/mediaUtils';
 import { createMediaSourceNode, createSceneNode, createSequenceNode } from '@/utils/graphCommands';
 import {
@@ -51,6 +58,16 @@ export type ProjectManagementDeps = {
   getReopenHistoryLimit?: () => number;
 };
 
+export type ProjectOpenTarget = {
+  branchId?: string;
+  historyEntryId?: string;
+  createRecoveryBranch?: boolean;
+};
+
+export interface NewProjectCreationOptions {
+  colorManagement?: ProjectColorManagement;
+}
+
 // ---------------------------------------------------------------------------
 // setupNewProject — shared helper for all createNewProject* methods
 // ---------------------------------------------------------------------------
@@ -62,12 +79,14 @@ const setupNewProject = (
   nodes: AnyNode[],
   selectedId: string,
   maxFrames = 0,
+  options?: NewProjectCreationOptions,
 ) => {
   const fps = 30;
   const { historyEntry, persistedState } = buildProjectInitState({
     nodes,
     selectedNodeId: selectedId,
     fps,
+    colorManagement: options?.colorManagement,
   });
   const branchIndex = initializeProjectBranches(newProjectId);
   set((state) => ({
@@ -76,6 +95,7 @@ const setupNewProject = (
     projectId: newProjectId,
     activeProjectBranchId: branchIndex.activeBranchId,
     projectBranches: branchIndex.branches,
+    colorManagement: persistedState.colorManagement,
     nodes,
     nodePositionsByFlow: persistedState.nodePositionsByFlow ?? {},
     selectedNodeId: selectedId,
@@ -149,13 +169,19 @@ export const closeProjectService = (
 // createNewProject
 // ---------------------------------------------------------------------------
 
-export const createNewProjectService = async (set: SetState, _get: GetState, file: File) => {
+export const createNewProjectService = async (
+  set: SetState,
+  _get: GetState,
+  file: File,
+  options?: NewProjectCreationOptions,
+) => {
   const newProjectId = `proj_${Date.now()}`;
   const projectName = file.name.split('.').slice(0, -1).join('.') || 'New Project';
   const mediaKind = getMediaFileKind(file);
 
   if (mediaKind === 'image') {
     const { width, height } = await readImageDimensions(file);
+    const mediaColorManagement = await getImportedImageColorManagement(file);
     const assetId = await saveAsset(file);
     const mediaNode = createMediaSourceNode({
       name: file.name,
@@ -164,12 +190,22 @@ export const createNewProjectService = async (set: SetState, _get: GetState, fil
       mediaKind: 'image',
       width,
       height,
-      colorSpace: getImportedImageColorSpace(file),
+      colorSpace: getMediaSourceColorSpace(mediaColorManagement),
+      mediaColorManagement,
     });
     const newSceneNode = createSceneNode({ width, height });
-    setupNewProject(set, newProjectId, projectName, [newSceneNode, mediaNode], mediaNode.id, 0);
+    setupNewProject(
+      set,
+      newProjectId,
+      projectName,
+      [newSceneNode, mediaNode],
+      mediaNode.id,
+      0,
+      options,
+    );
   } else if (mediaKind === 'video') {
-    const { width, height, duration } = await readVideoMetadata(file);
+    const { width, height, duration, color } = await readVideoMetadata(file);
+    const mediaColorManagement = createBrowserDecodedVideoColorManagement();
     const assetId = await saveAsset(file);
     const fps = 30;
     const totalFrames = Math.floor(duration * fps);
@@ -187,6 +223,9 @@ export const createNewProjectService = async (set: SetState, _get: GetState, fil
       width,
       height,
       duration,
+      videoColorMetadata: color,
+      colorSpace: getMediaSourceColorSpace(mediaColorManagement),
+      mediaColorManagement,
     });
     setupNewProject(
       set,
@@ -195,6 +234,7 @@ export const createNewProjectService = async (set: SetState, _get: GetState, fil
       [newSceneNode, mediaNode],
       mediaNode.id,
       totalFrames,
+      options,
     );
   }
 };
@@ -203,12 +243,14 @@ export const createNewProjectFromFilesService = async (
   set: SetState,
   _get: GetState,
   files: File[],
+  options?: NewProjectCreationOptions,
 ) => {
   const imageEntries = buildImageEntriesFromFiles(files);
   if (imageEntries.length === 0) return;
 
   const firstEntry = imageEntries[0];
   const { width, height } = await readImageDimensions(firstEntry.file);
+  const mediaColorManagement = await getImportedImageColorManagement(firstEntry.file);
   const assetIds = await persistSequenceAssets(imageEntries, 'copy');
 
   const newProjectId = `proj_${Date.now()}`;
@@ -220,7 +262,8 @@ export const createNewProjectFromFilesService = async (
     frames: assetIds,
     width,
     height,
-    colorSpace: getImportedImageColorSpace(firstEntry.file),
+    colorSpace: getMediaSourceColorSpace(mediaColorManagement),
+    mediaColorManagement,
   });
 
   setupNewProject(
@@ -230,6 +273,7 @@ export const createNewProjectFromFilesService = async (
     [newSceneNode, sequenceNode],
     sequenceNode.id,
     assetIds.length - 1,
+    options,
   );
 };
 
@@ -238,12 +282,14 @@ export const createNewProjectFromDirectoryService = async (
   _get: GetState,
   directoryHandle: FileSystemDirectoryHandle,
   importMode: SequenceImportMode = 'copy',
+  options?: NewProjectCreationOptions,
 ) => {
   const imageEntries = await collectImageEntriesFromDirectoryHandle(directoryHandle);
   if (imageEntries.length === 0) return;
 
   const firstEntry = imageEntries[0];
   const { width, height } = await readImageDimensions(firstEntry.file);
+  const mediaColorManagement = await getImportedImageColorManagement(firstEntry.file);
   const assetIds = await persistSequenceAssets(imageEntries, importMode, directoryHandle);
 
   const newProjectId = `proj_${Date.now()}`;
@@ -255,7 +301,8 @@ export const createNewProjectFromDirectoryService = async (
     frames: assetIds,
     width,
     height,
-    colorSpace: getImportedImageColorSpace(firstEntry.file),
+    colorSpace: getMediaSourceColorSpace(mediaColorManagement),
+    mediaColorManagement,
   });
 
   setupNewProject(
@@ -265,6 +312,7 @@ export const createNewProjectFromDirectoryService = async (
     [newSceneNode, sequenceNode],
     sequenceNode.id,
     assetIds.length - 1,
+    options,
   );
 };
 
@@ -274,11 +322,12 @@ export const createNewProjectFromDimensionsService = (
   name: string,
   width: number,
   height: number,
+  options?: NewProjectCreationOptions,
 ) => {
   const newProjectId = `proj_${Date.now()}`;
   const newSceneNode = createSceneNode({ width, height, maxFrames: 120 });
   const newNodes: AnyNode[] = [newSceneNode];
-  setupNewProject(set, newProjectId, name, newNodes, newSceneNode.id, 120);
+  setupNewProject(set, newProjectId, name, newNodes, newSceneNode.id, 120, options);
 };
 
 // ---------------------------------------------------------------------------
@@ -370,6 +419,7 @@ export const loadProjectService = async (
     projectState: StoredProjectState;
     branches: ProjectBranchRecord[];
   }) => Promise<void>,
+  target: ProjectOpenTarget = {},
 ) => {
   const currentProjectId = get().projectId;
   if (currentProjectId && currentProjectId !== projectId) {
@@ -377,22 +427,61 @@ export const loadProjectService = async (
   }
 
   const branchIndex = ensureProjectBranches(projectId);
-  let branchId = branchIndex.activeBranchId;
+  const requestedBranch = target.branchId
+    ? branchIndex.branches.find((branch) => branch.id === target.branchId)
+    : null;
+  if (target.branchId && !requestedBranch) {
+    throw new Error('The selected project branch no longer exists.');
+  }
+
+  let branchId = requestedBranch?.id ?? branchIndex.activeBranchId;
   let projectState = await loadProjectState(getProjectBranchStorageId(projectId, branchId));
 
-  if (!projectState && branchId !== 'main') {
+  if (!projectState && !target.branchId && branchId !== 'main') {
     branchId = 'main';
-    setActiveProjectBranchId(projectId, branchId);
     projectState = await loadProjectState(projectId);
   }
 
-  if (!projectState) return;
+  if (!projectState) {
+    if (!target.branchId && !target.historyEntryId) return;
+    throw new Error('The selected project version could not be loaded.');
+  }
+
+  if (target.historyEntryId) {
+    const sourceBranchId = branchId;
+    const historyEntry = projectState.history?.find((entry) => entry.id === target.historyEntryId);
+    const restoredState = restorePersistedProjectHistoryEntry(projectState, target.historyEntryId, {
+      truncateFutureHistory: target.createRecoveryBranch,
+    });
+    if (!restoredState || !historyEntry) {
+      throw new Error('The selected history version is no longer available.');
+    }
+    projectState = restoredState;
+
+    if (target.createRecoveryBranch) {
+      const branch = createProjectBranchRecord({
+        projectId,
+        name: createScopedProjectBranchName(
+          'recovery',
+          historyEntry.checkpointLabel || historyEntry.label,
+          'version',
+        ),
+        kind: 'user',
+        parentBranchId: sourceBranchId,
+      });
+      await saveProject(getProjectBranchStorageId(projectId, branch.id), projectState);
+      upsertProjectBranch(projectId, branch);
+      branchId = branch.id;
+    }
+  }
+
+  const activeBranchIndex = setActiveProjectBranchId(projectId, branchId);
 
   await loadProjectStateIntoEditor({
     projectId,
     branchId,
     projectState,
-    branches: getProjectBranches(projectId),
+    branches: activeBranchIndex.branches,
   });
 };
 

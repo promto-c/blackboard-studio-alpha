@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import type { ComfyNode, ComfyWorkflow, FieldBinding, SceneNode } from '@blackboard/types';
 import { NodeType } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
-import { CollapsibleSection } from '@blackboard/ui';
+import { Badge, CollapsibleSection } from '@blackboard/ui';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import {
   COMFY_ROOT_BINDING_FIELDS,
@@ -87,15 +87,13 @@ export function ComfyRootSizeBindingsSection({
       action={
         selectedWorkflow ? (
           <div className="flex items-center gap-1.5">
-            <span
-              className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
-                boundCount > 0
-                  ? 'border-primary-300/25 bg-primary-300/10 text-primary-100'
-                  : 'border-white/10 bg-gray-900/70 text-gray-500'
-              }`}
+            <Badge
+              size="sm"
+              variant={boundCount > 0 ? 'accent' : 'neutral'}
+              className={boundCount > 0 ? '' : '!border-white/10 !bg-gray-900/70 !text-gray-500'}
             >
               {boundCount}/2
-            </span>
+            </Badge>
             {canAutoBind ? (
               <button
                 type="button"

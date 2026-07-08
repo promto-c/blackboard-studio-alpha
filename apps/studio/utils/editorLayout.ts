@@ -35,11 +35,7 @@ const clampFiniteNumber = (value: unknown, fallback: number, min: number, max: n
   return Math.min(max, Math.max(min, numericValue));
 };
 
-const clampEditor = (value: unknown, config: { DEFAULT: number; MIN: number; MAX: number }) =>
-  clampFiniteNumber(value, config.DEFAULT, config.MIN, config.MAX);
-
-export const clampEditorPanelWidth = (v: unknown) => clampEditor(v, EditorPanelWidth);
-export const clampEditorTimelineHeight = (v: unknown) => clampEditor(v, EditorTimelineHeight);
-export const clampEditorSubPanelWidth = (v: unknown) => clampEditor(v, EditorSubPanelWidth);
-export const clampEditorSubPanelHeight = (v: unknown) => clampEditor(v, EditorSubPanelHeight);
-export const clampEditorItemsPanelPercent = (v: unknown) => clampEditor(v, EditorItemsPanelPercent);
+export const clampEditor = (
+  value: unknown,
+  config: { DEFAULT: number; MIN: number; MAX: number },
+) => clampFiniteNumber(value, config.DEFAULT, config.MIN, config.MAX);

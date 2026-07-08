@@ -1,6 +1,12 @@
 import { NodeType, type Scene3DNode } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
+import { isPromiseLike } from '@blackboard/renderer';
 import type { NodeDefinition } from '@/nodes/NodeDefinition';
+import {
+  prepareScene3DProjectionAssets,
+  renderScene3DToTarget,
+  renderScene3DToTargetAsync,
+} from '@/renderer/scene3dRenderer';
 import Scene3DAdjustments from './Scene3DAdjustments';
 import Scene3DItemsPanel from './Scene3DItemsPanel';
 import Scene3DToolButton from './Scene3DToolButton';
@@ -9,9 +15,11 @@ import { createDefaultScene3DSettings, normalizeScene3DSettings } from './scene3
 export const scene3DNode: NodeDefinition = {
   type: NodeType.SCENE_3D,
   name: 'Scene 3D',
-  description: 'Build and preview a 3D scene using the current 2D canvas as an output plane.',
+  description: 'Build and render a 3D scene using the current 2D canvas as an output plane.',
   category: 'Utility',
   renderMode: 'utility',
+  renderOutputContract: 'pipeline',
+  processingDomain: 'scene_linear',
   IconComponent: Icons.CubeTransparent,
   ToolComponent: Scene3DToolButton,
   AdjustmentComponent: Scene3DAdjustments,
@@ -21,13 +29,22 @@ export const scene3DNode: NodeDefinition = {
       name: 'backdrop',
       label: 'Backdrop',
       type: 'texture',
+      processingDomain: 'scene_linear',
       required: false,
       description:
         'Texture rendered onto the 3D output plane. When disconnected, the plane is empty.',
     },
   ],
+  outputPorts: [
+    {
+      name: 'output',
+      label: 'Output',
+      processingDomain: 'scene_linear',
+      description: 'Scene-linear 3D render for compositing and display/view output.',
+    },
+  ],
   flags: {
-    isRenderable: false,
+    isRenderable: true,
     isDraggable: true,
   },
   getInitialNodeProps: () => ({
@@ -40,6 +57,40 @@ export const scene3DNode: NodeDefinition = {
         .map((item) => item.asset?.assetId)
         .filter((assetId): assetId is string => Boolean(assetId)),
     checkFrameReady: () => true,
+  },
+  renderOutput: (node, target, _inputTexture, context) => {
+    const scene3D = node as Scene3DNode;
+    const backdropNodeId = scene3D.inputs?.backdrop;
+    const backdropResult = backdropNodeId
+      ? context.resolveOutput(backdropNodeId, context.getInputSourcePort(scene3D, 'backdrop'))
+      : undefined;
+
+    const render = (backdropTexture: typeof _inputTexture) => {
+      const renderOptions = {
+        renderer: context.renderer,
+        target,
+        node: scene3D,
+        sceneNode: context.sceneNode,
+        backdropTexture,
+        transformColorPickingToSceneLinear: context.transformColorPickingToSceneLinear,
+        clearRenderTargetTransparent: context.clearRenderTargetTransparent,
+      };
+
+      if (context.executionMode !== 'async') {
+        return renderScene3DToTarget(renderOptions);
+      }
+
+      return prepareScene3DProjectionAssets({
+        renderer: context.renderer,
+        node: scene3D,
+        sceneNode: context.sceneNode,
+        transformColorPickingToSceneLinear: context.transformColorPickingToSceneLinear,
+      }).then(() => renderScene3DToTargetAsync(renderOptions));
+    };
+
+    return backdropResult && isPromiseLike(backdropResult)
+      ? backdropResult.then(render)
+      : render(backdropResult);
   },
   onNodeUpdate: (node, changes, context) => {
     const sceneNode = context.sceneNode as { width?: number; height?: number } | undefined;

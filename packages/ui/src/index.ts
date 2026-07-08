@@ -1,6 +1,7 @@
 // @blackboard/ui — Shared UI components and icons
 
 // --- Components ---
+export { Badge, type BadgeProps } from './Badge';
 export { default as CodeBlock, type CodeBlockProps } from './CodeBlock';
 export { default as CollapsibleSection } from './CollapsibleSection';
 export { default as ColorPicker } from './ColorPicker';
@@ -29,6 +30,8 @@ export { Spinner, type SpinnerProps } from './Spinner';
 export { default as Slider, type SliderProps } from './Slider';
 export { default as SplitterHandle, type SplitterHandleProps } from './SplitterHandle';
 export { default as StyledDropdown } from './StyledDropdown';
+export { SplitControl, SplitControlAction } from './SplitControl';
+export type { SplitControlActionProps, SplitControlProps } from './SplitControl';
 export { default as TextInputField, type TextInputFieldProps } from './TextInputField';
 export { default as ToggleButton, type ToggleButtonProps } from './ToggleButton';
 export { default as ToggleSwitch, type ToggleSwitchProps } from './ToggleSwitch';

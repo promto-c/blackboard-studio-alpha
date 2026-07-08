@@ -1,6 +1,11 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import type { Pan, SceneNode } from '@blackboard/types';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
+import {
+  advanceAdaptiveAnimationClock,
+  createAdaptiveAnimationClock,
+  getTimeCorrectedSmoothing,
+} from '@/utils/adaptiveAnimation';
 import { useViewportLayoutInsets } from './useViewportLayoutInsets';
 import { calculatePivotedViewportPan, calculateViewportFitTarget } from './viewportFit';
 
@@ -9,7 +14,17 @@ const MAX_VIEWPORT_ZOOM = 16;
 const WHEEL_ZOOM_FACTOR = 1.1;
 const VIEWPORT_ANIMATION_SMOOTHING = 0.2;
 const VIEWPORT_ZOOM_EPSILON = 0.001;
-const VIEWPORT_PAN_EPSILON = 0.01;
+const VIEWPORT_PAN_EPSILON = 0.25;
+
+const isViewportTransformSettled = (
+  zoom: number,
+  pan: Pan,
+  targetZoom: number,
+  targetPan: Pan,
+): boolean =>
+  Math.abs(targetZoom - zoom) < VIEWPORT_ZOOM_EPSILON &&
+  Math.abs(targetPan.x - pan.x) < VIEWPORT_PAN_EPSILON &&
+  Math.abs(targetPan.y - pan.y) < VIEWPORT_PAN_EPSILON;
 
 interface UseViewportGesturesParams {
   sceneNode: SceneNode | undefined;
@@ -21,8 +36,10 @@ interface UseViewportGesturesParams {
   viewportSize: { width: number; height: number };
   viewportRef: React.RefObject<HTMLDivElement | null>;
   projectId: string;
-  setZoom: (zoom: number) => void;
-  setPan: (pan: Pan) => void;
+  setViewportTransform: (
+    transform: { zoom: number; pan: Pan },
+    options?: { syncAnimationTarget?: boolean },
+  ) => void;
   setAnimationTarget: (target: { zoom?: number; pan?: Pan }) => void;
 }
 
@@ -58,8 +75,7 @@ export function useViewportGestures({
   viewportSize,
   viewportRef,
   projectId,
-  setZoom,
-  setPan,
+  setViewportTransform,
   setAnimationTarget,
 }: UseViewportGesturesParams): UseViewportGesturesResult {
   // --- Middle mouse panning ---
@@ -73,6 +89,8 @@ export function useViewportGestures({
 
   // --- Zoom/pan animation ---
   const animationFrameRef = useRef<number | null>(null);
+  const animationTickRef = useRef<(timestamp: number) => void>(() => undefined);
+  const animationClockRef = useRef(createAdaptiveAnimationClock());
   const sceneNodeRef = useRef(sceneNode);
   const zoomRef = useRef(zoom);
   const panRef = useRef(pan);
@@ -89,62 +107,113 @@ export function useViewportGestures({
     targetPanRef.current = targetPan;
   }, [sceneNode, zoom, pan, targetZoom, targetPan]);
 
-  const animate = useCallback(() => {
-    const zoomDiff = targetZoom - zoom;
-    const panXDiff = targetPan.x - pan.x;
-    const panYDiff = targetPan.y - pan.y;
-
-    if (
-      Math.abs(zoomDiff) < VIEWPORT_ZOOM_EPSILON &&
-      Math.abs(panXDiff) < VIEWPORT_PAN_EPSILON &&
-      Math.abs(panYDiff) < VIEWPORT_PAN_EPSILON
-    ) {
-      if (animationFrameRef.current) {
-        if (zoom !== targetZoom || pan.x !== targetPan.x || pan.y !== targetPan.y) {
-          setZoom(targetZoom);
-          setPan(targetPan);
-        }
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
+  const commitViewportTransform = useCallback(
+    (
+      nextZoom: number,
+      nextPan: Pan,
+      options?: {
+        syncAnimationTarget?: boolean;
+      },
+    ) => {
+      zoomRef.current = nextZoom;
+      panRef.current = nextPan;
+      if (options?.syncAnimationTarget) {
+        targetZoomRef.current = nextZoom;
+        targetPanRef.current = nextPan;
       }
-      return;
+      setViewportTransform(
+        { zoom: nextZoom, pan: nextPan },
+        { syncAnimationTarget: options?.syncAnimationTarget },
+      );
+    },
+    [setViewportTransform],
+  );
+
+  const stopAnimation = useCallback(() => {
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
     }
+    animationClockRef.current = createAdaptiveAnimationClock();
+  }, []);
 
-    const nextZoom = zoom + zoomDiff * VIEWPORT_ANIMATION_SMOOTHING;
-    const nextPan = {
-      x: pan.x + panXDiff * VIEWPORT_ANIMATION_SMOOTHING,
-      y: pan.y + panYDiff * VIEWPORT_ANIMATION_SMOOTHING,
+  const scheduleAnimation = useCallback(() => {
+    if (animationFrameRef.current !== null) return;
+    animationFrameRef.current = requestAnimationFrame((timestamp) => {
+      animationFrameRef.current = null;
+      animationTickRef.current(timestamp);
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    animationTickRef.current = (timestamp) => {
+      const currentZoom = zoomRef.current;
+      const currentPan = panRef.current;
+      const currentTargetZoom = targetZoomRef.current;
+      const currentTargetPan = targetPanRef.current;
+      const zoomDiff = currentTargetZoom - currentZoom;
+      const panXDiff = currentTargetPan.x - currentPan.x;
+      const panYDiff = currentTargetPan.y - currentPan.y;
+
+      if (
+        isViewportTransformSettled(currentZoom, currentPan, currentTargetZoom, currentTargetPan)
+      ) {
+        if (
+          currentZoom !== currentTargetZoom ||
+          currentPan.x !== currentTargetPan.x ||
+          currentPan.y !== currentTargetPan.y
+        ) {
+          commitViewportTransform(currentTargetZoom, currentTargetPan);
+        }
+        animationClockRef.current = createAdaptiveAnimationClock();
+        return;
+      }
+
+      const frame = advanceAdaptiveAnimationClock(animationClockRef.current, timestamp);
+      animationClockRef.current = frame.clock;
+      if (!frame.shouldUpdate) {
+        scheduleAnimation();
+        return;
+      }
+
+      const smoothing = getTimeCorrectedSmoothing(VIEWPORT_ANIMATION_SMOOTHING, frame.elapsedMs);
+      const nextZoom = currentZoom + zoomDiff * smoothing;
+      const nextPan = {
+        x: currentPan.x + panXDiff * smoothing,
+        y: currentPan.y + panYDiff * smoothing,
+      };
+      if (isViewportTransformSettled(nextZoom, nextPan, currentTargetZoom, currentTargetPan)) {
+        commitViewportTransform(currentTargetZoom, currentTargetPan);
+        animationClockRef.current = createAdaptiveAnimationClock();
+        return;
+      }
+
+      commitViewportTransform(nextZoom, nextPan);
+      scheduleAnimation();
     };
-
-    setZoom(nextZoom);
-    setPan(nextPan);
-
-    animationFrameRef.current = requestAnimationFrame(animate);
-  }, [pan, setPan, setZoom, targetPan, targetZoom, zoom]);
+  }, [commitViewportTransform, scheduleAnimation]);
 
   useEffect(() => {
     const isAnimating = zoom !== targetZoom || pan.x !== targetPan.x || pan.y !== targetPan.y;
     if (isAnimating && prefersReducedMotion) {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
-      setZoom(targetZoom);
-      setPan(targetPan);
+      stopAnimation();
+      commitViewportTransform(targetZoom, targetPan);
       return;
     }
 
-    if (isAnimating && !animationFrameRef.current) {
-      animationFrameRef.current = requestAnimationFrame(animate);
-    }
+    if (isAnimating) scheduleAnimation();
+  }, [
+    zoom,
+    pan,
+    targetZoom,
+    targetPan,
+    prefersReducedMotion,
+    commitViewportTransform,
+    scheduleAnimation,
+    stopAnimation,
+  ]);
 
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
-    };
-  }, [zoom, pan, targetZoom, targetPan, prefersReducedMotion, animate, setPan, setZoom]);
+  useEffect(() => stopAnimation, [stopAnimation]);
 
   // --- Pivoted pan calculation ---
   const calculatePivotedPan = useCallback(
@@ -271,23 +340,19 @@ export function useViewportGestures({
 
       e.preventDefault();
 
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
+      stopAnimation();
 
       const currentZoom = zoomRef.current;
       const currentPan = panRef.current;
       const currentTargetZoom = targetZoomRef.current;
       const currentTargetPan = targetPanRef.current;
 
-      if (currentZoom !== currentTargetZoom) {
-        zoomRef.current = currentTargetZoom;
-        setZoom(currentTargetZoom);
-      }
-      if (currentPan.x !== currentTargetPan.x || currentPan.y !== currentTargetPan.y) {
-        panRef.current = currentTargetPan;
-        setPan(currentTargetPan);
+      if (
+        currentZoom !== currentTargetZoom ||
+        currentPan.x !== currentTargetPan.x ||
+        currentPan.y !== currentTargetPan.y
+      ) {
+        commitViewportTransform(currentTargetZoom, currentTargetPan);
       }
 
       const t1 = e.touches[0];
@@ -334,13 +399,7 @@ export function useViewportGestures({
         };
         const nextPan = { x: panFromZoom.x + panDelta.x, y: panFromZoom.y - panDelta.y };
 
-        zoomRef.current = clampedZoom;
-        panRef.current = nextPan;
-        targetZoomRef.current = clampedZoom;
-        targetPanRef.current = nextPan;
-        setZoom(clampedZoom);
-        setPan(nextPan);
-        setAnimationTarget({ zoom: clampedZoom, pan: nextPan });
+        commitViewportTransform(clampedZoom, nextPan, { syncAnimationTarget: true });
       }
     };
 
@@ -367,7 +426,14 @@ export function useViewportGestures({
       element.removeEventListener('touchend', handleTouchEnd);
       element.removeEventListener('touchcancel', handleTouchCancel);
     };
-  }, [viewportRef, calculatePivotedPan, enableGestures, setAnimationTarget, setPan, setZoom]);
+  }, [
+    viewportRef,
+    calculatePivotedPan,
+    commitViewportTransform,
+    enableGestures,
+    setAnimationTarget,
+    stopAnimation,
+  ]);
 
   // --- Middle-mouse panning ---
   const startPan = useCallback(
@@ -379,12 +445,10 @@ export function useViewportGestures({
       // Ctrl+middle-mouse is handled by scrubbing, not panning
       if (e.ctrlKey) return false;
 
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
+      stopAnimation();
+      if (zoom !== targetZoom || pan.x !== targetPan.x || pan.y !== targetPan.y) {
+        commitViewportTransform(targetZoom, targetPan);
       }
-      if (zoom !== targetZoom) setZoom(targetZoom);
-      if (pan.x !== targetPan.x || pan.y !== targetPan.y) setPan(targetPan);
       setIsMousePanning(true);
       panStartRef.current = {
         startX: e.clientX,
@@ -394,7 +458,16 @@ export function useViewportGestures({
       };
       return true;
     },
-    [enableGestures, sceneNode, zoom, targetZoom, pan, targetPan, setZoom, setPan],
+    [
+      commitViewportTransform,
+      enableGestures,
+      pan,
+      sceneNode,
+      stopAnimation,
+      targetPan,
+      targetZoom,
+      zoom,
+    ],
   );
 
   useEffect(() => {
@@ -404,8 +477,7 @@ export function useViewportGestures({
       const dx = e.clientX - panStartRef.current.startX,
         dy = e.clientY - panStartRef.current.startY;
       const newPan = { x: panStartRef.current.panX + dx, y: panStartRef.current.panY - dy };
-      setPan(newPan);
-      setAnimationTarget({ pan: newPan });
+      commitViewportTransform(zoomRef.current, newPan, { syncAnimationTarget: true });
     };
     const handleMouseUp = () => {
       setIsMousePanning(false);
@@ -417,7 +489,7 @@ export function useViewportGestures({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isMousePanning, setPan, setAnimationTarget]);
+  }, [commitViewportTransform, isMousePanning]);
 
   return {
     isMousePanning,

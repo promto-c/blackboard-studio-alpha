@@ -93,8 +93,11 @@ export function createUniformGetter(
       if (uniformData.ui === UniformUIType.SLIDER) {
         uniforms[key] = { value: getValueAtFrame(uniformData.value, context.frame) };
       } else if (uniformData.ui === UniformUIType.COLOR) {
+        const color = context.transformColorPickingToSceneLinear(
+          uniformData.value as [number, number, number],
+        );
         uniforms[key] = {
-          value: new THREE.Color(...(uniformData.value as [number, number, number])),
+          value: new THREE.Color(...color),
         };
       } else {
         uniforms[key] = { value: uniformData.value };
@@ -185,6 +188,7 @@ export function createShaderNodeDefinition(
     name,
     category,
     renderMode: 'shader',
+    processingDomain: 'scene_linear',
     description,
     IconComponent,
     ToolComponent,

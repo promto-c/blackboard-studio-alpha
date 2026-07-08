@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react';
 import * as THREE from 'three';
 import type { SceneNode } from '@blackboard/types';
+import { readRenderTargetPixelRgbaFloat } from '@blackboard/renderer';
 
 export type ViewportPixelInfo = {
   x: number;
@@ -51,9 +52,6 @@ export const useViewportPixelInspector = ({
   pixelInfo: _pixelInfo,
   setPixelInfo,
 }: UseViewportPixelInspectorOptions) => {
-  const pixelReadBuffer8Ref = useRef(new Uint8Array(4));
-  const pixelReadBuffer16Ref = useRef(new Uint16Array(4));
-  const pixelReadBuffer32Ref = useRef(new Float32Array(4));
   const pixelInfoRef = useRef<ViewportPixelInfo | null>(_pixelInfo);
   const mouseScenePosRef = useRef(mouseScenePos);
   const isPlayingRef = useRef(isPlaying);
@@ -90,28 +88,7 @@ export const useViewportPixelInspector = ({
       y: number,
     ): [number, number, number, number] => {
       if (!gl) return [0, 0, 0, 0];
-      const textureType = renderTarget.texture.type;
-
-      if (textureType === THREE.FloatType) {
-        const buffer = pixelReadBuffer32Ref.current;
-        gl.readRenderTargetPixels(renderTarget, x, y, 1, 1, buffer);
-        return [buffer[0], buffer[1], buffer[2], buffer[3]];
-      }
-
-      if (textureType === THREE.HalfFloatType) {
-        const buffer = pixelReadBuffer16Ref.current;
-        gl.readRenderTargetPixels(renderTarget, x, y, 1, 1, buffer);
-        return [
-          THREE.DataUtils.fromHalfFloat(buffer[0]),
-          THREE.DataUtils.fromHalfFloat(buffer[1]),
-          THREE.DataUtils.fromHalfFloat(buffer[2]),
-          THREE.DataUtils.fromHalfFloat(buffer[3]),
-        ];
-      }
-
-      const buffer = pixelReadBuffer8Ref.current;
-      gl.readRenderTargetPixels(renderTarget, x, y, 1, 1, buffer);
-      return [buffer[0] / 255, buffer[1] / 255, buffer[2] / 255, buffer[3] / 255];
+      return readRenderTargetPixelRgbaFloat(gl, renderTarget, x, y);
     },
     [gl],
   );

@@ -1,3 +1,5 @@
+import { ACESCG_LUMINANCE_GLSL } from '@/color-management/effectColorMath';
+
 /*
  * Advanced Lens Bokeh
  */
@@ -45,6 +47,8 @@ out vec4 fragColor;
 #define PI 3.14159265359
 #define PI2 6.28318530718
 #define MAX_SAMPLES 128
+
+${ACESCG_LUMINANCE_GLSL}
 
 // --- SDF Shapes ---
 
@@ -96,15 +100,13 @@ float get_shape_sdf(vec2 p, int type, float r) {
     return sdCircle(p, r);
 }
 
-float get_luminance(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
-
 void main() {
     vec4 base = texture(u_tDiffuse, v_uv);
 
     // 1. Calculate Raw Depth
     float depth = 0.5;
     if (u_depthSource == 1) { // Luminance
-        depth = 1.0 - get_luminance(base.rgb);
+        depth = 1.0 - acescg_luminance(base.rgb);
     } else if (u_depthSource == 2) { // Radial
         depth = clamp(length(v_uv - 0.5) * 2.0, 0.0, 1.0);
     } else if (u_depthSource == 3) { // Linear H
@@ -112,7 +114,7 @@ void main() {
     } else if (u_depthSource == 4) { // Linear V
         depth = v_uv.y;
     } else if (u_depthSource == 5) { // External Node
-        depth = get_luminance(texture(u_tDepth, v_uv).rgb);
+        depth = acescg_luminance(texture(u_tDepth, v_uv).rgb);
     }
 
     // 2. Apply Depth Adjustments
@@ -199,7 +201,7 @@ void main() {
             col.g = texture(u_tDiffuse, sampleUV).g;
             col.b = texture(u_tDiffuse, sampleUV - chromaOffset).b;
             
-            float lum = get_luminance(col);
+            float lum = acescg_luminance(col);
             float boost = smoothstep(u_threshold, 1.0, lum) * u_gain;
             float weight = shapeFactor * (1.0 + boost);
             

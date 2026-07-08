@@ -16,13 +16,15 @@ import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useMediaSourceSelection } from '@/hooks/useMediaSourceSelection';
 import { usePreferences } from '@/state/preferencesContext';
 import { RotoTrackingDriftTolerance } from '@/state/preferences';
-import { ToggleButton } from '@blackboard/ui';
+import { Badge, ToggleButton } from '@blackboard/ui';
 import {
   MediaSourceSelect,
   Slider,
   SegmentedControl,
   ViewportToolPanel as Panel,
   ViewportToolPanelHeader as PanelHeader,
+  ViewportToolPanelSection as PanelSection,
+  ViewportToolPanelSectionStack as PanelSectionStack,
 } from '@/components';
 import { toggleTransformWithHierarchy } from '@/utils/transformHierarchy';
 import {
@@ -151,7 +153,7 @@ function TrackingSection({
   children: React.ReactNode;
 }) {
   return (
-    <section className="space-y-2 rounded-lg border border-white/10 bg-black/20 p-2.5">
+    <PanelSection className="space-y-2">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold uppercase text-gray-400">
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-white/[0.04] text-gray-300">
@@ -162,7 +164,7 @@ function TrackingSection({
         {meta}
       </div>
       {children}
-    </section>
+    </PanelSection>
   );
 }
 
@@ -173,21 +175,19 @@ function TrackingPill({
   children: React.ReactNode;
   tone?: 'neutral' | 'accent' | 'warning' | 'danger';
 }) {
-  const toneClassName =
+  const overrideClass =
     tone === 'accent'
-      ? 'border-primary-400/25 bg-primary-500/10 text-primary-100'
+      ? '!bg-primary-400/[0.12] !text-primary-100'
       : tone === 'warning'
-        ? 'border-amber-300/25 bg-amber-300/10 text-amber-100'
+        ? '!bg-amber-500/[0.14] !text-amber-200'
         : tone === 'danger'
-          ? 'border-red-300/25 bg-red-500/10 text-red-100'
-          : 'border-white/10 bg-white/[0.04] text-gray-300';
+          ? '!bg-red-400/[0.11] !text-red-100'
+          : '!bg-white/[0.055] !text-gray-300';
 
   return (
-    <span
-      className={`inline-flex min-w-0 max-w-full items-center rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase ${toneClassName}`}
-    >
-      <span className="truncate">{children}</span>
-    </span>
+    <Badge size="sm" uppercase variant={tone} className={`font-semibold ${overrideClass}`}>
+      {children}
+    </Badge>
   );
 }
 
@@ -332,12 +332,8 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
   }, [effectiveTarget, node.paths, selectedLayer, selectedPath, trackingScope.sourcePathIds]);
   const canTrack =
     !!sourceId && !!effectiveTarget && trackingScope.sourcePathIds.length > 0 && !isTracking;
-  const targetLabel =
-    effectiveTarget?.kind === 'layer'
-      ? isPendingRotoTrackingLayerTarget(effectiveTarget)
-        ? `${effectiveTarget.layerName} (new)`
-        : (selectedLayer?.name ?? 'Layer')
-      : (selectedPath?.name ?? 'Shape');
+  const sourceShapeCount = trackingScope.sourcePathIds.length;
+  const sourceShapeLabel = `${sourceShapeCount} shape${sourceShapeCount === 1 ? '' : 's'}`;
 
   useEffect(() => {
     setTargetKind(trackingScope.defaultTarget?.kind ?? 'shape');
@@ -409,55 +405,63 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
   return (
     <Panel>
       <PanelHeader title="Track" onClose={onClose} />
-      <div className="space-y-2.5">
-        <TrackingSection
-          title="Source"
-          icon={<Icons.Photo className="h-3.5 w-3.5" />}
-          meta={
-            <TrackingPill tone={sourceId ? 'accent' : 'warning'}>
-              {sourceId ? 'Ready' : 'Missing'}
-            </TrackingPill>
-          }
-        >
-          <MediaSourceSelect value={sourceId} options={availableSources} onChange={setSourceId} />
-        </TrackingSection>
+      <PanelSectionStack>
+        <TrackingSection title="Setup" icon={<Icons.Link className="h-3.5 w-3.5" />}>
+          <div className="space-y-3">
+            <MediaSourceSelect value={sourceId} options={availableSources} onChange={setSourceId} />
 
-        <TrackingSection
-          title="Target"
-          icon={<Icons.Transform className="h-3.5 w-3.5" />}
-          meta={
-            <TrackingPill tone={effectiveTarget ? 'accent' : 'warning'}>{targetLabel}</TrackingPill>
-          }
-        >
-          <div className="space-y-2">
-            {trackingScope.availableTargets.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <span className="truncate text-[10px] font-medium text-gray-400">Target</span>
+                <TrackingPill tone={effectiveTarget && sourceShapeCount > 0 ? 'accent' : 'warning'}>
+                  {sourceShapeLabel}
+                </TrackingPill>
+              </div>
+
               <SegmentedControl
                 value={targetKind}
-                options={trackingScope.availableTargets.map((kind) => ({
-                  value: kind,
-                  label: kind === 'layer' ? 'Layer' : 'Shape',
-                }))}
+                options={[
+                  {
+                    value: 'shape',
+                    label: 'Shape',
+                    disabled: !trackingScope.availableTargets.includes('shape'),
+                    title: !trackingScope.availableTargets.includes('shape')
+                      ? 'Shape target is unavailable for the current selection'
+                      : undefined,
+                  },
+                  {
+                    value: 'layer',
+                    label: 'Layer',
+                    disabled: !trackingScope.availableTargets.includes('layer'),
+                    title: !trackingScope.availableTargets.includes('layer')
+                      ? 'Layer target is unavailable for the current selection'
+                      : undefined,
+                  },
+                ]}
                 onChange={(value) => setTargetKind(value as 'shape' | 'layer')}
               />
-            )}
 
-            <div className="flex flex-wrap gap-1">
-              <TrackingPill>
-                {trackingScope.sourcePathIds.length} shape
-                {trackingScope.sourcePathIds.length === 1 ? '' : 's'}
-              </TrackingPill>
-              {effectiveTarget?.kind === 'layer' &&
-                isPendingRotoTrackingLayerTarget(effectiveTarget) && (
-                  <TrackingPill tone="warning">New layer</TrackingPill>
-                )}
-              {hasTrackingData && <TrackingPill tone="accent">Tracked</TrackingPill>}
+              {(effectiveTarget?.kind === 'layer' &&
+                isPendingRotoTrackingLayerTarget(effectiveTarget)) ||
+              hasTrackingData ? (
+                <div className="flex flex-wrap gap-1">
+                  {effectiveTarget?.kind === 'layer' &&
+                    isPendingRotoTrackingLayerTarget(effectiveTarget) && (
+                      <TrackingPill tone="warning">New layer</TrackingPill>
+                    )}
+                  {hasTrackingData && <TrackingPill tone="accent">Tracked</TrackingPill>}
+                </div>
+              ) : null}
+
+              {trackingScope.reason && (
+                <div
+                  role="status"
+                  className="rounded-md bg-amber-600/[0.14] px-2 py-1.5 text-[10px] leading-4 text-amber-200/90"
+                >
+                  {trackingScope.reason}
+                </div>
+              )}
             </div>
-
-            {trackingScope.reason && (
-              <div className="rounded border border-amber-800/60 bg-amber-950/30 px-2 py-1.5 text-[10px] text-amber-200">
-                {trackingScope.reason}
-              </div>
-            )}
           </div>
         </TrackingSection>
 
@@ -831,7 +835,7 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
             )}
           </div>
         </TrackingSection>
-      </div>
+      </PanelSectionStack>
     </Panel>
   );
 }

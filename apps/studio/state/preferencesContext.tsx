@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, ReactNode, useCallback, useMemo } from 'react';
-import { colors, applyTheme, applyUiStyle } from '@/utils/colors';
+import { colors, applyComponentStyle, applyTheme, applyUiStyle } from '@/utils/colors';
 import { loadPreferences, savePreferencesToStorage, type Preferences } from '@/state/preferences';
 
 interface PreferencesContextType extends Preferences {
@@ -32,6 +32,10 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
       if (prefs.uiStyle && prefs.uiStyle !== currentPrefs.uiStyle) {
         applyUiStyle(prefs.uiStyle);
+      }
+
+      if (prefs.componentStyle && prefs.componentStyle !== currentPrefs.componentStyle) {
+        applyComponentStyle(prefs.componentStyle);
       }
 
       return newPrefs;

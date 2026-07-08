@@ -11,9 +11,7 @@ import {
   getCachedOnnxModelOutputMetadata,
   loadOnnxModelIoMetadataCached,
 } from '@/services/onnx/onnxMetadataCache';
-
-const getErrorMessage = (error: unknown, fallback: string): string =>
-  error instanceof Error ? error.message : fallback;
+import { getErrorMessage } from '@/utils/guards';
 
 export const useOnnxModelMetadata = (
   selectedModel: InstalledOnnxModel | null,

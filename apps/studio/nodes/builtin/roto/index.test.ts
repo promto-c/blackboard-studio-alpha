@@ -1,11 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@google/genai', () => ({
-  GoogleGenAI: vi.fn(),
-  Modality: {},
-  Type: {},
-}));
-
 vi.mock('./RotoAdjustments', () => ({ default: {} }));
 vi.mock('./RotoItemsPanel', () => ({ default: {} }));
 vi.mock('./RotoTool', () => ({ RotoTool: {} }));

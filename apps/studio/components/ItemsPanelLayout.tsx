@@ -3,6 +3,7 @@ import {
   handleStandardClipboardHotkeyEvent,
   type StandardClipboardHandlers,
 } from '@/utils/standardClipboardHotkeys';
+import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 
 interface ItemsPanelLayoutProps {
   title: string;
@@ -13,6 +14,7 @@ interface ItemsPanelLayoutProps {
   children: React.ReactNode;
   onDeleteSelected?: () => void;
   onSelectAll?: () => void;
+  onBackgroundClick?: () => void;
   clipboardHotkeys?: StandardClipboardHandlers;
 }
 
@@ -33,6 +35,7 @@ export function ItemsPanelLayout({
   children,
   onDeleteSelected,
   onSelectAll,
+  onBackgroundClick,
   clipboardHotkeys,
 }: ItemsPanelLayoutProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -65,6 +68,20 @@ export function ItemsPanelLayout({
     rootRef.current?.focus({ preventScroll: true });
   }, []);
 
+  const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
+  const { setHierarchySelection } = useEditorActions();
+
+  const handleClick = (event: React.MouseEvent) => {
+    const target = event.target as HTMLElement;
+    if (target.closest('button, a, input, [role="button"], [data-tree-row]')) return;
+
+    if (onBackgroundClick) {
+      onBackgroundClick();
+    } else if (selectedNodeId) {
+      setHierarchySelection(selectedNodeId, [], []);
+    }
+  };
+
   return (
     <div
       ref={rootRef}
@@ -72,6 +89,7 @@ export function ItemsPanelLayout({
       tabIndex={-1}
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
+      onClick={handleClick}
     >
       <div className="flex items-center justify-between gap-2 border-b border-white/10 px-2 py-1.5">
         <div className="min-w-0">

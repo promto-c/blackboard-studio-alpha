@@ -17,6 +17,12 @@ import {
 } from './comfyOutputLayers';
 import { createSourceTransformUpdate, sourceMediaNodeFlags } from '../../sourceNodeBehavior';
 import { isComfy3DGeneratedOutput } from './comfyOutputActivation';
+import {
+  ColorManagementDefaults,
+  createProjectDefaultMediaColorManagement,
+  getMediaSourceColorSpace,
+  isDataMediaColorManagement,
+} from '@/color-management';
 
 const getComfyNodeAssetIds = (node: ComfyNode): string[] =>
   Array.from(
@@ -82,6 +88,7 @@ export const comfyNode: NodeDefinition = {
   name: 'Comfy',
   category: 'Image',
   renderMode: 'media',
+  processingDomain: 'scene_linear',
   description: 'Run ComfyUI workflows and bring image, video, mesh, or splat outputs into Studio.',
   IconComponent: Icons.ComputerDesktop,
   ToolComponent: ComfyTool,
@@ -133,8 +140,10 @@ export const comfyNode: NodeDefinition = {
     opacity: 100,
     operator: BlendMode.OVER,
     transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
-    colorSpace: 'sRGB Encoded Rec.709 (sRGB)',
+    colorSpace: ColorManagementDefaults.TEXTURE_SPACE,
+    mediaColorManagement: createProjectDefaultMediaColorManagement(),
     useOutputSizeAsScene: false,
+    hiddenInputPortIds: [],
     lastPromptId: undefined,
     lastRunAt: undefined,
     lastError: undefined,
@@ -183,6 +192,14 @@ export const comfyNode: NodeDefinition = {
     },
     checkFrameReady: (node, frame, caches) => {
       const comfyNode = node as ComfyNode;
+      const hiddenPortIds = new Set(comfyNode.hiddenInputPortIds ?? []);
+      const visibleInputImages = Object.entries(comfyNode.workflowInputImages ?? {}).filter(
+        ([portName]) => !hiddenPortIds.has(portName),
+      );
+      if (!visibleInputImages.every(([, img]) => caches.imageCache.has(img.assetId))) {
+        return false;
+      }
+
       const hasGeneratedOutputs = (comfyNode.generatedOutputs ?? []).some(
         (output) => !output.deletedAt,
       );
@@ -249,9 +266,26 @@ export const comfyNode: NodeDefinition = {
       return comfyNode.src || '';
     },
     isVideoFile: (node) => getComfyMediaKind(node as ComfyNode) === 'video',
-    getColorSpace: (node) => (node as ComfyNode).colorSpace,
+    getColorSpace: (node) => {
+      const comfyNode = node as ComfyNode;
+      const activeOutput = getActiveGeneratedOutput(comfyNode);
+      return (
+        getMediaSourceColorSpace(activeOutput?.mediaColorManagement) ??
+        activeOutput?.colorSpace ??
+        getMediaSourceColorSpace(comfyNode.mediaColorManagement) ??
+        comfyNode.colorSpace
+      );
+    },
+    isData: (node) => {
+      const comfyNode = node as ComfyNode;
+      const activeOutput = getActiveGeneratedOutput(comfyNode);
+      return (
+        isDataMediaColorManagement(activeOutput?.mediaColorManagement) ||
+        (!activeOutput && isDataMediaColorManagement(comfyNode.mediaColorManagement))
+      );
+    },
     getCompositeLayers: (node, frame, context) =>
-      getComfyCompositeLayers(node as ComfyNode, frame, context.sceneNode),
+      getComfyCompositeLayers(node as ComfyNode, frame, context.sceneNode, context.nodes),
   },
   ViewportOverlayDirectComponent: ComfyCropSvgOverlay,
   ViewportHtmlOverlayComponent: ComfyCropPromptOverlay,

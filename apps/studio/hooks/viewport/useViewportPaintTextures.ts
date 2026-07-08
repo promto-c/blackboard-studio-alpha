@@ -1,29 +1,39 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { NodeType, type AnyNode, type PaintNode, type SceneNode } from '@blackboard/types';
+import { configureRawStraightAlphaTexture } from '@blackboard/renderer';
 import {
-  buildPaintAlphaCompositeCanvas,
-  buildPaintCompositeCanvas,
-  buildPaintStrokeCanvas,
-  cloneCanvas,
-  compositePaintRasterOntoCanvas,
-  resizeOrClearPaintCanvas,
+  NodeType,
+  type AnyNode,
+  type PaintNode,
+  type ProjectColorManagement,
+  type SceneNode,
+} from '@blackboard/types';
+import {
+  applyPaintStrokeToRaster,
+  buildPaintAlphaCompositeRaster,
+  buildPaintCompositeRaster,
+  clonePaintRaster,
+  createPaintRaster,
   type PaintLivePreview,
 } from '@/nodes/builtin/paint/paintRaster';
 import { withSharedPaintSnapshotRenderer } from '@/nodes/builtin/paint/paintSnapshotRenderer';
+import {
+  renderTargetToPaintCloneSource,
+  type PaintCloneSource,
+  type PaintRaster,
+} from '@/nodes/builtin/paint/paintFloatReadback';
 import { getPaintTextureCommittedState } from '@/nodes/builtin/paint/paintTextureKeys';
 import { renderWithSharedPipeline } from '@/renderer/pipeline';
-import { getCanvasStorageColorTypeForBitDepth } from '@/utils/canvasColorType';
 
 interface PaintTextureEntry {
-  colorTexture: THREE.CanvasTexture;
-  alphaTexture: THREE.CanvasTexture;
+  colorTexture: THREE.DataTexture;
+  alphaTexture: THREE.DataTexture;
   key: string;
   committedKey: string;
-  committedColorCanvas: HTMLCanvasElement | null;
-  committedAlphaCanvas: HTMLCanvasElement | null;
-  previewColorCanvas: HTMLCanvasElement | null;
-  previewAlphaCanvas: HTMLCanvasElement | null;
+  committedColorRaster: PaintRaster | null;
+  committedAlphaRaster: PaintRaster | null;
+  previewColorRaster: PaintRaster | null;
+  previewAlphaRaster: PaintRaster | null;
   preview: PaintLivePreview | null;
 }
 
@@ -31,16 +41,33 @@ interface UseViewportPaintTexturesOptions {
   nodes: AnyNode[];
   currentFrame: number;
   sceneNode: SceneNode | undefined;
+  projectColorManagement: ProjectColorManagement;
   livePreview?: PaintLivePreview | null;
   bumpMediaUpdate: () => void;
 }
 
-const configurePaintTexture = (texture: THREE.CanvasTexture) => {
+const createPaintTexture = (raster: PaintRaster): THREE.DataTexture => {
+  const texture = configureRawStraightAlphaTexture(
+    new THREE.DataTexture(
+      raster.rgba,
+      raster.width,
+      raster.height,
+      THREE.RGBAFormat,
+      THREE.FloatType,
+    ),
+  );
+  texture.flipY = true;
+  texture.unpackAlignment = 1;
+  return texture;
+};
+
+const updatePaintTexture = (texture: THREE.DataTexture, raster: PaintRaster) => {
+  texture.image = {
+    data: raster.rgba,
+    width: raster.width,
+    height: raster.height,
+  };
   texture.needsUpdate = true;
-  texture.colorSpace = THREE.NoColorSpace;
-  texture.minFilter = THREE.LinearFilter;
-  texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = false;
 };
 
 const removePaintTextureEntry = (
@@ -49,7 +76,6 @@ const removePaintTextureEntry = (
 ): boolean => {
   const existing = entries.get(nodeId);
   if (!existing) return false;
-
   existing.colorTexture.dispose();
   existing.alphaTexture.dispose();
   entries.delete(nodeId);
@@ -61,129 +87,104 @@ const upsertPaintTextureEntry = (
   nodeId: string,
   key: string,
   committedKey: string,
-  colorCanvas: HTMLCanvasElement,
-  alphaCanvas: HTMLCanvasElement,
-  committedColorCanvas: HTMLCanvasElement | null,
-  committedAlphaCanvas: HTMLCanvasElement | null,
-  previewColorCanvas: HTMLCanvasElement | null,
-  previewAlphaCanvas: HTMLCanvasElement | null,
+  colorRaster: PaintRaster,
+  alphaRaster: PaintRaster,
+  committedColorRaster: PaintRaster | null,
+  committedAlphaRaster: PaintRaster | null,
+  previewColorRaster: PaintRaster | null,
+  previewAlphaRaster: PaintRaster | null,
   preview: PaintLivePreview | null,
 ) => {
   const existing = entries.get(nodeId);
-  const colorTexture = existing?.colorTexture ?? new THREE.CanvasTexture(colorCanvas);
-  const alphaTexture = existing?.alphaTexture ?? new THREE.CanvasTexture(alphaCanvas);
-
-  colorTexture.image = colorCanvas;
-  alphaTexture.image = alphaCanvas;
-  configurePaintTexture(colorTexture);
-  configurePaintTexture(alphaTexture);
+  const colorTexture = existing?.colorTexture ?? createPaintTexture(colorRaster);
+  const alphaTexture = existing?.alphaTexture ?? createPaintTexture(alphaRaster);
+  if (existing) {
+    updatePaintTexture(colorTexture, colorRaster);
+    updatePaintTexture(alphaTexture, alphaRaster);
+  }
 
   entries.set(nodeId, {
     colorTexture,
     alphaTexture,
     key,
     committedKey,
-    committedColorCanvas,
-    committedAlphaCanvas,
-    previewColorCanvas,
-    previewAlphaCanvas,
+    committedColorRaster,
+    committedAlphaRaster,
+    previewColorRaster,
+    previewAlphaRaster,
     preview,
   });
 };
 
-const createBlankPaintCanvas = (
+const copyCommittedPaintRaster = (
+  committed: PaintRaster | null,
+  reusable: PaintRaster | null | undefined,
   width: number,
   height: number,
-  canvasColorType: ReturnType<typeof getCanvasStorageColorTypeForBitDepth>,
-  source?: HTMLCanvasElement | null,
-) => resizeOrClearPaintCanvas(source ?? null, width, height, canvasColorType);
-
-const copyCommittedPaintCanvas = (
-  committedCanvas: HTMLCanvasElement | null,
-  previewCanvas: HTMLCanvasElement | null | undefined,
-  width: number,
-  height: number,
-  canvasColorType: ReturnType<typeof getCanvasStorageColorTypeForBitDepth>,
-): HTMLCanvasElement => {
-  const nextCanvas = createBlankPaintCanvas(width, height, canvasColorType, previewCanvas ?? null);
-  const nextContext = nextCanvas.getContext('2d');
-  if (nextContext && committedCanvas) {
-    nextContext.drawImage(committedCanvas, 0, 0);
+): PaintRaster => {
+  const next =
+    reusable?.width === width && reusable.height === height
+      ? reusable
+      : createPaintRaster(width, height);
+  next.rgba.fill(0);
+  if (committed) {
+    next.rgba.set(committed.rgba);
   }
-  return nextCanvas;
+  return next;
 };
 
-const renderPaintLivePreviewCanvases = ({
-  committedColorCanvas,
-  committedAlphaCanvas,
+const renderPaintLivePreviewRasters = ({
+  committedColorRaster,
+  committedAlphaRaster,
   preview,
-  previewColorCanvas,
-  previewAlphaCanvas,
+  previewColorRaster,
+  previewAlphaRaster,
   width,
   height,
-  canvasColorType,
 }: {
-  committedColorCanvas: HTMLCanvasElement | null;
-  committedAlphaCanvas: HTMLCanvasElement | null;
+  committedColorRaster: PaintRaster | null;
+  committedAlphaRaster: PaintRaster | null;
   preview: PaintLivePreview;
-  previewColorCanvas: HTMLCanvasElement | null | undefined;
-  previewAlphaCanvas: HTMLCanvasElement | null | undefined;
+  previewColorRaster: PaintRaster | null | undefined;
+  previewAlphaRaster: PaintRaster | null | undefined;
   width: number;
   height: number;
-  canvasColorType: ReturnType<typeof getCanvasStorageColorTypeForBitDepth>;
-}): { colorCanvas: HTMLCanvasElement; alphaCanvas: HTMLCanvasElement } | null => {
-  const nextColorCanvas = copyCommittedPaintCanvas(
-    committedColorCanvas,
-    previewColorCanvas,
+}): { colorRaster: PaintRaster; alphaRaster: PaintRaster } => {
+  const colorRaster = copyCommittedPaintRaster(
+    committedColorRaster,
+    previewColorRaster,
     width,
     height,
-    canvasColorType,
   );
-  const nextAlphaCanvas = copyCommittedPaintCanvas(
-    committedAlphaCanvas,
-    previewAlphaCanvas,
+  const alphaRaster = copyCommittedPaintRaster(
+    committedAlphaRaster,
+    previewAlphaRaster,
     width,
     height,
-    canvasColorType,
   );
-
-  const strokeCanvas = buildPaintStrokeCanvas({
+  applyPaintStrokeToRaster(preview.channels === 'a' ? alphaRaster : colorRaster, {
     tool: preview.tool,
     points: preview.points,
     width,
     height,
     size: preview.size,
+    spacing: preview.spacing,
     softness: preview.softness,
     opacity: preview.opacity,
     color: preview.color,
     alpha: preview.alpha,
     channels: preview.channels,
     cloneOffset: preview.cloneOffset,
-    sourceCanvas: preview.sourceCanvas,
-    canvasColorType: preview.canvasColorType ?? canvasColorType,
+    cloneSource: preview.cloneSource,
   });
-  if (!strokeCanvas) {
-    return {
-      colorCanvas: nextColorCanvas,
-      alphaCanvas: nextAlphaCanvas,
-    };
-  }
-
-  const targetCanvas = preview.channels === 'a' ? nextAlphaCanvas : nextColorCanvas;
-  if (!compositePaintRasterOntoCanvas(targetCanvas, strokeCanvas, preview.tool, preview.channels)) {
-    return null;
-  }
-
-  return {
-    colorCanvas: nextColorCanvas,
-    alphaCanvas: nextAlphaCanvas,
-  };
+  return { colorRaster, alphaRaster };
 };
 
 export const useViewportPaintTextures = ({
   nodes,
   currentFrame,
   sceneNode,
+  projectColorManagement,
   livePreview = null,
   bumpMediaUpdate,
 }: UseViewportPaintTexturesOptions) => {
@@ -202,7 +203,6 @@ export const useViewportPaintTextures = ({
     let isDisposed = false;
     const paintNodes = nodes.filter((node) => node.type === NodeType.PAINT) as PaintNode[];
     const activeIds = new Set(paintNodes.map((node) => node.id));
-    const requestedCanvasColorType = getCanvasStorageColorTypeForBitDepth(sceneNode.bitDepth);
 
     paintNodes.forEach((node) => {
       const { committedKey, requiresDynamicCloneSource } = getPaintTextureCommittedState({
@@ -217,69 +217,59 @@ export const useViewportPaintTextures = ({
       const key = previewForNode
         ? `${committedKey}:preview:${previewForNode.cacheKey}`
         : committedKey;
-      let cloneSourceCanvasPromise: Promise<HTMLCanvasElement | null> | null = null;
-      const resolveCloneSourceCanvas = (): Promise<HTMLCanvasElement | null> => {
-        if (!requiresDynamicCloneSource) {
-          return Promise.resolve(null);
-        }
-        if (cloneSourceCanvasPromise) {
-          return cloneSourceCanvasPromise;
-        }
-
-        cloneSourceCanvasPromise = (async () => {
+      let cloneSourcePromise: Promise<PaintCloneSource | null> | null = null;
+      const resolveCloneSource = (): Promise<PaintCloneSource | null> => {
+        if (!requiresDynamicCloneSource) return Promise.resolve(null);
+        cloneSourcePromise ??= (async () => {
           const paintNodeIndex = nodes.findIndex((candidate) => candidate.id === node.id);
-          if (paintNodeIndex < 0) {
-            return null;
-          }
-
+          if (paintNodeIndex < 0) return null;
           const upstreamNodes = nodes.slice(0, paintNodeIndex);
-          const finalColorSpace = sceneNode.colorSpace === 'Linear' ? 'srgb' : 'raw_texture';
-
           return withSharedPaintSnapshotRenderer(async (renderer) => {
-            const { canvas, dispose } = await renderWithSharedPipeline({
+            const { finalOutputTarget, dispose } = await renderWithSharedPipeline({
               captureFinalOutput: true,
               nodes: upstreamNodes,
               sceneNode,
+              projectColorManagement,
               frame: currentFrame,
               width: sceneNode.width,
               height: sceneNode.height,
-              finalColorSpace,
+              finalColorSpace: 'scene_linear',
+              presentToCanvas: false,
               textureCacheMode: 'persistent',
               renderer,
             });
-
             try {
-              return cloneCanvas(canvas, requestedCanvasColorType);
+              if (!finalOutputTarget) {
+                throw new Error('Clone sampling requires a floating-point renderer capture.');
+              }
+              return renderTargetToPaintCloneSource(renderer, finalOutputTarget);
             } finally {
               dispose();
             }
           });
         })();
-
-        return cloneSourceCanvasPromise;
+        return cloneSourcePromise;
       };
 
-      if (existing && existing.key === key) {
-        return;
-      }
+      if (existing?.key === key) return;
 
       const shouldHoldExistingPreview =
         !previewForNode &&
-        existing?.previewColorCanvas &&
-        existing.previewAlphaCanvas &&
+        existing?.previewColorRaster &&
+        existing.previewAlphaRaster &&
         existing.preview &&
         existing.committedKey === committedKey;
-
       const canPromoteExistingPreview =
         !previewForNode &&
-        existing?.previewColorCanvas &&
-        existing.previewAlphaCanvas &&
+        existing?.previewColorRaster &&
+        existing.previewAlphaRaster &&
         existing.preview &&
         existing.committedKey !== committedKey &&
         node.strokes.length > 0 &&
         node.strokes[0].pointCount === existing.preview.cursor &&
         node.strokes[0].tool === existing.preview.tool &&
         node.strokes[0].size === existing.preview.size &&
+        node.strokes[0].spacing === existing.preview.spacing &&
         node.strokes[0].softness === existing.preview.softness &&
         node.strokes[0].opacity === existing.preview.opacity &&
         (node.strokes[0].channels ?? 'rgb') === existing.preview.channels &&
@@ -292,12 +282,12 @@ export const useViewportPaintTextures = ({
           node.id,
           key,
           committedKey,
-          existing.previewColorCanvas,
-          existing.previewAlphaCanvas,
-          existing.committedColorCanvas,
-          existing.committedAlphaCanvas,
-          existing.previewColorCanvas,
-          existing.previewAlphaCanvas,
+          existing.previewColorRaster,
+          existing.previewAlphaRaster,
+          existing.committedColorRaster,
+          existing.committedAlphaRaster,
+          existing.previewColorRaster,
+          existing.previewAlphaRaster,
           existing.preview,
         );
         bumpMediaUpdate();
@@ -310,10 +300,10 @@ export const useViewportPaintTextures = ({
           node.id,
           key,
           committedKey,
-          existing.previewColorCanvas,
-          existing.previewAlphaCanvas,
-          existing.previewColorCanvas,
-          existing.previewAlphaCanvas,
+          existing.previewColorRaster,
+          existing.previewAlphaRaster,
+          existing.previewColorRaster,
+          existing.previewAlphaRaster,
           null,
           null,
           null,
@@ -323,74 +313,63 @@ export const useViewportPaintTextures = ({
       }
 
       if (previewForNode && existing?.committedKey === committedKey) {
-        const previewCanvases = renderPaintLivePreviewCanvases({
-          committedColorCanvas: existing.committedColorCanvas,
-          committedAlphaCanvas: existing.committedAlphaCanvas,
+        const previewRasters = renderPaintLivePreviewRasters({
+          committedColorRaster: existing.committedColorRaster,
+          committedAlphaRaster: existing.committedAlphaRaster,
           preview: previewForNode,
-          previewColorCanvas: existing.previewColorCanvas,
-          previewAlphaCanvas: existing.previewAlphaCanvas,
+          previewColorRaster: existing.previewColorRaster,
+          previewAlphaRaster: existing.previewAlphaRaster,
           width: sceneNode.width,
           height: sceneNode.height,
-          canvasColorType: requestedCanvasColorType,
         });
-
-        if (!previewCanvases) {
-          return;
-        }
-
         upsertPaintTextureEntry(
           paintTexturesRef.current,
           node.id,
           key,
           committedKey,
-          previewCanvases.colorCanvas,
-          previewCanvases.alphaCanvas,
-          existing.committedColorCanvas,
-          existing.committedAlphaCanvas,
-          previewCanvases.colorCanvas,
-          previewCanvases.alphaCanvas,
+          previewRasters.colorRaster,
+          previewRasters.alphaRaster,
+          existing.committedColorRaster,
+          existing.committedAlphaRaster,
+          previewRasters.colorRaster,
+          previewRasters.alphaRaster,
           previewForNode,
         );
         bumpMediaUpdate();
         return;
       }
 
-      const committedColorCanvasPromise =
+      const committedColorPromise =
         existing?.committedKey === committedKey
-          ? Promise.resolve(existing.committedColorCanvas)
-          : buildPaintCompositeCanvas(
+          ? Promise.resolve(existing.committedColorRaster)
+          : buildPaintCompositeRaster(
               node.strokes,
               sceneNode.width,
               sceneNode.height,
               node.layers,
               currentFrame,
-              requestedCanvasColorType,
-              { resolveCloneSourceCanvas },
+              { resolveCloneSource },
             );
-      const committedAlphaCanvasPromise =
+      const committedAlphaPromise =
         existing?.committedKey === committedKey
-          ? Promise.resolve(existing.committedAlphaCanvas)
-          : buildPaintAlphaCompositeCanvas(
+          ? Promise.resolve(existing.committedAlphaRaster)
+          : buildPaintAlphaCompositeRaster(
               node.strokes,
               sceneNode.width,
               sceneNode.height,
               node.layers,
               currentFrame,
-              requestedCanvasColorType,
-              { resolveCloneSourceCanvas },
+              { resolveCloneSource },
             );
 
-      void Promise.all([committedColorCanvasPromise, committedAlphaCanvasPromise])
-        .then(([committedColorCanvas, committedAlphaCanvas]) => {
+      void Promise.all([committedColorPromise, committedAlphaPromise])
+        .then(([committedColorRaster, committedAlphaRaster]) => {
           if (isDisposed) return;
           const latestNode = nodes.find(
             (candidate) => candidate.id === node.id && candidate.type === NodeType.PAINT,
           ) as PaintNode | undefined;
-          if (!latestNode) {
-            return;
-          }
-
           if (
+            !latestNode ||
             getPaintTextureCommittedState({
               node: latestNode,
               nodes,
@@ -402,59 +381,41 @@ export const useViewportPaintTextures = ({
             return;
           }
 
-          if (!committedColorCanvas && !committedAlphaCanvas && !previewForNode) {
-            if (removePaintTextureEntry(paintTexturesRef.current, node.id)) {
-              bumpMediaUpdate();
-            }
+          if (!committedColorRaster && !committedAlphaRaster && !previewForNode) {
+            if (removePaintTextureEntry(paintTexturesRef.current, node.id)) bumpMediaUpdate();
             return;
           }
 
-          const activeCanvases = previewForNode
-            ? renderPaintLivePreviewCanvases({
-                committedColorCanvas,
-                committedAlphaCanvas,
+          const activeRasters = previewForNode
+            ? renderPaintLivePreviewRasters({
+                committedColorRaster,
+                committedAlphaRaster,
                 preview: previewForNode,
-                previewColorCanvas: existing?.previewColorCanvas,
-                previewAlphaCanvas: existing?.previewAlphaCanvas,
+                previewColorRaster: existing?.previewColorRaster,
+                previewAlphaRaster: existing?.previewAlphaRaster,
                 width: sceneNode.width,
                 height: sceneNode.height,
-                canvasColorType: requestedCanvasColorType,
               })
             : {
-                colorCanvas: copyCommittedPaintCanvas(
-                  committedColorCanvas,
-                  existing?.previewColorCanvas,
-                  sceneNode.width,
-                  sceneNode.height,
-                  requestedCanvasColorType,
-                ),
-                alphaCanvas: copyCommittedPaintCanvas(
-                  committedAlphaCanvas,
-                  existing?.previewAlphaCanvas,
-                  sceneNode.width,
-                  sceneNode.height,
-                  requestedCanvasColorType,
-                ),
+                colorRaster: committedColorRaster
+                  ? clonePaintRaster(committedColorRaster)
+                  : createPaintRaster(sceneNode.width, sceneNode.height),
+                alphaRaster: committedAlphaRaster
+                  ? clonePaintRaster(committedAlphaRaster)
+                  : createPaintRaster(sceneNode.width, sceneNode.height),
               };
-
-          if (!activeCanvases) {
-            if (removePaintTextureEntry(paintTexturesRef.current, node.id)) {
-              bumpMediaUpdate();
-            }
-            return;
-          }
 
           upsertPaintTextureEntry(
             paintTexturesRef.current,
             node.id,
             key,
             committedKey,
-            activeCanvases.colorCanvas,
-            activeCanvases.alphaCanvas,
-            committedColorCanvas,
-            committedAlphaCanvas,
-            previewForNode ? activeCanvases.colorCanvas : null,
-            previewForNode ? activeCanvases.alphaCanvas : null,
+            activeRasters.colorRaster,
+            activeRasters.alphaRaster,
+            committedColorRaster,
+            committedAlphaRaster,
+            previewForNode ? activeRasters.colorRaster : null,
+            previewForNode ? activeRasters.alphaRaster : null,
             previewForNode,
           );
           bumpMediaUpdate();
@@ -462,18 +423,13 @@ export const useViewportPaintTextures = ({
         .catch(() => undefined);
     });
 
-    paintTexturesRef.current.forEach((entry, nodeId) => {
-      if (!activeIds.has(nodeId)) {
-        entry.colorTexture.dispose();
-        entry.alphaTexture.dispose();
-        paintTexturesRef.current.delete(nodeId);
-      }
+    paintTexturesRef.current.forEach((_entry, nodeId) => {
+      if (!activeIds.has(nodeId)) removePaintTextureEntry(paintTexturesRef.current, nodeId);
     });
-
     return () => {
       isDisposed = true;
     };
-  }, [nodes, currentFrame, sceneNode, livePreview, bumpMediaUpdate]);
+  }, [nodes, currentFrame, sceneNode, projectColorManagement, livePreview, bumpMediaUpdate]);
 
   useEffect(
     () => () => {

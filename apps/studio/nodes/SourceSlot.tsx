@@ -1,7 +1,7 @@
 import React, { useRef } from 'react';
 import { useEditorActions } from '@/state/editorContext';
 import { CollapsibleSection } from '@blackboard/ui';
-import { ArrowUpTray, FolderOpen, Photo, Video } from '@blackboard/icons';
+import { ArrowDownTray, FolderOpen, Photo, Video } from '@blackboard/icons';
 import { IMAGE_IMPORT_ACCEPT } from '@/utils/mediaFiles';
 
 export type SourceSlotKind = 'image' | 'video' | 'image_sequence';
@@ -84,7 +84,7 @@ function SourceSlot({ nodeId, kind, sourceFileName, width, height, frameCount }:
           title="Replace source file"
           className="shrink-0 rounded-md p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
         >
-          <ArrowUpTray className="h-4 w-4" />
+          <ArrowDownTray className="h-4 w-4" />
         </button>
       </div>
 

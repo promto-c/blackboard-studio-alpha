@@ -378,6 +378,7 @@ export const useComfyCropInteraction = ({
 
   return {
     dragState,
+    justCreatedRegionId,
     isCropToolActive,
     shouldForceOverlays: isSelectToolActive || isCropToolActive || Boolean(dragState),
     handleMouseDown,

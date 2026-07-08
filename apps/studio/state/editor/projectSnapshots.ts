@@ -1,5 +1,6 @@
 import type { PersistedProjectState } from '@blackboard/types';
 import type { EditorState } from '@/state/editor/slices/types';
+import { getRootFlow, replaceFlowNodes } from '@/state/editor/flowModel';
 
 export type StoredProjectState = PersistedProjectState;
 export type BuildPersistedProjectStateOptions = {
@@ -7,10 +8,19 @@ export type BuildPersistedProjectStateOptions = {
   checkpointLatestHistoryEntry?: boolean;
 };
 
+export type RestorePersistedProjectHistoryOptions = {
+  truncateFutureHistory?: boolean;
+};
+
 const stripSessionState = (
   entry: EditorState['history'][number],
 ): EditorState['history'][number] => {
-  const { history: _history, historyIndex: _historyIndex, ...state } = entry.state;
+  const {
+    history: _history,
+    historyIndex: _historyIndex,
+    viewerSettings: _viewerSettings,
+    ...state
+  } = entry.state;
   return {
     ...entry,
     state,
@@ -49,6 +59,7 @@ export const buildPersistedProjectState = (
     rootFlowId: state.rootFlowId,
     activeFlowId: state.activeFlowId,
     activeTab: state.activeTab,
+    colorManagement: state.colorManagement,
     aiChats: state.aiChats,
     aiAgentRuns: state.aiAgentRuns,
     activeAiAgentRunId: state.activeAiAgentRunId,
@@ -58,11 +69,58 @@ export const buildPersistedProjectState = (
     viewerSlots: state.viewerSlots,
     activeViewerSlot: state.activeViewerSlot,
     renderSettings: state.renderSettings,
-    viewerSettings: state.viewerSettings,
     fps: state.fps,
     currentFrame: state.currentFrame,
     nodePositionsByFlow: state.nodePositionsByFlow,
     history,
     historyIndex,
   };
+};
+
+/**
+ * Materializes a persisted history entry as a complete project snapshot.
+ * History entries are partial editor patches, so node-only entries must also
+ * be projected back into the canonical flow model before they can be opened.
+ */
+export const restorePersistedProjectHistoryEntry = (
+  projectState: StoredProjectState,
+  historyEntryId: string,
+  options: RestorePersistedProjectHistoryOptions = {},
+): StoredProjectState | null => {
+  const history = Array.isArray(projectState.history) ? projectState.history : [];
+  const historyIndex = history.findIndex((entry) => entry.id === historyEntryId);
+  if (historyIndex < 0) return null;
+
+  const entry = history[historyIndex];
+  const restoredState: StoredProjectState = {
+    ...projectState,
+    ...entry.state,
+    history: options.truncateFutureHistory ? history.slice(0, historyIndex + 1) : history,
+    historyIndex,
+  };
+
+  if (entry.state.nodes) {
+    const flowId =
+      restoredState.activeFlowId ??
+      restoredState.rootFlowId ??
+      projectState.activeFlowId ??
+      projectState.rootFlowId;
+
+    if (flowId) {
+      restoredState.flows = replaceFlowNodes(
+        restoredState.flows ?? {},
+        flowId,
+        entry.state.nodes,
+        getRootFlow(restoredState.flows ?? {}, flowId)?.name ?? 'Root Flow',
+      );
+      restoredState.rootFlowId = restoredState.rootFlowId ?? flowId;
+      restoredState.activeFlowId = flowId;
+    }
+  }
+
+  if (options.truncateFutureHistory) {
+    restoredState.historyIndex = restoredState.history.length - 1;
+  }
+
+  return restoredState;
 };

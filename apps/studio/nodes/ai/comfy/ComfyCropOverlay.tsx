@@ -1,4 +1,4 @@
-import { useMemo, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
   EditorTab,
   type ComfyNode,
@@ -232,23 +232,19 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
   const ctx = ecc(props);
   const viewport = ctx.viewport;
   const node = props.node as ComfyNode;
-  const cropInteraction = ctx.comfyCrop as { dragState?: unknown };
+  const cropInteraction = ctx.comfyCrop;
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const focusedDrawRef = useRef<string | null>(null);
   const viewportSize = viewport.viewportSize;
   const sceneSize = { width: props.scene.width, height: props.scene.height };
   const zoom = props.zoom;
   const pan = props.pan;
-  const { updateNode, setActiveTab, setSubPanelVisible } = useEditorActions();
+  const { updateNode, setActiveTab, setSubPanelVisible, requestBackgroundJobCancel } =
+    useEditorActions();
   const backgroundJobs = useEditorSelector((state) => state.backgroundJobs);
   const projectId = useEditorSelector((state) => state.projectId);
   const activeProjectBranchId = useEditorSelector((state) => state.activeProjectBranchId);
-  const {
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
-    ollamaEndpoint,
-    aiTaskRoutes,
-    integrationConnections,
-  } = usePreferences();
+  const { aiTaskRoutes, integrationConnections } = usePreferences();
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -260,20 +256,12 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
   const promptRouteError = getAiTaskRouteError('imagePromptTools', {
     aiTaskRoutes,
     integrationConnections,
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
-    ollamaEndpoint,
   });
   const promptRoute = promptRouteError
     ? null
     : resolveAiTaskRoute('imagePromptTools', {
         aiTaskRoutes,
         integrationConnections,
-        geminiApiKey,
-        openAiApiKey,
-        openAiBaseUrl,
-        ollamaEndpoint,
       });
 
   const suggestions = useMemo(() => {
@@ -299,6 +287,23 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
     () => getPendingComfyOutputSlots(activeNodeComfyJobs, region?.id),
     [activeNodeComfyJobs, region?.id],
   );
+
+  // Auto-focus the prompt textarea when a new region is freshly created via draw.
+  // Uses focusedDrawRef to only focus once per draw cycle (the justCreatedRegionId
+  // stays set until the user interacts with a different region, so we avoid
+  // re-focusing on every unrelated re-render).
+  useEffect(() => {
+    if (
+      region &&
+      cropInteraction.justCreatedRegionId &&
+      cropInteraction.justCreatedRegionId === region.id &&
+      focusedDrawRef.current !== cropInteraction.justCreatedRegionId &&
+      textareaRef.current
+    ) {
+      textareaRef.current.focus();
+      focusedDrawRef.current = cropInteraction.justCreatedRegionId;
+    }
+  }, [region, cropInteraction.justCreatedRegionId]);
 
   if (
     cropInteraction.dragState ||
@@ -476,6 +481,7 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
     >
       <div className="rounded-lg border border-white/15 bg-gray-950/70 p-2 shadow-2xl shadow-black/45 backdrop-blur-xl ring-1 ring-white/10">
         <PromptTextField
+          inputRef={textareaRef}
           label={`${regionLabel} Prompt`}
           value={region.prompt}
           onValueChange={(v) => writeRegion({ ...region, prompt: v }, false)}
@@ -559,6 +565,7 @@ export function ComfyCropPromptOverlay(props: ViewportOverlayProps) {
               fallbackActiveSrc={node.src}
               onActivateOutput={handleActivateOutput}
               onOpenGallery={openGallery}
+              onCancelPending={requestBackgroundJobCancel}
             />
           </div>
         ) : null}

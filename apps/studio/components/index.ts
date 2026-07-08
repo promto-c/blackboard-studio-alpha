@@ -3,10 +3,38 @@
 
 // app-specific re-exports
 export { Slider, type SliderProps } from './Slider';
+export {
+  PreferenceBentoCard,
+  PreferenceBentoControl,
+  PreferenceBentoEmptyState,
+  PreferenceBentoResetButton,
+  type PreferenceBentoIcon,
+} from './PreferencesBento';
 
 // --- app-specific components ---
 export { AttentionPulse } from './AttentionPulse';
 export { BackgroundJobsMonitor } from './BackgroundJobsMonitor';
+export {
+  ColorManagementControlRow,
+  ColorManagementControlSection,
+  type ColorManagementControlRowProps,
+  type ColorManagementControlSectionProps,
+} from './ColorManagementControls';
+export {
+  ColorManagementSettingsEditor,
+  type ColorManagementSettingsEditorProps,
+} from './ColorManagementSettingsEditor';
+export {
+  DisplayViewSelector,
+  getDisplayViewSelectorModel,
+  type DisplayViewSelectorProps,
+} from './DisplayViewSelector';
+export {
+  InlineOptionList,
+  type InlineOptionListOption,
+  type InlineOptionListProps,
+} from './InlineOptionList';
+export { getProjectColorManagementPanelModel } from './ProjectColorManagementPanel';
 export { ConnectionBadge } from './ConnectionBadge';
 export { GlobalTooltipLayer } from './GlobalTooltipLayer';
 export { HotkeyBadge } from './HotkeyBadge';
@@ -18,7 +46,15 @@ export {
 } from './InspectorBreadcrumb';
 export { ItemsHierarchyRenderer } from './ItemsHierarchyRenderer';
 export { AssetViewer, type AssetViewerMedia } from './AssetViewer';
-export { ImageThumbnail } from './ImageThumbnail';
+export { Scene3DAssetPreview, type Scene3DAssetPreviewProps } from './Scene3DAssetPreview';
+export {
+  ColorManagedImagePreview,
+  type ColorManagedImagePreviewProps,
+} from './ColorManagedImagePreview';
+export {
+  ColorManagedVideoPreview,
+  type ColorManagedVideoPreviewProps,
+} from './ColorManagedVideoPreview';
 export { ItemsPanelLayout } from './ItemsPanelLayout';
 export {
   FloatingMenu,
@@ -39,8 +75,25 @@ export { MediaSourceSelect } from './MediaSourceSelect';
 export { NativeDesktopStatusButton } from './NativeDesktopStatusButton';
 export { NodeItemsPanel, getNodeItemsComponent, type NodeItemsPanelProps } from './NodeItemsPanel';
 export { OcioColorSpaceDropdown } from './OcioColorSpaceDropdown';
+export { OcioConfigSelector, type OcioConfigSelectorProps } from './OcioConfigSelector';
+export {
+  OcioContextVariablesEditor,
+  type OcioContextVariablesEditorProps,
+} from './OcioContextVariablesEditor';
+export {
+  MediaColorManagementControls,
+  MediaColorManagementInspector,
+  type MediaColorManagementControlsProps,
+} from './MediaColorManagementInspector';
 export { PwaStatusButton } from './PwaStatusButton';
 export { PwaUpdateToast } from './PwaUpdateToast';
+export {
+  ExecuteButton,
+  ExecuteButtonAction,
+  ExecuteButtonGroup,
+  ExecuteButtonMenuTrigger,
+  ExecuteMenuItem,
+} from './ExecuteButton';
 export { SettingsPanelFrame } from './SettingsPanelFrame';
 // SegmentedControl is the unified component supporting both options-based and children-based APIs.
 // SlidingSegmentedControl is the animated variant built on top.
@@ -69,7 +122,16 @@ export {
   ViewportToolPanel,
   ViewportToolPanelArea,
   ViewportToolPanelHeader,
+  ViewportToolPanelSection,
+  ViewportToolPanelSectionStack,
 } from './ViewportToolPanel';
 export { ViewportToolsRenderer } from './ViewportToolsRenderer';
+export { WorkingSpaceField } from './WorkingSpaceField';
+export {
+  createLocatedExternalConfigReference,
+  ExternalConfigReferenceField,
+  type ExternalConfigReferenceFieldHandle,
+  type ExternalConfigReferenceFieldProps,
+} from './ExternalConfigReferenceField';
 export { FlowViewModeControls, type FlowViewModeControlsProps } from './FlowViewModeControls';
 export { InspectorStack, type InspectorStackProps } from './InspectorStack';

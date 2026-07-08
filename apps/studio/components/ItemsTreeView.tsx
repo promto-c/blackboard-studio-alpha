@@ -15,7 +15,7 @@ interface ItemsTreeViewProps {
   dropIndicator?: ItemsTreeDropIndicator | null;
   contentStart?: number;
   contentStep?: number;
-  containerClassName?: string;
+  rootClassName?: string;
   className?: string;
   contentClassName?: string;
   onBackgroundClick?: () => void;
@@ -34,7 +34,7 @@ export function ItemsTreeView({
   dropIndicator,
   contentStart = TREE_ROW_CONTENT_START,
   contentStep = TREE_GUIDE_STEP,
-  containerClassName = 'flex-1 min-h-0',
+  rootClassName = 'flex-1 min-h-0',
   className = 'h-full overflow-y-auto px-1 py-1',
   contentClassName = 'relative',
   onBackgroundClick,
@@ -51,7 +51,7 @@ export function ItemsTreeView({
   return (
     <ScrollArea
       ref={scrollViewportRef}
-      containerClassName={containerClassName}
+      rootClassName={rootClassName}
       className={className}
       onClick={handleClick}
     >

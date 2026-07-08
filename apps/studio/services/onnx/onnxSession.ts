@@ -57,7 +57,7 @@ export const readInputMetadata = (session: ort.InferenceSession): OnnxInputMetad
       dims: numericDims,
       isDynamic: isDynamicShape(numericDims),
       dimsLabel: numericDims.length > 0 ? formatOnnxShape(numericDims) : 'unknown',
-      kind: inferInputKind(numericDims, tensorType),
+      kind: inferInputKind(numericDims),
     };
   });
 
@@ -75,7 +75,7 @@ export const readOutputMetadata = (session: ort.InferenceSession): OnnxOutputMet
       dims: numericDims,
       isDynamic: isDynamicShape(numericDims),
       dimsLabel: numericDims.length > 0 ? formatOnnxShape(numericDims) : 'unknown',
-      kind: inferOutputKind(numericDims, tensorType),
+      kind: inferOutputKind(numericDims),
     };
   });
 

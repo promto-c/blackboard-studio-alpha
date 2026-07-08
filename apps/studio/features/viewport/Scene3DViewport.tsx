@@ -1,23 +1,56 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
-import { USDZLoader } from 'three/examples/jsm/loaders/USDZLoader.js';
-import type { Pan, Scene3DItem, Scene3DNode, Scene3DVector3, SceneNode } from '@blackboard/types';
+import type {
+  Pan,
+  ProjectColorManagement,
+  Scene3DItem,
+  Scene3DNode,
+  Scene3DSettings,
+  SceneNode,
+} from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
 import { normalizeScene3DSettings } from '@/nodes/builtin/scene_3d/scene3d';
+import {
+  createScene3DPreviewAssetKey,
+  configureScene3DDisplayBackdropTexture,
+  createScene3DPreviewRenderer,
+} from '@/renderer/scene3dPreviewRenderer';
+import {
+  applyScene3DBackdropPlaneTransform,
+  applyScene3DItemTransform,
+  createScene3DCameraOrientation,
+  createScene3DBaseColor,
+  createScene3DBackdropPlaneGeometry,
+  createScene3DEnvironmentLight,
+  createScene3DLineBox,
+  createScene3DLightColor,
+  disposeScene3DObject,
+  fitImportedScene3DObjectToScene,
+  getImportedScene3DObjectBox,
+  getScene3DPositiveIntensity,
+  isScene3DItemVisible,
+  isScene3DSplatItem,
+  parseScene3DColor,
+  type Scene3DColorTransform,
+  scaleScene3DVector,
+} from '@/renderer/scene3dRenderer';
+import {
+  loadScene3DAssetObject,
+  type LoadedScene3DAssetObject,
+  type LoadScene3DSplatRuntime,
+  type Scene3DSplatRuntimeModule,
+} from '@/renderer/scene3dAssetLoader';
 import { getAsset } from '@/state/assetStorage';
 import { VIEWPORT_BACKGROUND } from '@/utils/colors';
+import { colorManagementService, convertColorPickingToSceneLinear } from '@/color-management';
 import { ViewportFrameOverlay, type ViewportFrameRect } from './ViewportFrameOverlay';
 import type { Scene3DViewportCameraMode } from './ViewportCameraSelector';
 
 interface Scene3DViewportProps {
   sceneNode: SceneNode;
   scene3DNode: Scene3DNode;
+  projectColorManagement: ProjectColorManagement;
   selectedItemId?: string | null;
   backdropCanvas: HTMLCanvasElement | null;
   hasBackdropOutput: boolean;
@@ -29,218 +62,6 @@ interface Scene3DViewportProps {
   onViewportCameraModeChange: (mode: Scene3DViewportCameraMode) => void;
 }
 
-const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
-
-const parseColor = (value: string | undefined, fallback: string) => {
-  try {
-    return new THREE.Color(value || fallback);
-  } catch {
-    return new THREE.Color(fallback);
-  }
-};
-
-const scaleVector = (value: Scene3DVector3, scale: number): THREE.Vector3 =>
-  new THREE.Vector3(value.x * scale, value.y * scale, value.z * scale);
-
-const applyItemTransform = (object: THREE.Object3D, item: Scene3DItem, pixelScale: number) => {
-  object.position.copy(scaleVector(item.transform.position, pixelScale));
-  object.rotation.set(
-    toRadians(item.transform.rotation.x),
-    toRadians(item.transform.rotation.y),
-    toRadians(item.transform.rotation.z),
-  );
-  object.scale.set(item.transform.scale.x, item.transform.scale.y, item.transform.scale.z);
-};
-
-const isScene3DSplatItem = (item: Scene3DItem): boolean =>
-  item.type === 'splat' || item.asset?.kind === 'splat';
-
-type Scene3DSplatRuntimeModule = typeof import('./scene3dSplatRuntime');
-type LoadScene3DSplatRuntime = () => Promise<Scene3DSplatRuntimeModule>;
-
-interface LoadedScene3DAssetObject {
-  object: THREE.Object3D;
-  usesSplatRenderer: boolean;
-}
-
-const disposeObject = (object: THREE.Object3D) => {
-  object.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    if (mesh.geometry) mesh.geometry.dispose();
-    const material = mesh.material;
-    if (Array.isArray(material)) {
-      material.forEach((entry) => entry.dispose());
-    } else if (material) {
-      material.dispose();
-    }
-  });
-  const disposable = object as THREE.Object3D & { dispose?: () => void };
-  disposable.dispose?.();
-};
-
-const createLineBox = (size: Scene3DVector3, pixelScale: number, color: string, opacity = 1) => {
-  const geometry = new THREE.BoxGeometry(
-    Math.max(size.x * pixelScale, 0.001),
-    Math.max(size.y * pixelScale, 0.001),
-    Math.max(size.z * pixelScale, 0.001),
-  );
-  const edges = new THREE.EdgesGeometry(geometry);
-  geometry.dispose();
-  const material = new THREE.LineBasicMaterial({
-    color: parseColor(color, '#22d3ee'),
-    transparent: opacity < 1,
-    opacity,
-  });
-  return new THREE.LineSegments(edges, material);
-};
-
-const createCameraOrientation = (
-  position: THREE.Vector3,
-  target: THREE.Vector3,
-): THREE.Quaternion => {
-  const camera = new THREE.PerspectiveCamera();
-  camera.position.copy(position);
-  camera.lookAt(target);
-  return camera.quaternion.clone();
-};
-
-const applyBackdropPlaneTransform = (
-  object: THREE.Object3D,
-  center: THREE.Vector3,
-  cameraOrientation: THREE.Quaternion,
-) => {
-  object.position.copy(center);
-  object.quaternion.copy(cameraOrientation);
-};
-
-const itemVisible = (item: Scene3DItem | undefined) => item?.visible !== false;
-
-const createGeometryObject = (
-  geometry: THREE.BufferGeometry,
-  item: Scene3DItem,
-): THREE.Object3D => {
-  if (!geometry.getAttribute('normal')) {
-    geometry.computeVertexNormals();
-  }
-  const material = new THREE.MeshStandardMaterial({
-    color: parseColor(item.color, '#e5e7eb'),
-    roughness: 0.58,
-    metalness: 0.04,
-    vertexColors: Boolean(geometry.getAttribute('color')),
-  });
-  return new THREE.Mesh(geometry, material);
-};
-
-const prepareLoadedObject = (object: THREE.Object3D, item: Scene3DItem): THREE.Object3D => {
-  object.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    if (mesh.geometry && !mesh.geometry.getAttribute('normal')) {
-      mesh.geometry.computeVertexNormals();
-    }
-    if (!mesh.material) {
-      mesh.material = new THREE.MeshStandardMaterial({
-        color: parseColor(item.color, '#e5e7eb'),
-        roughness: 0.58,
-        metalness: 0.04,
-      });
-    }
-  });
-  return object;
-};
-
-const loadScene3DMeshAssetObject = async (
-  item: Scene3DItem,
-  objectUrl: string,
-): Promise<THREE.Object3D> => {
-  switch (item.asset?.format) {
-    case 'glb':
-    case 'gltf': {
-      const result = await new GLTFLoader().loadAsync(objectUrl);
-      return prepareLoadedObject(result.scene, item);
-    }
-    case 'obj': {
-      const result = await new OBJLoader().loadAsync(objectUrl);
-      return prepareLoadedObject(result, item);
-    }
-    case 'fbx': {
-      const result = await new FBXLoader().loadAsync(objectUrl);
-      return prepareLoadedObject(result, item);
-    }
-    case 'usdz': {
-      const result = await new USDZLoader().loadAsync(objectUrl);
-      return prepareLoadedObject(result, item);
-    }
-    case 'stl': {
-      const geometry = await new STLLoader().loadAsync(objectUrl);
-      return createGeometryObject(geometry, item);
-    }
-    case 'ply': {
-      const geometry = await new PLYLoader().loadAsync(objectUrl);
-      return createGeometryObject(geometry, item);
-    }
-    default:
-      throw new Error('Unsupported 3D asset format.');
-  }
-};
-
-const loadScene3DAssetObject = async (
-  item: Scene3DItem,
-  blob: Blob,
-  objectUrls: string[],
-  loadSplatRuntime: LoadScene3DSplatRuntime,
-): Promise<LoadedScene3DAssetObject> => {
-  if (isScene3DSplatItem(item)) {
-    try {
-      const runtime = await loadSplatRuntime();
-      return {
-        object: await runtime.loadScene3DSplatAssetObject(item, blob),
-        usesSplatRenderer: true,
-      };
-    } catch (error) {
-      if (item.asset?.format !== 'ply') throw error;
-      console.warn('Failed to load PLY as a Gaussian splat; falling back to mesh loading.', error);
-    }
-  }
-
-  const objectUrl = URL.createObjectURL(blob);
-  objectUrls.push(objectUrl);
-  return {
-    object: await loadScene3DMeshAssetObject(item, objectUrl),
-    usesSplatRenderer: false,
-  };
-};
-
-const getImportedObjectBox = (object: THREE.Object3D, applyWorldTransform = false): THREE.Box3 => {
-  const splatObject = object as THREE.Object3D & { getBoundingBox?: () => THREE.Box3 };
-  if (typeof splatObject.getBoundingBox === 'function') {
-    const box = splatObject.getBoundingBox().clone();
-    return applyWorldTransform ? box.applyMatrix4(object.matrixWorld) : box;
-  }
-  return new THREE.Box3().setFromObject(object);
-};
-
-const fitImportedObjectToScene = (
-  object: THREE.Object3D,
-  scene3d: ReturnType<typeof normalizeScene3DSettings>,
-  pixelScale: number,
-) => {
-  const box = getImportedObjectBox(object);
-  if (box.isEmpty()) return;
-
-  const size = box.getSize(new THREE.Vector3());
-  const maxAxis = Math.max(size.x, size.y, size.z);
-  if (!Number.isFinite(maxAxis) || maxAxis <= 0) return;
-
-  const center = box.getCenter(new THREE.Vector3());
-  object.position.sub(center);
-
-  const canvasSpan = Math.min(scene3d.bounds.x, scene3d.bounds.y) * pixelScale;
-  const depthSpan = scene3d.bounds.z * pixelScale;
-  const targetSpan = Math.max(Math.min(canvasSpan * 0.42, depthSpan * 0.9), 1);
-  object.scale.multiplyScalar(targetSpan / maxAxis);
-};
-
 const createAssetPlaceholder = (
   item: Scene3DItem,
   pixelScale: number,
@@ -248,7 +69,7 @@ const createAssetPlaceholder = (
 ): { group: THREE.Group; marker: THREE.LineSegments } => {
   const size = item.size ?? { x: 120, y: 120, z: 120 };
   const isSplat = isScene3DSplatItem(item);
-  const marker = createLineBox(
+  const marker = createScene3DLineBox(
     size,
     pixelScale,
     isSelected
@@ -258,7 +79,7 @@ const createAssetPlaceholder = (
         : MODEL_PLACEHOLDER_COLOR_DEFAULT,
     0.72,
   );
-  applyItemTransform(marker, item, pixelScale);
+  applyScene3DItemTransform(marker, item, pixelScale);
   const group = new THREE.Group();
   group.add(marker);
   return { group, marker };
@@ -272,6 +93,9 @@ const SPLAT_PLACEHOLDER_COLOR_DEFAULT = '#67e8f9';
 
 interface SceneItemBinding {
   type: 'box' | 'asset';
+  object?: THREE.Object3D;
+  assetKey?: string;
+  colorTransform?: Scene3DColorTransform;
   edges?: THREE.LineSegments;
   assetPlaceholder?: THREE.LineSegments;
   assetPlaceholderColor?: string;
@@ -287,6 +111,14 @@ interface EditorCameraView {
 interface ProjectionViewportView {
   zoom: number;
   pan: Pan;
+}
+
+interface Scene3DViewportSnapshot {
+  scene3d: Scene3DSettings;
+  sceneNode: Pick<SceneNode, 'width' | 'height'>;
+  backdropCanvas: HTMLCanvasElement | null;
+  hasBackdropOutput: boolean;
+  transformColorPickingToSceneLinear: Scene3DColorTransform;
 }
 
 const createProjectionViewportView = (zoom: number, pan: Pan): ProjectionViewportView => ({
@@ -343,6 +175,7 @@ const frameRectsEqual = (first: ViewportFrameRect | null, second: ViewportFrameR
 function Scene3DViewport({
   sceneNode,
   scene3DNode,
+  projectColorManagement,
   selectedItemId,
   backdropCanvas,
   hasBackdropOutput,
@@ -353,6 +186,10 @@ function Scene3DViewport({
   viewportCameraMode,
   onViewportCameraModeChange,
 }: Scene3DViewportProps) {
+  const projectColorManagementRoles = useMemo(
+    () => colorManagementService.resolveProjectColorManagement(projectColorManagement),
+    [projectColorManagement],
+  );
   const viewportPanX = viewportPan.x;
   const viewportPanY = viewportPan.y;
   const mountRef = useRef<HTMLDivElement>(null);
@@ -389,6 +226,32 @@ function Scene3DViewport({
       ),
     [scene3DNode.scene3d, sceneNode.height, sceneNode.width],
   );
+  const transformColorPickingToSceneLinear = useMemo<Scene3DColorTransform>(
+    () => (color) => convertColorPickingToSceneLinear(color, projectColorManagementRoles),
+    [projectColorManagementRoles],
+  );
+  const snapshotRef = useRef<Scene3DViewportSnapshot>({
+    scene3d,
+    sceneNode: { width: sceneNode.width, height: sceneNode.height },
+    backdropCanvas,
+    hasBackdropOutput,
+    transformColorPickingToSceneLinear,
+  });
+  const rebuildSceneContentsRef = useRef<(() => void) | null>(null);
+  const renderFrameRef = useRef<(() => void) | null>(null);
+  const onViewportCameraModeChangeRef = useRef(onViewportCameraModeChange);
+
+  snapshotRef.current = {
+    scene3d,
+    sceneNode: { width: sceneNode.width, height: sceneNode.height },
+    backdropCanvas,
+    hasBackdropOutput,
+    transformColorPickingToSceneLinear,
+  };
+
+  useEffect(() => {
+    onViewportCameraModeChangeRef.current = onViewportCameraModeChange;
+  }, [onViewportCameraModeChange]);
 
   useEffect(() => {
     selectedItemIdRef.current = selectedItemId;
@@ -442,12 +305,7 @@ function Scene3DViewport({
     const mount = mountRef.current;
     if (!mount) return;
 
-    const pixelScale = scene3d.world.pixelScale;
-    const renderer = new THREE.WebGLRenderer({
-      alpha: false,
-      antialias: false,
-      preserveDrawingBuffer: true,
-    });
+    const renderer = createScene3DPreviewRenderer();
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     const initialBackdropColor = new THREE.Color(VIEWPORT_BACKGROUND);
     renderer.setClearColor(initialBackdropColor, 1);
@@ -455,55 +313,89 @@ function Scene3DViewport({
 
     const scene = new THREE.Scene();
     scene.background = initialBackdropColor;
-    const objectUrls: string[] = [];
-    let disposed = false;
-    let splatRuntimePromise: Promise<Scene3DSplatRuntimeModule> | null = null;
-    let sparkRenderer: THREE.Object3D | null = null;
-    const loadSplatRuntime: LoadScene3DSplatRuntime = () => {
-      splatRuntimePromise ??= import('./scene3dSplatRuntime');
-      return splatRuntimePromise;
-    };
-    const ensureSplatRenderer = async () => {
-      const runtime = await loadSplatRuntime();
-      if (sparkRenderer || disposed) return;
-      sparkRenderer = runtime.createScene3DSplatRenderer(renderer);
-      scene.add(sparkRenderer);
-    };
+    const contentRoot = new THREE.Group();
+    scene.add(contentRoot);
     const bindings = new Map<string, SceneItemBinding>();
     sceneContextRef.current = { scene, renderer, bindings };
 
-    const sceneCameraPosition = scaleVector(scene3d.camera.position, pixelScale);
-    const target = scaleVector(scene3d.camera.target, pixelScale);
-    const sceneCameraOrientation = createCameraOrientation(sceneCameraPosition, target);
-    const camera = new THREE.PerspectiveCamera(
-      scene3d.camera.fov,
-      1,
-      Math.max(scene3d.camera.near * pixelScale, 0.001),
-      Math.max(scene3d.camera.far * pixelScale, 10),
-    );
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.001, 10);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.screenSpacePanning = true;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.PAN,
+      RIGHT: THREE.MOUSE.PAN,
+    };
+
+    let disposed = false;
+    let contentVersion = 0;
+    let outputTexture: THREE.CanvasTexture | null = null;
+    let splatRuntimePromise: Promise<Scene3DSplatRuntimeModule> | null = null;
+    let sparkRenderer: THREE.Object3D | null = null;
+
+    const loadSplatRuntime: LoadScene3DSplatRuntime = () => {
+      splatRuntimePromise ??= import('@/renderer/scene3dSplatRuntime');
+      return splatRuntimePromise;
+    };
+
+    const ensureSplatRenderer = async () => {
+      const runtime = await loadSplatRuntime();
+      if (sparkRenderer || disposed) return;
+      sparkRenderer = runtime.createScene3DSplatRenderer(renderer, () =>
+        renderFrameRef.current?.(),
+      );
+      scene.add(sparkRenderer);
+    };
+
+    const getSceneCameraRuntime = () => {
+      const { scene3d: currentScene3d } = snapshotRef.current;
+      const pixelScale = currentScene3d.world.pixelScale;
+      const position = scaleScene3DVector(currentScene3d.camera.position, pixelScale);
+      const target = scaleScene3DVector(currentScene3d.camera.target, pixelScale);
+      return {
+        pixelScale,
+        position,
+        target,
+        orientation: createScene3DCameraOrientation(position, target),
+      };
+    };
 
     const applyProjectionViewportTransform = () => {
+      const { scene3d: currentScene3d, sceneNode: currentSceneNode } = snapshotRef.current;
+      const { pixelScale, position, target } = getSceneCameraRuntime();
       const rect = mount.getBoundingClientRect();
       const viewportWidth = Math.max(1, rect.width);
       const viewportHeight = Math.max(1, rect.height);
       const view = projectionViewRef.current;
       const safeZoom = Math.max(0.001, view.zoom);
-      const baseDistance = Math.max(sceneCameraPosition.distanceTo(target), 0.001);
+      const baseDistance = Math.max(position.distanceTo(target), 0.001);
       const baseSceneZoom =
-        viewportHeight > 0 && sceneNode.height > 0 ? viewportHeight / sceneNode.height : 1;
+        viewportHeight > 0 && currentSceneNode.height > 0
+          ? viewportHeight / currentSceneNode.height
+          : 1;
       const projectionScale = safeZoom / Math.max(0.001, baseSceneZoom);
       const translateX = (2 * view.pan.x) / viewportWidth;
       const translateY = (2 * view.pan.y) / viewportHeight;
       const nextFilmBackRect = createProjectionFrameRect({
         viewportWidth,
         viewportHeight,
-        outputWidth: sceneNode.width,
-        outputHeight: sceneNode.height,
+        outputWidth: currentSceneNode.width,
+        outputHeight: currentSceneNode.height,
         view,
       });
 
-      const sceneSpan = Math.max(scene3d.bounds.x, scene3d.bounds.y, scene3d.bounds.z) * pixelScale;
-      camera.far = Math.max(scene3d.camera.far * pixelScale, baseDistance + sceneSpan * 2, 10);
+      const sceneSpan =
+        Math.max(currentScene3d.bounds.x, currentScene3d.bounds.y, currentScene3d.bounds.z) *
+        pixelScale;
+      camera.fov = currentScene3d.camera.fov;
+      camera.near = Math.max(currentScene3d.camera.near * pixelScale, 0.001);
+      camera.far = Math.max(
+        currentScene3d.camera.far * pixelScale,
+        baseDistance + sceneSpan * 2,
+        10,
+      );
       camera.updateProjectionMatrix();
 
       const viewportMatrix = new THREE.Matrix4().set(
@@ -546,25 +438,16 @@ function Scene3DViewport({
     };
 
     const setCameraFromScene = () => {
-      camera.position.copy(sceneCameraPosition);
+      const { position, target } = getSceneCameraRuntime();
+      camera.position.copy(position);
       camera.lookAt(target);
       applyProjectionViewportTransform();
-    };
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.screenSpacePanning = true;
-    controls.mouseButtons = {
-      LEFT: THREE.MOUSE.ROTATE,
-      MIDDLE: THREE.MOUSE.PAN,
-      RIGHT: THREE.MOUSE.PAN,
     };
 
     const saveEditorCameraView = () => {
       if (viewportCameraModeRef.current !== 'perspective') return;
       editorCameraViewRef.current = {
-        nodeId: scene3DNode.id,
+        nodeId: scene3DNodeIdRef.current,
         position: camera.position.clone(),
         target: controls.target.clone(),
       };
@@ -572,7 +455,7 @@ function Scene3DViewport({
 
     const restoreEditorCameraView = () => {
       const savedView = editorCameraViewRef.current;
-      if (!savedView || savedView.nodeId !== scene3DNode.id) return false;
+      if (!savedView || savedView.nodeId !== scene3DNodeIdRef.current) return false;
       camera.position.copy(savedView.position);
       controls.target.copy(savedView.target);
       camera.lookAt(savedView.target);
@@ -580,6 +463,7 @@ function Scene3DViewport({
     };
 
     const applyViewportCameraMode = () => {
+      const { target } = getSceneCameraRuntime();
       const isPerspectiveView = viewportCameraModeRef.current === 'perspective';
       controls.enabled = isPerspectiveView;
       if (isPerspectiveView) {
@@ -599,7 +483,7 @@ function Scene3DViewport({
     const promoteToPerspectiveView = () => {
       if (viewportCameraModeRef.current === 'perspective') return;
       viewportCameraModeRef.current = 'perspective';
-      onViewportCameraModeChange('perspective');
+      onViewportCameraModeChangeRef.current('perspective');
       applyViewportCameraMode();
     };
 
@@ -612,6 +496,7 @@ function Scene3DViewport({
     });
 
     const resetToSceneCamera = () => {
+      const { target } = getSceneCameraRuntime();
       resetProjectionView();
       setCameraFromScene();
       controls.target.copy(target);
@@ -622,233 +507,307 @@ function Scene3DViewport({
       }
     };
     resetViewRef.current = resetToSceneCamera;
-
-    applyViewportCameraMode();
     controls.addEventListener('change', saveEditorCameraView);
 
-    const ambient = new THREE.HemisphereLight(0xffffff, 0x1f2937, 1.2);
-    scene.add(ambient);
+    const disposeCurrentContent = (retainedObjects = new Set<THREE.Object3D>()) => {
+      contentVersion += 1;
+      outputTexture?.dispose();
+      outputTexture = null;
+      bindings.clear();
+      [...contentRoot.children].forEach((child) => {
+        contentRoot.remove(child);
+        if (retainedObjects.has(child)) return;
+        disposeScene3DObject(child);
+      });
+    };
 
-    const outputPlaneItem = scene3d.items.find((item) => item.type === 'output_plane');
-    let outputTexture: THREE.CanvasTexture | null = null;
-    if (scene3d.world.showOutputPlane && itemVisible(outputPlaneItem)) {
-      if (backdropCanvas && hasBackdropOutput) {
-        outputTexture = new THREE.CanvasTexture(backdropCanvas);
-        outputTexture.colorSpace = THREE.SRGBColorSpace;
-        outputTexture.minFilter = THREE.LinearFilter;
-        outputTexture.magFilter = THREE.LinearFilter;
+    const rebuildSceneContents = () => {
+      if (disposed) return;
+      const {
+        scene3d: currentScene3d,
+        backdropCanvas: currentBackdropCanvas,
+        hasBackdropOutput: currentHasBackdropOutput,
+        transformColorPickingToSceneLinear: currentColorTransform,
+      } = snapshotRef.current;
+
+      const retainedAssets = new Map<string, SceneItemBinding>();
+      const retainedObjects = new Set<THREE.Object3D>();
+      for (const item of currentScene3d.items) {
+        if (item.type !== 'model' && item.type !== 'splat') continue;
+        const assetKey = createScene3DPreviewAssetKey(item, currentScene3d);
+        const binding = bindings.get(item.id);
+        if (
+          !assetKey ||
+          !binding?.object ||
+          binding.assetPlaceholder ||
+          binding.assetKey !== assetKey ||
+          binding.colorTransform !== currentColorTransform
+        ) {
+          continue;
+        }
+        retainedAssets.set(item.id, binding);
+        retainedObjects.add(binding.object);
+        if (binding.assetHelper) retainedObjects.add(binding.assetHelper);
       }
 
-      if (outputTexture) {
-        const geometry = new THREE.PlaneGeometry(
-          Math.max(scene3d.bounds.x * pixelScale, 0.001),
-          Math.max(scene3d.bounds.y * pixelScale, 0.001),
-        );
-        const material = new THREE.MeshBasicMaterial({
-          color: 0xffffff,
-          map: outputTexture,
-          side: THREE.DoubleSide,
-        });
-        const plane = new THREE.Mesh(geometry, material);
-        applyBackdropPlaneTransform(plane, target, sceneCameraOrientation);
-        scene.add(plane);
-      }
+      disposeCurrentContent(retainedObjects);
+      const version = contentVersion;
 
-      const planeEdges = createLineBox(
-        { x: scene3d.bounds.x, y: scene3d.bounds.y, z: 0.1 },
-        pixelScale,
-        '#67e8f9',
-        0.82,
-      );
-      applyBackdropPlaneTransform(planeEdges, target, sceneCameraOrientation);
-      scene.add(planeEdges);
-    }
+      const { pixelScale, position, target, orientation } = getSceneCameraRuntime();
 
-    if (scene3d.world.gridEnabled) {
-      const grid = new THREE.GridHelper(
-        Math.max(scene3d.world.gridSize * pixelScale, 0.001),
-        scene3d.world.gridDivisions,
-        0x334155,
-        0x1f2937,
-      );
-      grid.position.y = (-scene3d.bounds.y * pixelScale) / 2;
-      scene.add(grid);
-    }
+      contentRoot.add(createScene3DEnvironmentLight(currentScene3d.world, currentColorTransform));
 
-    if (scene3d.world.showAxes) {
-      const axes = new THREE.AxesHelper(
-        Math.max(scene3d.bounds.x, scene3d.bounds.y) * pixelScale * 0.18,
-      );
-      scene.add(axes);
-    }
+      const outputPlaneItem = currentScene3d.items.find((item) => item.type === 'output_plane');
+      if (currentScene3d.world.showOutputPlane && isScene3DItemVisible(outputPlaneItem)) {
+        if (currentBackdropCanvas && currentHasBackdropOutput) {
+          outputTexture = configureScene3DDisplayBackdropTexture(
+            new THREE.CanvasTexture(currentBackdropCanvas),
+          );
+        }
 
-    const sceneCameraItem = scene3d.items.find((item) => item.type === 'camera');
-    if (itemVisible(sceneCameraItem)) {
-      const shotCamera = new THREE.PerspectiveCamera(
-        scene3d.camera.fov,
-        Math.max(scene3d.bounds.x / scene3d.bounds.y, 0.001),
-        Math.max(scene3d.camera.near * pixelScale, 0.001),
-        Math.max(scene3d.camera.far * pixelScale, 10),
-      );
-      shotCamera.position.copy(sceneCameraPosition);
-      shotCamera.quaternion.copy(sceneCameraOrientation);
-      shotCamera.updateMatrixWorld(true);
-      const helper = new THREE.CameraHelper(shotCamera);
-      helper.visible = true;
-      scene.add(helper);
+        if (outputTexture) {
+          const geometry = createScene3DBackdropPlaneGeometry(
+            Math.max(currentScene3d.bounds.x * pixelScale, 0.001),
+            Math.max(currentScene3d.bounds.y * pixelScale, 0.001),
+            'dom-canvas',
+          );
+          const material = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            map: outputTexture,
+            toneMapped: false,
+          });
+          const plane = new THREE.Mesh(geometry, material);
+          applyScene3DBackdropPlaneTransform(plane, target, orientation);
+          contentRoot.add(plane);
+        }
 
-      const cameraBody = new THREE.Mesh(
-        new THREE.BoxGeometry(0.24, 0.16, 0.12),
-        new THREE.MeshBasicMaterial({ color: parseColor(sceneCameraItem?.color, '#e5e7eb') }),
-      );
-      cameraBody.position.copy(shotCamera.position);
-      scene.add(cameraBody);
-    }
-
-    for (const item of scene3d.items) {
-      if (!item.visible || item.type === 'output_plane' || item.type === 'camera') continue;
-
-      if (item.type === 'light') {
-        const light = new THREE.DirectionalLight(
-          parseColor(item.color, '#fef3c7'),
-          item.intensity ?? 2,
-        );
-        applyItemTransform(light, item, pixelScale);
-        light.target.position.copy(target);
-        scene.add(light);
-        scene.add(light.target);
-
-        const marker = new THREE.Mesh(
-          new THREE.SphereGeometry(0.12, 16, 12),
-          new THREE.MeshBasicMaterial({ color: parseColor(item.color, '#fef3c7') }),
-        );
-        marker.position.copy(light.position);
-        scene.add(marker);
-        continue;
-      }
-
-      if (item.type === 'box') {
-        const size = item.size ?? { x: 100, y: 100, z: 100 };
-        const geometry = new THREE.BoxGeometry(
-          Math.max(size.x * pixelScale, 0.001),
-          Math.max(size.y * pixelScale, 0.001),
-          Math.max(size.z * pixelScale, 0.001),
-        );
-        const material = new THREE.MeshStandardMaterial({
-          color: parseColor(item.color, '#38bdf8'),
-          roughness: 0.42,
-          metalness: 0.08,
-          transparent: true,
-          opacity: 0.82,
-        });
-        const mesh = new THREE.Mesh(geometry, material);
-        applyItemTransform(mesh, item, pixelScale);
-        scene.add(mesh);
-
-        const edges = createLineBox(
-          size,
+        const planeEdges = createScene3DLineBox(
+          { x: currentScene3d.bounds.x, y: currentScene3d.bounds.y, z: 0.1 },
           pixelScale,
-          selectedItemIdRef.current === item.id ? BOX_EDGE_COLOR_SELECTED : BOX_EDGE_COLOR_DEFAULT,
-          0.9,
+          '#67e8f9',
+          0.82,
         );
-        applyItemTransform(edges, item, pixelScale);
-        scene.add(edges);
-        bindings.set(item.id, { type: 'box', edges });
-        continue;
+        applyScene3DBackdropPlaneTransform(planeEdges, target, orientation);
+        contentRoot.add(planeEdges);
       }
 
-      if (item.type === 'model' || item.type === 'splat') {
-        const { group: placeholder, marker: placeholderMarker } = createAssetPlaceholder(
-          item,
-          pixelScale,
-          selectedItemIdRef.current === item.id,
+      if (currentScene3d.world.gridEnabled) {
+        const grid = new THREE.GridHelper(
+          Math.max(currentScene3d.world.gridSize * pixelScale, 0.001),
+          currentScene3d.world.gridDivisions,
+          0x334155,
+          0x1f2937,
         );
-        scene.add(placeholder);
+        grid.position.y = (-currentScene3d.bounds.y * pixelScale) / 2;
+        contentRoot.add(grid);
+      }
 
-        const assetBinding: SceneItemBinding = {
-          type: 'asset',
-          assetPlaceholder: placeholderMarker,
-          assetPlaceholderColor: isScene3DSplatItem(item)
-            ? SPLAT_PLACEHOLDER_COLOR_DEFAULT
-            : MODEL_PLACEHOLDER_COLOR_DEFAULT,
-        };
-        bindings.set(item.id, assetBinding);
+      if (currentScene3d.world.showAxes) {
+        const axes = new THREE.AxesHelper(
+          Math.max(currentScene3d.bounds.x, currentScene3d.bounds.y) * pixelScale * 0.18,
+        );
+        contentRoot.add(axes);
+      }
 
-        if (!item.asset?.assetId) continue;
+      const sceneCameraItem = currentScene3d.items.find((item) => item.type === 'camera');
+      if (isScene3DItemVisible(sceneCameraItem)) {
+        const shotCamera = new THREE.PerspectiveCamera(
+          currentScene3d.camera.fov,
+          Math.max(currentScene3d.bounds.x / currentScene3d.bounds.y, 0.001),
+          Math.max(currentScene3d.camera.near * pixelScale, 0.001),
+          Math.max(currentScene3d.camera.far * pixelScale, 10),
+        );
+        shotCamera.position.copy(position);
+        shotCamera.quaternion.copy(orientation);
+        shotCamera.updateMatrixWorld(true);
+        contentRoot.add(new THREE.CameraHelper(shotCamera));
 
-        void (async () => {
-          let loadedAsset: LoadedScene3DAssetObject | null = null;
-          try {
-            const blob = await getAsset(item.asset.assetId);
-            if (!blob || disposed) return;
+        const cameraBody = new THREE.Mesh(
+          new THREE.BoxGeometry(0.24, 0.16, 0.12),
+          new THREE.MeshBasicMaterial({
+            color: parseScene3DColor(sceneCameraItem?.color, '#e5e7eb'),
+          }),
+        );
+        cameraBody.position.copy(shotCamera.position);
+        contentRoot.add(cameraBody);
+      }
 
-            loadedAsset = await loadScene3DAssetObject(item, blob, objectUrls, loadSplatRuntime);
-            if (disposed) {
-              disposeObject(loadedAsset.object);
-              return;
+      for (const item of currentScene3d.items) {
+        if (!item.visible || item.type === 'output_plane' || item.type === 'camera') continue;
+
+        if (item.type === 'light') {
+          const lightColor = createScene3DLightColor(item, '#fef3c7', currentColorTransform);
+          const light = new THREE.DirectionalLight(
+            lightColor,
+            getScene3DPositiveIntensity(item.intensity, 2),
+          );
+          applyScene3DItemTransform(light, item, pixelScale);
+          light.target.position.copy(target);
+          contentRoot.add(light);
+          contentRoot.add(light.target);
+
+          const marker = new THREE.Mesh(
+            new THREE.SphereGeometry(0.12, 16, 12),
+            new THREE.MeshBasicMaterial({ color: lightColor }),
+          );
+          marker.position.copy(light.position);
+          contentRoot.add(marker);
+          continue;
+        }
+
+        if (item.type === 'box') {
+          const size = item.size ?? { x: 100, y: 100, z: 100 };
+          const geometry = new THREE.BoxGeometry(
+            Math.max(size.x * pixelScale, 0.001),
+            Math.max(size.y * pixelScale, 0.001),
+            Math.max(size.z * pixelScale, 0.001),
+          );
+          const material = new THREE.MeshStandardMaterial({
+            color: createScene3DBaseColor(item, '#38bdf8', currentColorTransform),
+            roughness: 0.42,
+            metalness: 0.08,
+            transparent: true,
+            opacity: 0.82,
+          });
+          const mesh = new THREE.Mesh(geometry, material);
+          applyScene3DItemTransform(mesh, item, pixelScale);
+          contentRoot.add(mesh);
+
+          const edges = createScene3DLineBox(
+            size,
+            pixelScale,
+            selectedItemIdRef.current === item.id
+              ? BOX_EDGE_COLOR_SELECTED
+              : BOX_EDGE_COLOR_DEFAULT,
+            0.9,
+          );
+          applyScene3DItemTransform(edges, item, pixelScale);
+          contentRoot.add(edges);
+          bindings.set(item.id, { type: 'box', object: mesh, edges });
+          continue;
+        }
+
+        if (item.type === 'model' || item.type === 'splat') {
+          const assetKey = createScene3DPreviewAssetKey(item, currentScene3d);
+          const retainedAsset = retainedAssets.get(item.id);
+          if (assetKey && retainedAsset?.object) {
+            applyScene3DItemTransform(retainedAsset.object, item, pixelScale);
+            contentRoot.add(retainedAsset.object);
+            if (retainedAsset.assetHelper) {
+              retainedAsset.object.updateMatrixWorld(true);
+              retainedAsset.assetHelper.box.setFromObject(retainedAsset.object);
+              retainedAsset.assetHelper.visible = selectedItemIdRef.current === item.id;
+              contentRoot.add(retainedAsset.assetHelper);
             }
+            bindings.set(item.id, retainedAsset);
+            continue;
+          }
 
-            if (loadedAsset.usesSplatRenderer) {
-              await ensureSplatRenderer();
-              if (disposed) {
-                disposeObject(loadedAsset.object);
+          const { group: placeholder, marker: placeholderMarker } = createAssetPlaceholder(
+            item,
+            pixelScale,
+            selectedItemIdRef.current === item.id,
+          );
+          contentRoot.add(placeholder);
+
+          const assetBinding: SceneItemBinding = {
+            type: 'asset',
+            object: placeholder,
+            assetKey: assetKey ?? undefined,
+            colorTransform: currentColorTransform,
+            assetPlaceholder: placeholderMarker,
+            assetPlaceholderColor: isScene3DSplatItem(item)
+              ? SPLAT_PLACEHOLDER_COLOR_DEFAULT
+              : MODEL_PLACEHOLDER_COLOR_DEFAULT,
+          };
+          bindings.set(item.id, assetBinding);
+
+          if (!item.asset?.assetId) continue;
+
+          const isStale = () => disposed || version !== contentVersion;
+          void (async () => {
+            let loadedAsset: LoadedScene3DAssetObject | null = null;
+            try {
+              const blob = await getAsset(item.asset.assetId);
+              if (!blob || isStale()) return;
+
+              loadedAsset = await loadScene3DAssetObject(
+                item,
+                blob,
+                loadSplatRuntime,
+                currentColorTransform,
+              );
+              if (isStale()) {
+                disposeScene3DObject(loadedAsset.object);
                 return;
               }
-            }
 
-            const importedObject = loadedAsset.object;
-            loadedAsset = null;
-            if (disposed) {
-              disposeObject(importedObject);
-              return;
-            }
+              if (loadedAsset.usesSplatRenderer) {
+                await ensureSplatRenderer();
+                if (isStale()) {
+                  disposeScene3DObject(loadedAsset.object);
+                  return;
+                }
+              }
 
-            scene.remove(placeholder);
-            disposeObject(placeholder);
+              const importedObject = loadedAsset.object;
+              loadedAsset = null;
+              contentRoot.remove(placeholder);
+              disposeScene3DObject(placeholder);
 
-            const root = new THREE.Group();
-            fitImportedObjectToScene(importedObject, scene3d, pixelScale);
-            root.add(importedObject);
-            applyItemTransform(root, item, pixelScale);
-            scene.add(root);
-            root.updateMatrixWorld(true);
+              const root = new THREE.Group();
+              fitImportedScene3DObjectToScene(importedObject, currentScene3d, pixelScale);
+              root.add(importedObject);
+              applyScene3DItemTransform(root, item, pixelScale);
+              contentRoot.add(root);
+              root.updateMatrixWorld(true);
+              assetBinding.object = root;
+              assetBinding.assetPlaceholder = undefined;
 
-            const box = getImportedObjectBox(importedObject, true);
-            if (!box.isEmpty()) {
-              const helper = new THREE.Box3Helper(box, new THREE.Color('#f8fafc'));
-              helper.visible = selectedItemIdRef.current === item.id;
-              scene.add(helper);
-              assetBinding.assetHelper = helper;
+              const box = getImportedScene3DObjectBox(importedObject, true);
+              if (!box.isEmpty()) {
+                const helper = new THREE.Box3Helper(box, new THREE.Color('#f8fafc'));
+                helper.visible = selectedItemIdRef.current === item.id;
+                contentRoot.add(helper);
+                assetBinding.assetHelper = helper;
+              }
+            } catch (error) {
+              if (loadedAsset) {
+                disposeScene3DObject(loadedAsset.object);
+              }
+              if (isStale()) {
+                return;
+              }
+              console.error(`Failed to load 3D asset ${item.asset?.fileName ?? item.name}`, error);
+              const errorMarker = createScene3DLineBox(
+                item.size ?? { x: 120, y: 120, z: 120 },
+                pixelScale,
+                '#fb7185',
+                0.9,
+              );
+              applyScene3DItemTransform(errorMarker, item, pixelScale);
+              contentRoot.remove(placeholder);
+              disposeScene3DObject(placeholder);
+              contentRoot.add(errorMarker);
+              assetBinding.object = errorMarker;
+              assetBinding.assetPlaceholder = undefined;
             }
-          } catch (error) {
-            if (loadedAsset) {
-              disposeObject(loadedAsset.object);
-            }
-            console.error(`Failed to load 3D asset ${item.asset?.fileName ?? item.name}`, error);
-            const errorMarker = createLineBox(
-              item.size ?? { x: 120, y: 120, z: 120 },
-              pixelScale,
-              '#fb7185',
-              0.9,
-            );
-            applyItemTransform(errorMarker, item, pixelScale);
-            if (!disposed) {
-              scene.remove(placeholder);
-              disposeObject(placeholder);
-              scene.add(errorMarker);
-            }
-          }
-        })();
-        continue;
+          })();
+          continue;
+        }
+
+        const marker = new THREE.Mesh(
+          new THREE.SphereGeometry(0.1, 12, 8),
+          new THREE.MeshBasicMaterial({ color: parseScene3DColor(item.color, '#a7f3d0') }),
+        );
+        applyScene3DItemTransform(marker, item, pixelScale);
+        contentRoot.add(marker);
       }
 
-      const marker = new THREE.Mesh(
-        new THREE.SphereGeometry(0.1, 12, 8),
-        new THREE.MeshBasicMaterial({ color: parseColor(item.color, '#a7f3d0') }),
-      );
-      applyItemTransform(marker, item, pixelScale);
-      scene.add(marker);
-    }
+      applyViewportCameraMode();
+      renderFrameRef.current?.();
+    };
+    rebuildSceneContentsRef.current = rebuildSceneContents;
 
     const resize = () => {
       const rect = mount.getBoundingClientRect();
@@ -867,8 +826,11 @@ function Scene3DViewport({
     const renderFrame = () => {
       if (outputTexture) outputTexture.needsUpdate = true;
       controls.update();
+      camera.updateMatrixWorld(true);
+      scene.updateMatrixWorld(true);
       renderer.render(scene, camera);
     };
+    renderFrameRef.current = renderFrame;
     const stopRenderLoop = () => {
       if (frameId === null) return;
       cancelAnimationFrame(frameId);
@@ -908,28 +870,34 @@ function Scene3DViewport({
       });
       controls.removeEventListener('change', saveEditorCameraView);
       controls.dispose();
-      resetViewRef.current = () => {};
-      outputTexture?.dispose();
-      objectUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl));
-      [...scene.children].forEach((child) => {
-        scene.remove(child);
-        disposeObject(child);
-      });
+      disposeCurrentContent();
+      if (sparkRenderer) {
+        scene.remove(sparkRenderer);
+        disposeScene3DObject(sparkRenderer);
+      }
+      scene.remove(contentRoot);
+      disposeScene3DObject(contentRoot);
       renderer.dispose();
       renderer.domElement.remove();
+      resetViewRef.current = () => {};
       sceneContextRef.current = null;
       applyProjectionTransformRef.current = null;
       applyViewportCameraModeRef.current = null;
+      rebuildSceneContentsRef.current = null;
+      renderFrameRef.current = null;
       syncActiveStateRef.current = null;
     };
+  }, [scene3DNode.id]);
+
+  useEffect(() => {
+    rebuildSceneContentsRef.current?.();
   }, [
     backdropCanvas,
     hasBackdropOutput,
-    onViewportCameraModeChange,
-    scene3DNode.id,
     scene3d,
     sceneNode.height,
     sceneNode.width,
+    transformColorPickingToSceneLinear,
   ]);
 
   useEffect(() => {
@@ -953,6 +921,7 @@ function Scene3DViewport({
         }
       }
     }
+    renderFrameRef.current?.();
   }, [selectedItemId]);
 
   const showCameraViewGuides = viewportCameraMode === 'sceneCamera';

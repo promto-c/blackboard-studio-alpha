@@ -25,6 +25,7 @@ interface ComfyExecuteSectionProps {
   onActivateGeneratedOutput: (output: GeneratedOutput) => void;
   onOpenGalleryView: () => void;
   onCancelRun: () => void;
+  onCancelPendingSlot: (jobId: string) => void;
   onClearInspectorLog: () => void;
 }
 
@@ -47,6 +48,7 @@ export function ComfyExecuteSection({
   onActivateGeneratedOutput,
   onOpenGalleryView,
   onCancelRun,
+  onCancelPendingSlot,
   onClearInspectorLog,
 }: ComfyExecuteSectionProps) {
   const runActions = (
@@ -78,6 +80,7 @@ export function ComfyExecuteSection({
             fallbackActiveSrc={node.src}
             onActivateOutput={onActivateGeneratedOutput}
             onOpenGallery={onOpenGalleryView}
+            onCancelPending={onCancelPendingSlot}
           />
         </AttentionPulse>
       </CollapsibleSection>

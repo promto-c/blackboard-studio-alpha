@@ -1,4 +1,9 @@
-import type { Scene3DAssetReference } from '@blackboard/types';
+import type {
+  MediaColorManagement,
+  OcioColorSpaceName,
+  Scene3DAssetReference,
+  VideoColorMetadata,
+} from '@blackboard/types';
 import { performTransaction, openDB } from './assetStorage';
 
 const GALLERY_STORE_NAME = 'gallery';
@@ -10,11 +15,14 @@ export interface GalleryEntry {
   assetId: string;
   mediaKind?: 'image' | 'image_sequence' | 'video' | 'model_3d';
   scene3dAsset?: Scene3DAssetReference;
+  colorSpace?: OcioColorSpaceName;
+  mediaColorManagement?: MediaColorManagement;
   frames?: string[];
   width: number;
   height: number;
   duration?: number;
   fps?: number;
+  videoColorMetadata?: VideoColorMetadata;
   createdAt: number;
   deletedAt?: number;
   label?: string;

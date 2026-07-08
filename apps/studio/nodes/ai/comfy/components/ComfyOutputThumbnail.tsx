@@ -1,7 +1,7 @@
+import { useMemo } from 'react';
 import type { GeneratedOutput } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
-import useAssetObjectUrl from '@/hooks/useAssetObjectUrl';
-import useAssetPreviewUrl from '@/hooks/useAssetPreviewUrl';
+import { useAssetPreview } from '@/hooks/useAssetPreviewUrl';
 
 export function ComfyOutputThumbnail({
   output,
@@ -14,8 +14,28 @@ export function ComfyOutputThumbnail({
 }) {
   const isVideo = output.mediaKind === 'video';
   const isModel3D = output.mediaKind === 'model_3d';
-  const imageUrl = useAssetPreviewUrl(!isVideo && !isModel3D ? output.src : '', 320);
-  const videoUrl = useAssetObjectUrl(isVideo ? output.src : null);
+  const previewSource = useMemo(
+    () =>
+      !isModel3D &&
+      output.src &&
+      output.width > 0 &&
+      output.height > 0 &&
+      output.mediaColorManagement
+        ? {
+            assetId: output.src,
+            width: output.width,
+            height: output.height,
+            mediaKind: isVideo ? ('video' as const) : ('image' as const),
+            mediaColorManagement: output.mediaColorManagement,
+          }
+        : null,
+    [isModel3D, isVideo, output.height, output.mediaColorManagement, output.src, output.width],
+  );
+  const preview = useAssetPreview(previewSource, {
+    mode: 'gallery-thumbnail',
+    maxDimension: 320,
+    priority: 'visible-thumbnail',
+  });
 
   return (
     <button
@@ -40,10 +60,17 @@ export function ComfyOutputThumbnail({
             {output.scene3dAsset?.format ?? '3D'}
           </span>
         </div>
-      ) : videoUrl && isVideo ? (
-        <video src={videoUrl} className="h-full w-full object-cover" muted playsInline />
-      ) : imageUrl ? (
-        <img src={imageUrl} alt="" className="h-full w-full object-cover" />
+      ) : preview.url && isVideo ? (
+        <video
+          src={preview.url}
+          className="h-full w-full object-cover"
+          muted
+          playsInline
+          preload="metadata"
+          aria-label={output.label || 'Comfy video output'}
+        />
+      ) : preview.url ? (
+        <img src={preview.url} alt="" className="h-full w-full object-cover" />
       ) : (
         <div className="flex h-full w-full items-center justify-center text-gray-500">
           <Icons.Photo className="h-5 w-5" />

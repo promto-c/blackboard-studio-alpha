@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 
 export interface UseDebouncedAsyncOptions {
   delay?: number;
+  enabled?: boolean;
   onError?: (error: unknown) => void;
 }
 
@@ -10,7 +11,7 @@ export function useDebouncedAsync<T>(
   deps: React.DependencyList,
   options: UseDebouncedAsyncOptions = {},
 ): T | undefined {
-  const { delay = 200, onError } = options;
+  const { delay = 200, enabled = true, onError } = options;
   const [value, setValue] = useState<T | undefined>();
   const generationRef = useRef(0);
   const fnRef = useRef(fn);
@@ -22,6 +23,13 @@ export function useDebouncedAsync<T>(
     generationRef.current += 1;
     const generation = generationRef.current;
     let isCancelled = false;
+
+    if (!enabled) {
+      setValue(undefined);
+      return () => {
+        isCancelled = true;
+      };
+    }
 
     const timeoutId = setTimeout(async () => {
       if (isCancelled) return;
@@ -41,7 +49,7 @@ export function useDebouncedAsync<T>(
       isCancelled = true;
       clearTimeout(timeoutId);
     };
-  }, deps);
+  }, [delay, enabled, ...deps]);
 
   return value;
 }

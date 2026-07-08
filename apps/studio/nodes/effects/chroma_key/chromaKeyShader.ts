@@ -1,3 +1,5 @@
+import { ACESCG_LUMINANCE_GLSL } from '@/color-management/effectColorMath';
+
 export const CHROMA_KEY_SHADER = `
 precision highp float;
 
@@ -10,6 +12,8 @@ uniform float u_spill; // {"label": "Spill Suppression", "min": 0.0, "max": 1.0,
 in vec2 v_uv;
 out vec4 fragColor;
 
+${ACESCG_LUMINANCE_GLSL}
+
 void main() {
     vec4 tex = texture(u_tDiffuse, v_uv);
     
@@ -19,7 +23,7 @@ void main() {
     
     // Simple spill suppression: desaturate if close to key color
     float spillVal = 1.0 - smoothstep(u_similarity, u_similarity + 0.2, dist);
-    float gray = dot(tex.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float gray = acescg_luminance(tex.rgb);
     
     // Blend towards gray based on spill amount
     tex.rgb = mix(tex.rgb, vec3(gray), spillVal * u_spill);

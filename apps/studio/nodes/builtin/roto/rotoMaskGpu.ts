@@ -22,20 +22,6 @@ void main() {
 }
 `;
 
-const ACCUMULATE_MASK_SHADER = `
-precision highp float;
-
-in vec2 v_uv;
-uniform sampler2D u_tSample;
-uniform float u_weight;
-out vec4 fragColor;
-
-void main() {
-  float mask = texture(u_tSample, v_uv).a * u_weight;
-  fragColor = vec4(mask, mask, mask, mask);
-}
-`;
-
 const renderPass = (
   context: ResolveOutputContext,
   material: THREE.ShaderMaterial,
@@ -66,37 +52,8 @@ export const renderFloatRotoMask = (
   const width = Math.max(1, maskRead.width);
   const height = Math.max(1, maskRead.height);
   layers.forEach((layer, index) => {
-    if (layer.samples.length === 0) return;
-    const firstSample = layer.samples[0];
-    let layerTexture = firstSample.texture;
-    if (layer.samples.length > 1) {
-      const accumulationTarget = getBlurVertical();
-      context.clearRenderTargetTransparent(accumulationTarget);
-      const accumulate = context.getMaterial(
-        `${nodeId}:roto-motion-accumulate`,
-        ACCUMULATE_MASK_SHADER,
-        {
-          u_tSample: { value: layerTexture },
-          u_weight: { value: 1 },
-        },
-      );
-      accumulate.transparent = true;
-      accumulate.blending = THREE.CustomBlending;
-      accumulate.blendEquation = THREE.AddEquation;
-      accumulate.blendSrc = THREE.OneFactor;
-      accumulate.blendDst = THREE.OneFactor;
-      context.quad.material = accumulate;
-      context.renderer.setRenderTarget(accumulationTarget);
-      layer.samples.forEach((sample) => {
-        sample.prepare?.();
-        accumulate.uniforms.u_tSample.value = sample.texture;
-        accumulate.uniforms.u_weight.value = sample.weight;
-        context.renderer.render(context.scene, context.camera);
-      });
-      layerTexture = accumulationTarget.texture;
-    } else {
-      firstSample.prepare?.();
-    }
+    layer.prepare?.();
+    let layerTexture = layer.texture;
     if (layer.feather > 0) {
       const horizontalTarget = getBlurHorizontal();
       const verticalTarget = getBlurVertical();

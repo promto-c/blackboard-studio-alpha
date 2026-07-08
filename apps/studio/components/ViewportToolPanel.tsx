@@ -123,3 +123,31 @@ export function ViewportToolPanel({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+
+export function ViewportToolPanelSectionStack({
+  children,
+  className = '',
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`-mx-3 -mb-3 overflow-hidden rounded-b-[calc(0.5rem-1px)] border-t border-white/[0.08] bg-black/[0.12] divide-y divide-white/[0.08]${className ? ` ${className}` : ''}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function ViewportToolPanelSection({
+  children,
+  className = '',
+  ...props
+}: React.HTMLAttributes<HTMLElement>) {
+  return (
+    <section className={`p-3${className ? ` ${className}` : ''}`} {...props}>
+      {children}
+    </section>
+  );
+}

@@ -8,6 +8,7 @@ export const groupNode: NodeDefinition = {
   name: 'Group',
   category: 'Effect',
   renderMode: 'scene',
+  processingDomain: 'scene_linear',
   description: 'Container node with explicit external input ports.',
   IconComponent: Icons.FolderOpen,
   AdjustmentComponent: GroupAdjustments,

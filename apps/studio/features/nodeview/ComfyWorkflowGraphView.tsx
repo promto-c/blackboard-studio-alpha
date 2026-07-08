@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Badge } from '@blackboard/ui';
 import { ComfyWorkflow } from '@blackboard/types';
 import { useCanvasViewport } from '@/hooks/useCanvasViewport';
 import { isJsonObject, getNonEmptyString } from '@/utils/guards';
@@ -553,15 +554,17 @@ function ComfyWorkflowGraphView({
                 </>
               )}
               {port.type ? (
-                <span
-                  className={`shrink-0 rounded border px-1 font-mono text-[9px] ${
+                <Badge
+                  size="sm"
+                  shrink
+                  className={`!px-1 font-mono ${
                     isInput
-                      ? 'border-emerald-100/20 bg-emerald-300/10 text-emerald-100/70'
-                      : 'border-amber-100/20 bg-amber-300/10 text-amber-100/70'
+                      ? '!border-emerald-100/20 !bg-emerald-300/10 !text-emerald-100/70'
+                      : '!border-amber-100/20 !bg-amber-300/10 !text-amber-100/70'
                   }`}
                 >
                   {port.type}
-                </span>
+                </Badge>
               ) : null}
             </div>
           );
@@ -606,9 +609,9 @@ function ComfyWorkflowGraphView({
                   </p>
                 </div>
                 {subgraph ? (
-                  <span className="rounded-md border border-primary-300/20 bg-primary-300/10 px-1.5 py-0.5 text-[10px] font-medium text-primary-100">
+                  <Badge size="sm" variant="accent">
                     Subgraph
-                  </span>
+                  </Badge>
                 ) : null}
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-[10px] text-gray-500">

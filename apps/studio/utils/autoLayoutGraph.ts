@@ -66,12 +66,9 @@ export function buildStackMap(layerStacks: AnyNode[][]): Map<string, AnyNode[]> 
  * in the main column.
  */
 export function computeAutoLayout(
-  _nodes: AnyNode[],
   layerStacks: AnyNode[][],
 ): Record<string, { x: number; y: number }> {
   const positions: Record<string, { x: number; y: number }> = {};
-
-  if (_nodes.length === 0) return positions;
 
   if (layerStacks.length === 0) {
     positions[OUTPUT_NODE_ID] = { x: -NODE_WIDTH / 2, y: 0 };
@@ -100,7 +97,7 @@ export function computeAutoLayout(
  * Build the ordered pipeline of node IDs matching the node graph order.
  * Stack1 -> Stack2 -> Merge2 -> Stack3 -> Merge3 -> ... -> Output
  */
-export function buildPipelineOrder(_nodes: AnyNode[], layerStacks: AnyNode[][]): string[] {
+export function buildPipelineOrder(layerStacks: AnyNode[][]): string[] {
   const ids: string[] = [];
 
   for (const stack of layerStacks) {

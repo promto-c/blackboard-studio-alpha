@@ -1,7 +1,7 @@
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import type {
   AnyNode,
-  PaintBrushChannels,
+  PaintBrushSettings,
   RotoPointRef,
   RotoPath,
   RotoRefinement,
@@ -40,14 +40,7 @@ export interface ViewportAdapterContext {
   rotoRefinement: RotoRefinement | null;
   nudgeRadius: number;
   rotoPointWeightMode: string;
-  paintBrush: {
-    size: number;
-    opacity: number;
-    color: [number, number, number];
-    alpha: number;
-    channels: PaintBrushChannels;
-    softness: number;
-  };
+  paintBrush: PaintBrushSettings;
   viewerChannels: ViewerSettings['channels'];
   pixelInfo: { x: number; y: number; color: [number, number, number, number] } | null;
   transformInputDataWindowRect: {

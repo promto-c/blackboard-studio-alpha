@@ -16,7 +16,7 @@ export const applyGradePreviewToNodes = (
   values: AiChatGradePreviewArtifact['values'],
   frame: number,
 ) => {
-  let nextNodes = setKeyframeValue(nodes, nodeId, 'grade.brightness', frame, values.brightness);
+  let nextNodes = setKeyframeValue(nodes, nodeId, 'grade.exposure', frame, values.exposure);
   nextNodes = setKeyframeValue(nextNodes, nodeId, 'grade.contrast', frame, values.contrast);
   nextNodes = setKeyframeValue(nextNodes, nodeId, 'grade.saturation', frame, values.saturation);
   return nextNodes;

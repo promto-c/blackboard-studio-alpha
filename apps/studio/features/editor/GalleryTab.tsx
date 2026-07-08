@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getComfyEndpoint } from '@/utils/aiRouting';
+import { DEFAULT_COMFY_ENDPOINT, normalizeComfyEndpoint } from '@/services/comfy/client';
 import { ComfyNode, EditorTab, NodeType } from '@blackboard/types';
-import { ScrollArea } from '@blackboard/ui';
+import { Badge, ScrollArea } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import { getAsset } from '@/state/assetStorage';
+import { beginAssetPreviewProfile, markAssetPreviewMilestone } from '@/services/assetPreview';
 import {
   createComfyWorkflowFromImage,
   createDefaultComfyWorkflowControls,
@@ -74,7 +77,7 @@ function GalleryTab() {
     switchProjectBranch,
     syncComfyGeneratedOutputsWithGalleryEntries,
   } = useEditorActions();
-  const { comfyEndpoint } = usePreferences();
+  const { integrationConnections } = usePreferences();
 
   const selectedComfyNode = nodes.find(
     (node): node is ComfyNode => node.id === selectedNodeId && node.type === NodeType.COMFY,
@@ -119,11 +122,16 @@ function GalleryTab() {
   } | null>(null);
 
   const loadEntries = useCallback(async () => {
+    beginAssetPreviewProfile();
     setIsLoading(true);
     const entries = await loadGalleryEntries();
     setAllEntries(entries);
     setIsLoading(false);
   }, []);
+
+  useEffect(() => {
+    if (!isLoading) markAssetPreviewMilestone('metadataInteractiveMs');
+  }, [isLoading]);
 
   useEffect(() => {
     void loadEntries();
@@ -436,7 +444,9 @@ function GalleryTab() {
       if (!blob) throw new Error('Could not read the selected output asset.');
 
       const workflow = await createComfyWorkflowFromImage({
-        endpoint: comfyEndpoint,
+        endpoint: normalizeComfyEndpoint(
+          getComfyEndpoint({ integrationConnections }) ?? DEFAULT_COMFY_ENDPOINT,
+        ),
         image: blob,
         id: `comfy_workflow_output_${hashComfyWorkflowSource(entry.id)}`,
         name: `${entry.label || entry.nodeName || 'Output'} params`,
@@ -493,9 +503,9 @@ function GalleryTab() {
           <Icons.Photo className="h-4 w-4 text-primary-200" />
           <h2 className="truncate text-sm font-semibold text-gray-100">Gallery</h2>
         </div>
-        <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-gray-400">
+        <Badge size="sm" variant="neutral" noBorder className="!bg-white/5 font-mono">
           {visibleEntries.length}
-        </span>
+        </Badge>
       </div>
 
       {selectedCount > 0 && (

@@ -32,6 +32,7 @@ export const warpNode: NodeDefinition = {
   name: 'Pin Warp',
   category: 'Effect',
   renderMode: 'warp',
+  processingDomain: 'scene_linear',
   description: 'Distort image using movable control pins.',
   IconComponent: Pin,
   ToolComponent: WarpTool,

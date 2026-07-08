@@ -1,6 +1,9 @@
 import * as THREE from 'three';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BlendMode, ImageFitMode, NodeType, type AnyNode } from '@blackboard/types';
+import { ColorManagementDefaults } from '@/color-management/constants';
+import { colorManagementService, createDefaultProjectColorManagement } from '@/color-management';
+import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
 import { MEDIA_SOURCE_UPSTREAM } from '@/utils/mediaSourceSelection';
 
 const { createPixelDataReaderMock, getPixelDataForFrameMock, renderWithSharedPipelineMock } =
@@ -35,7 +38,7 @@ const SCENE_NODE: AnyNode = {
   width: 2,
   height: 2,
   bitDepth: 16,
-  colorSpace: 'Linear',
+  colorSpace: ColorManagementDefaults.WORKING_SPACE,
   maxFrames: 0,
   fps: 30,
 };
@@ -51,7 +54,7 @@ const IMAGE_NODE: AnyNode = {
   height: 2,
   opacity: 100,
   operator: BlendMode.OVER,
-  colorSpace: 'sRGB',
+  colorSpace: ColorManagementDefaults.TEXTURE_SPACE,
   transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
 };
 
@@ -61,13 +64,7 @@ const GRADE_NODE: AnyNode = {
   name: 'Look',
   enabled: true,
   stacked: true,
-  grade: {
-    brightness: 0,
-    contrast: 1,
-    saturation: 1,
-    gain: 1,
-    gamma: 1,
-  },
+  grade: createDefaultGrade(),
 };
 
 const ROTO_NODE: AnyNode = {
@@ -78,11 +75,28 @@ const ROTO_NODE: AnyNode = {
   invert: false,
   paths: [],
 };
+const PROJECT_COLOR_MANAGEMENT = createDefaultProjectColorManagement();
+
+beforeEach(() => {
+  vi.spyOn(colorManagementService, 'resolveProjectColorManagement').mockReturnValue({
+    project: PROJECT_COLOR_MANAGEMENT,
+    config: PROJECT_COLOR_MANAGEMENT.config,
+    workingColorSpace: ColorManagementDefaults.WORKING_SPACE,
+    textureColorSpace: ColorManagementDefaults.TEXTURE_SPACE,
+    colorPickingColorSpace: ColorManagementDefaults.COLOR_PICKING_SPACE,
+    dataColorSpace: ColorManagementDefaults.DATA_SPACE,
+    display: PROJECT_COLOR_MANAGEMENT.viewer.display,
+    view: PROJECT_COLOR_MANAGEMENT.viewer.view,
+    look: PROJECT_COLOR_MANAGEMENT.viewer.look,
+    context: {},
+  });
+});
 
 afterEach(() => {
   createPixelDataReaderMock.mockReset();
   getPixelDataForFrameMock.mockReset();
   renderWithSharedPipelineMock.mockReset();
+  vi.restoreAllMocks();
   globalThis.document = originalDocument;
 });
 
@@ -90,7 +104,9 @@ describe('sourcePixelData', () => {
   it('collapses upstream to the raw media source when it is already a single source node', () => {
     const nodes = [SCENE_NODE, IMAGE_NODE, ROTO_NODE];
 
-    expect(resolveSourcePixelSource(nodes, 'roto-1', MEDIA_SOURCE_UPSTREAM)).toEqual({
+    expect(
+      resolveSourcePixelSource(nodes, 'roto-1', MEDIA_SOURCE_UPSTREAM, PROJECT_COLOR_MANAGEMENT),
+    ).toEqual({
       kind: 'media-node',
       node: IMAGE_NODE,
     });
@@ -99,10 +115,13 @@ describe('sourcePixelData', () => {
   it('resolves the upstream source to the nodes before the roto node', () => {
     const nodes = [SCENE_NODE, IMAGE_NODE, GRADE_NODE, ROTO_NODE];
 
-    expect(resolveSourcePixelSource(nodes, 'roto-1', MEDIA_SOURCE_UPSTREAM)).toEqual({
+    expect(
+      resolveSourcePixelSource(nodes, 'roto-1', MEDIA_SOURCE_UPSTREAM, PROJECT_COLOR_MANAGEMENT),
+    ).toEqual({
       kind: 'upstream',
       nodes: [SCENE_NODE, IMAGE_NODE, GRADE_NODE],
       sceneNode: SCENE_NODE,
+      projectColorManagement: PROJECT_COLOR_MANAGEMENT,
     });
   });
 
@@ -143,9 +162,11 @@ describe('sourcePixelData', () => {
         _y: number,
         _width: number,
         _height: number,
-        buffer: Uint8Array,
+        buffer: Float32Array,
       ) => {
-        buffer.set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+        buffer.set(
+          [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].map((value) => value / 255),
+        );
       },
     );
     globalThis.document = {
@@ -157,7 +178,7 @@ describe('sourcePixelData', () => {
       finalOutputTarget: {
         width: 2,
         height: 2,
-        texture: { type: THREE.UnsignedByteType },
+        texture: { type: THREE.FloatType },
       },
       dispose,
     });
@@ -169,6 +190,7 @@ describe('sourcePixelData', () => {
         sceneNode: SCENE_NODE as typeof SCENE_NODE & {
           type: typeof NodeType.SCENE;
         },
+        projectColorManagement: PROJECT_COLOR_MANAGEMENT,
       },
       5,
       30,
@@ -206,7 +228,7 @@ it('reuses the upstream renderer across frames and disposes it once per session'
         _y: number,
         _width: number,
         _height: number,
-        buffer: Uint8Array,
+        buffer: Float32Array,
       ) => buffer.fill(0),
     ),
     dispose: vi.fn(),
@@ -217,7 +239,7 @@ it('reuses the upstream renderer across frames and disposes it once per session'
       finalOutputTarget: {
         width: 1,
         height: 1,
-        texture: { type: THREE.UnsignedByteType },
+        texture: { type: THREE.FloatType },
       },
       dispose: vi.fn(),
     })
@@ -226,7 +248,7 @@ it('reuses the upstream renderer across frames and disposes it once per session'
       finalOutputTarget: {
         width: 1,
         height: 1,
-        texture: { type: THREE.UnsignedByteType },
+        texture: { type: THREE.FloatType },
       },
       dispose: vi.fn(),
     });
@@ -238,6 +260,7 @@ it('reuses the upstream renderer across frames and disposes it once per session'
       sceneNode: SCENE_NODE as typeof SCENE_NODE & {
         type: typeof NodeType.SCENE;
       },
+      projectColorManagement: PROJECT_COLOR_MANAGEMENT,
     },
     30,
   );

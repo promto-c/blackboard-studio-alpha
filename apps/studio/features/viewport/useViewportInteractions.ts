@@ -22,9 +22,10 @@ import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import type {
   AnyNode,
   ComfyNode,
+  PaintBrushSettings,
+  ProjectColorManagement,
   SceneNode,
   ViewerSettings,
-  PaintBrushChannels,
   RotoPointRef,
   RotoPath,
   RotoRefinement,
@@ -60,6 +61,7 @@ export interface UseViewportInteractionsParams {
   selectedNodeId: string | null;
   nodes: AnyNode[];
   sceneNode: SceneNode | undefined;
+  projectColorManagement: ProjectColorManagement;
   selectedRotoLayerIds: string[];
   selectedRotoPathIds: string[];
   selectedRotoPointRefs: RotoPointRef[];
@@ -77,14 +79,7 @@ export interface UseViewportInteractionsParams {
   rotoRefinement: RotoRefinement | null;
   nudgeRadius: number;
   rotoPointWeightMode: string;
-  paintBrush: {
-    size: number;
-    opacity: number;
-    color: [number, number, number];
-    alpha: number;
-    channels: PaintBrushChannels;
-    softness: number;
-  };
+  paintBrush: PaintBrushSettings;
   viewerChannels: ViewerSettings['channels'];
   pixelInfo: { x: number; y: number; color: [number, number, number, number] } | null;
   transformInputDataWindowRect: {
@@ -149,6 +144,7 @@ export function useViewportInteractions(
     selectedNodeId,
     nodes,
     sceneNode,
+    projectColorManagement,
     selectedRotoLayerIds,
     selectedRotoPathIds,
     selectedRotoPointRefs,
@@ -232,6 +228,7 @@ export function useViewportInteractions(
     setHierarchySelection,
     activeViewportTool,
     sceneNode,
+    projectColorManagement,
     frame: visualFrame,
     zoom,
     paintBrush,

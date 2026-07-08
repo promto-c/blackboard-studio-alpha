@@ -1,10 +1,14 @@
-import type {
-  ComfyNode,
-  GeneratedOutput,
-  SceneNode,
-  ViewportPromptRegion,
+import {
+  ImageFitMode,
+  type AnyNode,
+  type ComfyNode,
+  type GeneratedOutput,
+  type SceneNode,
+  type ViewportPromptRegion,
 } from '@blackboard/types';
 import type { MediaCompositeLayer } from '@/nodes/NodeDefinition';
+import { isDataChannel, isDataMediaColorManagement } from '@/color-management';
+import { createAutoFitTransform, type SourceTransformNode } from '../../sourceNodeBehavior';
 import { getComfyOutputTransform } from './comfyOutputTransform';
 import { isComfy3DGeneratedOutput } from './comfyOutputActivation';
 export {
@@ -119,23 +123,112 @@ export const getComfyCompositeLayers = (
   node: ComfyNode,
   frame: number,
   sceneNode: Pick<SceneNode, 'width' | 'height'>,
-): MediaCompositeLayer[] =>
-  [...getVisibleComfyGeneratedOutputs(node)].reverse().flatMap((output) => {
-    const texture = getComfyGeneratedOutputTextureKey(output, frame);
-    if (!texture) return [];
-    const transform = getComfyOutputTransform({ node, output, sceneNode });
+  nodes?: readonly AnyNode[],
+): MediaCompositeLayer[] => {
+  const hiddenPortIds = new Set(node.hiddenInputPortIds ?? []);
 
-    return [
-      {
-        id: output.id,
-        textureKey: texture.textureKey,
-        assetId: texture.assetId,
-        isVideoFile: texture.isVideoFile,
-        width: output.width,
-        height: output.height,
-        transform,
-        opacity: 100,
-        colorSpace: output.colorSpace ?? node.colorSpace,
-      },
-    ];
-  });
+  // Directly-loaded input port images — rendered behind generated outputs.
+  // Reversed so the last port entry renders on top (matching output layer convention).
+  const inputLayers: MediaCompositeLayer[] = Object.entries(node.workflowInputImages ?? {})
+    .filter(([portName]) => !hiddenPortIds.has(portName))
+    .reverse()
+    .map(([portName, inputImage]) => {
+      const fitTransform = createAutoFitTransform({
+        node: node as unknown as SourceTransformNode,
+        imageSize: { width: inputImage.width, height: inputImage.height },
+        sceneNode,
+        fitMode: ImageFitMode.FIT,
+      });
+      return {
+        id: `${node.id}:input:${portName}`,
+        textureKey: inputImage.assetId,
+        assetId: inputImage.assetId,
+        width: inputImage.width,
+        height: inputImage.height,
+        transform: fitTransform,
+        colorSpace: node.colorSpace,
+        isData:
+          isDataMediaColorManagement(node.mediaColorManagement) ||
+          isDataChannel(portName) ||
+          isDataChannel(inputImage.name),
+      } satisfies MediaCompositeLayer;
+    });
+
+  // Graph-edge connected input ports (upstream nodes feeding into Comfy inputs).
+  // These are resolved as additional composite layers so they render at the
+  // correct Z-order alongside directly-loaded images.
+  if (nodes) {
+    Object.entries(node.inputs ?? {})
+      .filter(
+        ([portName]) =>
+          portName !== 'pipe' &&
+          !hiddenPortIds.has(portName) &&
+          !node.workflowInputImages?.[portName],
+      )
+      .forEach(([portName, sourceId]) => {
+        const upstreamNode = nodes.find((n) => n.id === sourceId);
+        if (!upstreamNode) return;
+        const src = (upstreamNode as { src?: string }).src;
+        if (!src) return;
+        const width = (upstreamNode as { width?: number }).width ?? 0;
+        const height = (upstreamNode as { height?: number }).height ?? 0;
+        if (!width || !height) return;
+
+        const fitTransform = createAutoFitTransform({
+          node: node as unknown as SourceTransformNode,
+          imageSize: { width, height },
+          sceneNode,
+          fitMode: ImageFitMode.FIT,
+        });
+
+        // Use the upstream node's own color space so the pipeline can
+        // apply the correct transform (e.g. sRGB→Linear) instead of
+        // assuming the Comfy node's colorSpace, which may be an OCIO
+        // name like 'sRGB Encoded Rec.709 (sRGB)'.
+        const upstreamColorSpace = (upstreamNode as { colorSpace?: string }).colorSpace;
+        const upstreamMediaColorManagement = (
+          upstreamNode as { mediaColorManagement?: ComfyNode['mediaColorManagement'] }
+        ).mediaColorManagement;
+
+        inputLayers.push({
+          id: `${node.id}:input-graph:${portName}`,
+          textureKey: src,
+          assetId: src,
+          width,
+          height,
+          transform: fitTransform,
+          colorSpace: upstreamColorSpace ?? node.colorSpace,
+          isData:
+            isDataMediaColorManagement(upstreamMediaColorManagement) || isDataChannel(portName),
+        } satisfies MediaCompositeLayer);
+      });
+  }
+
+  // Visible generated outputs — rendered on top of all input images
+  const outputLayers: MediaCompositeLayer[] = [...getVisibleComfyGeneratedOutputs(node)]
+    .reverse()
+    .flatMap((output) => {
+      const texture = getComfyGeneratedOutputTextureKey(output, frame);
+      if (!texture) return [];
+
+      const transform = getComfyOutputTransform({ node, output, sceneNode });
+
+      return [
+        {
+          id: output.id,
+          textureKey: texture.textureKey,
+          assetId: texture.assetId,
+          isVideoFile: texture.isVideoFile,
+          width: output.width,
+          height: output.height,
+          transform,
+          opacity: 100,
+          colorSpace: output.colorSpace ?? node.colorSpace,
+          isData:
+            isDataMediaColorManagement(output.mediaColorManagement) || isDataChannel(output.label),
+        } satisfies MediaCompositeLayer,
+      ];
+    });
+
+  return [...inputLayers, ...outputLayers];
+};

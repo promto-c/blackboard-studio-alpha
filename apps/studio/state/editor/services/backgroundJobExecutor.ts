@@ -1,3 +1,4 @@
+import { getErrorMessage } from '@/utils/guards';
 import {
   getBackgroundJobDefinition,
   type BackgroundJobProgressState,
@@ -75,9 +76,6 @@ const isAbortLikeError = (error: unknown): boolean =>
       typeof error === 'object' &&
       'name' in error &&
       (error as { name?: unknown }).name === 'AbortError';
-
-const getErrorMessage = (error: unknown, fallback = 'Background job failed.'): string =>
-  error instanceof Error ? error.message : typeof error === 'string' ? error : fallback;
 
 const waitForRetryDelay = (delayMs: number, signal: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
@@ -201,7 +199,7 @@ export const createBackgroundJobResumeUpdate = (
     detail: resumability.detail ?? 'Resuming job...',
     progress: resumability.mode === 'restart' ? (initialProgress ?? 0) : job.progress,
     indeterminate: definition.progress.initial.indeterminate ?? true,
-    cancellable: false,
+    cancellable: definition.defaultCancellable,
     source: { ...(job.source ?? {}), restoredFromStorage: true },
   };
 };
@@ -276,7 +274,7 @@ export class BackgroundJobExecutor {
         });
         return;
       } catch (error) {
-        const message = getErrorMessage(error);
+        const message = getErrorMessage(error, 'Background job failed.');
         if (cancelRequested || isAbortLikeError(error)) {
           bridge.finish(nextJob.id, {
             status: 'cancelled',

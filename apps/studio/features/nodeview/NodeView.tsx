@@ -5,6 +5,7 @@ import {
   EditorTab,
   NodePositions,
   NodeType,
+  type OutputNode,
   SceneNode,
   ViewerSlotAssignments,
 } from '@blackboard/types';
@@ -19,6 +20,7 @@ import {
 import { useCanvasViewport } from '@/hooks/useCanvasViewport';
 import { useNodeDrag } from '@/hooks/useNodeDrag';
 import { usePreferences } from '@/state/preferencesContext';
+import { getOutputTechnicalChannelPort } from '@/color-management';
 
 import {
   getOutputPipeEdge,
@@ -117,6 +119,9 @@ function NodeView({
     const flowId = s.activeFlowId ?? s.rootFlowId;
     return flowId ? s.flows[flowId] : null;
   });
+  const outputNode = activeFlow?.nodes.find(
+    (node): node is OutputNode => node.id === activeFlow.outputNodeId,
+  );
   const backgroundJobs = useEditorSelector((s) => s.backgroundJobs);
   const previewNodeType = useEditorSelector((s) => s.previewNodeType);
   const nodePositions = useEditorSelector((s) => {
@@ -293,16 +298,17 @@ function NodeView({
         });
       }
     }
-    if (outputPipeEdge) {
+    for (const edge of activeFlow?.edges ?? []) {
+      if (edge.targetNodeId !== OUTPUT_NODE_ID) continue;
       conns.push({
-        sourceNodeId: outputPipeEdge.sourceNodeId,
-        sourcePortName: outputPipeEdge.sourcePort,
+        sourceNodeId: edge.sourceNodeId,
+        sourcePortName: edge.sourcePort,
         targetNodeId: OUTPUT_NODE_ID,
-        targetPortName: outputPipeEdge.targetPort,
+        targetPortName: edge.targetPort,
       });
     }
     return conns;
-  }, [nodes, outputPipeEdge]);
+  }, [activeFlow, nodes]);
 
   // Merge all connections
   const allConnections = useMemo(() => {
@@ -1013,7 +1019,7 @@ function NodeView({
     if (missing.length > 0) {
       // Place new nodes between their pipeline neighbours, shifting
       // downstream nodes so nothing overlaps.
-      const pipelineOrder = buildPipelineOrder(nodes, nodeStacks);
+      const pipelineOrder = buildPipelineOrder(nodeStacks);
       const newPositions = placeNewNodes(nodePositions, missing, pipelineOrder, nodeStacks);
       setNodePositions(newPositions, { pushHistory: false });
     }
@@ -1062,6 +1068,8 @@ function NodeView({
           return;
         }
         setSelectedConnection(null);
+        // Prevent bubbling to the outer flow container's selectNode(null) handler
+        event.stopPropagation();
       }}
     >
       {/* Grid background */}
@@ -1116,6 +1124,14 @@ function NodeView({
             isSelected={isOutputNodeSelected}
             isDragTarget={!!dragConnectState}
             isConnected={connectionMap.has(`${OUTPUT_NODE_ID}:pipe`)}
+            technicalChannels={outputNode?.technicalChannels ?? []}
+            connectedTechnicalPorts={
+              new Set(
+                (outputNode?.technicalChannels ?? [])
+                  .map((channel) => getOutputTechnicalChannelPort(channel.id))
+                  .filter((portName) => connectionMap.has(`${OUTPUT_NODE_ID}:${portName}`)),
+              )
+            }
             viewerNodeId={viewerNodeId}
             viewerSlots={viewerSlots}
             onSelect={(event) => selectNodeFromPointer(event, OUTPUT_NODE_ID)}

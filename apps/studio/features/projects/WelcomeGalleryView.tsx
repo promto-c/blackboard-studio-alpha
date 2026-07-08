@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ScrollArea } from '@blackboard/ui';
+import { Badge, ScrollArea } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 import {
   loadGalleryEntries,
@@ -12,8 +12,18 @@ import { useEditorActions } from '@/state/editorContext';
 import { GalleryCard } from '@/features/editor/galleryShared';
 import type { GalleryEntry, GallerySelection } from '@/features/editor/galleryShared';
 import { AssetViewer, type AssetViewerMedia } from '@/components';
+import { beginAssetPreviewProfile, markAssetPreviewMilestone } from '@/services/assetPreview';
+import {
+  SlidingSegmentedControl,
+  type SlidingSegmentedControlOption,
+} from '@/components/SlidingSegmentedControl';
 
 type GalleryScope = 'app' | 'recycle';
+
+const GALLERY_SCOPE_OPTIONS: SlidingSegmentedControlOption<GalleryScope>[] = [
+  { value: 'app', label: 'Items', Icon: Icons.Photo, title: 'Gallery items' },
+  { value: 'recycle', label: 'Bin', Icon: Icons.Trash, title: 'Recycle Bin' },
+];
 
 const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof HTMLElement)) return false;
@@ -48,6 +58,7 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
 
   useEffect(() => {
     const load = async () => {
+      beginAssetPreviewProfile();
       setIsLoading(true);
       setSelection(new Map<string, GalleryEntry>());
       const all = await loadEntries();
@@ -61,6 +72,10 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
     };
     void load();
   }, [scope]);
+
+  useEffect(() => {
+    if (!isLoading) markAssetPreviewMilestone('metadataInteractiveMs');
+  }, [isLoading]);
 
   const visibleEntries = useMemo(() => {
     if (scope === 'recycle') return allEntries.filter((e) => !!e.deletedAt);
@@ -78,7 +93,7 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
   );
 
   const activeMedia = useMemo<AssetViewerMedia | null>(() => {
-    if (!activeEntry || activeEntry.mediaKind === 'model_3d') return null;
+    if (!activeEntry) return null;
     return {
       id: activeEntry.id,
       assetId: activeEntry.assetId,
@@ -92,6 +107,8 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
       detail: activeEntry.detail || activeEntry.prompt,
       source: activeEntry.source,
       createdAt: activeEntry.createdAt,
+      mediaColorManagement: activeEntry.mediaColorManagement,
+      scene3dAsset: activeEntry.scene3dAsset,
     };
   }, [activeEntry]);
 
@@ -223,7 +240,7 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
       tabIndex={0}
       onKeyDown={handleGalleryKeyDown}
     >
-      <div className="mb-5 flex items-center justify-between gap-4">
+      <div className="mb-5 flex items-center gap-4">
         <div className="flex min-w-0 items-center gap-3">
           <button
             onClick={onBack}
@@ -236,30 +253,6 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
             <h1 className="text-xl font-bold text-white">Gallery</h1>
             <p className="text-sm text-gray-400">Browse generated outputs across all projects</p>
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <div className="flex overflow-hidden rounded-md border border-white/10 bg-gray-800 text-xs">
-            <button
-              type="button"
-              onClick={() => setScope('app')}
-              className={`px-2.5 py-1 transition ${scope === 'app' ? 'bg-primary-300/15 text-primary-100' : 'text-gray-400 hover:text-gray-200'}`}
-            >
-              Items
-            </button>
-            <button
-              type="button"
-              onClick={() => setScope('recycle')}
-              className={`flex items-center gap-1 px-2.5 py-1 transition ${scope === 'recycle' ? 'bg-rose-300/15 text-rose-100' : 'text-gray-400 hover:text-gray-200'}`}
-            >
-              <Icons.Trash className="h-3 w-3" />
-              Bin
-            </button>
-          </div>
-          {allEntries.length > 0 ? (
-            <span className="shrink-0 rounded-md bg-white/[0.05] px-2 py-1 font-mono text-xs text-gray-400">
-              {allEntries.length}
-            </span>
-          ) : null}
         </div>
       </div>
 
@@ -307,31 +300,51 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
         </div>
       ) : null}
 
-      {isLoading ? (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex flex-col items-center gap-3">
-            <Icons.CubeTransparent className="h-8 w-8 animate-pulse text-primary-300" />
-            <p className="text-sm text-gray-400">Loading gallery...</p>
-          </div>
-        </div>
-      ) : hasEntries ? (
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[20rem_minmax(0,1fr)] lg:grid-rows-1">
-          <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-white/10 bg-gray-950/55">
-            <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <Icons.Photo className="h-4 w-4 text-primary-200" />
-                <span className="truncate text-sm font-semibold text-gray-100">
-                  {isRecycle ? 'Recycle Bin' : 'Items'}
-                </span>
-              </div>
-              <span className="text-[11px] text-gray-500">
-                {selectedCount > 0
-                  ? `${selectedCount} selected`
-                  : isRecycle
-                    ? 'Deleted items'
-                    : 'Click to preview'}
-              </span>
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[20rem_minmax(0,1fr)] lg:grid-rows-1">
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-white/10 bg-gray-950/55">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <SlidingSegmentedControl<GalleryScope>
+                options={GALLERY_SCOPE_OPTIONS}
+                value={scope}
+                onChange={setScope}
+                ariaLabel="Gallery scope"
+                activeWidth={84}
+                inactiveWidth={30}
+                padding={6}
+                selectionRadius={6}
+                height={34}
+                className="!rounded-lg !border-white/[0.06] !bg-gray-950/45"
+                itemClassName="!rounded-md !px-1.5 !text-xs !font-medium !tracking-normal"
+                iconClassName="h-3.5 w-3.5"
+                activeIconClassName={isRecycle ? 'text-rose-300' : 'text-primary-300'}
+                inactiveIconClassName="text-gray-600"
+                labelMaxWidthClassName="max-w-20"
+              />
+              <Badge
+                size="sm"
+                variant="neutral"
+                shrink
+                noBorder
+                className="!bg-white/5 font-mono !text-gray-400"
+              >
+                {visibleEntries.length}
+              </Badge>
             </div>
+            <span className="text-[11px] text-gray-500">
+              {selectedCount > 0
+                ? `${selectedCount} selected`
+                : isRecycle
+                  ? 'Deleted items'
+                  : 'Click to preview'}
+            </span>
+          </div>
+          {isLoading ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+              <Icons.CubeTransparent className="h-7 w-7 animate-pulse text-primary-300" />
+              <p className="text-xs text-gray-500">Loading items…</p>
+            </div>
+          ) : hasEntries ? (
             <ScrollArea fill axis="y" contentClassName="grid grid-cols-2 gap-2 p-2">
               {visibleEntries.map((entry) => (
                 <div
@@ -352,7 +365,16 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
                 </div>
               ))}
             </ScrollArea>
-          </div>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+              <Icons.Photo className="h-7 w-7 text-gray-700" />
+              <p className="text-xs font-medium text-gray-400">
+                {isRecycle ? 'Recycle bin is empty' : 'No gallery items'}
+              </p>
+            </div>
+          )}
+        </div>
+        {hasEntries ? (
           <AssetViewer
             media={activeMedia}
             onOpenProject={
@@ -362,20 +384,20 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
             }
             className="min-h-[24rem] lg:min-h-0"
           />
-        </div>
-      ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-          <Icons.Photo className="h-10 w-10 text-gray-600" />
-          <p className="text-base font-medium text-gray-300">
-            {isRecycle ? 'Recycle bin is empty' : 'No gallery items found'}
-          </p>
-          <p className="max-w-md text-sm leading-6 text-gray-500">
-            {isRecycle
-              ? 'Deleted items will appear here. You can restore them or permanently delete them.'
-              : 'Generated Comfy or AI outputs will appear here across all your projects. Open a project and run a generation to get started.'}
-          </p>
-        </div>
-      )}
+        ) : (
+          <div className="flex min-h-[24rem] flex-col items-center justify-center gap-3 rounded-lg border border-white/10 bg-gray-950/35 p-8 text-center lg:min-h-0">
+            <Icons.Photo className="h-10 w-10 text-gray-600" />
+            <p className="text-base font-medium text-gray-300">
+              {isRecycle ? 'Recycle bin is empty' : 'No gallery items found'}
+            </p>
+            <p className="max-w-md text-sm leading-6 text-gray-500">
+              {isRecycle
+                ? 'Deleted items will appear here. You can restore them or permanently delete them.'
+                : 'Generated Comfy or AI outputs will appear here across all your projects. Open a project and run a generation to get started.'}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

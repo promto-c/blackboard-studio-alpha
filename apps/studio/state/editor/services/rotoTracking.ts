@@ -545,8 +545,8 @@ export const trackRotoSelectionService = async (
   ) => void,
 ) => {
   const projectContext = getProjectBranchContext();
-  const { nodes, currentFrame, maxFrames, fps } = get();
-  const trackingSource = resolveSourcePixelSource(nodes, rotoNodeId, sourceId);
+  const { nodes, currentFrame, maxFrames, fps, colorManagement } = get();
+  const trackingSource = resolveSourcePixelSource(nodes, rotoNodeId, sourceId, colorManagement);
   if (!trackingSource) return;
   const trackingFps = fps || 30;
   const trackingPixelReader = createSourcePixelDataReader(trackingSource, trackingFps);
@@ -964,14 +964,14 @@ export const smartTrackRotoSelectionService = async (
   ) => void,
 ) => {
   const projectContext = getProjectBranchContext();
-  const { nodes, currentFrame, fps } = get();
+  const { nodes, currentFrame, fps, colorManagement } = get();
   const rotoNode = nodes.find((node: AnyNode) => node.id === rotoNodeId) as RotoNode | undefined;
   if (!rotoNode) return;
 
   const trackingPaths = getTrackingPathStates(rotoNode, sourcePathIds);
   if (trackingPaths.length === 0) return;
 
-  const trackingSource = resolveSourcePixelSource(nodes, rotoNodeId, sourceId);
+  const trackingSource = resolveSourcePixelSource(nodes, rotoNodeId, sourceId, colorManagement);
   if (!trackingSource) return;
   const trackingFps = fps || 30;
   const trackingPixelReader = createSourcePixelDataReader(trackingSource, trackingFps);

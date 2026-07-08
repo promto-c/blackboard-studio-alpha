@@ -8,10 +8,12 @@ import {
   ViewerSlotAssignments,
 } from '@blackboard/types';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
 import {
   assignViewerSlotToNode,
   getNodeInputRenderNodes,
   getOutputRenderNodes,
+  getScene3DProjectionRenderNodes,
   getViewerRenderNodes,
   getViewerTargetLabel,
   getViewportRenderNodes,
@@ -134,13 +136,7 @@ const GRADE_B: AnyNode = {
   name: 'Grade B',
   enabled: true,
   stacked: true,
-  grade: {
-    brightness: 0,
-    contrast: 1,
-    saturation: 1,
-    gain: 1,
-    gamma: 1,
-  },
+  grade: createDefaultGrade(),
 };
 
 const MERGE_B: AnyNode = {
@@ -180,6 +176,9 @@ const SCENE_3D_NODE: AnyNode = {
     },
     world: {
       pixelScale: 0.01,
+      environmentColor: '#ffffff',
+      environmentGroundColor: '#1f2937',
+      environmentIntensity: 1.2,
       gridEnabled: true,
       gridSize: 1920,
       gridDivisions: 16,
@@ -498,6 +497,45 @@ describe('viewerSlots utils', () => {
         flowToScene3DBackdrop,
       ),
     ).toEqual([SCENE_NODE, IMAGE_B]);
+  });
+
+  it('renders the Scene 3D projection instead of only its backdrop branch', () => {
+    const scene3DWithBackdrop = {
+      ...SCENE_3D_NODE,
+      detachedFromPipe: true,
+      inputs: { backdrop: IMAGE_B.id },
+    } as AnyNode;
+    const flowToScene3DBackdrop: Flow = {
+      id: 'flow_scene3d_projection',
+      name: 'Scene 3D Projection',
+      nodes: [SCENE_NODE, IMAGE_B, scene3DWithBackdrop, OUTPUT_NODE],
+      edges: [
+        {
+          id: 'edge_img_b_scene3d_backdrop',
+          sourceNodeId: IMAGE_B.id,
+          sourcePort: 'output',
+          targetNodeId: scene3DWithBackdrop.id,
+          targetPort: 'backdrop',
+        },
+      ],
+      stacks: [],
+      outputNodeId: OUTPUT_NODE_ID,
+    };
+
+    expect(
+      getScene3DProjectionRenderNodes(
+        [SCENE_NODE, IMAGE_B, scene3DWithBackdrop],
+        scene3DWithBackdrop.id,
+        flowToScene3DBackdrop,
+      ),
+    ).toEqual([
+      SCENE_NODE,
+      IMAGE_B,
+      expect.objectContaining({
+        id: scene3DWithBackdrop.id,
+        inputs: { backdrop: IMAGE_B.id },
+      }),
+    ]);
   });
 
   it('renders unconnected canonical viewer targets from an empty scene', () => {

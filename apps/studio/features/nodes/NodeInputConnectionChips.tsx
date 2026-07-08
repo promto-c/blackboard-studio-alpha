@@ -1,24 +1,18 @@
 import type { AnyNode } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
 import { getInputConnections } from '@/utils/connectionGraph';
-import { nodeRegistry } from '@/nodes/registry';
+import { getInputPorts } from '@/nodes/helpers';
 
 interface PendingConnection {
   nodeId: string;
   portName: string;
 }
 
-function getInputPortsForNode(node: AnyNode) {
-  const inputPorts = nodeRegistry.get(node.type)?.inputPorts;
-  if (!inputPorts) return [];
-  return typeof inputPorts === 'function' ? inputPorts(node) : inputPorts;
-}
-
 const getPortLabel = (node: AnyNode, portName: string): string =>
-  getInputPortsForNode(node).find((port) => port.name === portName)?.label ?? portName;
+  getInputPorts(node).find((port) => port.name === portName)?.label ?? portName;
 
 const isReservedInputPort = (node: AnyNode, portName: string): boolean =>
-  portName !== 'pipe' && !getInputPortsForNode(node).some((port) => port.name === portName);
+  portName !== 'pipe' && !getInputPorts(node).some((port) => port.name === portName);
 
 export function NodeInputConnectionChips({
   node,
@@ -42,7 +36,7 @@ export function NodeInputConnectionChips({
   pendingConnection?: PendingConnection | null;
 }) {
   const connectedInputs = getInputConnections(node).filter((input) => input.portName !== 'pipe');
-  const inputPorts = getInputPortsForNode(node);
+  const inputPorts = getInputPorts(node);
   const connectedPortNames = new Set(connectedInputs.map((input) => input.portName));
   const unconnectedPorts = isSelected
     ? inputPorts.filter((port) => !connectedPortNames.has(port.name))

@@ -78,19 +78,14 @@ export const getLastPendingAssistantMessageIndex = (messages: AiChatMessage[]) =
 
 export const getResolvedAiProvider = (
   provider: GenerateAssistantChatOptions['provider'],
-): 'gemini' | 'ollama' | 'openai' => resolveTextAiProvider(provider);
+): 'ollama' | 'openai' => resolveTextAiProvider(provider);
 
 export const getResolvedAiModel = (
-  options: Pick<
-    GenerateAssistantChatOptions,
-    'provider' | 'geminiModel' | 'openAiModel' | 'ollamaModel'
-  >,
+  options: Pick<GenerateAssistantChatOptions, 'provider' | 'openAiModel' | 'ollamaModel'>,
 ): string =>
-  getResolvedAiProvider(options.provider) === 'ollama'
+  options.provider === 'ollama'
     ? options.ollamaModel?.trim() || ''
-    : getResolvedAiProvider(options.provider) === 'openai'
-      ? options.openAiModel?.trim() || ''
-      : options.geminiModel?.trim() || 'gemini-2.5-flash';
+    : options.openAiModel?.trim() || '';
 
 /* ------------------------------------------------------------------ */
 /*  Chat title helpers                                                */

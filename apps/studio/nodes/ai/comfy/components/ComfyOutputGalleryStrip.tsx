@@ -18,6 +18,7 @@ interface ComfyOutputGalleryStripProps {
   emptyLabel?: string;
   onActivateOutput: (output: GeneratedOutput) => void;
   onOpenGallery: () => void;
+  onCancelPending?: (slotId: string) => void;
 }
 
 export function ComfyOutputGalleryStrip({
@@ -29,6 +30,7 @@ export function ComfyOutputGalleryStrip({
   emptyLabel = 'Run output thumbnails appear here',
   onActivateOutput,
   onOpenGallery,
+  onCancelPending,
 }: ComfyOutputGalleryStripProps) {
   const [outputStripElement, setOutputStripElement] = React.useState<HTMLDivElement | null>(null);
   const [visibleOutputSlots, setVisibleOutputSlots] = React.useState(DEFAULT_VISIBLE_OUTPUT_SLOTS);
@@ -80,6 +82,7 @@ export function ComfyOutputGalleryStrip({
               label={slot.label}
               detail={slot.detail}
               active={slot.active}
+              onClick={onCancelPending ? () => onCancelPending(slot.jobId) : undefined}
             />
           ))}
           {visibleOutputs.length > 0 ? (

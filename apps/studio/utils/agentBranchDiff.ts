@@ -263,16 +263,14 @@ export const summarizeAgentBranchDiff = (
   if (
     stringifyComparable({
       renderSettings: base?.renderSettings,
-      viewerSettings: base?.viewerSettings,
       fps: base?.fps,
     }) !==
     stringifyComparable({
       renderSettings: candidate?.renderSettings,
-      viewerSettings: candidate?.viewerSettings,
       fps: candidate?.fps,
     })
   ) {
-    items.push('Changes project/viewer settings.');
+    items.push('Changes project settings.');
   }
   if (stringifyComparable(base?.aiChats) !== stringifyComparable(candidate?.aiChats)) {
     items.push('Changes saved chat history.');

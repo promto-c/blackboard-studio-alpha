@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 interface PopoverProps {
   trigger: React.ReactElement;
   children: React.ReactNode | ((close: () => void) => React.ReactNode);
+  triggerClassName?: string;
   widthClass?: string;
   side?: 'top' | 'bottom' | 'right';
   align?: 'start' | 'center' | 'end';
@@ -16,6 +17,7 @@ interface PopoverProps {
 function Popover({
   trigger,
   children,
+  triggerClassName = '',
   widthClass = 'w-48',
   side = 'bottom',
   align = 'center',
@@ -152,10 +154,13 @@ function Popover({
   }, [isOpen]);
 
   return (
-    <span className="inline-flex items-stretch" onMouseDown={(e) => e.stopPropagation()}>
+    <span
+      className={`inline-flex items-stretch ${triggerClassName}`}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
       <span
         ref={triggerRef}
-        className="inline-flex items-stretch"
+        className={`inline-flex items-stretch ${triggerClassName}`}
         onClick={(e) => {
           e.stopPropagation();
           handleToggle();
@@ -175,7 +180,7 @@ function Popover({
           >
             <div
               ref={glowRef}
-              className={`interactive-glow glass-component ${widthClass} bg-gray-900/80 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-2 ring-1 ring-inset ring-white/10`}
+              className={`bb-popover-surface interactive-glow glass-component ${widthClass} bg-gray-900/80 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-2 ring-1 ring-inset ring-white/10`}
             >
               {typeof children === 'function' ? children(closePopover) : children}
             </div>

@@ -2,6 +2,7 @@ import { isBackgroundJobActive, type BackgroundJob } from '@/state/editor/servic
 
 export interface ComfyPendingOutputSlot {
   id: string;
+  jobId: string;
   label: string;
   detail?: string;
   active: boolean;
@@ -27,7 +28,34 @@ export const getActiveComfyOutputJobs = ({
         (!job.source.branchId || job.source.branchId === branchId) &&
         isBackgroundJobActive(job),
     )
-    .sort((a, b) => a.startedAt - b.startedAt);
+    .sort((a, b) => {
+      if (a.source?.batchId && a.source.batchId === b.source?.batchId) {
+        return (a.source.runIndex ?? 0) - (b.source.runIndex ?? 0);
+      }
+      return a.startedAt - b.startedAt;
+    });
+
+const getSingleJobPendingSlot = (job: BackgroundJob, jobIndex: number): ComfyPendingOutputSlot => {
+  const source = job.source;
+  const runIndex = Math.max(1, source?.runIndex ?? jobIndex + 1);
+  const runCount = Math.max(1, source?.runCount ?? 1);
+  const active = job.status !== 'queued';
+
+  return {
+    id: job.id,
+    jobId: job.id,
+    label:
+      job.status === 'cancelling'
+        ? 'Cancelling'
+        : active
+          ? 'Generating'
+          : runCount > 1
+            ? `Queued ${runIndex}`
+            : 'Queued',
+    detail: runCount > 1 ? `Run ${runIndex}/${runCount}` : job.detail,
+    active,
+  };
+};
 
 export const getPendingComfyOutputSlots = (
   jobs: readonly BackgroundJob[],
@@ -36,6 +64,10 @@ export const getPendingComfyOutputSlots = (
   const scopedJobs = regionId ? jobs.filter((job) => job.source?.comfyRegionId === regionId) : jobs;
 
   return scopedJobs.flatMap((job, jobIndex) => {
+    if (job.source?.batchId) {
+      return [getSingleJobPendingSlot(job, jobIndex)];
+    }
+
     const source = job.source;
     const runCount = source?.runCount ?? 0;
     if (runCount <= 0) return [];
@@ -50,6 +82,7 @@ export const getPendingComfyOutputSlots = (
       const isActiveSlot = slot === runIndex && job.status !== 'queued';
       return {
         id: `${job.id}:${slot}`,
+        jobId: job.id,
         label: isActiveSlot
           ? 'Generating'
           : queuedJobNumber > 1

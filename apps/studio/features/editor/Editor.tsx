@@ -2,12 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import useDeviceLayout, { LayoutMode } from '@/hooks/useDeviceLayout';
 import { useEditorSelector } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
-import {
-  EditorPanelWidth,
-  EditorTimelineHeight,
-  clampEditorPanelWidth,
-  clampEditorTimelineHeight,
-} from '@/utils/editorLayout';
+import { EditorPanelWidth, EditorTimelineHeight, clampEditor } from '@/utils/editorLayout';
 import { SplitterHandle } from '@blackboard/ui';
 import Viewport from '@/features/viewport/Viewport';
 import Panel from './Panel';
@@ -15,18 +10,23 @@ import Timeline from '@/features/timeline/Timeline';
 import ViewportToolbar from '@/features/viewport/ViewportToolbar';
 import Header from './Header';
 import { VIEWPORT_BACKGROUND } from '@/utils/colors';
+import { PreferencesNavigationProvider } from '@/features/projects/preferencesNavigation';
+import { useAutoDetectViewportView } from '@/hooks/useAutoDetectViewportView';
 
 const CORNER_HANDLE_PROXIMITY_PX = 56;
 
 function Editor() {
+  useAutoDetectViewportView();
   const maxFrames = useEditorSelector((s) => s.maxFrames);
   const layoutMode = useDeviceLayout();
   const isMobilePortrait = layoutMode === LayoutMode.MobilePortrait;
   const { editorPanelWidth, editorTimelineHeight, setPreferences } = usePreferences();
 
-  const [panelWidth, setPanelWidth] = useState(() => clampEditorPanelWidth(editorPanelWidth));
+  const [panelWidth, setPanelWidth] = useState(() =>
+    clampEditor(editorPanelWidth, EditorPanelWidth),
+  );
   const [timelineHeight, setTimelineHeight] = useState(() =>
-    clampEditorTimelineHeight(editorTimelineHeight),
+    clampEditor(editorTimelineHeight, EditorTimelineHeight),
   );
   const [isCornerHandleHovered, setIsCornerHandleHovered] = useState(false);
   const [isCornerHandleDragging, setIsCornerHandleDragging] = useState(false);
@@ -36,12 +36,12 @@ function Editor() {
   const isTimelineVisible = maxFrames > 0;
 
   useEffect(() => {
-    const nextPanelWidth = clampEditorPanelWidth(editorPanelWidth);
+    const nextPanelWidth = clampEditor(editorPanelWidth, EditorPanelWidth);
     setPanelWidth((current) => (current === nextPanelWidth ? current : nextPanelWidth));
   }, [editorPanelWidth]);
 
   useEffect(() => {
-    const nextTimelineHeight = clampEditorTimelineHeight(editorTimelineHeight);
+    const nextTimelineHeight = clampEditor(editorTimelineHeight, EditorTimelineHeight);
     setTimelineHeight((current) => (current === nextTimelineHeight ? current : nextTimelineHeight));
   }, [editorTimelineHeight]);
 
@@ -51,8 +51,8 @@ function Editor() {
         editorPanelWidth: number;
         editorTimelineHeight: number;
       }> = {};
-      const nextPanelWidth = clampEditorPanelWidth(panelWidth);
-      const nextTimelineHeight = clampEditorTimelineHeight(timelineHeight);
+      const nextPanelWidth = clampEditor(panelWidth, EditorPanelWidth);
+      const nextTimelineHeight = clampEditor(timelineHeight, EditorTimelineHeight);
 
       if (nextPanelWidth !== editorPanelWidth) {
         nextPrefs.editorPanelWidth = nextPanelWidth;
@@ -174,175 +174,177 @@ function Editor() {
   const cornerHighlightOpacity = 0.14 + cornerHandleStrength * 0.18;
 
   return (
-    <div
-      ref={editorContainerRef}
-      className="relative h-screen w-screen overflow-hidden font-sans"
-      style={{ backgroundColor: VIEWPORT_BACKGROUND }}
-    >
-      {/* Viewport as fullscreen background */}
-      <div className="absolute inset-0 z-0">
-        <Viewport />
-      </div>
+    <PreferencesNavigationProvider>
+      <div
+        ref={editorContainerRef}
+        className="relative h-screen w-screen overflow-hidden font-sans"
+        style={{ backgroundColor: VIEWPORT_BACKGROUND }}
+      >
+        {/* Viewport as fullscreen background */}
+        <div className="absolute inset-0 z-0">
+          <Viewport />
+        </div>
 
-      <Header />
+        <Header />
 
-      {/* UI node on top */}
-      <div className="relative z-10 flex flex-col h-full w-full pointer-events-none">
-        <main className={`flex flex-1 overflow-hidden ${isMobilePortrait ? 'flex-col' : ''}`}>
-          {!isMobilePortrait && (
-            <>
-              <div
-                style={{ width: `${panelWidth}px` }}
-                className="h-full flex-shrink-0 pointer-events-auto"
-              >
+        {/* UI node on top */}
+        <div className="relative z-10 flex flex-col h-full w-full pointer-events-none">
+          <main className={`flex flex-1 overflow-hidden ${isMobilePortrait ? 'flex-col' : ''}`}>
+            {!isMobilePortrait && (
+              <>
+                <div
+                  style={{ width: `${panelWidth}px` }}
+                  className="h-full flex-shrink-0 pointer-events-auto"
+                >
+                  <Panel isMobilePortrait={isMobilePortrait} />
+                </div>
+                <SplitterHandle
+                  axis="x"
+                  label="Panel"
+                  title="Resize panel"
+                  value={panelWidth}
+                  min={EditorPanelWidth.MIN}
+                  max={EditorPanelWidth.MAX}
+                  defaultValue={EditorPanelWidth.DEFAULT}
+                  onChange={setPanelWidth}
+                  hideHandleAfterRatio={0.88}
+                />
+              </>
+            )}
+            <div className="flex-1 flex items-center justify-center overflow-hidden min-h-0 relative">
+              {/* This is now a spacer, content is in the background Viewport */}
+              <ViewportToolbar />
+            </div>
+
+            {isMobilePortrait && (
+              <div className="pointer-events-auto">
                 <Panel isMobilePortrait={isMobilePortrait} />
               </div>
-              <SplitterHandle
-                axis="x"
-                label="Panel"
-                title="Resize panel"
-                value={panelWidth}
-                min={EditorPanelWidth.MIN}
-                max={EditorPanelWidth.MAX}
-                defaultValue={EditorPanelWidth.DEFAULT}
-                onChange={setPanelWidth}
-                hideHandleAfterRatio={0.88}
-              />
-            </>
-          )}
-          <div className="flex-1 flex items-center justify-center overflow-hidden min-h-0 relative">
-            {/* This is now a spacer, content is in the background Viewport */}
-            <ViewportToolbar />
-          </div>
-
-          {isMobilePortrait && (
-            <div className="pointer-events-auto">
-              <Panel isMobilePortrait={isMobilePortrait} />
-            </div>
-          )}
-        </main>
-        <div className="pointer-events-auto flex flex-col">
-          {isTimelineVisible && (
-            <>
-              {!isMobilePortrait && (
-                <div
-                  className="pointer-events-none absolute z-30"
-                  style={{
-                    left: panelWidth,
-                    bottom: timelineHeight,
-                    transform: 'translate(-50%, 50%)',
-                  }}
-                >
+            )}
+          </main>
+          <div className="pointer-events-auto flex flex-col">
+            {isTimelineVisible && (
+              <>
+                {!isMobilePortrait && (
                   <div
-                    role="separator"
-                    aria-label="Resize panel and timeline"
-                    title="Resize panel and timeline"
-                    onPointerDown={handleCornerPointerDown}
-                    onPointerEnter={() => setIsCornerHandleHovered(true)}
-                    onPointerLeave={() => setIsCornerHandleHovered(false)}
-                    className="pointer-events-auto relative flex h-11 w-11 items-center justify-center cursor-nwse-resize touch-none select-none outline-none transition-[opacity,transform] duration-200"
+                    className="pointer-events-none absolute z-30"
                     style={{
-                      opacity: cornerHandleOpacity,
-                      transform: `scale(${cornerHandleScale})`,
+                      left: panelWidth,
+                      bottom: timelineHeight,
+                      transform: 'translate(-50%, 50%)',
                     }}
                   >
                     <div
-                      className="pointer-events-none absolute inset-0 flex items-center justify-center blur-md"
-                      style={{ opacity: cornerGlowOpacity }}
-                    >
-                      <div
-                        className="absolute rounded-full bg-primary-200/30"
-                        style={{
-                          width: cornerArmLength + 6,
-                          height: cornerArmThickness + 6,
-                        }}
-                      />
-                      <div
-                        className="absolute rounded-full bg-primary-200/30"
-                        style={{
-                          width: cornerArmThickness + 6,
-                          height: cornerArmLength + 6,
-                        }}
-                      />
-                      <div
-                        className="absolute rounded-full bg-primary-100/35"
-                        style={{
-                          width: cornerCoreSize + 8,
-                          height: cornerCoreSize + 8,
-                        }}
-                      />
-                    </div>
-                    <div
-                      className="pointer-events-none absolute inset-0 flex items-center justify-center"
+                      role="separator"
+                      aria-label="Resize panel and timeline"
+                      title="Resize panel and timeline"
+                      onPointerDown={handleCornerPointerDown}
+                      onPointerEnter={() => setIsCornerHandleHovered(true)}
+                      onPointerLeave={() => setIsCornerHandleHovered(false)}
+                      className="pointer-events-auto relative flex h-11 w-11 items-center justify-center cursor-nwse-resize touch-none select-none outline-none transition-[opacity,transform] duration-200"
                       style={{
-                        filter:
-                          'drop-shadow(0 0 0.5px rgba(255,255,255,0.18)) drop-shadow(0 10px 24px rgba(0,0,0,0.28))',
+                        opacity: cornerHandleOpacity,
+                        transform: `scale(${cornerHandleScale})`,
                       }}
                     >
                       <div
-                        className="absolute rounded-full bg-black/60"
-                        style={{ width: cornerArmLength, height: cornerArmThickness }}
-                      />
+                        className="pointer-events-none absolute inset-0 flex items-center justify-center blur-md"
+                        style={{ opacity: cornerGlowOpacity }}
+                      >
+                        <div
+                          className="absolute rounded-full bg-primary-200/30"
+                          style={{
+                            width: cornerArmLength + 6,
+                            height: cornerArmThickness + 6,
+                          }}
+                        />
+                        <div
+                          className="absolute rounded-full bg-primary-200/30"
+                          style={{
+                            width: cornerArmThickness + 6,
+                            height: cornerArmLength + 6,
+                          }}
+                        />
+                        <div
+                          className="absolute rounded-full bg-primary-100/35"
+                          style={{
+                            width: cornerCoreSize + 8,
+                            height: cornerCoreSize + 8,
+                          }}
+                        />
+                      </div>
                       <div
-                        className="absolute rounded-full bg-black/60"
-                        style={{ width: cornerArmThickness, height: cornerArmLength }}
-                      />
-                      <div
-                        className="absolute rounded-full bg-black/72"
-                        style={{ width: cornerCoreSize, height: cornerCoreSize }}
-                      />
-                      <div
-                        className="absolute rounded-full bg-white/12"
+                        className="pointer-events-none absolute inset-0 flex items-center justify-center"
                         style={{
-                          width: Math.max(cornerArmLength - 8, 8),
-                          height: 1.5,
-                          opacity: cornerHighlightOpacity,
-                          transform: 'translateY(-1px)',
+                          filter:
+                            'drop-shadow(0 0 0.5px rgba(255,255,255,0.18)) drop-shadow(0 10px 24px rgba(0,0,0,0.28))',
                         }}
-                      />
+                      >
+                        <div
+                          className="absolute rounded-full bg-black/60"
+                          style={{ width: cornerArmLength, height: cornerArmThickness }}
+                        />
+                        <div
+                          className="absolute rounded-full bg-black/60"
+                          style={{ width: cornerArmThickness, height: cornerArmLength }}
+                        />
+                        <div
+                          className="absolute rounded-full bg-black/72"
+                          style={{ width: cornerCoreSize, height: cornerCoreSize }}
+                        />
+                        <div
+                          className="absolute rounded-full bg-white/12"
+                          style={{
+                            width: Math.max(cornerArmLength - 8, 8),
+                            height: 1.5,
+                            opacity: cornerHighlightOpacity,
+                            transform: 'translateY(-1px)',
+                          }}
+                        />
+                        <div
+                          className="absolute rounded-full bg-white/12"
+                          style={{
+                            width: 1.5,
+                            height: Math.max(cornerArmLength - 8, 8),
+                            opacity: cornerHighlightOpacity,
+                            transform: 'translateX(-1px)',
+                          }}
+                        />
+                      </div>
                       <div
-                        className="absolute rounded-full bg-white/12"
-                        style={{
-                          width: 1.5,
-                          height: Math.max(cornerArmLength - 8, 8),
-                          opacity: cornerHighlightOpacity,
-                          transform: 'translateX(-1px)',
-                        }}
-                      />
-                    </div>
-                    <div
-                      className="pointer-events-none absolute flex items-center gap-0.5"
-                      style={{ opacity: 0.46 + cornerHandleStrength * 0.26 }}
-                    >
-                      <div className="h-1 w-1 rounded-full bg-gray-100" />
-                      <div className="h-1 w-1 rounded-full bg-gray-100" />
-                      <div className="h-1 w-1 rounded-full bg-gray-100" />
+                        className="pointer-events-none absolute flex items-center gap-0.5"
+                        style={{ opacity: 0.46 + cornerHandleStrength * 0.26 }}
+                      >
+                        <div className="h-1 w-1 rounded-full bg-gray-100" />
+                        <div className="h-1 w-1 rounded-full bg-gray-100" />
+                        <div className="h-1 w-1 rounded-full bg-gray-100" />
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-              <SplitterHandle
-                axis="y"
-                label="Timeline"
-                title="Resize timeline"
-                value={timelineHeight}
-                min={EditorTimelineHeight.MIN}
-                max={EditorTimelineHeight.MAX}
-                defaultValue={EditorTimelineHeight.DEFAULT}
-                direction={-1}
-                onChange={setTimelineHeight}
-                hideHandleBeforeRatio={0.12}
-              />
-              <Timeline
-                height={timelineHeight}
-                setHeight={setTimelineHeight}
-                minHeight={EditorTimelineHeight.MIN}
-              />
-            </>
-          )}
+                )}
+                <SplitterHandle
+                  axis="y"
+                  label="Timeline"
+                  title="Resize timeline"
+                  value={timelineHeight}
+                  min={EditorTimelineHeight.MIN}
+                  max={EditorTimelineHeight.MAX}
+                  defaultValue={EditorTimelineHeight.DEFAULT}
+                  direction={-1}
+                  onChange={setTimelineHeight}
+                  hideHandleBeforeRatio={0.12}
+                />
+                <Timeline
+                  height={timelineHeight}
+                  setHeight={setTimelineHeight}
+                  minHeight={EditorTimelineHeight.MIN}
+                />
+              </>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </PreferencesNavigationProvider>
   );
 }
 

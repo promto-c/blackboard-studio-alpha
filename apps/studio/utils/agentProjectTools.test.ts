@@ -1,17 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@google/genai', () => ({
-  GoogleGenAI: vi.fn(),
-  Type: {
-    ARRAY: 'array',
-    BOOLEAN: 'boolean',
-    INTEGER: 'integer',
-    NUMBER: 'number',
-    OBJECT: 'object',
-    STRING: 'string',
-  },
-}));
-
 import {
   EditorTab,
   NodeType,
@@ -212,7 +200,7 @@ describe('agentProjectTools', () => {
     const createResult = harness.getTool('create_node').run({
       type: NodeType.GRADE,
       name: 'Agent Look',
-      props: { id: 'ignored', grade: { brightness: 0.2, contrast: 1.1, saturation: 1 } },
+      props: { id: 'ignored', grade: { exposure: 0.2, contrast: 1.1, saturation: 1 } },
     });
 
     expect(JSON.parse(createResult.content).status).toBe('created');

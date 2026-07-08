@@ -27,6 +27,7 @@ export const textNode: NodeDefinition = {
   name: 'Text',
   category: 'Image',
   renderMode: 'text',
+  processingDomain: 'scene_linear',
   description: 'Add a text node.',
   IconComponent: Text,
   ToolComponent: TextTool,
@@ -36,6 +37,8 @@ export const textNode: NodeDefinition = {
     isSource: true,
     isRenderable: true,
   },
+  getGeneratedColor: (node, context) =>
+    context.transformColorPickingToSceneLinear((node as TextNode).color),
   getInitialNodeProps: (): Omit<TextNode, 'id' | 'name' | 'enabled' | 'type'> => ({
     text: 'Hello World',
     fontFamily: 'Arial, sans-serif',

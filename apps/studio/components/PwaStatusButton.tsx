@@ -179,7 +179,7 @@ export function PwaStatusButton({ className = '' }: PwaStatusButtonProps) {
     snapshot.onDemandBytes > 0
       ? Math.min(100, Math.round((snapshot.onDemandCachedBytes / snapshot.onDemandBytes) * 100))
       : 0;
-  const hasOfflinePacks = snapshot.onDemandAssetGroups.length > 0;
+  const hasOnDemandAssets = snapshot.onDemandAssetGroups.length > 0;
   const headerMeta = [
     snapshot.isStandalone ? 'Installed' : 'Browser',
     `Checked ${formatCheckedTime(snapshot.lastCheckedAt)}`,
@@ -333,7 +333,7 @@ export function PwaStatusButton({ className = '' }: PwaStatusButtonProps) {
             ))}
           </div>
 
-          {hasOfflinePacks ? (
+          {hasOnDemandAssets ? (
             <div className="overflow-hidden rounded-lg border border-white/10 bg-black/20">
               <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-white/[0.035] px-2.5 py-2">
                 <div className="flex min-w-0 items-center gap-2">
@@ -341,7 +341,7 @@ export function PwaStatusButton({ className = '' }: PwaStatusButtonProps) {
                     <Icons.Bundle className="h-3.5 w-3.5" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-[11px] font-medium text-gray-200">Optional packs</p>
+                    <p className="text-[11px] font-medium text-gray-200">On-demand assets</p>
                     <p className="truncate text-[10px] text-gray-500">
                       {formatBytes(snapshot.onDemandCachedBytes)} /{' '}
                       {formatBytes(snapshot.onDemandBytes)} cached
@@ -357,17 +357,17 @@ export function PwaStatusButton({ className = '' }: PwaStatusButtonProps) {
                     }
                     title={
                       allButtonRemoves
-                        ? 'Remove cached offline packs'
+                        ? 'Remove cached on-demand assets'
                         : allOptionalCached
-                          ? 'Offline packs ready'
-                          : 'Download offline packs'
+                          ? 'On-demand assets ready'
+                          : 'Download on-demand assets'
                     }
                     aria-label={
                       allButtonRemoves
-                        ? 'Remove cached offline packs'
+                        ? 'Remove cached on-demand assets'
                         : allOptionalCached
-                          ? 'Offline packs ready'
-                          : 'Download offline packs'
+                          ? 'On-demand assets ready'
+                          : 'Download on-demand assets'
                     }
                     className={`group relative flex h-7 items-center justify-center gap-1.5 overflow-hidden rounded-md border border-white/10 bg-white/[0.04] text-[10px] font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50 disabled:cursor-not-allowed disabled:opacity-50 ${
                       allButtonIconOnly ? 'w-7 px-0' : 'px-2'
@@ -431,9 +431,6 @@ export function PwaStatusButton({ className = '' }: PwaStatusButtonProps) {
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                               <p className="text-[11px] font-medium text-gray-200">{group.label}</p>
-                              <span className="rounded border border-white/10 bg-white/[0.04] px-1 py-0.5 text-[9px] text-gray-500">
-                                {group.source === 'marketplace' ? 'Marketplace' : 'Bundled'}
-                              </span>
                               <p className="text-[10px] text-gray-500">
                                 {formatBytes(group.cachedBytes)} / {formatBytes(group.size)}
                               </p>

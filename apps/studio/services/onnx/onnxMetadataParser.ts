@@ -166,7 +166,7 @@ const createInputMetadata = (name: string, type: string, dims: number[]): OnnxIn
   dims,
   isDynamic: isDynamicShape(dims),
   dimsLabel: dims.length > 0 ? formatOnnxShape(dims) : 'unknown',
-  kind: inferInputKind(dims, type),
+  kind: inferInputKind(dims),
 });
 
 const createOutputMetadata = (name: string, type: string, dims: number[]): OnnxOutputMetadata => ({
@@ -175,7 +175,7 @@ const createOutputMetadata = (name: string, type: string, dims: number[]): OnnxO
   dims,
   isDynamic: isDynamicShape(dims),
   dimsLabel: dims.length > 0 ? formatOnnxShape(dims) : 'unknown',
-  kind: inferOutputKind(dims, type),
+  kind: inferOutputKind(dims),
 });
 
 // --- protobuf-level ONNX model parsing ---

@@ -48,6 +48,7 @@ export interface BackgroundJobSource {
   branchId?: string;
   nodeId?: string;
   workflowId?: string;
+  batchId?: string;
   historyId?: string;
   promptId?: string;
   comfyEndpoint?: string;

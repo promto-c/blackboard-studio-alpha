@@ -13,23 +13,29 @@ describe('ai routing', () => {
     expect(normalizeAiTaskRoutes(undefined)).toEqual(DEFAULT_AI_TASK_ROUTES);
   });
 
-  it('resolves an openai route with provider-specific settings', () => {
+  it('resolves an openai route with provider-specific settings from a connection', () => {
     const route = resolveAiTaskRoute('assistantChat', {
       aiTaskRoutes: {
         ...DEFAULT_AI_TASK_ROUTES,
         assistantChat: {
           provider: 'openai',
+          connectionId: 'openai-default',
           model: 'gpt-5-mini',
         },
       },
-      geminiApiKey: '',
-      openAiApiKey: 'sk-test',
-      openAiBaseUrl: 'https://api.openai.com/v1/',
-      ollamaEndpoint: 'http://localhost:11434',
+      integrationConnections: [
+        {
+          id: 'openai-default',
+          provider: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: DEFAULT_OPENAI_BASE_URL,
+        },
+      ],
     });
 
     expect(route).toEqual({
       provider: 'openai',
+      connectionId: 'openai-default',
       model: 'gpt-5-mini',
       openAiApiKey: 'sk-test',
       openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
@@ -59,10 +65,6 @@ describe('ai routing', () => {
           endpoint: 'http://studio-box.local:11434',
         },
       ],
-      geminiApiKey: '',
-      openAiApiKey: '',
-      openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
-      ollamaEndpoint: 'http://localhost:11434',
     });
 
     expect(route).toEqual({
@@ -92,10 +94,6 @@ describe('ai routing', () => {
             baseUrl: 'http://localhost:8000/v1',
           },
         ],
-        geminiApiKey: '',
-        openAiApiKey: '',
-        openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
-        ollamaEndpoint: 'http://localhost:11434',
       }),
     ).toBeNull();
   });
@@ -118,10 +116,6 @@ describe('ai routing', () => {
           disabledModels: ['qwen2.5-coder:14b'],
         },
       ],
-      geminiApiKey: '',
-      openAiApiKey: '',
-      openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
-      ollamaEndpoint: 'http://localhost:11434',
     };
 
     expect(getAiTaskRouteError('assistantChat', preferences)).toBe(
@@ -142,10 +136,6 @@ describe('ai routing', () => {
             model: '',
           },
         },
-        geminiApiKey: '',
-        openAiApiKey: '',
-        openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
-        ollamaEndpoint: '',
       }),
     ).toBe('Choose a model in Preferences > Integrations.');
 
@@ -158,10 +148,6 @@ describe('ai routing', () => {
             model: 'gpt-5-mini',
           },
         },
-        geminiApiKey: '',
-        openAiApiKey: '',
-        openAiBaseUrl: DEFAULT_OPENAI_BASE_URL,
-        ollamaEndpoint: 'http://localhost:11434',
       }),
     ).toBe('Set an OpenAI API key in Preferences > Integrations.');
   });

@@ -34,13 +34,13 @@ export const createNodePredicates = (nodeRegistry: NodeRegistryLike) => ({
       def.renderMode !== 'merge' &&
       def.renderMode !== 'utility' &&
       isStackAdjustmentCategory(def.category);
-    return isStackAdj && 'stacked' in node && !!(node as any).stacked;
+    return isStackAdj && 'stacked' in node && node.stacked === true;
   },
 
   isStackedExportAdjustmentNode: (node: AnyNode): boolean => {
     const def = nodeRegistry.get(node.type);
     const isExportAdj = !!def && isPipelineAdjustmentRenderMode(def.renderMode);
-    return isExportAdj && 'stacked' in node && !!(node as any).stacked;
+    return isExportAdj && 'stacked' in node && node.stacked === true;
   },
 
   /**
@@ -50,7 +50,7 @@ export const createNodePredicates = (nodeRegistry: NodeRegistryLike) => ({
   isLoopingTimelineNode: (node: AnyNode): boolean => {
     const def = nodeRegistry.get(node.type);
     if (def?.flags?.isLooping) {
-      return !!(node as any).loop;
+      return 'loop' in node && node.loop === true;
     }
     return false;
   },

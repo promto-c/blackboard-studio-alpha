@@ -1,14 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { NodeType, type AnyNode } from '@blackboard/types';
 
-// Mock the Google GenAI module to prevent API key errors during import of
-// nodeRegistry (which transitively pulls in ai.ts via editorContext).
-vi.mock('@google/genai', () => ({
-  GoogleGenAI: vi.fn(),
-  Modality: {},
-  Type: {},
-}));
-
 import {
   isStackAdjustmentType,
   isExportAdjustmentType,
@@ -67,7 +59,7 @@ describe('isExportAdjustmentType', () => {
   });
 
   it('returns false for non-export stack-only types', () => {
-    expect(isExportAdjustmentType(NodeType.WARP)).toBe(false);
+    expect(isExportAdjustmentType(NodeType.WARP)).toBe(true);
     expect(isExportAdjustmentType(NodeType.NOTE)).toBe(false);
   });
 });

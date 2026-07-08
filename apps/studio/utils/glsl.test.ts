@@ -55,6 +55,35 @@ uniform float u_mix; // {"label": "Mix", "min": 0.0, "max": 1.0, "step": 0.01, "
     expect(Object.keys(uniforms)).toEqual(['u_mix']);
   });
 
+  it('normalizes untrusted uniform metadata to typed defaults', () => {
+    const uniforms = parseUniformsFromGLSL(`
+uniform vec2 u_offset; // {"label": [12, "Vertical"], "value": ["bad", 0.25], "min": [-2, -3], "max": [2, 3], "step": [0.1, 0.2]}
+uniform vec3 u_color; // {"label": 42, "type": "color", "value": [0.5, "bad", 0.25]}
+`);
+
+    expect(uniforms.u_offset_x).toEqual({
+      label: 'u_offset X',
+      ui: UniformUIType.SLIDER,
+      value: 0.5,
+      min: -2,
+      max: 2,
+      step: 0.1,
+    });
+    expect(uniforms.u_offset_y).toEqual({
+      label: 'Vertical',
+      ui: UniformUIType.SLIDER,
+      value: 0.25,
+      min: -3,
+      max: 3,
+      step: 0.2,
+    });
+    expect(uniforms.u_color).toEqual({
+      label: 'u_color',
+      ui: UniformUIType.COLOR,
+      value: [0.5, 1, 0.25],
+    });
+  });
+
   it('parses temporal sampler input ports from shader metadata', () => {
     const ports = parseInputPortsFromGLSL(`
 precision highp float;

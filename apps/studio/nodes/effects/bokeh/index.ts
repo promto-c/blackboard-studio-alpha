@@ -88,7 +88,9 @@ export const bokehNode = createShaderNodeDefinition({
       {
         name: 'depth',
         label: 'Depth Map',
-        type: 'texture',
+        type: 'data',
+        dataSemantic: 'depth',
+        processingDomain: 'depth',
         required: false,
         description: 'External node to use as depth map (when Depth Source is "External Node")',
         uniformName: 'u_tDepth',

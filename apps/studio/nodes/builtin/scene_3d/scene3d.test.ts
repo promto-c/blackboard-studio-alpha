@@ -40,6 +40,16 @@ describe('scene3d settings', () => {
     expect(settings.world).not.toHaveProperty('background');
   });
 
+  it('stores explicit HDR environment lighting settings', () => {
+    const settings = createDefaultScene3DSettings(1920, 1080);
+
+    expect(settings.world).toMatchObject({
+      environmentColor: '#ffffff',
+      environmentGroundColor: '#1f2937',
+      environmentIntensity: 1.2,
+    });
+  });
+
   it('derives the default scene rect from the camera fov and backdrop distance', () => {
     const settings = createDefaultScene3DSettings(1920, 1080);
     const expectedDistance = getScene3DBackdropDistanceForCanvas(canvasSize, settings.camera.fov);
@@ -78,6 +88,26 @@ describe('scene3d settings', () => {
     expect(outputPlane?.size?.x).toBeCloseTo(expectedRect.width, 4);
     expect(outputPlane?.size?.y).toBeCloseTo(expectedRect.height, 4);
     expect(getScene3DCameraDistance(normalized.camera)).toBeCloseTo(distance, 4);
+  });
+
+  it('normalizes environment intensity without display-range clamping', () => {
+    const settings = createDefaultScene3DSettings(1920, 1080);
+    const normalized = normalizeScene3DSettings(
+      scene3DNode({
+        ...settings,
+        world: {
+          ...settings.world,
+          environmentColor: '#88aaff',
+          environmentGroundColor: '#111827',
+          environmentIntensity: 12.5,
+        },
+      }),
+      canvasSize,
+    );
+
+    expect(normalized.world.environmentColor).toBe('#88aaff');
+    expect(normalized.world.environmentGroundColor).toBe('#111827');
+    expect(normalized.world.environmentIntensity).toBe(12.5);
   });
 
   it('uses backdrop distance edits to move the camera along its view direction', () => {

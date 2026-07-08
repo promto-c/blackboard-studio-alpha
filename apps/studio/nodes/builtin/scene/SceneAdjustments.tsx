@@ -3,12 +3,20 @@ import { AnyNode, SceneNode } from '@blackboard/types';
 import { useEditorActions } from '@/state/editorContext';
 import { SettingRow } from '@/components/SettingRow';
 import { OcioColorSpaceDropdown } from '@/components/OcioColorSpaceDropdown';
-import { StyledDropdown } from '@blackboard/ui';
+import { SegmentedControl } from '@/components/SegmentedControl';
+import {
+  CollapsibleSection,
+  SplitControl,
+  SplitControlAction,
+  StyledDropdown,
+} from '@blackboard/ui';
+import * as Icons from '@blackboard/icons';
+import { usePreferencesNavigation } from '@/features/projects/preferencesNavigation';
 
 const bitDepthOptions: { value: 8 | 16 | 32; label: string }[] = [
-  { value: 8, label: '8-bit integer' },
-  { value: 16, label: '16-bit float' },
-  { value: 32, label: '32-bit float' },
+  { value: 8, label: '8-bit' },
+  { value: 16, label: '16-bit' },
+  { value: 32, label: '32-bit' },
 ];
 
 const fpsOptions: { value: number; label: string }[] = [
@@ -19,12 +27,16 @@ const fpsOptions: { value: number; label: string }[] = [
   { value: 60, label: '60 fps' },
 ];
 
-const inputClassName =
-  'bg-gray-700/50 text-gray-200 text-xs rounded focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block p-2 font-mono w-full flex items-center justify-between text-left border-0';
+const PROPERTY_ROW_CLASS =
+  '!grid min-h-10 grid-cols-[minmax(0,1fr)_12rem] items-center gap-3 py-0.5';
+
+const INPUT_CLASS_NAME =
+  'bb-control-input block min-h-9 w-full border-0 px-2.5 py-2 font-mono text-xs tabular-nums text-gray-200 outline-none';
 
 function SceneAdjustments({ node: anyNode }: { node: AnyNode }) {
   const sceneNode = anyNode as SceneNode;
   const { updateNode, setMaxFrames } = useEditorActions();
+  const { openPreferences } = usePreferencesNavigation();
 
   const [width, setWidth] = useState(String(sceneNode.width));
   const [height, setHeight] = useState(String(sceneNode.height));
@@ -69,75 +81,103 @@ function SceneAdjustments({ node: anyNode }: { node: AnyNode }) {
   };
 
   return (
-    <div className="p-4 bg-gray-800/50 rounded-lg space-y-4">
-      <SettingRow label="Resolution">
-        <div className="flex items-center gap-2 w-40">
-          <input
-            type="number"
-            value={width}
-            onChange={(e) => setWidth(e.target.value)}
-            onBlur={handleDimensionBlur}
-            onKeyDown={handleKeyDown}
-            className={inputClassName}
-            min="1"
-          />
-          <span className="text-gray-500 -mx-1">x</span>
-          <input
-            type="number"
-            value={height}
-            onChange={(e) => setHeight(e.target.value)}
-            onBlur={handleDimensionBlur}
-            onKeyDown={handleKeyDown}
-            className={inputClassName}
-            min="1"
-          />
+    <div>
+      <CollapsibleSection title="Composition" defaultOpen>
+        <div>
+          <SettingRow label="Resolution" className={PROPERTY_ROW_CLASS}>
+            <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+              <input
+                type="number"
+                value={width}
+                onChange={(e) => setWidth(e.target.value)}
+                onBlur={handleDimensionBlur}
+                onKeyDown={handleKeyDown}
+                className={INPUT_CLASS_NAME}
+                min="1"
+                aria-label="Resolution width"
+              />
+              <span aria-hidden="true" className="text-[10px] font-medium text-gray-600">
+                ×
+              </span>
+              <input
+                type="number"
+                value={height}
+                onChange={(e) => setHeight(e.target.value)}
+                onBlur={handleDimensionBlur}
+                onKeyDown={handleKeyDown}
+                className={INPUT_CLASS_NAME}
+                min="1"
+                aria-label="Resolution height"
+              />
+            </div>
+          </SettingRow>
+
+          <SettingRow label="Timeline Duration" className={PROPERTY_ROW_CLASS}>
+            <input
+              type="number"
+              value={maxFramesInput}
+              onChange={(e) => setMaxFramesInput(e.target.value)}
+              onBlur={handleMaxFramesBlur}
+              onKeyDown={handleKeyDown}
+              className={INPUT_CLASS_NAME}
+              min="0"
+              step="1"
+              aria-label="Timeline duration in frames"
+            />
+          </SettingRow>
+
+          <SettingRow label="Frame Rate" className={PROPERTY_ROW_CLASS}>
+            <StyledDropdown
+              value={sceneNode.fps || 30}
+              options={fpsOptions}
+              onChange={(value) => handleUpdate({ fps: value as number })}
+              widthClass="w-full"
+              popoverWidthClass="w-48"
+            />
+          </SettingRow>
         </div>
-      </SettingRow>
+      </CollapsibleSection>
 
-      <SettingRow label="Timeline Duration">
-        <div className="w-40">
-          <input
-            type="number"
-            value={maxFramesInput}
-            onChange={(e) => setMaxFramesInput(e.target.value)}
-            onBlur={handleMaxFramesBlur}
-            onKeyDown={handleKeyDown}
-            className={inputClassName}
-            min="0"
-            step="1"
-          />
+      <CollapsibleSection title="Color Pipeline" defaultOpen>
+        <div>
+          <SettingRow label="Working Space" className={PROPERTY_ROW_CLASS}>
+            <SplitControl className="w-full">
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <OcioColorSpaceDropdown
+                  value={sceneNode.colorSpace}
+                  onChange={(value) =>
+                    handleUpdate({ colorSpace: value as SceneNode['colorSpace'] })
+                  }
+                  includeData={false}
+                  widthClass="w-full"
+                  popoverWidthClass="w-80"
+                />
+              </div>
+              <SplitControlAction
+                onClick={() =>
+                  openPreferences({
+                    section: 'colorManagement',
+                    colorScope: 'project',
+                  })
+                }
+                title="Open project color settings"
+                aria-label="Open project color settings"
+              >
+                <Icons.Cog className="h-4 w-4" />
+              </SplitControlAction>
+            </SplitControl>
+          </SettingRow>
+
+          <SettingRow label="Bit Depth" className={PROPERTY_ROW_CLASS}>
+            <SegmentedControl
+              value={sceneNode.bitDepth}
+              options={bitDepthOptions}
+              onChange={(value) => handleUpdate({ bitDepth: Number(value) as 8 | 16 | 32 })}
+              className="w-full"
+            />
+          </SettingRow>
         </div>
-      </SettingRow>
-
-      <SettingRow label="Frame Rate (FPS)">
-        <StyledDropdown
-          value={sceneNode.fps || 30}
-          options={fpsOptions}
-          onChange={(value) => handleUpdate({ fps: value as number })}
-          widthClass="w-40"
-          popoverWidthClass="w-40"
-        />
-      </SettingRow>
-
-      <SettingRow label="Working Space">
-        <OcioColorSpaceDropdown
-          value={sceneNode.colorSpace}
-          onChange={(value) => handleUpdate({ colorSpace: value as SceneNode['colorSpace'] })}
-          includeData={false}
-          widthClass="w-40"
-          popoverWidthClass="w-80"
-        />
-      </SettingRow>
-
-      <SettingRow label="Bit Depth">
-        <StyledDropdown
-          value={sceneNode.bitDepth}
-          options={bitDepthOptions}
-          onChange={(value) => handleUpdate({ bitDepth: value as 8 | 16 | 32 })}
-          widthClass="w-40"
-          popoverWidthClass="w-48"
-        />
-      </SettingRow>
+      </CollapsibleSection>
     </div>
   );
 }

@@ -20,9 +20,16 @@ import {
   ViewerSlotAssignments,
   validateRootFlow,
 } from '@blackboard/types';
+import {
+  ColorManagementDefaults,
+  createProjectDefaultMediaColorManagement,
+  createUnassignedMediaColorManagement,
+  getMediaSourceColorSpace,
+} from '@/color-management';
 import { nodeRegistry } from '@/nodes/registry';
-import { getDefaultViewportTool, nodeFlags } from '@/nodes/helpers';
+import { getDefaultViewportTool, getInputPorts, nodeFlags } from '@/nodes/helpers';
 import { getNodeCount } from '@/state/editor/selectors';
+import { canConnectNodeProcessingDomains } from '@/utils/nodeProcessingDomains';
 import {
   buildFlowFromNodes,
   createOutputNode,
@@ -63,8 +70,6 @@ import {
 } from '@/utils/nodeClipboard';
 import { createUniqueItemNameAssigner } from '@/utils/uniqueItemName';
 import { deepClone } from '@/utils/deepClone';
-import type { InputPortDescriptor } from '@/nodes/NodeDefinition';
-
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -273,7 +278,7 @@ function getNextImplicitPipeTargetNodeId(nodes: AnyNode[], sourceIndex: number):
 const getPrimaryAutoInputPortName = (node: AnyNode): string | null => {
   if (usesImplicitPipelineInput(node.type)) return 'pipe';
 
-  const ports = getInputPortsForNode(node).filter(
+  const ports = getInputPorts(node).filter(
     (port) => port.type === 'texture' || port.type === 'mask',
   );
   if (ports.length > 0) {
@@ -442,7 +447,7 @@ export const createSceneNode = (opts: {
   width: opts.width,
   height: opts.height,
   bitDepth: 16,
-  colorSpace: 'Linear',
+  colorSpace: ColorManagementDefaults.WORKING_SPACE,
   maxFrames: opts.maxFrames ?? 0,
   fps: opts.fps ?? 30,
 });
@@ -456,24 +461,44 @@ export const createMediaSourceNode = (opts: {
   width: number;
   height: number;
   colorSpace?: MediaSourceNode['colorSpace'];
+  mediaColorManagement?: MediaSourceNode['mediaColorManagement'];
+  videoColorMetadata?: MediaSourceNode['videoColorMetadata'];
   duration?: number;
   transform?: ImageTransform;
-}): MediaSourceNode => ({
-  id: `media_${Date.now()}`,
-  type: NodeType.MEDIA_SOURCE,
-  name: opts.name,
-  enabled: true,
-  src: opts.src,
-  sourceFileName: opts.sourceFileName,
-  mediaKind: opts.mediaKind,
-  width: opts.width,
-  height: opts.height,
-  opacity: 100,
-  operator: BlendMode.OVER,
-  ...(opts.mediaKind === 'image' ? { colorSpace: opts.colorSpace ?? 'sRGB' } : {}),
-  ...(opts.mediaKind === 'video' ? { duration: opts.duration ?? 0, loop: true } : {}),
-  transform: opts.transform ?? { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
-});
+}): MediaSourceNode => {
+  const mediaColorManagement =
+    opts.mediaColorManagement ??
+    (opts.colorSpace
+      ? createProjectDefaultMediaColorManagement(opts.colorSpace)
+      : opts.mediaKind === 'video'
+        ? createUnassignedMediaColorManagement()
+        : createProjectDefaultMediaColorManagement());
+  const sourceColorSpace = getMediaSourceColorSpace(mediaColorManagement);
+
+  return {
+    id: `media_${Date.now()}`,
+    type: NodeType.MEDIA_SOURCE,
+    name: opts.name,
+    enabled: true,
+    src: opts.src,
+    sourceFileName: opts.sourceFileName,
+    mediaKind: opts.mediaKind,
+    width: opts.width,
+    height: opts.height,
+    opacity: 100,
+    operator: BlendMode.OVER,
+    ...(sourceColorSpace ? { colorSpace: sourceColorSpace } : {}),
+    mediaColorManagement,
+    ...(opts.mediaKind === 'video'
+      ? {
+          duration: opts.duration ?? 0,
+          loop: true,
+          ...(opts.videoColorMetadata ? { videoColorMetadata: opts.videoColorMetadata } : {}),
+        }
+      : {}),
+    transform: opts.transform ?? { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
+  };
+};
 
 /** Create an Image Sequence node with the given frame assets and metadata. */
 export const createSequenceNode = (opts: {
@@ -483,31 +508,43 @@ export const createSequenceNode = (opts: {
   width: number;
   height: number;
   colorSpace?: ImageSequenceNode['colorSpace'];
+  mediaColorManagement?: ImageSequenceNode['mediaColorManagement'];
   scaleX?: number;
   scaleY?: number;
-}): ImageSequenceNode => ({
-  id: `seq_${Date.now()}`,
-  type: NodeType.IMAGE_SEQUENCE,
-  name: opts.name,
-  enabled: true,
-  frames: opts.frames,
-  sourceFileName: opts.sourceFileName,
-  width: opts.width,
-  height: opts.height,
-  opacity: 100,
-  operator: BlendMode.OVER,
-  transform: {
-    x: 0,
-    y: 0,
-    scaleX: opts.scaleX ?? 1,
-    scaleY: opts.scaleY ?? 1,
-    fitMode: ImageFitMode.FIT,
-  },
-  colorSpace: opts.colorSpace ?? 'sRGB',
-  fps: 30,
-  startFrame: 0,
-  loop: true,
-});
+}): ImageSequenceNode => {
+  const mediaColorManagement =
+    opts.mediaColorManagement ??
+    createProjectDefaultMediaColorManagement(
+      opts.colorSpace ?? ColorManagementDefaults.TEXTURE_SPACE,
+    );
+  const sourceColorSpace =
+    getMediaSourceColorSpace(mediaColorManagement) ?? ColorManagementDefaults.TEXTURE_SPACE;
+
+  return {
+    id: `seq_${Date.now()}`,
+    type: NodeType.IMAGE_SEQUENCE,
+    name: opts.name,
+    enabled: true,
+    frames: opts.frames,
+    sourceFileName: opts.sourceFileName,
+    width: opts.width,
+    height: opts.height,
+    opacity: 100,
+    operator: BlendMode.OVER,
+    transform: {
+      x: 0,
+      y: 0,
+      scaleX: opts.scaleX ?? 1,
+      scaleY: opts.scaleY ?? 1,
+      fitMode: ImageFitMode.FIT,
+    },
+    colorSpace: sourceColorSpace,
+    mediaColorManagement,
+    fps: 30,
+    startFrame: 0,
+    loop: true,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // createDetachedNode  —  creates a node without inserting it into the list
@@ -915,6 +952,18 @@ export function connectNodeCommand(
   // Validation
   if (nodeId === sourceNodeId) return null;
   if (!state.nodes.find((l) => l.id === sourceNodeId)) return null;
+  if (
+    nodeId !== OUTPUT_NODE_ID &&
+    !canConnectNodeProcessingDomains({
+      nodes: state.nodes,
+      sourceNodeId,
+      sourcePortName,
+      targetNodeId: nodeId,
+      targetPortName: portName,
+    })
+  ) {
+    return null;
+  }
 
   const nextFlows = replaceFlowNodeInput(
     state.flows,
@@ -982,6 +1031,8 @@ export function disconnectNodeCommand(
     activeFlowId: FlowId | null;
     rootFlowId: FlowId | null;
     nodes: AnyNode[];
+    selectedNodeId?: string | null;
+    selectedNodeIds?: string[];
   },
   nodeId: string,
   portName: string,
@@ -1025,8 +1076,8 @@ export function disconnectNodeCommand(
   return {
     documentPatch: { flows: finalFlows, nodes: nextNodes },
     selectionPatch: {
-      selectedNodeId: null,
-      selectedNodeIds: [],
+      selectedNodeId: state.selectedNodeId ?? null,
+      selectedNodeIds: state.selectedNodeIds ?? [],
     },
     layoutPatch: {},
     historyLabel: `Disconnect ${portName} input`,
@@ -1889,12 +1940,6 @@ export const getUniqueGroupInputId = (
   return nextId;
 };
 
-const getInputPortsForNode = (node: AnyNode): InputPortDescriptor[] => {
-  const inputPorts = nodeRegistry.get(node.type)?.inputPorts;
-  if (!inputPorts) return [];
-  return typeof inputPorts === 'function' ? inputPorts(node) : inputPorts;
-};
-
 export const buildEmptyGroupFlow = (flowId: FlowId, name: string): Flow => ({
   id: flowId,
   name,
@@ -2072,7 +2117,7 @@ export function groupNodesCommand(state: GraphCommandState): GraphCommandResult 
 
   for (const targetNode of selectedNodes) {
     const targetNodeName = targetNode.name || targetNode.id;
-    for (const port of getInputPortsForNode(targetNode)) {
+    for (const port of getInputPorts(targetNode)) {
       if (port.name === 'pipe') continue;
 
       const targetKey = `${targetNode.id}:${port.name}`;

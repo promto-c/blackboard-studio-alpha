@@ -6,6 +6,7 @@ import {
   type SceneNode,
 } from '@blackboard/types';
 import { buildFlowFromNodes, ROOT_FLOW_ID } from '@/state/editor/flowModel';
+import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
 import { cherryPickAgentNodeChanges } from './agentBranchMerge';
 
 const scene: SceneNode = {
@@ -31,19 +32,15 @@ const image = (id: string): AnyNode =>
     src: '',
   }) as AnyNode;
 
-const grade = (id: string, brightness: number): AnyNode =>
+const grade = (id: string, exposure: number): AnyNode =>
   ({
     id,
     type: NodeType.GRADE,
     name: id,
     enabled: true,
     grade: {
-      brightness,
-      contrast: 1,
-      saturation: 1,
-      gain: 1,
-      gamma: 1,
-      lift: 0,
+      ...createDefaultGrade(),
+      exposure,
     },
     inputs: { pipe: 'plate' },
   }) as AnyNode;
@@ -78,9 +75,9 @@ describe('agentBranchMerge', () => {
     expect(mergedNodes.map((node) => node.id)).toContain('parent-only');
     expect(mergedNodes.map((node) => node.id)).toContain('agent-extra');
     const lookNode = mergedNodes.find((node) => node.id === 'look') as AnyNode & {
-      grade?: { brightness: number };
+      grade?: { exposure: number };
     };
-    expect(lookNode.grade?.brightness).toBe(0.25);
+    expect(lookNode.grade?.exposure).toBe(0.25);
     expect(result.state.nodePositionsByFlow?.[ROOT_FLOW_ID]?.look).toEqual({ x: 10, y: 20 });
   });
 });

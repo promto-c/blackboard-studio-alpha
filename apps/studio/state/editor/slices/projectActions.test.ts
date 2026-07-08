@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BlendMode,
   ComfyNode,
+  HistoryEntry,
   ImageFitMode,
   GroupNode,
   MediaSourceNode,
@@ -21,6 +22,10 @@ import {
 } from '@/state/editor/flowModel';
 import { createProjectActions } from '@/state/editor/slices/projectActions';
 import {
+  createBuiltinProjectColorConfigReference,
+  createDefaultProjectColorManagement,
+} from '@/color-management';
+import {
   deleteProject as deleteProjectFromStorage,
   getProjectBranchStorageId,
   getProjectBranches,
@@ -29,6 +34,7 @@ import {
   upsertProjectBranch,
 } from '@/state/persist';
 import { deleteAssets, requestReferencePermissions } from '@/state/assetStorage';
+import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 
 const sourcePixelDataMocks = vi.hoisted(() => ({
   onReadFrame: undefined as undefined | ((frame: number) => void),
@@ -143,9 +149,28 @@ const createHarness = (
     state = { ...state, ...fn(state) };
   };
   const get = () => state;
+  const commitMutation: CommitEditorMutation<TestState> = (input) => {
+    const mutation = typeof input === 'function' ? input(state) : input;
+    state = { ...state, ...mutation.patch };
+
+    if (!mutation.history) return;
+
+    const nextEntry: HistoryEntry = {
+      id: `hist_test_${state.history.length}`,
+      label: mutation.history.label,
+      state: mutation.history.state as HistoryEntry['state'],
+      createdAt: Date.now(),
+    };
+    const nextHistory = [...state.history.slice(0, state.historyIndex + 1), nextEntry];
+    state = {
+      ...state,
+      history: nextHistory,
+      historyIndex: nextHistory.length - 1,
+    };
+  };
 
   const actions = createProjectActions(set as never, get as never, {
-    commitMutation: vi.fn(),
+    commitMutation,
     trackingAbortController: { current: null },
     ...options.deps,
   });
@@ -170,6 +195,31 @@ describe('createProjectActions', () => {
     sourcePixelDataMocks.onReadFrame = undefined;
     sourcePixelDataMocks.calculateOpticalFlow = undefined;
     vi.mocked(requestReferencePermissions).mockResolvedValue(undefined);
+  });
+
+  it('copies the selected color config into new dimension projects', () => {
+    const selectedColorManagement = createDefaultProjectColorManagement({
+      config: createBuiltinProjectColorConfigReference('ocio://show-config-v1'),
+    });
+    const { actions, getState } = createHarness({
+      deps: {
+        getNewProjectColorManagement: () => selectedColorManagement,
+      },
+    });
+
+    actions.createNewProjectFromDimensions('Show Project', 1280, 720);
+
+    const expectedConfig = {
+      kind: 'builtin',
+      id: 'show-config-v1',
+      uri: 'ocio://show-config-v1',
+    };
+    const state = getState();
+    expect(state.colorManagement.config).toEqual(expectedConfig);
+    expect(state.history[0]?.state.colorManagement?.config).toEqual(expectedConfig);
+    expect(saveProject).toHaveBeenCalled();
+    const savedState = vi.mocked(saveProject).mock.calls.at(-1)?.[1];
+    expect(savedState?.colorManagement.config).toEqual(expectedConfig);
   });
 
   it('restores the selected node default viewport tool when loading a project', async () => {
@@ -200,12 +250,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: paintNode.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       nodePositionsByFlow: {},
     });
@@ -239,12 +289,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: sceneNode.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       currentFrame: 42,
       nodePositionsByFlow: {},
@@ -278,6 +328,7 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: sceneNode.id,
       history: [
         {
@@ -297,7 +348,6 @@ describe('createProjectActions', () => {
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       currentFrame: 42,
       nodePositionsByFlow: {},
@@ -333,6 +383,7 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: sceneNode.id,
       history: [
         {
@@ -375,7 +426,6 @@ describe('createProjectActions', () => {
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       currentFrame: 42,
       nodePositionsByFlow: {},
@@ -420,6 +470,7 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: sceneNode.id,
       history: [
         { id: 'edit-1', label: 'Edit 1', createdAt: 100, state: entryState },
@@ -431,7 +482,6 @@ describe('createProjectActions', () => {
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       currentFrame: 42,
       nodePositionsByFlow: {},
@@ -443,6 +493,81 @@ describe('createProjectActions', () => {
 
     expect(getState().history.map((entry) => entry.id)).toEqual(['edit-1', 'edit-2', 'edit-3']);
     expect(getState().historyIndex).toBe(0);
+  });
+
+  it('opens an older version in a new recovery branch without changing the source branch', async () => {
+    const projectId = 'project-open-recovery-version';
+    const initialState = getInitialState();
+    const sceneNode: SceneNode = {
+      id: 'scene-recovery',
+      type: NodeType.SCENE,
+      name: 'Scene',
+      enabled: true,
+      width: 1920,
+      height: 1080,
+      bitDepth: 16,
+      colorSpace: 'Linear',
+      maxFrames: 120,
+      fps: 24,
+    };
+    const flow = buildFlowFromNodes([sceneNode], ROOT_FLOW_ID, 'Root Flow');
+
+    vi.mocked(loadProjectState).mockResolvedValue({
+      flows: { [ROOT_FLOW_ID]: flow },
+      rootFlowId: ROOT_FLOW_ID,
+      activeFlowId: ROOT_FLOW_ID,
+      activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
+      selectedNodeId: sceneNode.id,
+      history: [
+        {
+          id: 'working-version',
+          label: 'Working version',
+          createdAt: 100,
+          state: { currentFrame: 12 },
+        },
+        {
+          id: 'failed-version',
+          label: 'Failed version',
+          createdAt: 200,
+          state: { currentFrame: 48 },
+        },
+      ],
+      historyIndex: 1,
+      viewerNodeId: null,
+      viewerSlots: {},
+      activeViewerSlot: null,
+      renderSettings: initialState.renderSettings,
+      fps: 24,
+      currentFrame: 48,
+      nodePositionsByFlow: {},
+    });
+
+    const { actions, getState } = createHarness();
+    await actions.loadProject(projectId, {
+      branchId: 'main',
+      historyEntryId: 'working-version',
+      createRecoveryBranch: true,
+    });
+
+    const recoveryBranch = getState().projectBranches.find((branch) =>
+      branch.name.startsWith('recovery/'),
+    );
+    expect(recoveryBranch).toMatchObject({
+      parentBranchId: 'main',
+      kind: 'user',
+      status: 'active',
+    });
+    expect(getState().activeProjectBranchId).toBe(recoveryBranch?.id);
+    expect(getState().currentFrame).toBe(12);
+    expect(getState().history.map((entry) => entry.id)).toEqual(['working-version']);
+    expect(saveProject).toHaveBeenCalledWith(
+      getProjectBranchStorageId(projectId, recoveryBranch?.id),
+      expect.objectContaining({
+        currentFrame: 12,
+        historyIndex: 0,
+      }),
+    );
   });
 
   it('deletes an inactive project branch and its stored snapshot', async () => {
@@ -507,12 +632,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: sceneNode.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       currentFrame: 3,
       nodePositionsByFlow: {},
@@ -575,12 +700,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: mainScene.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       currentFrame: 1,
       nodePositionsByFlow: {},
@@ -638,12 +763,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: sceneNode.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       currentFrame: 99,
       nodePositionsByFlow: {},
@@ -693,12 +818,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: childFlow.id,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: paintNode.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       nodePositionsByFlow: {
         [ROOT_FLOW_ID]: { [groupNode.id]: { x: 64, y: 80 } },
@@ -740,12 +865,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: comfyNode.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       nodePositionsByFlow: {},
     });
@@ -817,12 +942,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: comfyNode.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       nodePositionsByFlow: {},
     });
@@ -1452,12 +1577,12 @@ describe('createProjectActions', () => {
       rootFlowId: ROOT_FLOW_ID,
       activeFlowId: ROOT_FLOW_ID,
       activeTab: initialState.activeTab,
+      colorManagement: initialState.colorManagement,
       selectedNodeId: rotoNode.id,
       viewerNodeId: null,
       viewerSlots: {},
       activeViewerSlot: null,
       renderSettings: initialState.renderSettings,
-      viewerSettings: initialState.viewerSettings,
       fps: 24,
       currentFrame: 0,
       nodePositionsByFlow: {},

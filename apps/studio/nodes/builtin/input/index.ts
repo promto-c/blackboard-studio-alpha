@@ -7,6 +7,7 @@ export const inputNode: NodeDefinition = {
   name: 'Input',
   category: 'Effect',
   renderMode: 'scene',
+  processingDomain: 'scene_linear',
   description: 'Entry proxy for scene and group inputs.',
   IconComponent: Icons.ArrowDown,
   AdjustmentComponent: () => null,

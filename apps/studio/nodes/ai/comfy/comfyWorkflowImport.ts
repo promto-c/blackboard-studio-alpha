@@ -6,6 +6,11 @@ import {
   isComfyGraphWorkflow,
 } from '@/services/comfy/client';
 import { createComfyWorkflowControl, getComfyWorkflowControlCandidates } from './comfyControls';
+import {
+  getComfyOutputCandidateNodes,
+  normalizeComfyOutputCandidate,
+  updateComfyOutputCandidateInputs,
+} from './comfyOutputCandidates';
 import { getNonEmptyString } from '@/utils/guards';
 
 export const hashComfyWorkflowSource = (value: string): string => {
@@ -159,14 +164,57 @@ export const refreshComfyWorkflowFromSource = async (
     nextDefaultInputIds: extracted.selectedInputIds,
   });
 
+  // Preserve user output field customizations (format, bit_depth, etc.)
+  // that were set via the workflow output picker. The fresh extraction from
+  // sourceGraph resets these to defaults, losing user changes.
+  const oldOutputInputs = new Map<string, Record<string, unknown>>();
+  for (const candidate of workflow.outputCandidates ?? []) {
+    for (const node of getComfyOutputCandidateNodes(candidate)) {
+      oldOutputInputs.set(node.id, { ...node.inputs });
+    }
+  }
+
+  const outputCandidates = extracted.outputCandidates.map((candidate) => {
+    let nextCandidate = candidate;
+    for (const node of getComfyOutputCandidateNodes(candidate)) {
+      const oldInputs = oldOutputInputs.get(node.id);
+      if (!oldInputs) continue;
+      // Only preserve old input keys that also exist in the fresh candidate.
+      // This keeps user customizations while still picking up new fields
+      // (e.g. options added by a ComfyUI update).
+      const preservedInputs: Record<string, unknown> = {};
+      for (const key of Object.keys(oldInputs)) {
+        if (key in node.inputs) {
+          preservedInputs[key] = oldInputs[key];
+        }
+      }
+      nextCandidate = updateComfyOutputCandidateInputs(nextCandidate, node.id, {
+        ...node.inputs,
+        ...preservedInputs,
+      });
+    }
+    return normalizeComfyOutputCandidate(nextCandidate);
+  });
+  const prompt = { ...extracted.prompt };
+  for (const candidate of outputCandidates) {
+    for (const outputNode of getComfyOutputCandidateNodes(candidate)) {
+      const promptNode = prompt[outputNode.id];
+      if (!promptNode || typeof promptNode !== 'object' || Array.isArray(promptNode)) continue;
+      prompt[outputNode.id] = {
+        ...promptNode,
+        inputs: outputNode.inputs,
+      };
+    }
+  }
+
   return {
     ...workflow,
-    prompt: extracted.prompt,
+    prompt,
     inputCandidates: extracted.inputCandidates,
     selectedInputIds,
     controlOptions: extracted.controlOptions,
     defaultControlKeys: extracted.defaultControlKeys,
-    outputCandidates: extracted.outputCandidates,
+    outputCandidates,
     selectedOutputIds,
   };
 };
@@ -232,8 +280,5 @@ export const createDefaultComfyWorkflowControls = (
   workflow: ComfyWorkflow,
 ): ComfyWorkflowControl[] =>
   getComfyWorkflowControlCandidates(workflow)
-    .filter(
-      (candidate) =>
-        !workflow.defaultControlKeys || workflow.defaultControlKeys.includes(candidate.key),
-    )
+    .filter((candidate) => candidate.defaultVisible)
     .map((candidate) => createComfyWorkflowControl(workflow.id, candidate));

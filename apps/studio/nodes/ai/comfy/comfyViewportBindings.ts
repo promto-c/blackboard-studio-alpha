@@ -22,6 +22,7 @@ import {
 import { isJsonObject } from '@/utils/guards';
 import { normalizeComfyType } from '@/utils/comfyUtils';
 import { collectComfyGraphExposedFields } from '@/services/comfy/client';
+import { isDataChannel } from '@/color-management';
 
 export const COMFY_CROP_VIEWPORT_TOOL = 'comfy_crop';
 
@@ -151,6 +152,9 @@ const numericInputScore = (
   return score;
 };
 
+const isMaskWorkflowInputCandidate = (candidate: ComfyWorkflowInputCandidate): boolean =>
+  isDataChannel(candidate.inputName) || isDataChannel(candidate.nodeType);
+
 export const getComfyViewportBindingTargetOptions = (
   workflow: ComfyWorkflow | null | undefined,
   field: ComfyViewportBindingField,
@@ -163,7 +167,7 @@ export const getComfyViewportBindingTargetOptions = (
         const input = normalizeComfyType(candidate.inputName);
         const type = normalizeComfyType(candidate.nodeType);
         return field === 'mask'
-          ? input.includes('mask') || type.includes('mask')
+          ? isMaskWorkflowInputCandidate(candidate)
           : input.includes('image') || input.includes('video') || type.includes('loadimage');
       })
       .map((candidate) => ({

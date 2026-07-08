@@ -1,6 +1,5 @@
 import React from 'react';
 import { StyledDropdown } from '@blackboard/ui';
-import * as Icons from '@blackboard/icons';
 import { useOcio } from '@/state/ocioContext';
 
 interface OcioColorSpaceDropdownProps {
@@ -10,12 +9,6 @@ interface OcioColorSpaceDropdownProps {
   widthClass?: string;
   popoverWidthClass?: string;
 }
-
-const legacyOptions = [
-  { value: 'sRGB', label: 'sRGB', secondaryLabel: 'Legacy Rec.709 texture' },
-  { value: 'Linear', label: 'Linear', secondaryLabel: 'Legacy scene-linear alias' },
-  { value: 'Raw', label: 'Raw', secondaryLabel: 'Data, no color transform' },
-];
 
 const formatDescription = (value: string): string => value.replace(/\s+/g, ' ').trim();
 
@@ -27,86 +20,58 @@ export function OcioColorSpaceDropdown({
   popoverWidthClass = 'w-80',
 }: OcioColorSpaceDropdownProps) {
   const ocio = useOcio();
-  const resolvedValue = value || ocio.textureColorSpace || 'sRGB';
-  const canonicalValue = ocio.resolveColorSpaceName(resolvedValue);
+  const resolvedValue = value?.trim() ?? '';
+  const canonicalValue = resolvedValue ? ocio.resolveColorSpaceName(resolvedValue) : '';
 
-  const options = React.useMemo(() => {
-    if (!ocio.isInitialized) {
-      return includeData ? legacyOptions : legacyOptions.filter((option) => option.value !== 'Raw');
-    }
-
-    const mapped = ocio.colorSpaces
-      .filter((colorSpace) => includeData || !colorSpace.isData)
-      .map((colorSpace) => ({
-        value: colorSpace.name,
-        label: colorSpace.name,
-        secondaryLabel: colorSpace.description
-          ? formatDescription(colorSpace.description)
-          : colorSpace.family || colorSpace.encoding,
-        badges: [
-          colorSpace.family || undefined,
-          colorSpace.encoding || undefined,
-          colorSpace.isData ? 'Data' : undefined,
-        ].filter(Boolean) as string[],
-        searchText: [
-          colorSpace.name,
-          colorSpace.canonicalName,
-          colorSpace.family,
-          colorSpace.encoding,
-          colorSpace.description,
-          ...colorSpace.aliases,
-          ...colorSpace.categories,
-        ].join(' '),
-      }));
-
-    if (
-      resolvedValue &&
-      !mapped.some((option) => option.value === resolvedValue) &&
-      !mapped.some((option) => option.value === canonicalValue)
-    ) {
-      mapped.unshift({
-        value: resolvedValue,
-        label: resolvedValue,
-        secondaryLabel: 'Stored project value',
-        badges: ['Current'],
-        searchText: resolvedValue,
-      });
-    }
-
-    return mapped;
-  }, [canonicalValue, includeData, ocio, resolvedValue]);
-
-  const dropdown = (
-    <StyledDropdown
-      value={
-        options.some((option) => option.value === canonicalValue) ? canonicalValue : resolvedValue
-      }
-      options={options}
-      onChange={(nextValue) => onChange(String(nextValue))}
-      widthClass={widthClass}
-      popoverWidthClass={popoverWidthClass}
-      searchable
-    />
+  const options = React.useMemo(
+    () =>
+      ocio.colorSpaces
+        .filter((colorSpace) => includeData || !colorSpace.isData)
+        .map((colorSpace) => ({
+          value: colorSpace.name,
+          label: colorSpace.name,
+          secondaryLabel: colorSpace.description
+            ? formatDescription(colorSpace.description)
+            : colorSpace.family || colorSpace.encoding,
+          badges: [
+            colorSpace.family || undefined,
+            colorSpace.encoding || undefined,
+            colorSpace.isData ? 'Data' : undefined,
+          ].filter(Boolean) as string[],
+          searchText: [
+            colorSpace.name,
+            colorSpace.canonicalName,
+            colorSpace.family,
+            colorSpace.encoding,
+            colorSpace.description,
+            ...colorSpace.aliases,
+            ...colorSpace.categories,
+          ].join(' '),
+        })),
+    [includeData, ocio],
   );
 
-  if (ocio.isInitialized) return dropdown;
+  const selectedValue = options.some((option) => option.value === canonicalValue)
+    ? canonicalValue
+    : resolvedValue;
+  const hasUnresolvedValue =
+    Boolean(resolvedValue) && !options.some((option) => option.value === selectedValue);
 
   return (
-    <div className="space-y-2">
-      {dropdown}
-      <button
-        type="button"
-        onClick={() => void ocio.load()}
-        disabled={ocio.isLoading}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60"
-      >
-        {ocio.isLoading ? (
-          <Icons.RotateLoop className="h-4 w-4 animate-spin" />
-        ) : (
-          <Icons.ArrowDownTray className="h-4 w-4" />
-        )}
-        <span>{ocio.isLoading ? 'Loading OCIO' : 'Load OCIO color spaces'}</span>
-      </button>
+    <div className="space-y-1.5">
+      {hasUnresolvedValue ? (
+        <div className="rounded-lg border border-red-400/20 bg-red-500/10 px-2.5 py-2 text-xs leading-5 text-red-100">
+          Missing color space: <span className="font-mono">{resolvedValue}</span>
+        </div>
+      ) : null}
+      <StyledDropdown
+        value={selectedValue}
+        options={options}
+        onChange={(nextValue) => onChange(String(nextValue))}
+        widthClass={widthClass}
+        popoverWidthClass={popoverWidthClass}
+        searchable
+      />
     </div>
   );
 }

@@ -19,7 +19,7 @@ const createStorage = (initial: Record<string, string> = {}) => {
   };
 };
 
-const STORAGE_KEY = 'blackboard-background-jobs-v1';
+const STORAGE_KEY = 'blackboard-studio-background-jobs';
 
 describe('backgroundJobs', () => {
   afterEach(() => {
@@ -76,7 +76,7 @@ describe('backgroundJobs', () => {
     expect(job.status).toBe('running');
     expect(job.detail).toBe('Reconnecting to ComfyUI...');
     expect(job.source?.restoredFromStorage).toBe(true);
-    expect(job.cancellable).toBe(false);
+    expect(job.cancellable).toBe(true);
   });
 
   it('marks non-resumable active jobs as interrupted after reload', () => {

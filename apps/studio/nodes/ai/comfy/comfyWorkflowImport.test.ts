@@ -1,6 +1,7 @@
 import type { ComfyWorkflow } from '@blackboard/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  createDefaultComfyWorkflowControls,
   reconcileComfyWorkflowInputSelection,
   reconcileComfyWorkflowOutputSelection,
   refreshComfyWorkflowFromSource,
@@ -11,6 +12,34 @@ afterEach(() => {
 });
 
 describe('refreshComfyWorkflowFromSource', () => {
+  it('shows an internal sampler seed by default without exposing unrelated internal fields', () => {
+    const workflow: ComfyWorkflow = {
+      id: 'workflow-1',
+      name: 'Z-Image-Turbo',
+      prompt: {
+        '57_3': {
+          class_type: 'KSampler',
+          inputs: {
+            seed: 844219637214913,
+            steps: 8,
+            cfg: 1,
+          },
+        },
+      },
+      defaultControlKeys: [],
+      createdAt: 1,
+    };
+
+    expect(createDefaultComfyWorkflowControls(workflow)).toMatchObject([
+      {
+        nodeId: '57_3',
+        inputName: 'seed',
+        value: 844219637214913,
+        runMode: 'randomize',
+      },
+    ]);
+  });
+
   it('keeps newly discovered internal inputs unchecked', () => {
     expect(
       reconcileComfyWorkflowInputSelection({
@@ -198,5 +227,126 @@ describe('refreshComfyWorkflowFromSource', () => {
       syntheticOutputFormat: 'model_3d',
     });
     expect(refreshed.selectedOutputIds).toEqual(['88:0']);
+  });
+
+  it('preserves and normalizes synthetic output format settings during metadata refresh', async () => {
+    const objectInfo = {
+      VAEDecode: {
+        input: { required: {} },
+        output: ['IMAGE'],
+      },
+      SaveImageAdvanced: {
+        input: {
+          required: {
+            images: ['IMAGE'],
+            filename_prefix: ['STRING', { default: 'ComfyUI' }],
+            format: [
+              'COMFY_DYNAMICCOMBO_V3',
+              {
+                options: [
+                  {
+                    key: 'png',
+                    inputs: {
+                      required: {
+                        bit_depth: [['8-bit', '16-bit'], { default: '8-bit' }],
+                      },
+                    },
+                  },
+                  {
+                    key: 'exr',
+                    inputs: {
+                      required: {
+                        bit_depth: [['32-bit float'], { default: '32-bit float' }],
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        input_order: {
+          required: ['images', 'filename_prefix', 'format'],
+        },
+        output_node: true,
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify(objectInfo), { status: 200 })),
+    );
+
+    const workflow: ComfyWorkflow = {
+      id: 'workflow-image',
+      name: 'Image output',
+      prompt: {
+        '64': { class_type: 'VAEDecode', inputs: {} },
+        blackboard_exr_64_0: {
+          class_type: 'SaveImageAdvanced',
+          inputs: {
+            images: ['64', 0],
+            filename_prefix: 'blackboard/64_0_exr',
+            format: 'exr',
+            'format.bit_depth': '32-bit float',
+          },
+        },
+      },
+      sourceGraph: {
+        nodes: [
+          {
+            id: 64,
+            type: 'VAEDecode',
+            inputs: [],
+            outputs: [{ name: 'images', type: 'IMAGE', links: [] }],
+          },
+        ],
+        links: [],
+      },
+      outputCandidates: [
+        {
+          id: '64:0',
+          nodeId: '64',
+          nodeType: 'VAEDecode',
+          kind: 'synthetic',
+          outputIndex: 0,
+          outputName: 'images',
+          outputType: 'IMAGE',
+          label: 'VAEDecode #64 images',
+          promptLink: ['64', 0],
+          previewNodeId: 'blackboard_exr_64_0',
+          syntheticOutputFormat: 'exr_float',
+          syntheticOutputNodes: [
+            {
+              id: 'blackboard_exr_64_0',
+              nodeType: 'SaveImageAdvanced',
+              inputs: {
+                images: ['64', 0],
+                filename_prefix: 'blackboard/64_0_exr',
+                format: 'png',
+                'format.bit_depth': '32-bit float',
+              },
+            },
+          ],
+        },
+      ],
+      selectedOutputIds: ['64:0'],
+      createdAt: 1,
+    };
+
+    const refreshed = await refreshComfyWorkflowFromSource('http://127.0.0.1:8188', workflow);
+
+    expect(refreshed.prompt.blackboard_exr_64_0).toMatchObject({
+      class_type: 'SaveImageAdvanced',
+      inputs: {
+        format: 'png',
+        'format.bit_depth': '8-bit',
+      },
+    });
+    expect(refreshed.outputCandidates?.[0]?.syntheticOutputNodes?.[0]?.inputs).toMatchObject({
+      format: 'png',
+      'format.bit_depth': '8-bit',
+    });
   });
 });

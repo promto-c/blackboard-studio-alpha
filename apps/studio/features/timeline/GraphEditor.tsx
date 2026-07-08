@@ -4,6 +4,7 @@ import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import { getAnimatableProperties } from '@/nodes/animation';
 import { Keyframe } from '@blackboard/types';
 import { getSortedKeyframes, getSegmentTangents } from '@blackboard/renderer';
+import { useSmoothAnimation } from '@/hooks/useSmoothAnimation';
 
 // --- TYPES ---
 type DragInfo = {
@@ -42,6 +43,14 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
   const [dragInfo, setDragInfo] = useState<DragInfo | null>(null);
   const [selectedKeyframeIndex, setSelectedKeyframeIndex] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // --- Smooth zoom animation (shared hook) ---
+  const {
+    targetRef: graphTargetRef,
+    scheduleAnimation: graphScheduleAnimation,
+    stopAnimation: graphStopAnimation,
+    snapTo: graphSnapTo,
+  } = useSmoothAnimation(view, (v) => setView(v));
 
   const activeProperty = useMemo(
     () => animatableProps.find((p) => p.path === activePropertyPath),
@@ -89,32 +98,42 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
 
-      const beforeData = viewToData({ x: mouseX, y: mouseY });
+      // Use target as base so rapid scrolls compound correctly
+      const target = graphTargetRef.current;
       const zoomFactor = 1.1;
 
       const zoomXFactor = e.altKey ? 1 : e.deltaY < 0 ? zoomFactor : 1 / zoomFactor;
       const zoomYFactor = e.shiftKey ? 1 : e.deltaY < 0 ? zoomFactor : 1 / zoomFactor;
 
-      const newZoomX = view.zoomX * zoomXFactor;
-      const newZoomY = view.zoomY * zoomYFactor;
+      const newZoomX = target.zoomX * zoomXFactor;
+      const newZoomY = target.zoomY * zoomYFactor;
 
-      const newPanX = mouseX - beforeData.frame * newZoomX;
-      const newPanY = mouseY + beforeData.value * newZoomY;
+      // Keep the data point under the mouse stable
+      const beforeFrame = (mouseX - target.panX) / target.zoomX;
+      const beforeValue = (mouseY - target.panY) / -target.zoomY;
+      const newPanX = mouseX - beforeFrame * newZoomX;
+      const newPanY = mouseY + beforeValue * newZoomY;
 
-      setView({ panX: newPanX, panY: newPanY, zoomX: newZoomX, zoomY: newZoomY });
+      graphTargetRef.current = { panX: newPanX, panY: newPanY, zoomX: newZoomX, zoomY: newZoomY };
+      graphScheduleAnimation();
     },
-    [view, viewToData, setView],
+    [graphScheduleAnimation],
   );
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<SVGElement>, type: DragInfo['type'], keyIndex?: number) => {
       e.stopPropagation();
       if (e.button === 1) {
+        // Snap to animation target before starting pan
+        const target = graphTargetRef.current;
+        graphStopAnimation();
+        graphSnapTo(target);
+
         setDragInfo({
           type: 'pan',
           startX: e.clientX,
           startY: e.clientY,
-          originalView: view,
+          originalView: { panX: target.panX, panY: target.panY },
         });
         return;
       }
@@ -141,7 +160,7 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
         }
       }
     },
-    [view, keyframes],
+    [view, keyframes, graphStopAnimation, graphSnapTo],
   );
 
   const handleDoubleClick = useCallback(
@@ -170,11 +189,11 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
       const dy = e.clientY - dragInfo.startY;
 
       if (dragInfo.type === 'pan') {
-        setView((v) => ({
-          ...v,
-          panX: dragInfo.originalView.panX + dx,
-          panY: dragInfo.originalView.panY + dy,
-        }));
+        const newPanX = dragInfo.originalView.panX + dx;
+        const newPanY = dragInfo.originalView.panY + dy;
+        // Keep target in sync so wheel zoom after panning uses correct base
+        graphTargetRef.current = { ...graphTargetRef.current, panX: newPanX, panY: newPanY };
+        setView((v) => ({ ...v, panX: newPanX, panY: newPanY }));
       }
     };
     const handleMouseUp = () => setDragInfo(null);

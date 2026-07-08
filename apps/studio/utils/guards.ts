@@ -24,3 +24,27 @@ export const isAbortError = (error: unknown): boolean =>
     : error instanceof Error && error.name === 'AbortError';
 
 export const isSceneNode = (node: AnyNode): node is SceneNode => node.type === NodeType.SCENE;
+
+/**
+ * Check whether a value is a finite number.
+ */
+export const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+/**
+ * Check whether a value is an object with finite positive `width` and `height` properties.
+ */
+export const hasPositiveSize = (value: unknown): value is { width: number; height: number } =>
+  typeof value === 'object' &&
+  value !== null &&
+  isFiniteNumber((value as { width?: unknown }).width) &&
+  (value as { width: number }).width > 0 &&
+  isFiniteNumber((value as { height?: unknown }).height) &&
+  (value as { height: number }).height > 0;
+
+/**
+ * Extract a human-readable error message from an unknown value.
+ * Handles `Error` instances, string errors, and falls back to a default message.
+ */
+export const getErrorMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error ? error.message : typeof error === 'string' ? error : fallback;

@@ -10,6 +10,8 @@ import {
   getTagValue,
   hasTag,
   loadGalleryEntries,
+  restoreGalleryEntries,
+  updateGalleryEntry,
   type GalleryEntry,
 } from '@blackboard/project-store';
 import {
@@ -27,7 +29,7 @@ import {
   getComfyGeneratedOutputsForActivation,
   getComfyOutputActivationUpdates,
 } from '@/nodes/ai/comfy/comfyOutputActivation';
-import type { GetState, SetState } from '@/state/editor/slices/types';
+import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 
 // ---------------------------------------------------------------------------
@@ -151,11 +153,14 @@ export const createComfyGalleryEntries = ({
       assetId: output.src,
       mediaKind: output.mediaKind ?? 'image',
       scene3dAsset: output.scene3dAsset,
+      colorSpace: output.colorSpace,
+      mediaColorManagement: output.mediaColorManagement,
       frames: output.frames,
       width: output.width,
       height: output.height,
       duration: output.duration,
       fps: output.fps,
+      videoColorMetadata: output.videoColorMetadata,
       createdAt: output.createdAt,
       label: output.label ?? output.workflowName,
       prompt: output.prompt,
@@ -349,6 +354,7 @@ export const syncComfyGeneratedOutputs = (
     frames: undefined,
     duration: undefined,
     fps: undefined,
+    videoColorMetadata: undefined,
     width: 0,
     height: 0,
     activeGeneratedOutputId: undefined,
@@ -430,6 +436,173 @@ export const syncComfyGeneratedOutputsIntoFlows = (
   }
 
   return nextFlows;
+};
+
+type ComfyOutputGalleryState = {
+  nodeId: string;
+  output: GeneratedOutput;
+  deletedAt?: number;
+};
+
+const getComfyOutputGalleryStateKey = (nodeId: string, output: GeneratedOutput): string =>
+  `${nodeId}\x00${output.id}`;
+
+const addComfyOutputGalleryStatesFromNodes = (
+  statesByKey: Map<string, ComfyOutputGalleryState>,
+  nodes: AnyNode[] | undefined,
+): void => {
+  if (!nodes) return;
+
+  nodes.forEach((node) => {
+    if (!isComfyNode(node)) return;
+
+    node.generatedOutputs?.forEach((output) => {
+      const key = getComfyOutputGalleryStateKey(node.id, output);
+      if (statesByKey.has(key)) return;
+      statesByKey.set(key, {
+        nodeId: node.id,
+        output,
+        deletedAt: output.deletedAt,
+      });
+    });
+  });
+};
+
+const collectComfyOutputGalleryStates = (
+  snapshot: Pick<HistoryEntry['state'], 'flows' | 'nodes'>,
+): Map<string, ComfyOutputGalleryState> => {
+  const statesByKey = new Map<string, ComfyOutputGalleryState>();
+
+  Object.values(snapshot.flows ?? {}).forEach((flow) => {
+    addComfyOutputGalleryStatesFromNodes(statesByKey, getOrderedNodesFromFlow(flow));
+  });
+  addComfyOutputGalleryStatesFromNodes(statesByKey, snapshot.nodes);
+
+  return statesByKey;
+};
+
+const hasComfyOutputDeletedAtChanges = (
+  previousState: HistoryEntry['state'],
+  nextState: HistoryEntry['state'],
+): boolean => {
+  const previousOutputs = collectComfyOutputGalleryStates(previousState);
+  const nextOutputs = collectComfyOutputGalleryStates(nextState);
+  const outputKeys = new Set([...previousOutputs.keys(), ...nextOutputs.keys()]);
+
+  for (const key of outputKeys) {
+    const previousOutput = previousOutputs.get(key);
+    const nextOutput = nextOutputs.get(key);
+    if (!previousOutput || !nextOutput) continue;
+    if (previousOutput.deletedAt !== nextOutput.deletedAt) return true;
+  }
+
+  return false;
+};
+
+const buildComfyOutputGalleryStatesByNodeId = (
+  statesByKey: Map<string, ComfyOutputGalleryState>,
+): Map<string, ComfyOutputGalleryState[]> => {
+  const statesByNodeId = new Map<string, ComfyOutputGalleryState[]>();
+
+  statesByKey.forEach((outputState) => {
+    statesByNodeId.set(outputState.nodeId, [
+      ...(statesByNodeId.get(outputState.nodeId) ?? []),
+      outputState,
+    ]);
+  });
+
+  return statesByNodeId;
+};
+
+const galleryEntryMatchesComfyOutputState = (
+  entry: GalleryEntry,
+  outputState: ComfyOutputGalleryState,
+): boolean => {
+  if (entry.outputId && entry.outputId === outputState.output.id) return true;
+  if (!entry.assetId) return false;
+  return (
+    outputState.output.src === entry.assetId ||
+    (outputState.output.frames ?? []).includes(entry.assetId)
+  );
+};
+
+export const syncComfyGalleryEntriesWithEditorState = async (
+  state: Pick<EditorState, 'projectId' | 'activeProjectBranchId' | 'flows' | 'nodes'>,
+): Promise<boolean> => {
+  if (!state.projectId) return false;
+
+  const outputStates = buildComfyOutputGalleryStatesByNodeId(
+    collectComfyOutputGalleryStates({ flows: state.flows, nodes: state.nodes }),
+  );
+  if (outputStates.size === 0) return false;
+
+  const entries = await loadGalleryEntries();
+  const projectId = state.projectId;
+  const branchId = getResolvedBranchId(state.activeProjectBranchId);
+  const restoreEntryIds: string[] = [];
+  const updatePromises: Promise<void>[] = [];
+
+  entries.forEach((entry) => {
+    if (entry.source !== 'Comfy') return;
+    if (getTagValue(entry.tags, 'project:') !== projectId) return;
+    if ((getTagValue(entry.tags, 'branch:') ?? MAIN_PROJECT_BRANCH_ID) !== branchId) return;
+
+    const nodeId = getTagValue(entry.tags, 'node:');
+    if (!nodeId) return;
+
+    const outputState = outputStates
+      .get(nodeId)
+      ?.find((candidate) => galleryEntryMatchesComfyOutputState(entry, candidate));
+    if (!outputState) return;
+
+    if (outputState.deletedAt) {
+      if (entry.deletedAt !== outputState.deletedAt) {
+        updatePromises.push(updateGalleryEntry(entry.id, { deletedAt: outputState.deletedAt }));
+      }
+      return;
+    }
+
+    if (entry.deletedAt) {
+      restoreEntryIds.push(entry.id);
+    }
+  });
+
+  await Promise.all([
+    restoreEntryIds.length > 0 ? restoreGalleryEntries(restoreEntryIds) : Promise.resolve(),
+    ...updatePromises,
+  ]);
+
+  return restoreEntryIds.length > 0 || updatePromises.length > 0;
+};
+
+export const syncComfyGalleryEntriesAfterHistoryRestore = async ({
+  fromState,
+  toState,
+  editorState,
+}: {
+  fromState: HistoryEntry['state'];
+  toState: HistoryEntry['state'];
+  editorState: Pick<EditorState, 'projectId' | 'activeProjectBranchId' | 'flows' | 'nodes'>;
+}): Promise<boolean> => {
+  if (!hasComfyOutputDeletedAtChanges(fromState, toState)) return false;
+  return syncComfyGalleryEntriesWithEditorState(editorState);
+};
+
+const getGallerySyncHistoryLabel = (
+  mode: Exclude<ComfyGallerySyncMode, 'permanent-delete'>,
+  targets: ComfyGalleryOutputSyncTarget[],
+): string => {
+  const outputKeys = new Set(
+    targets.map(
+      (target) => `${target.nodeId}\x00${target.outputId ?? ''}\x00${target.assetId ?? ''}`,
+    ),
+  );
+  const count = outputKeys.size;
+  const plural = count === 1 ? '' : 's';
+
+  return mode === 'restore'
+    ? `Restore ${count} Gallery Output${plural}`
+    : `Delete ${count} Gallery Output${plural}`;
 };
 
 // ---------------------------------------------------------------------------
@@ -634,25 +807,48 @@ export const syncComfyGeneratedOutputsWithGalleryEntriesService = async (
   const state = get();
   const currentProjectId = state.projectId;
   const currentBranchId = getResolvedBranchId(state.activeProjectBranchId);
+  let shouldRefreshGallery = false;
   const currentTargets = targets.filter(
     (target) => target.projectId === currentProjectId && target.branchId === currentBranchId,
   );
 
   if (currentTargets.length > 0) {
+    shouldRefreshGallery = true;
     const nextFlows = syncComfyGeneratedOutputsIntoFlows(state.flows, currentTargets);
-    const nextHistory =
-      syncComfyGeneratedOutputsIntoHistory(state.history, currentTargets) ?? state.history;
+    const shouldRewriteHistory = mode === 'permanent-delete';
+    const nextHistory = shouldRewriteHistory
+      ? (syncComfyGeneratedOutputsIntoHistory(state.history, currentTargets) ?? state.history)
+      : state.history;
 
     if (nextFlows !== state.flows || nextHistory !== state.history) {
       const activeFlow = getRootFlow(nextFlows, state.activeFlowId ?? state.rootFlowId);
-      deps.commitMutation({
-        patch: {
-          flows: nextFlows,
-          nodes: getOrderedNodesFromFlow(activeFlow),
-          history: nextHistory,
-        },
-        persist: 'debounced',
-      });
+      const activeNodes = getOrderedNodesFromFlow(activeFlow);
+      const patch = {
+        flows: nextFlows,
+        nodes: activeNodes,
+        history: nextHistory,
+        galleryUpdatedAt: Date.now(),
+      };
+
+      if (mode === 'permanent-delete') {
+        deps.commitMutation({
+          patch,
+          persist: 'debounced',
+        });
+      } else {
+        deps.commitMutation({
+          patch,
+          history: {
+            label: getGallerySyncHistoryLabel(mode, currentTargets),
+            state: {
+              flows: nextFlows,
+              rootFlowId: state.rootFlowId,
+              activeFlowId: state.activeFlowId,
+              selectedNodeId: state.selectedNodeId,
+            },
+          },
+        });
+      }
     }
   }
 
@@ -661,7 +857,7 @@ export const syncComfyGeneratedOutputsWithGalleryEntriesService = async (
     if (target.projectId === currentProjectId && target.branchId === currentBranchId) {
       return;
     }
-    const key = `${target.projectId}\x00$\{target.branchId}`;
+    const key = `${target.projectId}\x00${target.branchId}`;
     savedTargetsByBranch.set(key, [...(savedTargetsByBranch.get(key) ?? []), target]);
   });
 
@@ -695,6 +891,15 @@ export const syncComfyGeneratedOutputsWithGalleryEntriesService = async (
       ),
     );
     touchProjectBranch(projectId, branchId, timestamp);
+  }
+
+  if (shouldRefreshGallery && currentTargets.length > 0) {
+    const latestState = get();
+    if (latestState.galleryUpdatedAt === state.galleryUpdatedAt) {
+      deps.commitMutation({
+        patch: { galleryUpdatedAt: Date.now() },
+      });
+    }
   }
 };
 

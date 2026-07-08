@@ -1,5 +1,4 @@
 import type { AnyNode, SourceAlphaMode } from '@blackboard/types';
-import { CollapsibleSection } from '@blackboard/ui';
 import { SegmentedControl } from '@/components';
 import { useEditorActions } from '@/state/editorContext';
 
@@ -14,7 +13,8 @@ function SourceAlphaControl({ node }: { node: AnyNode }) {
   const sourceAlphaMode = (node as { sourceAlphaMode?: SourceAlphaMode }).sourceAlphaMode ?? 'file';
 
   return (
-    <CollapsibleSection title="Alpha" defaultOpen>
+    <div className="space-y-1.5">
+      <label className="text-xs font-medium text-gray-400">Alpha</label>
       <SegmentedControl
         value={sourceAlphaMode}
         options={SOURCE_ALPHA_OPTIONS}
@@ -26,7 +26,7 @@ function SourceAlphaControl({ node }: { node: AnyNode }) {
           )
         }
       />
-    </CollapsibleSection>
+    </div>
   );
 }
 

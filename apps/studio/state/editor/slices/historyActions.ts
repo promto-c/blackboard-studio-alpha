@@ -8,9 +8,16 @@ type RedoHistoryBackupPayload = {
   historyIndex: number;
   nextEntry: HistoryEntry;
 };
+type HistoryRestoreDirection = 'undo' | 'redo' | 'jump';
+export type HistoryStateRestoredPayload = {
+  direction: HistoryRestoreDirection;
+  fromEntry: HistoryEntry;
+  toEntry: HistoryEntry;
+};
 type HistoryActionDeps = {
   backupRedoHistory?: (payload: RedoHistoryBackupPayload) => void;
   getUndoHistoryLimit?: () => number | null;
+  onHistoryStateRestored?: (payload: HistoryStateRestoredPayload) => void;
 };
 const isHierarchySelection = (
   value: unknown,
@@ -225,6 +232,14 @@ export function createHistoryActions(
       }),
     };
   };
+  const notifyHistoryStateRestored = (
+    direction: HistoryRestoreDirection,
+    fromEntry: HistoryEntry | undefined,
+    toEntry: HistoryEntry | undefined,
+  ) => {
+    if (!fromEntry || !toEntry || fromEntry === toEntry) return;
+    deps.onHistoryStateRestored?.({ direction, fromEntry, toEntry });
+  };
 
   return {
     beginHistoryInteraction: (id: string) => {
@@ -292,6 +307,7 @@ export function createHistoryActions(
           historyIndex: historyIndex - 1,
         }));
         debouncedSave();
+        notifyHistoryStateRestored('undo', currentEntry, prevEntry);
       }
     },
 
@@ -305,15 +321,17 @@ export function createHistoryActions(
           historyIndex: historyIndex + 1,
         }));
         debouncedSave();
+        notifyHistoryStateRestored('redo', history[historyIndex], nextEntry);
       }
     },
 
     jumpToHistoryState: (index: number) => {
       activeInteraction = null;
-      const { history } = get();
+      const { history, historyIndex } = get();
       if (index >= 0 && index < history.length) {
         set(() => ({ ...cloneHistorySelectionState(history[index].state), historyIndex: index }));
         debouncedSave();
+        notifyHistoryStateRestored('jump', history[historyIndex], history[index]);
       }
     },
 

@@ -250,6 +250,7 @@ const readBackgroundJobSource = (value: unknown): BackgroundJobSource | undefine
   const branchId = readString(value.branchId);
   const nodeId = readString(value.nodeId);
   const workflowId = readString(value.workflowId);
+  const batchId = readString(value.batchId);
   const historyId = readString(value.historyId);
   const promptId = readString(value.promptId);
   const comfyEndpoint = readString(value.comfyEndpoint);
@@ -274,6 +275,7 @@ const readBackgroundJobSource = (value: unknown): BackgroundJobSource | undefine
   if (branchId) source.branchId = branchId;
   if (nodeId) source.nodeId = nodeId;
   if (workflowId) source.workflowId = workflowId;
+  if (batchId) source.batchId = batchId;
   if (historyId) source.historyId = historyId;
   if (promptId) source.promptId = promptId;
   if (comfyEndpoint) source.comfyEndpoint = comfyEndpoint;
@@ -405,7 +407,7 @@ const normalizePersistedBackgroundJob = (value: unknown, now: number): Backgroun
     ...(resumableJob
       ? {
           indeterminate: resumeUpdate?.indeterminate ?? definition.progress.initial.indeterminate,
-          cancellable: false,
+          cancellable: resumeUpdate?.cancellable ?? definition.defaultCancellable,
         }
       : {}),
     ...(wasActive && !resumableJob

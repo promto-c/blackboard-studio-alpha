@@ -6,6 +6,8 @@ export const MEDIA_SOURCE_UPSTREAM = '__media_source_upstream__';
 export interface MediaSourceOption {
   value: string;
   label: string;
+  kind: 'upstream' | 'media-source' | 'image-sequence';
+  description: string;
 }
 
 export const isMediaSourceNode = (node: AnyNode): node is MediaSourceNode | ImageSequenceNode =>
@@ -50,15 +52,20 @@ export const getMediaSourceOptions = (
     options.push({
       value: MEDIA_SOURCE_UPSTREAM,
       label: 'Upstream Result',
+      kind: 'upstream',
+      description: 'Composited upstream flow',
     });
   }
 
   options.push(
     ...nodes
       .filter((node) => node.id !== currentNodeId && isMediaSourceNode(node))
-      .map((node) => ({
+      .map<MediaSourceOption>((node) => ({
         value: node.id,
         label: node.name,
+        kind: node.type === NodeType.IMAGE_SEQUENCE ? 'image-sequence' : 'media-source',
+        description:
+          node.type === NodeType.IMAGE_SEQUENCE ? 'Image sequence node' : 'Media source node',
       })),
   );
 

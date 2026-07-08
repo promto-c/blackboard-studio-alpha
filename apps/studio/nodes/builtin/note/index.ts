@@ -9,6 +9,7 @@ export const noteNode: NodeDefinition = {
   name: 'Note',
   category: 'Utility',
   renderMode: 'utility',
+  processingDomain: 'data',
   description: 'Add a markdown note to the graph.',
   IconComponent: Icons.DocumentPlus,
   ToolComponent: NoteTool,

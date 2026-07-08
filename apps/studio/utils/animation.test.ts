@@ -4,6 +4,8 @@ import {
   getValueAtFrame,
   getSortedKeyframes,
   hasKeyframeAt,
+  getImmutable,
+  setImmutable,
 } from '@blackboard/renderer';
 
 describe('getValueAtFrame', () => {
@@ -140,5 +142,29 @@ describe('hasKeyframeAt', () => {
       { frame: 10, value: 100 },
     ];
     expect(hasKeyframeAt(keyframes, 5)).toBe(false);
+  });
+});
+
+describe('immutable path helpers', () => {
+  it('updates nested array paths without mutating the source', () => {
+    const source = {
+      layers: [{ transform: { x: 10, y: 20 } }],
+    };
+
+    const updated = setImmutable(source, 'layers[0].transform.x', 42);
+
+    expect(updated.layers[0].transform.x).toBe(42);
+    expect(source.layers[0].transform.x).toBe(10);
+    expect(updated).not.toBe(source);
+    expect(updated.layers).not.toBe(source.layers);
+    expect(updated.layers[0]).not.toBe(source.layers[0]);
+  });
+
+  it('returns unknown paths safely', () => {
+    const source = { layers: [{ opacity: 75 }] };
+
+    expect(getImmutable(source, 'layers[0].opacity')).toBe(75);
+    expect(getImmutable(source, 'layers[1].opacity')).toBeUndefined();
+    expect(getImmutable(source, 'layers.invalid.opacity')).toBeUndefined();
   });
 });

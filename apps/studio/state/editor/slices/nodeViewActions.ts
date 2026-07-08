@@ -75,7 +75,7 @@ export function createNodeViewActions(
       deps.commitMutation((state) => {
         const otherNodes = state.nodes.filter((node) => node.type !== NodeType.SCENE);
         const nodeStacks = buildNodeStacks(otherNodes);
-        const positions = computeAutoLayout(state.nodes, nodeStacks);
+        const positions = computeAutoLayout(nodeStacks);
         resultPositions = positions;
 
         const nextNodePositionsByFlow = setNodePositionsForFlow(

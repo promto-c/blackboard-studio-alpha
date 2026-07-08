@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createStudioServiceWorkerSource, normalizePwaBasePath } from './buildServiceWorker';
-import { getOfflinePackAssetMetadata, getOfflinePackManualChunk } from './offlinePacks';
+import { getManagedAssetManualChunk, getManagedAssetMetadata } from './managedAssets';
 
 describe('PWA service worker generation', () => {
   it('normalizes Vite base paths for scoped installs', () => {
@@ -36,7 +36,6 @@ describe('PWA service worker generation', () => {
           group: 'onnx-runtime',
           label: 'ONNX node runtime',
           description: 'Runs browser ONNX model nodes.',
-          source: 'bundle',
           removable: true,
         },
       ],
@@ -48,7 +47,6 @@ describe('PWA service worker generation', () => {
     expect(source).toContain('const RUNTIME_ASSETS = [');
     expect(source).toContain('"label": "ONNX node runtime"');
     expect(source).toContain('"description": "Runs browser ONNX model nodes."');
-    expect(source).toContain('"source": "bundle"');
     expect(source).toContain('"removable": true');
     expect(source).toContain('precacheBytes');
     expect(source).toContain('runtimeBytes');
@@ -67,20 +65,17 @@ describe('PWA service worker generation', () => {
     expect(source).toContain('handleNavigation');
   });
 
-  it('classifies bundled offline packs from one registry', () => {
-    expect(getOfflinePackAssetMetadata('wasm/ort-wasm-simd-threaded.wasm')).toMatchObject({
+  it('classifies managed feature assets from one registry', () => {
+    expect(getManagedAssetMetadata('wasm/ort-wasm-simd-threaded.wasm')).toMatchObject({
       group: 'onnx-runtime',
-      source: 'bundle',
       removable: true,
     });
-    expect(getOfflinePackAssetMetadata('assets/gaussian-splat-abc123.js')).toMatchObject({
+    expect(getManagedAssetMetadata('assets/gaussian-splat-abc123.js')).toMatchObject({
       group: 'gaussian-splat',
     });
-    expect(getOfflinePackManualChunk('/repo/node_modules/@sparkjsdev/spark/dist/index.js')).toBe(
+    expect(getManagedAssetManualChunk('/repo/node_modules/@sparkjsdev/spark/dist/index.js')).toBe(
       'gaussian-splat',
     );
-    expect(getOfflinePackManualChunk('/repo/node_modules/@bb-studio/ocio/index.js')).toBe(
-      'color-management',
-    );
+    expect(getManagedAssetMetadata('assets/app-abc123.js')).toBeNull();
   });
 });

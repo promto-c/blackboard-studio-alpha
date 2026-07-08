@@ -8,6 +8,17 @@ export function createViewportUIActions(set: SetState, get: GetState) {
     setSubPanelVisible: (visible: boolean) => set(() => ({ isSubPanelVisible: visible })),
     setZoom: (zoom: number) => set(() => ({ zoom })),
     setPan: (pan: Pan) => set(() => ({ pan })),
+    setViewportTransform: (
+      transform: { zoom: number; pan: Pan },
+      options?: { syncAnimationTarget?: boolean },
+    ) =>
+      set(() => ({
+        zoom: transform.zoom,
+        pan: transform.pan,
+        ...(options?.syncAnimationTarget
+          ? { targetZoom: transform.zoom, targetPan: transform.pan }
+          : {}),
+      })),
     setAnimationTarget: (targets: { zoom?: number; pan?: Pan }) =>
       set((s) => ({
         targetZoom: targets.zoom ?? s.targetZoom,

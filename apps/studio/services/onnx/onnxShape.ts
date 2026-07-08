@@ -10,12 +10,12 @@ export function formatOnnxShape(dims: readonly number[]): string {
   return dims.map((d) => (isDynamicDim(d) ? '?' : String(d))).join(' × ');
 }
 
-export function inferInputKind(dims: readonly number[], _type: string): 'image' | 'scalar' {
+export function inferInputKind(dims: readonly number[]): 'image' | 'scalar' {
   if (dims.length >= 3) return 'image';
   return 'scalar';
 }
 
-export function inferOutputKind(dims: readonly number[], _type: string): 'image' | 'scalar' {
+export function inferOutputKind(dims: readonly number[]): 'image' | 'scalar' {
   if (dims.length >= 3) return 'image';
   return 'scalar';
 }

@@ -130,6 +130,7 @@ describe('createRotoDrawingActions', () => {
       getState().nodes,
       'roto-1',
       MEDIA_SOURCE_UPSTREAM,
+      getState().colorManagement,
     );
     expect(getSourcePixelDataForFrameMock).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'upstream' }),

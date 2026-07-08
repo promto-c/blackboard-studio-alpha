@@ -12,6 +12,9 @@ import { getScene3DAssetKind } from './scene3dModelAssets';
 export const DEFAULT_SCENE_3D_FOV = 45;
 export const MIN_SCENE_3D_BACKDROP_DISTANCE = 1;
 export const DEFAULT_SCENE_3D_PIXEL_SCALE = 0.01;
+export const DEFAULT_SCENE_3D_ENVIRONMENT_COLOR = '#ffffff';
+export const DEFAULT_SCENE_3D_ENVIRONMENT_GROUND_COLOR = '#1f2937';
+export const DEFAULT_SCENE_3D_ENVIRONMENT_INTENSITY = 1.2;
 
 export interface Scene3DCanvasSize {
   width: number;
@@ -234,6 +237,9 @@ export const createDefaultScene3DSettings = (
     },
     world: {
       pixelScale: DEFAULT_SCENE_3D_PIXEL_SCALE,
+      environmentColor: DEFAULT_SCENE_3D_ENVIRONMENT_COLOR,
+      environmentGroundColor: DEFAULT_SCENE_3D_ENVIRONMENT_GROUND_COLOR,
+      environmentIntensity: DEFAULT_SCENE_3D_ENVIRONMENT_INTENSITY,
       gridEnabled: true,
       gridSize: Math.max(backdropRect.width, backdropRect.height),
       gridDivisions: 16,
@@ -402,6 +408,14 @@ export const normalizeScene3DSettings = (
     camera,
     world: {
       pixelScale: clampPositive(source.world?.pixelScale, defaults.world.pixelScale),
+      environmentColor: source.world?.environmentColor ?? defaults.world.environmentColor,
+      environmentGroundColor:
+        source.world?.environmentGroundColor ?? defaults.world.environmentGroundColor,
+      environmentIntensity: clampPositive(
+        source.world?.environmentIntensity,
+        defaults.world.environmentIntensity,
+        0,
+      ),
       gridEnabled: source.world?.gridEnabled ?? defaults.world.gridEnabled,
       gridSize: clampPositive(source.world?.gridSize, defaults.world.gridSize, 1),
       gridDivisions: Math.max(

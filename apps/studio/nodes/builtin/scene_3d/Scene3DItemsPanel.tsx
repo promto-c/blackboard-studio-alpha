@@ -173,7 +173,7 @@ function Scene3DItemsPanel({ node: anyNode }: Scene3DItemsPanelProps) {
         disabled={isImporting}
         onClick={() => fileInputRef.current?.click()}
       >
-        <Icons.ArrowUpTray className="h-3.5 w-3.5" />
+        <Icons.ArrowDownTray className="h-3.5 w-3.5" />
       </button>
       <button
         type="button"

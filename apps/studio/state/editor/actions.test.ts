@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { BlendMode, ImageFitMode, NodeType, type AnyNode, type SceneNode } from '@blackboard/types';
 import { OUTPUT_NODE_ID, ROOT_FLOW_ID } from '@/state/editor/flowModel';
 import { buildProjectInitState } from '@/state/editor/actions';
+import {
+  ColorManagementDefaults,
+  createBuiltinProjectColorConfigReference,
+  createDefaultProjectColorManagement,
+} from '@/color-management';
 
 const createSceneNode = (): SceneNode => ({
   id: 'scene-1',
@@ -11,7 +16,7 @@ const createSceneNode = (): SceneNode => ({
   width: 1920,
   height: 1080,
   bitDepth: 8,
-  colorSpace: 'sRGB',
+  colorSpace: ColorManagementDefaults.WORKING_SPACE,
   maxFrames: 0,
   fps: 30,
 });
@@ -34,7 +39,7 @@ const createImageNode = (): AnyNode => ({
     scaleY: 1,
     fitMode: ImageFitMode.FIT,
   },
-  colorSpace: 'sRGB',
+  colorSpace: ColorManagementDefaults.TEXTURE_SPACE,
 });
 
 describe('buildProjectInitState', () => {
@@ -51,5 +56,29 @@ describe('buildProjectInitState', () => {
     expect(persistedState.nodePositionsByFlow?.[ROOT_FLOW_ID]).toEqual(nodePositions);
     expect(persistedState.history[0]).toEqual(historyEntry);
     expect(persistedState.historyIndex).toBe(0);
+  });
+
+  it('copies the selected color config reference into new project state', () => {
+    const nodes: AnyNode[] = [createSceneNode(), createImageNode()];
+    const selectedColorManagement = createDefaultProjectColorManagement({
+      config: createBuiltinProjectColorConfigReference('ocio://show-config-v1'),
+    });
+
+    const { historyEntry, persistedState } = buildProjectInitState({
+      nodes,
+      selectedNodeId: 'image-1',
+      colorManagement: selectedColorManagement,
+    });
+
+    const expectedConfig = {
+      kind: 'builtin',
+      id: 'show-config-v1',
+      uri: 'ocio://show-config-v1',
+    };
+    expect(historyEntry.state.colorManagement?.config).toEqual(expectedConfig);
+    expect(persistedState.colorManagement.config).toEqual(expectedConfig);
+    expect(historyEntry.state.colorManagement).not.toBe(selectedColorManagement);
+    expect(persistedState.colorManagement).not.toBe(selectedColorManagement);
+    expect(persistedState.colorManagement).not.toBe(historyEntry.state.colorManagement);
   });
 });

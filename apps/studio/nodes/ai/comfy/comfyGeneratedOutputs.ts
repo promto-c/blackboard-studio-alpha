@@ -2,7 +2,16 @@ import type { ComfyWorkflow, GeneratedOutput } from '@blackboard/types';
 import { saveAsset } from '@/state/assetStorage';
 import { readImageDimensions } from '@/state/editor/utils';
 import { fetchComfyOutputFile, type ComfyOutputFile } from '@/services/comfy/client';
-import { getMediaFileKind, isExrFileLike } from '@/utils/mediaFiles';
+import { getImportedImageColorManagement, getMediaFileKind } from '@/utils/mediaFiles';
+import {
+  colorManagementService,
+  createPipelineMediaColorManagementOverride,
+  createBrowserDecodedVideoColorManagement,
+  getMediaSourceColorSpace,
+  isDataColorSpace,
+  isDataChannel,
+  resolveMediaColorAssignmentPipeline,
+} from '@/color-management';
 import { isNonEmptyString } from '@/utils/guards';
 import { readVideoMetadata } from '@/utils/mediaUtils';
 import {
@@ -12,6 +21,91 @@ import {
 } from '@/nodes/builtin/scene_3d/scene3dModelAssets';
 
 const DEFAULT_SEQUENCE_FPS = 30;
+const COMFY_COLOR_SPACE_INPUT_NAMES = [
+  'output_color_space',
+  'input_color_space',
+  'ocio_color_space',
+  'color_space',
+  'colorspace',
+] as const;
+const COMFY_COLOR_SPACE_ROLE_ALIASES: Record<string, string> = {
+  linear: 'scene_linear',
+  scene_linear: 'scene_linear',
+  srgb: 'texture_paint',
+  data: 'data',
+  raw: 'data',
+};
+
+const getPromptNodeInputs = (
+  prompt: Record<string, unknown> | undefined,
+  nodeId: string | undefined,
+): Record<string, unknown> | null => {
+  if (!prompt || !nodeId) return null;
+  const node = prompt[nodeId];
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+  const inputs = (node as { inputs?: unknown }).inputs;
+  return inputs && typeof inputs === 'object' && !Array.isArray(inputs)
+    ? (inputs as Record<string, unknown>)
+    : null;
+};
+
+const getComfyDeclaredColorSpace = (inputs: Record<string, unknown> | null): string | undefined => {
+  if (!inputs) return undefined;
+  for (const preferredName of COMFY_COLOR_SPACE_INPUT_NAMES) {
+    const entry = Object.entries(inputs).find(([name]) => {
+      const normalizedName = name
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/g, '_');
+      return (
+        normalizedName === preferredName ||
+        normalizedName.endsWith(`.${preferredName}`) ||
+        normalizedName.endsWith(`_${preferredName}`)
+      );
+    });
+    if (typeof entry?.[1] === 'string' && entry[1].trim()) return entry[1].trim();
+  }
+  return undefined;
+};
+
+const resolveComfyColorSpace = (value: string | undefined): string | undefined => {
+  if (!value) return undefined;
+  try {
+    return colorManagementService.resolveConfiguredColorSpaceName(value);
+  } catch {
+    const alias = COMFY_COLOR_SPACE_ROLE_ALIASES[value.trim().toLowerCase()];
+    if (!alias) return undefined;
+    try {
+      return colorManagementService.resolveConfiguredColorSpaceName(alias);
+    } catch {
+      return undefined;
+    }
+  }
+};
+
+export const getComfyOutputColorSpace = ({
+  outputFile,
+  workflow,
+  submittedPrompt,
+}: {
+  outputFile: ComfyOutputFile;
+  workflow: ComfyWorkflow | null;
+  submittedPrompt?: Record<string, unknown>;
+}): string | undefined => {
+  const submittedInputs = getPromptNodeInputs(submittedPrompt, outputFile.nodeId);
+  const workflowInputs = getPromptNodeInputs(workflow?.prompt, outputFile.nodeId);
+  return resolveComfyColorSpace(
+    getComfyDeclaredColorSpace(submittedInputs) ?? getComfyDeclaredColorSpace(workflowInputs),
+  );
+};
+
+const isTechnicalGeneratedOutput = (
+  outputFile: ComfyOutputFile,
+  label: string,
+  outputName?: string,
+  outputType?: string,
+): boolean =>
+  [label, outputFile.filename, outputName, outputType].some((value) => isDataChannel(value));
 
 const getRecoveredOutputId = ({
   promptId,
@@ -38,6 +132,7 @@ export const createGeneratedOutputsFromComfyFiles = async ({
   workflow,
   promptId,
   promptSummary,
+  submittedPrompt,
   signal,
 }: {
   endpoint: string;
@@ -45,6 +140,7 @@ export const createGeneratedOutputsFromComfyFiles = async ({
   workflow: ComfyWorkflow | null;
   promptId: string;
   promptSummary?: string;
+  submittedPrompt?: Record<string, unknown>;
   signal?: AbortSignal;
 }): Promise<GeneratedOutput[]> => {
   const createdAt = Date.now();
@@ -63,6 +159,12 @@ export const createGeneratedOutputsFromComfyFiles = async ({
       const label = outputCandidate
         ? `${outputCandidate.label} · ${outputFile.filename}`
         : outputFile.filename;
+      const isTechnicalOutput = isTechnicalGeneratedOutput(
+        outputFile,
+        label,
+        outputCandidate?.outputName,
+        outputCandidate?.outputType,
+      );
 
       if (outputFile.kind === '3d') {
         const format = getScene3DAssetFormat(file.name);
@@ -96,10 +198,33 @@ export const createGeneratedOutputsFromComfyFiles = async ({
 
       const detectedKind = getMediaFileKind(file, outputFile.filename);
       const mediaKind = outputFile.kind === 'video' ? 'video' : detectedKind;
-      const colorSpace = isExrFileLike(file, outputFile.filename) ? 'Linear' : 'sRGB';
+      const fileColorManagement = isTechnicalOutput
+        ? resolveMediaColorAssignmentPipeline({
+            pipeline: {
+              sourceColorSpace: colorManagementService.getRendererColorManagement().dataColorSpace,
+              isData: true,
+              detail: `Comfy output: ${label}`,
+            },
+          })
+        : await getImportedImageColorManagement(file, outputFile.filename);
+      const comfyOutputColorSpace = isTechnicalOutput
+        ? undefined
+        : getComfyOutputColorSpace({ outputFile, workflow, submittedPrompt });
+      const mediaColorManagement = comfyOutputColorSpace
+        ? createPipelineMediaColorManagementOverride(fileColorManagement, comfyOutputColorSpace, {
+            isData: isDataColorSpace(
+              colorManagementService.getSnapshot().colorSpaces,
+              comfyOutputColorSpace,
+            ),
+          })
+        : fileColorManagement;
+      const colorSpace = getMediaSourceColorSpace(mediaColorManagement);
 
       if (mediaKind === 'video') {
-        const { width, height, duration } = await readVideoMetadata(file);
+        const { width, height, duration, color } = await readVideoMetadata(file);
+        const videoColorManagement = isTechnicalOutput
+          ? mediaColorManagement
+          : createBrowserDecodedVideoColorManagement();
         return {
           file: outputFile,
           outputIndex,
@@ -107,9 +232,12 @@ export const createGeneratedOutputsFromComfyFiles = async ({
             id: getRecoveredOutputId({ promptId, file: outputFile, outputIndex }),
             src: assetId,
             mediaKind: 'video',
+            colorSpace: getMediaSourceColorSpace(videoColorManagement),
+            mediaColorManagement: videoColorManagement,
             width,
             height,
             duration,
+            videoColorMetadata: color,
             createdAt: createdAt + outputIndex,
             label,
             prompt: promptSummary,
@@ -128,7 +256,8 @@ export const createGeneratedOutputsFromComfyFiles = async ({
           id: getRecoveredOutputId({ promptId, file: outputFile, outputIndex }),
           src: assetId,
           mediaKind: 'image',
-          colorSpace,
+          ...(colorSpace ? { colorSpace } : {}),
+          mediaColorManagement,
           width,
           height,
           createdAt: createdAt + outputIndex,

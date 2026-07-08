@@ -1,12 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // Suppress Google GenAI import that nodeRegistry pulls in transitively.
-vi.mock('@google/genai', () => ({
-  GoogleGenAI: vi.fn(),
-  Modality: {},
-  Type: {},
-}));
-
 import { NodeType, type AnyNode } from '@blackboard/types';
 import { buildNodeStacks, hasPreviousStackTarget } from '@/utils/nodeStacks';
 

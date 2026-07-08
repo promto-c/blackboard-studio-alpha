@@ -4,7 +4,13 @@
 // custom nodes and register them with the Blackboard Studio host app.
 
 import React from 'react';
-import type { TransformData } from '@blackboard/types';
+import type {
+  ColorProcessingDomain,
+  GeneratedColorResolver,
+  RenderSceneSize,
+  RenderSceneSizeBehavior,
+  TransformData,
+} from '@blackboard/types';
 
 // Re-export TransformData for plugin authors
 export type { TransformData } from '@blackboard/types';
@@ -32,7 +38,13 @@ export interface RenderContext {
   scene: { width: number; height: number };
   nodes: unknown[];
   flow?: unknown;
+  transformColorPickingToSceneLinear: (
+    color: readonly [number, number, number],
+  ) => [number, number, number];
 }
+
+export type RendererSceneSize = RenderSceneSize;
+export type RendererSceneSizeBehavior = RenderSceneSizeBehavior<unknown, RenderContext>;
 
 export type UniformsGetter = (node: unknown, context: RenderContext) => ShaderUniformMap;
 
@@ -44,6 +56,7 @@ export interface InputPortDescriptor {
   name: string;
   label: string;
   type: InputPortType;
+  processingDomain?: ColorProcessingDomain;
   required: boolean;
   description?: string;
   uniformName?: string;
@@ -243,6 +256,7 @@ export interface NodeDefinition {
   description?: string;
   category: 'Image' | 'Spatial' | 'Adjustment' | 'Effect' | 'Utility';
   renderMode: RenderMode;
+  processingDomain: ColorProcessingDomain | ((node: unknown) => ColorProcessingDomain);
 
   IconComponent: React.ComponentType<{ className?: string }>;
   ToolComponent?: React.ComponentType;
@@ -261,6 +275,8 @@ export interface NodeDefinition {
   getShader?: (node: unknown) => string | { horizontal: string; vertical: string };
   getUniforms?: UniformsGetter;
   getStabilizeTransform?: (node: unknown, frame: number, context?: unknown) => TransformData | null;
+  sceneSize?: RendererSceneSizeBehavior;
+  getGeneratedColor?: GeneratedColorResolver<unknown, RenderContext>;
 
   /** Optional secondary input ports this node declares. */
   inputPorts?: InputPortDescriptors;

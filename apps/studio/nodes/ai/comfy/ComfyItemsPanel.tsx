@@ -1,6 +1,7 @@
-import React, { useCallback, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { AnyNode, ComfyNode, GeneratedOutput, ViewportPromptRegion } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
+import { loadGalleryEntries, softDeleteGalleryEntries } from '@blackboard/project-store';
 import {
   FloatingMenu,
   HEADER_SELECTION_CHIP_CLASS,
@@ -32,6 +33,9 @@ import {
   createComfyViewportPromptRegion,
   getComfyViewportPromptRegionLabel,
 } from './comfyViewportBindings';
+import { getComfyInputPortName } from '../../portMapping';
+import { getSelectedComfyWorkflowInputCandidates } from './comfyInputs';
+import { getComfyGalleryEntriesForOutputDelete } from './comfyGalleryDeletion';
 
 interface ComfyItemsPanelProps {
   node: AnyNode;
@@ -308,7 +312,10 @@ const getOutputParentRegionId = (node: ComfyNode, output: GeneratedOutput): stri
 
 function ComfyItemsPanel({ node: anyNode }: ComfyItemsPanelProps) {
   const node = anyNode as ComfyNode;
-  const { updateNode, setHierarchySelection } = useEditorActions();
+  const { updateNode, setHierarchySelection, syncComfyGeneratedOutputsWithGalleryEntries } =
+    useEditorActions();
+  const projectId = useEditorSelector((state) => state.projectId);
+  const activeProjectBranchId = useEditorSelector((state) => state.activeProjectBranchId);
   const selection = useEditorSelector((state) => state.hierarchySelections[node.id]);
   const selectedRegionIds = selection?.layerIds ?? EMPTY_STRING_ARRAY;
   const selectedOutputIds = selection?.itemIds ?? EMPTY_STRING_ARRAY;
@@ -323,6 +330,91 @@ function ComfyItemsPanel({ node: anyNode }: ComfyItemsPanelProps) {
     node.workflows.find((candidate) => candidate.id === node.selectedWorkflowId) ??
     node.workflows[0] ??
     null;
+
+  // Input port items — both connected and unconnected ports shown as locked items
+  const inputPortItems = useMemo(() => {
+    if (!workflow) {
+      // No workflow selected: show any connected inputs from node.inputs
+      if (!node.inputs) return [];
+      return Object.entries(node.inputs)
+        .filter(([portName]) => portName !== 'pipe')
+        .map(([portName]) => ({
+          id: portName,
+          label: portName.charAt(0).toUpperCase() + portName.slice(1),
+          portName,
+          isConnected: true,
+        }));
+    }
+    const inputCandidates = getSelectedComfyWorkflowInputCandidates(workflow);
+    return inputCandidates.map((candidate) => {
+      const portName = getComfyInputPortName(
+        workflow.id,
+        candidate,
+        Object.keys(node.inputs ?? {}),
+        { allowSingleReservedPort: inputCandidates.length === 1 },
+      );
+      const isConnected = !!node.inputs?.[portName] || !!node.workflowInputImages?.[portName];
+      return {
+        id: candidate.id,
+        label: candidate.label,
+        portName,
+        isConnected,
+      };
+    });
+  }, [node.inputs, node.workflowInputImages, workflow]);
+
+  const connectedPortCount = useMemo(
+    () => inputPortItems.filter((p) => p.isConnected).length,
+    [inputPortItems],
+  );
+
+  const applyNodeUpdate = useCallback(
+    (updates: Partial<ComfyNode>, withHistory = true) => {
+      updateNode(node.id, updates as Record<string, unknown>, withHistory);
+    },
+    [node.id, updateNode],
+  );
+
+  const setSelection = useCallback(
+    (nextSelection: { regionIds: string[]; outputIds: string[] }) => {
+      setHierarchySelection(node.id, nextSelection.regionIds, nextSelection.outputIds);
+    },
+    [node.id, setHierarchySelection],
+  );
+
+  // Tracks which connected input port rows are hidden (locked items — show/hide but can't delete)
+  // Stored on the node data so viewport rendering can respect the visibility state.
+  const hiddenPortIds = useMemo(
+    () => node.hiddenInputPortIds ?? EMPTY_STRING_ARRAY,
+    [node.hiddenInputPortIds],
+  );
+  const prevWorkflowIdRef = useRef<string | undefined>(undefined);
+
+  // Initialize port visibility: first connected port shown by default, rest hidden
+  // Unconnected ports are always visible (dimmed) so users can see what's available
+  useEffect(() => {
+    const workflowId = workflow?.id;
+    const connectedPorts = inputPortItems.filter((p) => p.isConnected);
+    if (!connectedPorts.length) return;
+    if (prevWorkflowIdRef.current !== workflowId) {
+      prevWorkflowIdRef.current = workflowId;
+      const initialHiddenPortIds: string[] = [];
+      if (connectedPorts.length > 1) {
+        initialHiddenPortIds.push(...connectedPorts.slice(1).map((p) => p.portName));
+      }
+      applyNodeUpdate({ hiddenInputPortIds: initialHiddenPortIds }, false);
+    }
+  }, [applyNodeUpdate, workflow?.id, inputPortItems]);
+
+  const toggleInputPortVisibility = useCallback(
+    (portName: string) => {
+      const nextHidden = hiddenPortIds.includes(portName)
+        ? hiddenPortIds.filter((id) => id !== portName)
+        : [...hiddenPortIds, portName];
+      applyNodeUpdate({ hiddenInputPortIds: nextHidden }, false);
+    },
+    [hiddenPortIds, applyNodeUpdate],
+  );
 
   const hierarchy = useMemo(() => buildComfyHierarchy(node), [node]);
   const layerOptions = useMemo<LayerOption[]>(() => getLayerOptions(hierarchy), [hierarchy]);
@@ -372,21 +464,7 @@ function ComfyItemsPanel({ node: anyNode }: ComfyItemsPanelProps) {
   const selectedItemCount = selectedItems.length;
   const selectedRegion =
     selectedRegions.length === 1 && selectedOutputs.length === 0 ? selectedRegions[0] : null;
-  const hasItems = regions.length > 0 || outputs.length > 0;
-
-  const applyNodeUpdate = useCallback(
-    (updates: Partial<ComfyNode>, withHistory = true) => {
-      updateNode(node.id, updates as Record<string, unknown>, withHistory);
-    },
-    [node.id, updateNode],
-  );
-
-  const setSelection = useCallback(
-    (nextSelection: { regionIds: string[]; outputIds: string[] }) => {
-      setHierarchySelection(node.id, nextSelection.regionIds, nextSelection.outputIds);
-    },
-    [node.id, setHierarchySelection],
-  );
+  const hasItems = regions.length > 0 || outputs.length > 0 || inputPortItems.length > 0;
 
   const clearSelection = useCallback(() => {
     setSelection({ regionIds: [], outputIds: [] });
@@ -528,34 +606,86 @@ function ComfyItemsPanel({ node: anyNode }: ComfyItemsPanelProps) {
     [applyNodeUpdate, node, outputs],
   );
 
+  const moveOutputsToGalleryBin = useCallback(
+    async (deletedOutputs: GeneratedOutput[], deletedAt: number) => {
+      if (!projectId || deletedOutputs.length === 0) return;
+
+      const entries = getComfyGalleryEntriesForOutputDelete({
+        entries: await loadGalleryEntries(),
+        outputs: deletedOutputs,
+        scope: {
+          projectId,
+          branchId: activeProjectBranchId,
+          nodeId: node.id,
+        },
+      });
+      if (entries.length === 0) return;
+
+      await softDeleteGalleryEntries(entries.map((entry) => entry.id));
+      await syncComfyGeneratedOutputsWithGalleryEntries({
+        entries,
+        mode: 'soft-delete',
+        deletedAt,
+      });
+    },
+    [activeProjectBranchId, node.id, projectId, syncComfyGeneratedOutputsWithGalleryEntries],
+  );
+
+  const requestMoveOutputsToGalleryBin = useCallback(
+    (deletedOutputs: GeneratedOutput[], deletedAt: number) => {
+      void moveOutputsToGalleryBin(deletedOutputs, deletedAt).catch((error) => {
+        console.warn('Could not move Comfy output gallery entries to the bin.', error);
+      });
+    },
+    [moveOutputsToGalleryBin],
+  );
+
   const deleteRegion = useCallback(
     (regionId: string) => {
       const update = createComfyViewportPromptRegionDeleteUpdate(node, [regionId]);
       if (!update) return;
+      const deletedOutputs = outputs.filter((output) => output.regionId === regionId);
       clearSelection();
       applyNodeUpdate(update);
+      requestMoveOutputsToGalleryBin(deletedOutputs, Date.now());
     },
-    [applyNodeUpdate, clearSelection, node],
+    [applyNodeUpdate, clearSelection, node, outputs, requestMoveOutputsToGalleryBin],
   );
 
   const deleteOutput = useCallback(
     (outputId: string) => {
+      const deletedAt = Date.now();
+      const deletedOutput = outputs.find((output) => output.id === outputId);
       clearSelection();
       applyNodeUpdate({
         generatedOutputs: (node.generatedOutputs ?? []).map((output) =>
-          output.id === outputId ? { ...output, deletedAt: Date.now() } : output,
+          output.id === outputId ? { ...output, deletedAt } : output,
         ),
         activeGeneratedOutputId:
           node.activeGeneratedOutputId === outputId ? undefined : node.activeGeneratedOutputId,
       });
+      if (deletedOutput) requestMoveOutputsToGalleryBin([deletedOutput], deletedAt);
     },
-    [applyNodeUpdate, clearSelection, node.activeGeneratedOutputId, node.generatedOutputs],
+    [
+      applyNodeUpdate,
+      clearSelection,
+      node.activeGeneratedOutputId,
+      node.generatedOutputs,
+      outputs,
+      requestMoveOutputsToGalleryBin,
+    ],
   );
 
   const deleteSelected = useCallback(() => {
     if (selectedItemCount === 0) return;
     const selectedRegionIds = selectedRegions.map((region) => region.id);
+    const deletedRegionIdSet = new Set(selectedRegionIds);
     const outputIdSet = new Set(selectedOutputs.map((output) => output.id));
+    const deletedGalleryOutputs = outputs.filter(
+      (output) =>
+        outputIdSet.has(output.id) ||
+        Boolean(output.regionId && deletedRegionIdSet.has(output.regionId)),
+    );
     const regionDeleteUpdate = createComfyViewportPromptRegionDeleteUpdate(node, selectedRegionIds);
     const nextRegions = regionDeleteUpdate?.viewportPromptRegions ?? regions;
     const nextGeneratedOutputs =
@@ -575,10 +705,13 @@ function ComfyItemsPanel({ node: anyNode }: ComfyItemsPanelProps) {
         ? undefined
         : nextActiveGeneratedOutputId,
     });
+    requestMoveOutputsToGalleryBin(deletedGalleryOutputs, now);
   }, [
     applyNodeUpdate,
     clearSelection,
     node,
+    outputs,
+    requestMoveOutputsToGalleryBin,
     regions,
     selectedItemCount,
     selectedOutputs,
@@ -1160,6 +1293,7 @@ function ComfyItemsPanel({ node: anyNode }: ComfyItemsPanelProps) {
         )
       }
     >
+      {' '}
       <ItemsTreeView
         scrollViewportRef={scrollViewportRef}
         contentRef={treeContentRef}
@@ -1183,6 +1317,74 @@ function ComfyItemsPanel({ node: anyNode }: ComfyItemsPanelProps) {
           renderItem={renderHierarchyItem}
         />
       </ItemsTreeView>
+      {/* Input port items — locked: show/hide connected ports but can't delete */}
+      {inputPortItems.length > 0 && (
+        <div className="px-1 pb-1">
+          <div className="flex items-center gap-2 px-1 py-1">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-gray-500">
+              Input Ports
+            </span>
+            <span className="text-[10px] text-gray-600">
+              {connectedPortCount} / {inputPortItems.length} connected
+            </span>
+          </div>
+          <div className="space-y-0.5">
+            {inputPortItems.map((port) => {
+              const isHidden = hiddenPortIds.includes(port.portName);
+              const isDimmed = !port.isConnected;
+              return (
+                <div
+                  key={port.id}
+                  className={`group relative flex h-7 items-center gap-1 rounded-md px-1 py-0.5 text-[11px] transition-all animate-[fadeIn_150ms_ease-out] ${
+                    isHidden ? 'opacity-40' : isDimmed ? 'opacity-40' : ''
+                  } text-gray-300 hover:bg-white/[0.04]`}
+                  style={{ paddingLeft: '6px' }}
+                >
+                  <div
+                    className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md ${
+                      isDimmed ? 'text-gray-600' : 'text-gray-400'
+                    }`}
+                  >
+                    <Icons.Link className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left">
+                    <span
+                      className={`truncate font-medium tracking-[0.01em] ${
+                        isDimmed ? 'text-gray-500' : ''
+                      }`}
+                    >
+                      {port.label}
+                    </span>
+                    {!port.isConnected && (
+                      <span className="shrink-0 text-[10px] text-gray-600">empty</span>
+                    )}
+                  </div>
+                  {port.isConnected ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleInputPortVisibility(port.portName)}
+                      className="rounded-md p-1 text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-100"
+                      title={isHidden ? `Show ${port.label}` : `Hide ${port.label}`}
+                      aria-label={isHidden ? `Show ${port.label}` : `Hide ${port.label}`}
+                    >
+                      {isHidden ? (
+                        <Icons.EyeSlash className="h-3.5 w-3.5" />
+                      ) : (
+                        <Icons.Eye className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  ) : (
+                    <div className="w-[22px]" />
+                  )}
+                  <div className="rounded-md p-1 text-gray-500" title="Locked — cannot be deleted">
+                    <Icons.LockClosed className="h-3 w-3" />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </ItemsPanelLayout>
   );
 }

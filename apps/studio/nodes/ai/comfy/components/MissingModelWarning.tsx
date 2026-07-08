@@ -1,3 +1,4 @@
+import { Badge } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 import {
   getMissingModelInstallDirBadge,
@@ -128,9 +129,13 @@ export function MissingModelWarning({
                       {missingOption.control.label}
                     </p>
                     {dirBadge ? (
-                      <span className="shrink-0 rounded-md border border-red-200/20 bg-black/20 px-1.5 py-0.5 font-mono text-[10px] text-red-100/70">
+                      <Badge
+                        size="sm"
+                        variant="danger"
+                        className="!bg-black/20 !text-red-100/70 font-mono"
+                      >
                         {dirBadge}
-                      </span>
+                      </Badge>
                     ) : null}
                   </div>
                   <div className="mt-0.5 flex min-w-0 items-center gap-2">

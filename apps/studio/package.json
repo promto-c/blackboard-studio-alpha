@@ -1,7 +1,7 @@
 {
   "name": "@blackboard/studio",
   "private": true,
-  "version": "0.0.20",
+  "version": "0.0.21",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -21,16 +21,16 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@bb-studio/exr": "^0.1.1",
-    "@bb-studio/ocio": "^0.0.4",
+    "@bb-studio/exr": "^0.1.2",
+    "@bb-studio/ocio": "^0.0.6",
     "@blackboard/icons": "workspace:*",
     "@blackboard/plugin-sdk": "workspace:*",
     "@blackboard/project-store": "workspace:*",
     "@blackboard/renderer": "workspace:*",
     "@blackboard/types": "workspace:*",
     "@blackboard/ui": "workspace:*",
-    "@google/genai": "^1.16.0",
     "@sparkjsdev/spark": "^2.1.0",
+    "@tauri-apps/api": "^2.0.0",
     "onnxruntime-web": "^1.16.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

@@ -504,6 +504,13 @@ export const projectTrackingModelToMatrix4 = (
         [0, 0, 1, 0],
         [0, 0, 0, 1],
       ];
+    case 'independent_scale':
+      return [
+        [model[0] ?? 1, 0, 0, model[1] ?? 0],
+        [0, model[2] ?? 1, 0, model[3] ?? 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+      ];
     case 'affine':
       return [
         [model[0] ?? 1, model[1] ?? 0, 0, model[2] ?? 0],

@@ -97,6 +97,7 @@ export const transformNode: NodeDefinition = {
   name: 'Transform',
   category: 'Spatial',
   renderMode: 'shader',
+  processingDomain: 'scene_linear',
   description: 'Move, scale, rotate, and pivot the current image.',
   IconComponent: Icons.Transform,
   ToolComponent: TransformTool,
@@ -155,6 +156,7 @@ export const cropNode: NodeDefinition = {
   name: 'Crop',
   category: 'Spatial',
   renderMode: 'shader',
+  processingDomain: 'scene_linear',
   description: 'Crop the current image and update its data window.',
   IconComponent: Icons.Rectangle,
   ToolComponent: CropTool,
@@ -193,6 +195,7 @@ export const reformatNode: NodeDefinition = {
   name: 'Reformat',
   category: 'Spatial',
   renderMode: 'shader',
+  processingDomain: 'scene_linear',
   description: 'Reframe the current image into a target format window.',
   IconComponent: Icons.Landscape,
   ToolComponent: ReformatTool,
@@ -207,6 +210,18 @@ export const reformatNode: NodeDefinition = {
     changes: normalizeResamplingChanges(normalizeSizeChanges(node as ReformatNode, changes)),
     label: `Reformat ${node.name}`,
   }),
+  sceneSize: {
+    getInputSize: (node, fallback) => {
+      const reformatNode = node as ReformatNode;
+      return reformatNode.sourceWidth && reformatNode.sourceHeight
+        ? { width: reformatNode.sourceWidth, height: reformatNode.sourceHeight }
+        : fallback;
+    },
+    getOutputSize: (node) => {
+      const reformatNode = node as ReformatNode;
+      return { width: reformatNode.width, height: reformatNode.height };
+    },
+  },
   getShader: () => SpatialShader.REFORMAT,
   getUniforms: (node: AnyNode, context): ShaderUniformMap => {
     const reformatNode = node as ReformatNode;

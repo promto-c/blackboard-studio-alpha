@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { configureRawStraightAlphaTexture } from '@blackboard/renderer';
 import { getAsset } from '@/state/assetStorage';
 import {
   NodeType,
@@ -20,11 +21,15 @@ import { type BackgroundPrefetchMode, getRecommendedCacheSizeMB } from '@/state/
 import { usePreferences } from '@/state/preferencesContext';
 import { getInputPorts, getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
 
+export interface ViewportCacheNodeEntry {
+  cachedFrames: boolean[];
+  cachingFrames: boolean[];
+}
+
 export interface ViewportCacheStatus {
   memoryUsed: number;
   memoryLimit: number;
-  cachedFrames: boolean[];
-  cachingFrames: boolean[];
+  nodeEntries: Record<string, ViewportCacheNodeEntry>;
 }
 
 interface VideoDecodeSession {
@@ -72,6 +77,9 @@ const isTemporalInputPort = (port: ReturnType<typeof getInputPorts>[number]): bo
   typeof port.absoluteFrame === 'number' ||
   !!port.frameOffsetUniform ||
   !!port.absoluteFrameUniform;
+
+const isTextureBearingInputPort = (port: ReturnType<typeof getInputPorts>[number]): boolean =>
+  port.type === 'texture' || port.type === 'mask' || port.type === 'data';
 
 const isVideoFileNode = (node: AnyNode): boolean => {
   const descriptor = getMediaDescriptor(node.type);
@@ -303,16 +311,6 @@ export const useViewportMediaCache = ({
         node.type === NodeType.MEDIA_SOURCE && (node as MediaSourceNode).mediaKind === 'video',
     ) as MediaSourceNode[];
   }, [nodes]);
-  const activeTimelineCacheNode = useMemo(() => {
-    if (
-      selectedNode?.type === NodeType.IMAGE_SEQUENCE ||
-      (selectedNode?.type === NodeType.MEDIA_SOURCE &&
-        (selectedNode as MediaSourceNode).mediaKind === 'video')
-    ) {
-      return selectedNode as ImageSequenceNode | MediaSourceNode;
-    }
-    return sequenceNodes[0] ?? videoNodes[0];
-  }, [selectedNode, sequenceNodes, videoNodes]);
 
   const getSequenceFrameIndex = useCallback((node: ImageSequenceNode, frame: number) => {
     if (node.frames.length === 0) return null;
@@ -364,11 +362,7 @@ export const useViewportMediaCache = ({
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(video, 0, 0);
-          const frameTex = new THREE.CanvasTexture(canvas);
-          frameTex.colorSpace = THREE.NoColorSpace;
-          frameTex.minFilter = THREE.LinearFilter;
-          frameTex.magFilter = THREE.LinearFilter;
-          frameTex.generateMipmaps = false;
+          const frameTex = configureRawStraightAlphaTexture(new THREE.CanvasTexture(canvas));
 
           cache.add(frameKey, frameTex, undefined, undefined, frame);
         }
@@ -521,9 +515,7 @@ export const useViewportMediaCache = ({
               video.load();
             });
 
-            const texture = new THREE.VideoTexture(video);
-            // Use NoColorSpace to ensure raw data access; color mgmt is handled in shaders
-            texture.colorSpace = THREE.NoColorSpace;
+            const texture = configureRawStraightAlphaTexture(new THREE.VideoTexture(video));
 
             const onSeeked = () => {
               // Snapshot the current frame to cache for better performance
@@ -556,8 +548,7 @@ export const useViewportMediaCache = ({
               textureLoaderRef.current.load(
                 createdUrl,
                 (tex) => {
-                  // Use NoColorSpace to ensure raw data access; color mgmt is handled in shaders
-                  tex.colorSpace = THREE.NoColorSpace;
+                  configureRawStraightAlphaTexture(tex);
                   resolve(tex);
                 },
                 undefined,
@@ -712,11 +703,7 @@ export const useViewportMediaCache = ({
               if (!ctx) return;
 
               ctx.drawImage(video, 0, 0);
-              const frameTex = new THREE.CanvasTexture(canvas);
-              frameTex.colorSpace = THREE.NoColorSpace;
-              frameTex.minFilter = THREE.LinearFilter;
-              frameTex.magFilter = THREE.LinearFilter;
-              frameTex.generateMipmaps = false;
+              const frameTex = configureRawStraightAlphaTexture(new THREE.CanvasTexture(canvas));
               textureCacheRef.current.add(targetKey, frameTex, undefined, undefined, targetFrame);
               bumpMediaUpdateTrigger();
             }
@@ -780,6 +767,18 @@ export const useViewportMediaCache = ({
       getGeneratedOutputAssetIdsAt(node, currentFrame).forEach((assetId) => {
         loadAsset(assetId);
       });
+
+      // Load workflow input images (images loaded directly into input ports
+      // of source nodes like Comfy) so they are available in the texture
+      // cache when checkFrameReady verifies readiness.
+      const workflowInputImages = (
+        node as { workflowInputImages?: Record<string, { assetId: string }> }
+      ).workflowInputImages;
+      if (workflowInputImages) {
+        Object.values(workflowInputImages).forEach((img) => {
+          if (img.assetId) loadAsset(img.assetId);
+        });
+      }
 
       // Preload all image output assets (e.g., ONNX multi-output models)
       // so textures are immediately available when the user switches outputs.
@@ -856,7 +855,7 @@ export const useViewportMediaCache = ({
       const inputs = (node as { inputs?: Record<string, string> }).inputs;
 
       getInputPorts(node).forEach((port) => {
-        if (port.type !== 'texture') return;
+        if (!isTextureBearingInputPort(port)) return;
 
         const sourceNode =
           (inputs?.[port.name] ? nodesById.get(inputs[port.name]) : undefined) ??
@@ -1110,40 +1109,43 @@ export const useViewportMediaCache = ({
       const cache = textureCacheRef.current;
       const memoryStatus = cache.getMemoryStatus();
 
-      let cachedFrames: boolean[] = [];
-      let cachingFrames: boolean[] = [];
-      if (activeTimelineCacheNode?.type === NodeType.IMAGE_SEQUENCE) {
-        cachedFrames = buildTimelineStatus(activeTimelineCacheNode.frames, (assetId) =>
-          cache.has(assetId),
-        );
-        cachingFrames = buildTimelineStatus(activeTimelineCacheNode.frames, (assetId) => {
-          return pendingLoadsRef.current.has(assetId) && !cache.has(assetId);
-        });
-      } else if (
-        activeTimelineCacheNode?.type === NodeType.MEDIA_SOURCE &&
-        (activeTimelineCacheNode as MediaSourceNode).mediaKind === 'video'
-      ) {
-        const { src } = activeTimelineCacheNode;
-        cachedFrames = buildVideoTimelineStatus(src, (frameKey) => cache.has(frameKey));
-        cachingFrames = buildVideoTimelineStatus(src, (frameKey) => {
-          return pendingVideoFramesRef.current.has(frameKey) && !cache.has(frameKey);
-        });
+      const nodeEntries: Record<string, { cachedFrames: boolean[]; cachingFrames: boolean[] }> = {};
+
+      for (const seqNode of sequenceNodes) {
+        nodeEntries[seqNode.id] = {
+          cachedFrames: buildTimelineStatus(seqNode.frames, (assetId) => cache.has(assetId)),
+          cachingFrames: buildTimelineStatus(
+            seqNode.frames,
+            (assetId) => pendingLoadsRef.current.has(assetId) && !cache.has(assetId),
+          ),
+        };
+      }
+
+      for (const vidNode of videoNodes) {
+        const { src } = vidNode;
+        nodeEntries[vidNode.id] = {
+          cachedFrames: buildVideoTimelineStatus(src, (frameKey) => cache.has(frameKey)),
+          cachingFrames: buildVideoTimelineStatus(
+            src,
+            (frameKey) => pendingVideoFramesRef.current.has(frameKey) && !cache.has(frameKey),
+          ),
+        };
       }
 
       updateCacheStatus({
         memoryUsed: memoryStatus.used,
         memoryLimit: memoryStatus.limit,
-        cachedFrames,
-        cachingFrames,
+        nodeEntries,
       });
-    }, 120);
+    }, 40);
 
     return () => clearTimeout(timer);
   }, [
-    activeTimelineCacheNode,
     buildTimelineStatus,
     buildVideoTimelineStatus,
     mediaUpdateTrigger,
+    sequenceNodes,
+    videoNodes,
     updateCacheStatus,
   ]);
 

@@ -69,7 +69,7 @@ export const getAiChatComposerPlaceholder = (mode: AiChatScopeMode) => {
 
 const summarizeGradeNode = (node: GradeNode) =>
   [
-    `Grade controls: brightness ${formatAnimatableValue(node.grade.brightness)}, contrast ${formatAnimatableValue(node.grade.contrast)}, saturation ${formatAnimatableValue(node.grade.saturation)}, gain ${formatAnimatableValue(node.grade.gain)}, gamma ${formatAnimatableValue(node.grade.gamma)}.`,
+    `Grade domain: ${node.grade.processingDomain}. Exposure ${formatAnimatableValue(node.grade.exposure)} stops, contrast ${formatAnimatableValue(node.grade.contrast)} at middle gray ${formatAnimatableValue(node.grade.contrastPivot)}, saturation ${formatAnimatableValue(node.grade.saturation)}.`,
   ].join('\n');
 
 const summarizeBlurNode = (node: BlurNode) =>

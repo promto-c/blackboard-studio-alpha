@@ -4,6 +4,7 @@ import { CollapsibleSection, Popover } from '@blackboard/ui';
 import type { ComfyWorkflow } from '@blackboard/types';
 import type { ComfyWorkflowFile } from '@/services/comfy/client';
 import * as Icons from '@blackboard/icons';
+import { useKeyboardListNavigation } from '@/hooks/useKeyboardListNavigation';
 import {
   formatDateTime,
   getWorkflowFileDetail,
@@ -65,6 +66,18 @@ export function ComfyWorkflowPicker({
   onLoadBackendWorkflow,
   onSelectWorkflow,
 }: ComfyWorkflowPickerProps) {
+  const { setActiveIndex, handleKeyDown, optionsContainerRef, getItemProps } =
+    useKeyboardListNavigation({
+      itemsLength: filteredBackendWorkflowFiles.length,
+      onSelect: (index) => {
+        const activeFile = filteredBackendWorkflowFiles[index];
+        if (activeFile) {
+          onLoadBackendWorkflow(activeFile);
+        }
+      },
+      enabled: !isBrowsingWorkflows,
+    });
+
   return (
     <CollapsibleSection title="Workflow" defaultOpen>
       <div className="space-y-3">
@@ -114,7 +127,7 @@ export function ComfyWorkflowPicker({
                     disabled={isBrowsingWorkflows}
                     className="inline-flex min-w-0 items-center justify-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-gray-100 transition hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Icons.ArrowUpTray className="h-3.5 w-3.5 shrink-0" />
+                    <Icons.ArrowDownTray className="h-3.5 w-3.5 shrink-0" />
                     <span className="min-w-0 truncate">Import</span>
                   </button>
                   <Popover
@@ -137,9 +150,11 @@ export function ComfyWorkflowPicker({
                       <div className="space-y-2">
                         <input
                           value={backendWorkflowSearch}
-                          onChange={(event) =>
-                            onBackendWorkflowSearchChange(event.currentTarget.value)
-                          }
+                          onChange={(event) => {
+                            onBackendWorkflowSearchChange(event.currentTarget.value);
+                            setActiveIndex(0);
+                          }}
+                          onKeyDown={handleKeyDown}
                           placeholder="Search workflows..."
                           className="w-full rounded-lg border border-white/10 bg-gray-950/70 px-2.5 py-2 text-xs text-gray-100 outline-none transition placeholder:text-gray-600 focus:border-primary-300/60 focus:ring-2 focus:ring-primary-300/20"
                           autoFocus
@@ -162,26 +177,41 @@ export function ComfyWorkflowPicker({
                             axis="y"
                             viewportClassName="max-h-[min(18rem,calc(100vh-9rem))] pr-1"
                           >
-                            <div className="space-y-1">
-                              {filteredBackendWorkflowFiles.map((workflowFile) => (
-                                <button
-                                  key={workflowFile.path}
-                                  type="button"
-                                  onClick={() => {
-                                    closeBackendWorkflowPicker();
-                                    onLoadBackendWorkflow(workflowFile);
-                                  }}
-                                  disabled={isBrowsingWorkflows}
-                                  className="w-full min-w-0 rounded-lg px-3 py-2 text-left text-sm text-gray-300 transition-all duration-150 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  <span className="block truncate text-xs font-medium text-gray-100">
-                                    {getWorkflowNameFromPath(workflowFile.path)}
-                                  </span>
-                                  <span className="mt-1 block truncate text-[11px] text-gray-500">
-                                    {getWorkflowFileDetail(workflowFile)}
-                                  </span>
-                                </button>
-                              ))}
+                            <div
+                              ref={optionsContainerRef}
+                              className="space-y-1"
+                              role="listbox"
+                              aria-label="Backend workflows"
+                            >
+                              {filteredBackendWorkflowFiles.map((workflowFile, index) => {
+                                const { onMouseEnter, isActive } = getItemProps(index);
+                                return (
+                                  <button
+                                    key={workflowFile.path}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={isActive}
+                                    onClick={() => {
+                                      closeBackendWorkflowPicker();
+                                      onLoadBackendWorkflow(workflowFile);
+                                    }}
+                                    onMouseEnter={onMouseEnter}
+                                    disabled={isBrowsingWorkflows}
+                                    className={`w-full min-w-0 rounded-lg px-3 py-2 text-left text-sm text-gray-300 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${
+                                      isActive
+                                        ? 'bg-white/[0.09] text-gray-100'
+                                        : 'hover:bg-white/10'
+                                    }`}
+                                  >
+                                    <span className="block truncate text-xs font-medium text-gray-100">
+                                      {getWorkflowNameFromPath(workflowFile.path)}
+                                    </span>
+                                    <span className="mt-1 block truncate text-[11px] text-gray-500">
+                                      {getWorkflowFileDetail(workflowFile)}
+                                    </span>
+                                  </button>
+                                );
+                              })}
                             </div>
                           </ScrollArea>
                         )}

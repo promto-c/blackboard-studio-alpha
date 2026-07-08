@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import { RotoNode, type RotoMotionBlurPhase, type RotoMotionBlurSettings } from '@blackboard/types';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
+import { Badge, CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
 import { Slider, SegmentedControl } from '@/components';
 import { DEFAULT_ROTO_MOTION_BLUR, resolveRotoMotionBlurSettings } from '@/utils/rotoMotionBlur';
 
@@ -21,9 +21,9 @@ function firstValue<T>(nodes: RotoNode[], getValue: (node: RotoNode) => T): T {
 
 function MixedBadge() {
   return (
-    <span className="inline-flex items-center rounded bg-yellow-500/15 px-1 py-0.5 text-[9px] font-medium uppercase tracking-wider text-yellow-400">
+    <Badge size="sm" uppercase shrink noBorder className="!bg-yellow-500/15 !text-yellow-400">
       Mixed
-    </span>
+    </Badge>
   );
 }
 

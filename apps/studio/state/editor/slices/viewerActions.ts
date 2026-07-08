@@ -1,9 +1,11 @@
 import {
-  ViewerSettings,
-  RenderSettings,
-  CacheStatus,
-  ViewerSlot,
-  ViewerSlotAssignments,
+  type DisplayViewSelection,
+  type ProjectColorManagement,
+  type ViewerSettings,
+  type RenderSettings,
+  type CacheStatus,
+  type ViewerSlot,
+  type ViewerSlotAssignments,
 } from '@blackboard/types';
 import { getInitialState } from '@/state/editor/initialState';
 import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
@@ -14,6 +16,11 @@ import {
   sanitizeViewerNodeId,
   sanitizeViewerSlots,
 } from '@/utils/viewerSlots';
+import {
+  cloneProjectColorManagement,
+  createDefaultViewerColorManagement,
+  resolveCurrentViewerDisplayView,
+} from '@/color-management';
 
 export function createViewerActions(
   set: SetState,
@@ -21,16 +28,76 @@ export function createViewerActions(
   deps: { commitMutation: CommitEditorMutation<EditorState> },
 ) {
   return {
-    setViewerSettings: (updates: Partial<ViewerSettings>) =>
-      deps.commitMutation((s) => ({
-        patch: { viewerSettings: { ...s.viewerSettings, ...updates } },
-        persist: 'debounced',
+    setProjectColorManagement: (
+      colorManagement: ProjectColorManagement,
+      options?: { historyLabel?: string },
+    ) =>
+      deps.commitMutation((state) => {
+        const nextColorManagement = cloneProjectColorManagement(colorManagement);
+        const history = options?.historyLabel
+          ? state.history.map((entry, index) =>
+              index === state.historyIndex
+                ? {
+                    ...entry,
+                    state: {
+                      ...entry.state,
+                      colorManagement: cloneProjectColorManagement(state.colorManagement),
+                    },
+                  }
+                : entry,
+            )
+          : state.history;
+        return {
+          patch: {
+            colorManagement: nextColorManagement,
+            ...(options?.historyLabel ? { history } : {}),
+          },
+          ...(options?.historyLabel
+            ? {
+                history: {
+                  label: options.historyLabel,
+                  state: {
+                    colorManagement: cloneProjectColorManagement(nextColorManagement),
+                  },
+                },
+              }
+            : {}),
+          persist: 'debounced',
+        };
+      }),
+
+    setViewerDisplayView: (updates: Partial<DisplayViewSelection>) =>
+      set((s) => {
+        const current = resolveCurrentViewerDisplayView(
+          s.colorManagement.viewer,
+          s.viewerColorManagement,
+        );
+        return {
+          viewerColorManagement: {
+            ...s.viewerColorManagement,
+            displayViewOverride: {
+              ...current,
+              ...updates,
+            },
+          },
+        };
+      }),
+
+    setAutoDetectView: (autoDetectView: DisplayViewSelection | null) =>
+      set((s) => ({
+        viewerColorManagement: {
+          ...s.viewerColorManagement,
+          autoDetectView,
+        },
       })),
 
-    resetViewerSettings: () =>
-      deps.commitMutation(() => ({
-        patch: { viewerSettings: getInitialState().viewerSettings },
-        persist: 'debounced',
+    setViewerSettings: (updates: Partial<ViewerSettings>) =>
+      set((s) => ({ viewerSettings: { ...s.viewerSettings, ...updates } })),
+
+    resetViewerToProjectView: () =>
+      set(() => ({
+        viewerColorManagement: createDefaultViewerColorManagement(),
+        viewerSettings: getInitialState().viewerSettings,
       })),
 
     toggleExposureDefault: () => {

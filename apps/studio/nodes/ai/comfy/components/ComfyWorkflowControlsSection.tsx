@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ScrollArea } from '@blackboard/ui';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Badge, Popover } from '@blackboard/ui';
 import type { ComfyWorkflow, ComfyWorkflowControl } from '@blackboard/types';
 import {
   CollapsibleSection,
@@ -254,8 +254,6 @@ function ExpandableWorkflowTextControl({
 
 interface ComfyWorkflowControlsSectionProps {
   selectedWorkflow: ComfyWorkflow | null;
-  isWorkflowControlBuilderOpen: boolean;
-  pendingControlKeys: ReadonlySet<string>;
   activeControlKeys: ReadonlySet<string>;
   controlCandidates: ComfyWorkflowControlCandidate[];
   activeWorkflowControls: ComfyWorkflowControl[];
@@ -269,10 +267,7 @@ interface ComfyWorkflowControlsSectionProps {
   imagePromptRouteError: string | null;
   controlSourceSummaries: Record<string, ControlSourceSummary>;
   recommendedControlSourceSummaries: Record<string, ControlSourceSummary>;
-  onOpenWorkflowControlBuilder: () => void;
-  onCancelWorkflowControlBuilder: () => void;
-  onApplyWorkflowControlBuilder: () => void;
-  onToggleWorkflowControlCandidate: (candidateKey: string) => void;
+  onToggleWorkflowField: (candidateKey: string) => void;
   onToggleMissingModelDetails: () => void;
   onDownloadMissingModel: (missingOption: MissingWorkflowControlOption) => void;
   onCopyMissingModelPath: (missingOption: MissingWorkflowControlOption) => void;
@@ -295,8 +290,6 @@ interface ComfyWorkflowControlsSectionProps {
 
 export function ComfyWorkflowControlsSection({
   selectedWorkflow,
-  isWorkflowControlBuilderOpen,
-  pendingControlKeys,
   activeControlKeys,
   controlCandidates,
   activeWorkflowControls,
@@ -310,10 +303,7 @@ export function ComfyWorkflowControlsSection({
   imagePromptRouteError,
   controlSourceSummaries,
   recommendedControlSourceSummaries,
-  onOpenWorkflowControlBuilder,
-  onCancelWorkflowControlBuilder,
-  onApplyWorkflowControlBuilder,
-  onToggleWorkflowControlCandidate,
+  onToggleWorkflowField,
   onToggleMissingModelDetails,
   onDownloadMissingModel,
   onCopyMissingModelPath,
@@ -326,9 +316,78 @@ export function ComfyWorkflowControlsSection({
   onAdvancedControlIdChange,
   onWorkflowPropsKeyDown,
 }: ComfyWorkflowControlsSectionProps) {
-  const hasWorkflowControlBuilderChanges =
-    pendingControlKeys.size !== activeControlKeys.size ||
-    [...pendingControlKeys].some((key) => !activeControlKeys.has(key));
+  const [isAddFieldPopoverOpen, setIsAddFieldPopoverOpen] = useState(false);
+  const [fieldSearchQuery, setFieldSearchQuery] = useState('');
+
+  // Reset search when popover opens/closes
+  const handlePopoverOpenChange = (open: boolean) => {
+    if (!open) {
+      setFieldSearchQuery('');
+    }
+    setIsAddFieldPopoverOpen(open);
+  };
+
+  // Candidates not currently shown in the props section
+  const availableCandidates = useMemo(
+    () => controlCandidates.filter((candidate) => !activeControlKeys.has(candidate.key)),
+    [controlCandidates, activeControlKeys],
+  );
+
+  const normalizedSearchQuery = fieldSearchQuery.trim().toLowerCase();
+
+  // Filter helper: checks if a candidate matches the search query
+  const matchesSearch = useCallback(
+    (candidate: ComfyWorkflowControlCandidate): boolean => {
+      if (!normalizedSearchQuery) return true;
+      return (
+        candidate.label.toLowerCase().includes(normalizedSearchQuery) ||
+        candidate.classType?.toLowerCase().includes(normalizedSearchQuery) ||
+        candidate.inputName.toLowerCase().includes(normalizedSearchQuery) ||
+        candidate.key.toLowerCase().includes(normalizedSearchQuery) ||
+        String(candidate.nodeId).includes(normalizedSearchQuery)
+      );
+    },
+    [normalizedSearchQuery],
+  );
+
+  // Filter available candidates by search query
+  const filteredAvailableCandidates = useMemo(
+    () => availableCandidates.filter(matchesSearch),
+    [availableCandidates, matchesSearch],
+  );
+
+  // Group filtered candidates for the add-field popover
+  const groupedFilteredCandidates = useMemo(
+    () =>
+      filteredAvailableCandidates.reduce<Record<string, ComfyWorkflowControlCandidate[]>>(
+        (groups, candidate) => {
+          const group = candidate.classType || 'Other';
+          if (!groups[group]) groups[group] = [];
+          groups[group].push(candidate);
+          return groups;
+        },
+        {},
+      ),
+    [filteredAvailableCandidates],
+  );
+
+  // Filter active controls by search query for the "Shown fields" section
+  const filteredActiveControls = useMemo(
+    () =>
+      normalizedSearchQuery
+        ? activeWorkflowControls.filter((control) => {
+            const label = control.label?.toLowerCase() ?? '';
+            const classType = control.classType?.toLowerCase() ?? '';
+            const inputName = control.inputName?.toLowerCase() ?? '';
+            return (
+              label.includes(normalizedSearchQuery) ||
+              classType.includes(normalizedSearchQuery) ||
+              inputName.includes(normalizedSearchQuery)
+            );
+          })
+        : activeWorkflowControls,
+    [activeWorkflowControls, normalizedSearchQuery],
+  );
 
   return (
     <CollapsibleSection
@@ -336,105 +395,145 @@ export function ComfyWorkflowControlsSection({
       defaultOpen
       action={
         selectedWorkflow ? (
-          isWorkflowControlBuilderOpen ? (
-            <div className="flex items-center gap-1.5">
+          <Popover
+            isOpen={isAddFieldPopoverOpen}
+            onOpenChange={handlePopoverOpenChange}
+            align="end"
+            sideOffset={4}
+            widthClass="w-80"
+            trigger={
               <button
                 type="button"
-                onClick={onCancelWorkflowControlBuilder}
-                className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2 py-1 text-[10px] font-medium text-gray-400 transition hover:border-gray-500 hover:text-gray-100"
+                className="inline-flex items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15"
               >
-                <Icons.XMark className="h-3.5 w-3.5" />
-                Cancel
+                <Icons.Plus className="h-3.5 w-3.5" />
+                Fields
               </button>
-              <button
-                type="button"
-                onClick={onApplyWorkflowControlBuilder}
-                disabled={!hasWorkflowControlBuilderChanges}
-                className="inline-flex items-center gap-1 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+            }
+          >
+            {(closePopover) => (
+              <div
+                className="space-y-2"
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.stopPropagation();
+                    closePopover();
+                  }
+                }}
               >
-                <Icons.Check className="h-3.5 w-3.5" />
-                Apply
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={onOpenWorkflowControlBuilder}
-              className="inline-flex items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15"
-            >
-              <Icons.Plus className="h-3.5 w-3.5" />
-              Fields
-            </button>
-          )
+                {/* Search input */}
+                <div className="relative px-1">
+                  <Icons.MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+                  <input
+                    type="text"
+                    value={fieldSearchQuery}
+                    onChange={(e) => setFieldSearchQuery(e.target.value)}
+                    placeholder="Search fields..."
+                    autoFocus
+                    className="w-full rounded-md border border-gray-700 bg-gray-900 py-1.5 pl-7 pr-3 text-[11px] text-gray-100 placeholder:text-gray-600 focus:border-primary-300/40 focus:outline-none focus:ring-1 focus:ring-primary-300/20"
+                    onPointerDown={(e) => e.stopPropagation()}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <span className="text-xs font-medium text-gray-100">
+                    {activeControlKeys.size} shown
+                  </span>
+                  <span className="text-[10px] text-gray-500">
+                    {controlCandidates.length} editable
+                  </span>
+                </div>
+
+                {controlCandidates.length > 0 ? (
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {/* Available (unshown) fields */}
+                    {Object.entries(groupedFilteredCandidates).length > 0 &&
+                    filteredAvailableCandidates.length > 0 ? (
+                      Object.entries(groupedFilteredCandidates).map(([classType, candidates]) => (
+                        <div key={classType}>
+                          <div className="mb-1 px-1 text-[10px] font-medium uppercase tracking-wider text-gray-500">
+                            {classType}
+                          </div>
+                          {candidates.map((candidate) => (
+                            <button
+                              key={candidate.key}
+                              type="button"
+                              onClick={() => {
+                                onToggleWorkflowField(candidate.key);
+                                // Don't close the popover so users can add multiple fields
+                              }}
+                              className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-gray-400 transition hover:bg-primary-300/10 hover:text-gray-100"
+                            >
+                              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-gray-700">
+                                <Icons.Plus className="h-2.5 w-2.5" />
+                              </span>
+                              <span className="min-w-0 flex-1 truncate">{candidate.label}</span>
+                              <span className="shrink-0 font-mono text-[10px] text-gray-600">
+                                #{candidate.nodeId}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ))
+                    ) : normalizedSearchQuery ? (
+                      <div className="rounded-lg border border-dashed border-gray-700 px-3 py-4 text-center text-[11px] text-gray-500">
+                        No fields match "{fieldSearchQuery.trim()}"
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-gray-700 px-3 py-4 text-center text-[11px] text-gray-500">
+                        {activeControlKeys.size === controlCandidates.length
+                          ? 'All fields are shown'
+                          : 'No fields available'}
+                      </div>
+                    )}
+
+                    {/* Show filtered active fields at the bottom with hide icons */}
+                    {filteredActiveControls.length > 0 && (
+                      <>
+                        <div className="border-t border-white/10 pt-2">
+                          <div className="mb-1 px-1 text-[10px] font-medium uppercase tracking-wider text-gray-500">
+                            Shown fields
+                          </div>
+                          {filteredActiveControls.map((control) => {
+                            const controlKey = getComfyControlKey(
+                              control.nodeId,
+                              control.inputName,
+                            );
+                            return (
+                              <button
+                                key={controlKey}
+                                type="button"
+                                onClick={() => {
+                                  onToggleWorkflowField(controlKey);
+                                }}
+                                className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-gray-100 transition hover:bg-red-500/10 hover:text-red-200"
+                              >
+                                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-primary-300/30 bg-primary-300/10 text-primary-100">
+                                  <Icons.Check className="h-2.5 w-2.5" />
+                                </span>
+                                <span className="min-w-0 flex-1 truncate">{control.label}</span>
+                                <Icons.EyeSlash className="h-3 w-3 shrink-0 text-gray-500" />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-primary-300/15 bg-gray-950/60 p-3 text-xs leading-5 text-primary-100/60">
+                    This workflow does not expose editable primitive fields.
+                  </div>
+                )}
+              </div>
+            )}
+          </Popover>
         ) : undefined
       }
     >
       <div className="space-y-3">
         {selectedWorkflow ? (
-          isWorkflowControlBuilderOpen ? (
-            <div className="space-y-3 rounded-lg border border-primary-400/20 bg-primary-400/[0.06] p-2">
-              <div className="flex items-center justify-between gap-2 px-1">
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-primary-50">Workflow fields</p>
-                  <p className="mt-0.5 truncate text-[11px] text-primary-100/60">
-                    {pendingControlKeys.size} shown · {controlCandidates.length} editable
-                  </p>
-                </div>
-              </div>
-
-              {controlCandidates.length > 0 ? (
-                <ScrollArea
-                  axis="y"
-                  viewportClassName="max-h-64 rounded-lg border border-primary-300/10 bg-gray-950/60"
-                  contentClassName="space-y-1 p-1 pr-3"
-                >
-                  {controlCandidates.map((candidate) => {
-                    const isPending = pendingControlKeys.has(candidate.key);
-                    return (
-                      <button
-                        key={candidate.key}
-                        type="button"
-                        onClick={() => onToggleWorkflowControlCandidate(candidate.key)}
-                        aria-pressed={isPending}
-                        className={`flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-2 text-left transition ${
-                          isPending
-                            ? 'bg-primary-300/10 text-primary-50'
-                            : 'text-gray-400 hover:bg-white/[0.04] hover:text-gray-100'
-                        }`}
-                      >
-                        <span
-                          className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                            isPending
-                              ? 'border-primary-300/50 bg-primary-300/10 text-primary-100'
-                              : 'border-gray-700'
-                          }`}
-                        >
-                          {isPending && <Icons.Check className="h-3 w-3" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            <span className="truncate text-xs font-medium">{candidate.label}</span>
-                            {!candidate.defaultVisible ? (
-                              <span className="shrink-0 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-semibold text-gray-500">
-                                Internal
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="mt-0.5 block truncate text-[11px] text-gray-500">
-                            {candidate.classType} · #{candidate.nodeId} · {candidate.inputName}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </ScrollArea>
-              ) : (
-                <div className="rounded-lg border border-dashed border-primary-300/15 bg-gray-950/60 p-3 text-xs leading-5 text-primary-100/60">
-                  This workflow does not expose editable primitive fields.
-                </div>
-              )}
-            </div>
-          ) : activeWorkflowControls.length > 0 ? (
+          activeWorkflowControls.length > 0 ? (
             <div className="space-y-3" onKeyDown={onWorkflowPropsKeyDown}>
               {activeMissingControlOptions.length > 0 ? (
                 <MissingModelWarning
@@ -505,12 +604,14 @@ export function ComfyWorkflowControlsSection({
                             <>
                               {!isNumeric ? recommendedBindBadge : null}
                               {isSelectedEnumOptionMissing ? (
-                                <span
-                                  className="shrink-0 rounded-md border border-red-200/20 bg-black/20 px-1.5 py-0.5 font-mono text-[10px] text-red-100/70"
+                                <Badge
+                                  size="sm"
+                                  variant="danger"
+                                  className="!bg-black/20 !text-red-100/70 font-mono"
                                   title="Selected option is missing"
                                 >
                                   Missing
-                                </span>
+                                </Badge>
                               ) : null}
                               <ResetIconButton
                                 onClick={() => onResetWorkflowControl(control.id)}
@@ -612,11 +713,13 @@ export function ComfyWorkflowControlsSection({
                                 size="sm"
                               />
                             </div>
-                            {recommendedBindBadge}
-                            <ResetIconButton
-                              onClick={() => onResetWorkflowControl(control.id)}
-                              tooltip={getControlResetTooltip(control)}
-                            />
+                            <div className="flex shrink-0 items-center gap-1">
+                              {recommendedBindBadge}
+                              <ResetIconButton
+                                onClick={() => onResetWorkflowControl(control.id)}
+                                tooltip={getControlResetTooltip(control)}
+                              />
+                            </div>
                           </div>
                         ) : (
                           <ExpandableWorkflowTextControl
@@ -644,8 +747,7 @@ export function ComfyWorkflowControlsSection({
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/70 p-3 text-xs leading-5 text-gray-400">
-              No workflow props are shown yet. Use Fields to choose which workflow inputs appear
-              here.
+              No workflow props are shown yet. Use the Fields button to add workflow inputs here.
             </div>
           )
         ) : (

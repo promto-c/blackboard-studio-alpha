@@ -1,5 +1,3 @@
-import { GoogleGenAI, Type } from '@google/genai';
-import type { Content, Part } from '@google/genai';
 import type { AiAgentModeSettings, AiChatAttachment, AiProvider } from '@blackboard/types';
 import { isNonEmptyString, getNonEmptyString } from '@/utils/guards';
 import { DEFAULT_OPENAI_BASE_URL, normalizeOpenAiBaseUrl } from '@/utils/aiRouting';
@@ -8,20 +6,13 @@ import { buildAgentModePromptSection } from '@/utils/agentMode';
 import { formatAttachmentSize } from '@/features/editor/chatAttachments';
 import { publishDebugEvent } from '@/utils/debugEventBus';
 
-let aiClient: { apiKey: string; client: GoogleGenAI } | null = null;
-
-interface GeminiApiOptions {
-  geminiApiKey?: string;
-  geminiModel?: string;
-}
-
 interface OpenAiApiOptions {
   openAiApiKey?: string;
   openAiBaseUrl?: string;
   openAiModel?: string;
 }
 
-interface RoutedTextAiOptions extends GeminiApiOptions, OpenAiApiOptions {
+interface RoutedTextAiOptions extends OpenAiApiOptions {
   provider?: AiProvider;
   ollamaEndpoint?: string;
   ollamaModel?: string;
@@ -61,8 +52,6 @@ const requireEnhancedPrompt = (
 
 export interface GenerateShaderCodeOptions {
   provider?: AiProvider;
-  geminiApiKey?: string;
-  geminiModel?: string;
   openAiApiKey?: string;
   openAiBaseUrl?: string;
   openAiModel?: string;
@@ -79,8 +68,6 @@ export interface GenerateShaderCodeOptions {
 
 export interface GenerateAssistantChatOptions {
   provider?: AiProvider;
-  geminiApiKey?: string;
-  geminiModel?: string;
   openAiApiKey?: string;
   openAiBaseUrl?: string;
   openAiModel?: string;
@@ -146,22 +133,6 @@ export interface ShaderGenerationStreamUpdate {
   suggestions: string[];
 }
 
-const GEMINI_PROMPT_ENHANCEMENT_RESPONSE_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    message: { type: Type.STRING },
-    options: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING },
-    },
-    suggestions: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING },
-    },
-  },
-  required: ['message', 'options', 'suggestions'],
-};
-
 export interface OllamaModelSummary {
   name: string;
   model: string;
@@ -199,38 +170,6 @@ export const isOllamaAuthenticationRequiredError = (
     (error as { name?: unknown }).name === 'OllamaAuthenticationRequiredError' &&
     'authUrl' in error &&
     typeof (error as { authUrl?: unknown }).authUrl === 'string');
-
-const getBundledGeminiApiKey = (): string =>
-  (
-    ((process.env.API_KEY as string | undefined) ||
-      (process.env.GEMINI_API_KEY as string | undefined) ||
-      '') as string
-  ).trim();
-
-const resolveGeminiApiKey = (apiKey: string | undefined): string =>
-  apiKey?.trim() || getBundledGeminiApiKey();
-
-export const hasGeminiApiKey = (apiKey?: string): boolean => Boolean(resolveGeminiApiKey(apiKey));
-export const hasOpenAiApiKey = (apiKey?: string): boolean => Boolean(apiKey?.trim());
-
-function getAiClient(apiKeyOverride?: string): GoogleGenAI {
-  const apiKey = resolveGeminiApiKey(apiKeyOverride);
-
-  if (!apiKey) {
-    throw new Error(
-      'Missing Gemini API key. Set it in Preferences > AI or define GEMINI_API_KEY before building.',
-    );
-  }
-
-  if (!aiClient || aiClient.apiKey !== apiKey) {
-    aiClient = {
-      apiKey,
-      client: new GoogleGenAI({ apiKey }),
-    };
-  }
-
-  return aiClient.client;
-}
 
 const getOpenAiApiKey = (apiKey?: string): string => apiKey?.trim() || '';
 
@@ -519,40 +458,6 @@ export const getAiAttachmentImagePayloads = (
     return payload ? [payload] : [];
   });
 
-const buildGeminiContents = (
-  text: string,
-  attachments: AiChatAttachment[] | undefined,
-): string | Content => {
-  const imageParts: Part[] = (attachments ?? []).flatMap((attachment) => {
-    if (attachment.kind !== 'image') {
-      return [];
-    }
-
-    const data = getBase64Payload(attachment.dataUrl);
-    if (!data) {
-      return [];
-    }
-
-    return [
-      {
-        inlineData: {
-          mimeType: attachment.mimeType || 'image/png',
-          data,
-        },
-      } satisfies Part,
-    ];
-  });
-
-  if (imageParts.length === 0) {
-    return text;
-  }
-
-  return {
-    role: 'user',
-    parts: [{ text }, ...imageParts],
-  };
-};
-
 const buildOllamaUserMessage = (
   content: string,
   attachments: AiChatAttachment[] | undefined,
@@ -645,32 +550,11 @@ export async function getPromptSuggestions(options: RoutedTextAiOptions = {}): P
   try {
     const prompt =
       'Suggest 5 creative and short image prompts. Return only a JSON array of strings. Example: ["a majestic eagle", "a futuristic cityscape", "a portal to another dimension"].';
-    const provider =
-      options.provider === 'ollama'
-        ? 'ollama'
-        : options.provider === 'openai'
-          ? 'openai'
-          : 'gemini';
+    const provider = resolveTextAiProvider(options.provider);
     const jsonStr =
       provider === 'ollama'
         ? (await generateTextResponseWithOllama(prompt, options)).text
-        : provider === 'openai'
-          ? (await generateOpenAiResponseText(prompt, options)).text
-          : (
-              await getAiClient(options.geminiApiKey).models.generateContent({
-                model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-                contents: prompt,
-                config: {
-                  responseMimeType: 'application/json',
-                  responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.STRING,
-                    },
-                  },
-                },
-              })
-            ).text.trim();
+        : (await generateOpenAiResponseText(prompt, options)).text;
     const suggestions = JSON.parse(jsonStr) as string[];
 
     if (suggestions.length === 0) {
@@ -685,7 +569,7 @@ export async function getPromptSuggestions(options: RoutedTextAiOptions = {}): P
     }
     return suggestions;
   } catch (error) {
-    console.error('Gemini Suggestion Error:', error);
+    console.error('AI Suggestion Error:', error);
     // Fallback prompts
     return [
       'a beautiful sunset',
@@ -711,15 +595,7 @@ export async function enhancePrompt(
     const response = await generateTextResponseWithOllama(prompt, options);
     return requireEnhancedPrompt(response.text, currentPrompt, provider);
   }
-  if (provider === 'openai') {
-    const response = await generateOpenAiResponseText(prompt, options);
-    return requireEnhancedPrompt(response.text, currentPrompt, provider);
-  }
-  const ai = getAiClient(options.geminiApiKey);
-  const response = await ai.models.generateContent({
-    model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-    contents: prompt,
-  });
+  const response = await generateOpenAiResponseText(prompt, options);
   return requireEnhancedPrompt(response.text, currentPrompt, provider);
 }
 
@@ -833,18 +709,11 @@ export async function generatePromptEnhancementResult(
       message: 'Add a prompt first, then ask the assistant to refine it.',
       options: [],
       suggestions: [],
-      provider:
-        options.provider === 'ollama'
-          ? 'ollama'
-          : options.provider === 'openai'
-            ? 'openai'
-            : 'gemini',
+      provider: resolveTextAiProvider(options.provider),
       model:
         options.provider === 'ollama'
           ? options.ollamaModel?.trim() || ''
-          : options.provider === 'openai'
-            ? options.openAiModel?.trim() || ''
-            : options.geminiModel?.trim() || 'gemini-2.5-flash',
+          : options.openAiModel?.trim() || '',
     };
   }
 
@@ -887,60 +756,22 @@ export async function generatePromptEnhancementResult(
     };
   }
 
-  const response = await getAiClient(options.geminiApiKey).models.generateContent({
-    model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-    contents: request,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: GEMINI_PROMPT_ENHANCEMENT_RESPONSE_SCHEMA,
-    },
-  });
-  const parsed = requirePromptEnhancementResult(
-    parsePromptEnhancementResponse(response.text.trim()),
-    trimmedPrompt,
-    provider,
-  );
-  return {
-    ...parsed,
-    provider,
-    model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-  };
+  throw new Error('No AI provider available for prompt enhancement.');
 }
 
 /**
- * Calls Gemini to suggest creative GLSL shader ideas.
+ * Suggests creative GLSL shader ideas.
  * @returns An array of prompt suggestion strings.
  */
 export async function suggestShaderIdeas(options: RoutedTextAiOptions = {}): Promise<string[]> {
   try {
     const prompt =
       'Suggest 5 creative and short ideas for a GLSL fragment shader that processes an image. Return only a JSON array of strings. Example: ["a trippy watercolor effect", "old film grain and scratches", "a glowing neon edge detector"].';
-    const provider =
-      options.provider === 'ollama'
-        ? 'ollama'
-        : options.provider === 'openai'
-          ? 'openai'
-          : 'gemini';
+    const provider = resolveTextAiProvider(options.provider);
     const jsonStr =
       provider === 'ollama'
         ? (await generateTextResponseWithOllama(prompt, options)).text
-        : provider === 'openai'
-          ? (await generateOpenAiResponseText(prompt, options)).text
-          : (
-              await getAiClient(options.geminiApiKey).models.generateContent({
-                model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-                contents: prompt,
-                config: {
-                  responseMimeType: 'application/json',
-                  responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.STRING,
-                    },
-                  },
-                },
-              })
-            ).text.trim();
+        : (await generateOpenAiResponseText(prompt, options)).text;
     const suggestions = JSON.parse(jsonStr) as string[];
 
     if (suggestions.length === 0) {
@@ -955,7 +786,7 @@ export async function suggestShaderIdeas(options: RoutedTextAiOptions = {}): Pro
     }
     return suggestions;
   } catch (error) {
-    console.error('Gemini Shader Suggestion Error:', error);
+    console.error('AI Shader Suggestion Error:', error);
     // Fallback prompts
     return [
       'a glitchy digital distortion',
@@ -981,15 +812,7 @@ export async function enhanceShaderPrompt(
     const response = await generateTextResponseWithOllama(prompt, options);
     return requireEnhancedPrompt(response.text, currentPrompt, provider);
   }
-  if (provider === 'openai') {
-    const response = await generateOpenAiResponseText(prompt, options);
-    return requireEnhancedPrompt(response.text, currentPrompt, provider);
-  }
-  const ai = getAiClient(options.geminiApiKey);
-  const response = await ai.models.generateContent({
-    model: options.geminiModel?.trim() || 'gemini-2.5-flash',
-    contents: prompt,
-  });
+  const response = await generateOpenAiResponseText(prompt, options);
   return requireEnhancedPrompt(response.text, currentPrompt, provider);
 }
 
@@ -1517,19 +1340,6 @@ const OLLAMA_SHADER_RESPONSE_SCHEMA = {
     suggestions: {
       type: 'array',
       items: { type: 'string' },
-    },
-  },
-  required: ['message', 'shaderCode'],
-};
-
-const GEMINI_SHADER_RESPONSE_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    message: { type: Type.STRING },
-    shaderCode: { type: Type.STRING },
-    suggestions: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING },
     },
   },
   required: ['message', 'shaderCode'],
@@ -2176,39 +1986,6 @@ const streamAssistantResponseWithOllama = async (
   };
 };
 
-const generateShaderResponseWithGemini = async (
-  prompt: string,
-  options: GenerateShaderCodeOptions,
-  repairContext?: {
-    candidateShader?: string;
-    validationErrors?: string[];
-  },
-): Promise<{
-  message: string;
-  shaderCode: string;
-  suggestions: string[];
-  model: string;
-}> => {
-  const model = options.geminiModel?.trim() || 'gemini-2.5-flash';
-  const ai = getAiClient(options.geminiApiKey);
-  const response = await ai.models.generateContent({
-    model,
-    contents: buildGeminiContents(
-      buildShaderGenerationPrompt(prompt, options, repairContext),
-      options.attachments,
-    ),
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: GEMINI_SHADER_RESPONSE_SCHEMA,
-    },
-  });
-
-  return {
-    ...parseStructuredShaderResponse(response.text),
-    model,
-  };
-};
-
 const generateShaderResponseWithOpenAi = async (
   prompt: string,
   options: GenerateShaderCodeOptions,
@@ -2245,8 +2022,7 @@ export async function generateShaderChatTurn(
 ): Promise<ShaderGenerationResult> {
   let repairErrors: string[] = [];
   let repairCandidate: string | undefined;
-  const provider =
-    options.provider === 'ollama' ? 'ollama' : options.provider === 'openai' ? 'openai' : 'gemini';
+  const provider = resolveTextAiProvider(options.provider);
   let streamedThinking = '';
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -2259,15 +2035,10 @@ export async function generateShaderChatTurn(
             candidateShader: repairCandidate,
             validationErrors: repairErrors,
           })
-        : provider === 'openai'
-          ? await generateShaderResponseWithOpenAi(prompt, options, {
-              candidateShader: repairCandidate,
-              validationErrors: repairErrors,
-            })
-          : await generateShaderResponseWithGemini(prompt, options, {
-              candidateShader: repairCandidate,
-              validationErrors: repairErrors,
-            });
+        : await generateShaderResponseWithOpenAi(prompt, options, {
+            candidateShader: repairCandidate,
+            validationErrors: repairErrors,
+          });
 
     const shaderCode = cleanGeneratedShaderCode(response.shaderCode);
     const validation = validateGeneratedShaderCode(shaderCode);
@@ -2344,8 +2115,7 @@ export async function generateAssistantChatTurn(
   }
   const requestPrompt = trimmedPrompt || 'Please review the attached file(s).';
 
-  const provider =
-    options.provider === 'ollama' ? 'ollama' : options.provider === 'openai' ? 'openai' : 'gemini';
+  const provider = resolveTextAiProvider(options.provider);
 
   try {
     if (provider === 'ollama') {
@@ -2434,79 +2204,21 @@ export async function generateAssistantChatTurn(
       };
     }
 
-    if (provider === 'openai') {
-      const response = await generateOpenAiResponseText(
-        buildAssistantChatPrompt(requestPrompt, options),
-        {
-          openAiApiKey: options.openAiApiKey,
-          openAiBaseUrl: options.openAiBaseUrl,
-          openAiModel: options.openAiModel,
-          attachments: options.attachments,
-          signal: options.signal,
-        },
-      );
-
-      return {
-        message: response.text,
-        provider: 'openai',
-        model: response.model,
-      };
-    }
-
-    const model = options.geminiModel?.trim() || 'gemini-2.5-flash';
-    const geminiContents = buildGeminiContents(
+    const response = await generateOpenAiResponseText(
       buildAssistantChatPrompt(requestPrompt, options),
-      options.attachments,
+      {
+        openAiApiKey: options.openAiApiKey,
+        openAiBaseUrl: options.openAiBaseUrl,
+        openAiModel: options.openAiModel,
+        attachments: options.attachments,
+        signal: options.signal,
+      },
     );
 
-    publishDebugEvent({
-      type: 'ai_request',
-      source: 'generateAssistantChatTurn',
-      detail: `Gemini request model=${model}`,
-      data: {
-        provider: 'gemini',
-        model,
-        body: redactPayload({
-          model,
-          contents:
-            typeof geminiContents === 'string'
-              ? geminiContents.slice(0, 2000) +
-                (geminiContents.length > 2000 ? '… [truncated]' : '')
-              : geminiContents,
-        }),
-      },
-    });
-
-    const ai = getAiClient(options.geminiApiKey);
-    const response = await ai.models.generateContent({
-      model,
-      contents: geminiContents,
-    });
-
-    const content = response.text.trim();
-
-    publishDebugEvent({
-      type: 'ai_response',
-      source: 'generateAssistantChatTurn',
-      detail: `Gemini response received model=${model}`,
-      data: {
-        provider: 'gemini',
-        model,
-        body: redactPayload({
-          text: content.slice(0, 2000),
-          truncated: content.length > 2000,
-        }),
-      },
-    });
-
-    if (!content) {
-      throw new Error('AI assistant chat failed: Gemini returned an empty response.');
-    }
-
     return {
-      message: content,
-      provider: 'gemini',
-      model,
+      message: response.text,
+      provider: 'openai',
+      model: response.model,
     };
   } catch (error) {
     console.error('Assistant Chat Error:', error);

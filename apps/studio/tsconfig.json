@@ -12,5 +12,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "exclude": ["tailwind.config.js", "postcss.config.js"]
+  "exclude": ["tailwind.config.js", "postcss.config.js", "src-tauri/target"]
 }

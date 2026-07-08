@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/pwa/pwaLifecycle', () => ({
-  getPwaSnapshot: () => ({ isStandalone: false, isNewInstall: false }),
+  snapshot: { isStandalone: false, isNewInstall: false },
   subscribeToPwa: () => () => {},
   registerPwa: () => {},
   requestPwaInstall: async () => 'dismissed' as const,
@@ -253,6 +253,7 @@ describe('studio hotkey effect bindings', () => {
       name: 'Dummy',
       category: 'Effect',
       renderMode: 'shader',
+      processingDomain: 'scene_linear',
       IconComponent: () => null,
       AdjustmentComponent: () => null,
       getInitialNodeProps: () => ({}),

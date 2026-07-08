@@ -21,9 +21,11 @@ export const getComfyOutputActivationUpdates = (output: GeneratedOutput): Partia
     src: output.src,
     mediaKind: output.mediaKind === 'model_3d' ? 'image' : (output.mediaKind ?? 'image'),
     ...(output.colorSpace ? { colorSpace: output.colorSpace } : {}),
+    ...(output.mediaColorManagement ? { mediaColorManagement: output.mediaColorManagement } : {}),
     frames: output.frames,
     duration: output.duration,
     fps: output.fps,
+    videoColorMetadata: output.videoColorMetadata,
     width: output.width,
     height: output.height,
   };

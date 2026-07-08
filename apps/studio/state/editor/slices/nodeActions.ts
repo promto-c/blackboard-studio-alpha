@@ -1,4 +1,12 @@
-import { NodeType, AnyNode, Flow, GroupNode, Keyframe, AnimatableNumber } from '@blackboard/types';
+import {
+  NodeType,
+  AnyNode,
+  Flow,
+  GroupNode,
+  Keyframe,
+  AnimatableNumber,
+  type OutputTechnicalChannel,
+} from '@blackboard/types';
 import { nodeRegistry } from '@/nodes/registry';
 import { setKeyframeValue } from '@/nodes/animation';
 import { nodeFlags } from '@/nodes/helpers';
@@ -32,6 +40,10 @@ import {
 } from '@/utils/graphCommands';
 import { readNodeClipboard, writeNodeClipboard } from '@/utils/nodeClipboard';
 import type { EditorMutation, CommitEditorMutation } from '@/state/editor/commitMutation';
+import {
+  getOutputTechnicalChannelPort,
+  isOutputTechnicalChannelPort,
+} from '@/color-management/outputTechnicalChannels';
 
 export function createNodeActions(
   set: SetState,
@@ -415,11 +427,17 @@ export function createNodeActions(
       });
     },
 
-    batchUpdateNodes: (nodeIds: string[], updates: Partial<AnyNode>, withHistory = false) => {
+    batchUpdateNodes: (
+      nodeIds: string[],
+      updates: Partial<AnyNode> | ((node: AnyNode) => Partial<AnyNode>),
+      withHistory = false,
+    ) => {
       deps.commitMutation((state) => {
         const idSet = new Set(nodeIds);
         const newNodes = state.nodes.map((l) =>
-          idSet.has(l.id) ? ({ ...l, ...updates } as AnyNode) : l,
+          idSet.has(l.id)
+            ? ({ ...l, ...(typeof updates === 'function' ? updates(l) : updates) } as AnyNode)
+            : l,
         );
 
         const result: EditorMutation<EditorState> = { patch: { nodes: newNodes } };
@@ -639,6 +657,49 @@ export function createNodeActions(
             state: { flows: nextFlows, selectedNodeId: state.selectedNodeId },
           },
         };
+      });
+    },
+
+    setOutputTechnicalChannels: (channels: OutputTechnicalChannel[], withHistory = true) => {
+      deps.commitMutation((state) => {
+        const flowId = state.activeFlowId ?? state.rootFlowId;
+        const flow = flowId ? state.flows[flowId] : null;
+        if (!flowId || !flow) return { patch: {} };
+
+        const retainedPorts = new Set(
+          channels.map((channel) => getOutputTechnicalChannelPort(channel.id)),
+        );
+        const updatedFlows = updateFlowNode(state.flows, flowId, OUTPUT_NODE_ID, {
+          technicalChannels: channels,
+        } as Partial<AnyNode>);
+        if (!updatedFlows) return { patch: {} };
+
+        const updatedFlow = updatedFlows[flowId];
+        const nextFlows = {
+          ...updatedFlows,
+          [flowId]: {
+            ...updatedFlow,
+            edges: updatedFlow.edges.filter(
+              (edge) =>
+                edge.targetNodeId !== OUTPUT_NODE_ID ||
+                !isOutputTechnicalChannelPort(edge.targetPort) ||
+                retainedPorts.has(edge.targetPort),
+            ),
+          },
+        };
+
+        return withHistory
+          ? {
+              patch: { flows: nextFlows },
+              history: {
+                label: 'Update output channels',
+                state: { flows: nextFlows, selectedNodeId: state.selectedNodeId },
+              },
+            }
+          : {
+              patch: { flows: nextFlows },
+              persist: 'debounced',
+            };
       });
     },
 

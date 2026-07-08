@@ -611,6 +611,64 @@ function solveAffineLSQ(src: Point[], dst: Point[]): number[] | null {
 }
 
 /**
+ * Least Squares Independent Scale Fit (Translate + Independent X/Y Scale, no shear).
+ * x' = sx*x + tx
+ * y' = sy*y + ty
+ * Returns [sx, tx, sy, ty]
+ *
+ * Each axis is solved independently via ordinary least squares.
+ */
+function solveIndependentScaleLSQ(src: Point[], dst: Point[]): number[] | null {
+  const n = src.length;
+  if (n < 2) return null;
+
+  // X axis: minimize sum_i (sx * src_i.x + tx - dst_i.x)^2
+  // System: [sum(src.x^2), sum(src.x)] [sx] = [sum(src.x * dst.x)]
+  //         [sum(src.x),   n         ] [tx]   [sum(dst.x)        ]
+  let sx = 0,
+    sx2 = 0,
+    su = 0,
+    sux = 0;
+  let sy = 0,
+    sy2 = 0,
+    sv = 0,
+    svy = 0;
+
+  for (let i = 0; i < n; i++) {
+    const x = src[i].x;
+    const y = src[i].y;
+    const u = dst[i].x;
+    const v = dst[i].y;
+
+    sx += x;
+    sx2 += x * x;
+    su += u;
+    sux += u * x;
+
+    sy += y;
+    sy2 += y * y;
+    sv += v;
+    svy += v * y;
+  }
+
+  // Solve X axis
+  const detX = n * sx2 - sx * sx;
+  if (Math.abs(detX) < 1e-9) return null;
+  const scaleX = (n * sux - sx * su) / detX;
+  const transX = (su - scaleX * sx) / n;
+
+  // Solve Y axis
+  const detY = n * sy2 - sy * sy;
+  if (Math.abs(detY) < 1e-9) return null;
+  const scaleY = (n * svy - sy * sv) / detY;
+  const transY = (sv - scaleY * sy) / n;
+
+  if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY)) return null;
+
+  return [scaleX, transX, scaleY, transY];
+}
+
+/**
  * Least Squares Similarity Fit (Translate + Rotate + Scale).
  * x' = a*x - b*y + tx
  * y' = b*x + a*y + ty
@@ -763,7 +821,7 @@ function solveHomographyLSQ(src: Point[], dst: Point[]): number[] | null {
 function applyTransform(
   p: Point,
   model: number[],
-  type: 'homography' | 'affine' | 'similarity' | 'translation',
+  type: 'homography' | 'affine' | 'similarity' | 'independent_scale' | 'translation',
 ): Point {
   if (type === 'homography') {
     // [h00, h01, h02, h10, h11, h12, h20, h21, h22]
@@ -793,6 +851,14 @@ function applyTransform(
     };
   }
 
+  if (type === 'independent_scale') {
+    // [sx, tx, sy, ty]
+    return {
+      x: model[0] * p.x + model[1],
+      y: model[2] * p.y + model[3],
+    };
+  }
+
   // [tx, ty]
   return {
     x: p.x + model[0],
@@ -801,12 +867,142 @@ function applyTransform(
 }
 
 /**
- * Generic RANSAC Implementation
+ * Compute NCC score between two patches at integer positions.
+ * Internal helper — uses the same normalization as findTemplateMatch.
  */
+const computeNccScore = (
+  sourcePatch: { values: number[]; mean: number; variance: number },
+  candidatePatch: { values: number[]; mean: number; variance: number },
+): number => {
+  let dot = 0;
+  for (let i = 0; i < sourcePatch.values.length; i++) {
+    dot +=
+      (sourcePatch.values[i] - sourcePatch.mean) * (candidatePatch.values[i] - candidatePatch.mean);
+  }
+  return dot / Math.sqrt(sourcePatch.variance * candidatePatch.variance);
+};
+
+/**
+ * Refine tracked point positions to sub-pixel accuracy using parabolic
+ * interpolation of NCC scores around the best integer match.
+ *
+ * The parabolic fit uses 3 samples per axis:
+ *   f(-1) = NCC at (cx-1, cy), f(0) = NCC at (cx, cy), f(1) = NCC at (cx+1, cy)
+ *   Sub-pixel offset = (f(-1) - f(1)) / (2 * (f(-1) + f(1) - 2*f(0)))
+ *
+ * Only refines positions where the parabola is well-defined (denominator not near zero).
+ * Falls back to the original integer position if refinement is unstable.
+ *
+ * @param pyrA Pyramid of the source image (level 0 is full-res grayscale)
+ * @param pyrB Pyramid of the output image (level 0 is full-res grayscale)
+ * @param sourcePoints Original source positions (same reference as optical flow input)
+ * @param trackedPoints Current tracked positions (integer or sub-pixel from LK)
+ * @param patchRadius Radius of the NCC patch (default 3, so 7×7 window)
+ * @returns Refined tracked positions with sub-pixel correction where possible
+ */
+export function refineNccSubPixel(
+  pyrA: OpticalFlowPyramid,
+  pyrB: OpticalFlowPyramid,
+  sourcePoints: Point[],
+  trackedPoints: TrackResult[],
+  patchRadius: number = 3,
+): TrackResult[] {
+  if (pyrA.length === 0 || pyrB.length === 0 || sourcePoints.length === 0) {
+    return trackedPoints.map((t) => ({ x: t.x, y: t.y, error: 100 }));
+  }
+
+  const srcImage = pyrA[0];
+  const dstImage = pyrB[0];
+
+  return trackedPoints.map((tracked, index) => {
+    const source = sourcePoints[index];
+    const srcX = Math.round(source.x);
+    const srcY = Math.round(source.y);
+    const stx = Math.round(tracked.x);
+    const sty = Math.round(tracked.y);
+
+    // Get the source patch for NCC
+    const sourcePatch = readPatchStats(srcImage, srcX, srcY, patchRadius);
+    if (!sourcePatch || sourcePatch.variance < 1e-6) {
+      return { x: tracked.x, y: tracked.y, error: tracked.error };
+    }
+
+    // NCC at the integer center position
+    const centerPatch = readPatchStats(dstImage, stx, sty, patchRadius);
+    if (!centerPatch || centerPatch.variance < 1e-6) {
+      return { x: tracked.x, y: tracked.y, error: tracked.error };
+    }
+    const centerScore = computeNccScore(sourcePatch, centerPatch);
+    if (!Number.isFinite(centerScore)) {
+      return { x: tracked.x, y: tracked.y, error: tracked.error };
+    }
+
+    // NCC at ±1 in X (keep Y fixed)
+    const leftPatch = readPatchStats(dstImage, stx - 1, sty, patchRadius);
+    const rightPatch = readPatchStats(dstImage, stx + 1, sty, patchRadius);
+    const leftScore =
+      leftPatch && leftPatch.variance >= 1e-6 ? computeNccScore(sourcePatch, leftPatch) : -Infinity;
+    const rightScore =
+      rightPatch && rightPatch.variance >= 1e-6
+        ? computeNccScore(sourcePatch, rightPatch)
+        : -Infinity;
+
+    // NCC at ±1 in Y (keep X fixed)
+    const upPatch = readPatchStats(dstImage, stx, sty - 1, patchRadius);
+    const downPatch = readPatchStats(dstImage, stx, sty + 1, patchRadius);
+    const upScore =
+      upPatch && upPatch.variance >= 1e-6 ? computeNccScore(sourcePatch, upPatch) : -Infinity;
+    const downScore =
+      downPatch && downPatch.variance >= 1e-6 ? computeNccScore(sourcePatch, downPatch) : -Infinity;
+
+    // ---- Parabolic interpolation for X ----
+    let subPx = 0;
+    const hasValidX =
+      Number.isFinite(leftScore) && Number.isFinite(rightScore) && Number.isFinite(centerScore);
+    if (hasValidX) {
+      const aX = (leftScore + rightScore - 2 * centerScore) / 2; // parabola curvature (actually = a in ax²+bx+c)
+      if (Math.abs(aX) > 1e-6) {
+        const bX = (rightScore - leftScore) / 2;
+        subPx = -bX / (2 * aX);
+        // Clamp sub-pixel offset to ±0.8px to avoid overshoot
+        subPx = Math.max(-0.8, Math.min(0.8, subPx));
+      }
+    }
+
+    // ---- Parabolic interpolation for Y ----
+    let subPy = 0;
+    const hasValidY =
+      Number.isFinite(upScore) && Number.isFinite(downScore) && Number.isFinite(centerScore);
+    if (hasValidY) {
+      const aY = (upScore + downScore - 2 * centerScore) / 2;
+      if (Math.abs(aY) > 1e-6) {
+        const bY = (downScore - upScore) / 2;
+        subPy = -bY / (2 * aY);
+        subPy = Math.max(-0.8, Math.min(0.8, subPy));
+      }
+    }
+
+    // If both refinements are negligible, return original
+    if (Math.abs(subPx) < 0.01 && Math.abs(subPy) < 0.01) {
+      return { x: tracked.x, y: tracked.y, error: tracked.error };
+    }
+
+    // Refine the tracked position with the sub-pixel offset
+    const refinedX = stx + subPx;
+    const refinedY = sty + subPy;
+
+    // Compute the change in position introduced by refinement
+    const refinementDelta = Math.hypot(refinedX - tracked.x, refinedY - tracked.y);
+    const refinedError = Math.min(tracked.error + refinementDelta * 2, 100);
+
+    return { x: refinedX, y: refinedY, error: refinedError };
+  });
+}
+
 function ransac(
   src: Point[],
   dst: Point[],
-  type: 'homography' | 'affine' | 'similarity' | 'translation',
+  type: 'homography' | 'affine' | 'similarity' | 'independent_scale' | 'translation',
   minPoints: number,
   threshold: number = 2.0,
   iterations: number = 50,
@@ -833,6 +1029,7 @@ function ransac(
     if (type === 'homography') model = solveHomographyLSQ(subsetSrc, subsetDst);
     else if (type === 'affine') model = solveAffineLSQ(subsetSrc, subsetDst);
     else if (type === 'similarity') model = solveSimilarityLSQ(subsetSrc, subsetDst);
+    else if (type === 'independent_scale') model = solveIndependentScaleLSQ(subsetSrc, subsetDst);
     else model = solveTranslation(subsetSrc, subsetDst);
 
     if (!model) continue;
@@ -861,13 +1058,19 @@ function ransac(
     if (type === 'homography') return solveHomographyLSQ(finalSrc, finalDst);
     if (type === 'affine') return solveAffineLSQ(finalSrc, finalDst);
     if (type === 'similarity') return solveSimilarityLSQ(finalSrc, finalDst);
+    if (type === 'independent_scale') return solveIndependentScaleLSQ(finalSrc, finalDst);
     return solveTranslation(finalSrc, finalDst);
   }
 
   return bestModel;
 }
 
-type SolvedTransformType = 'homography' | 'affine' | 'similarity' | 'translation';
+type SolvedTransformType =
+  | 'homography'
+  | 'affine'
+  | 'similarity'
+  | 'independent_scale'
+  | 'translation';
 
 export interface SolvedTransformModel {
   type: SolvedTransformType;
@@ -880,6 +1083,7 @@ type TransformSolveConfig = {
   scale: boolean;
   affine: boolean;
   perspective: boolean;
+  independentScale?: boolean;
   deform: boolean;
   ransacThreshold?: number;
 };
@@ -892,6 +1096,9 @@ const getRequestedTransformType = (
   }
   if (config.affine) {
     return { type: 'affine', minPoints: 3 };
+  }
+  if (config.independentScale) {
+    return { type: 'independent_scale', minPoints: 2 };
   }
   if (config.rotation || config.scale) {
     return { type: 'similarity', minPoints: 2 };
@@ -937,9 +1144,14 @@ export const fitTrackedTransform = (
     minPoints = 3;
     model = ransac(referencePoints, trackedPoints, type, minPoints, threshold);
   }
-  if (!model && type === 'affine' && referencePoints.length >= 2) {
-    type = 'similarity';
-    minPoints = 2;
+  if (!model && (type === 'homography' || type === 'affine') && referencePoints.length >= 2) {
+    if (config.independentScale) {
+      type = 'independent_scale';
+      minPoints = 2;
+    } else {
+      type = 'similarity';
+      minPoints = 2;
+    }
     model = ransac(referencePoints, trackedPoints, type, minPoints, threshold);
   }
   if (!model && type !== 'translation') {

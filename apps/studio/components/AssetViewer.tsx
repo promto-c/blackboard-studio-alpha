@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import * as Icons from '@blackboard/icons';
-import { NodeType } from '@blackboard/types';
+import { NodeType, type MediaColorManagement, type Scene3DAssetReference } from '@blackboard/types';
 import { usePlayback } from '@/hooks/usePlayback';
-import useAssetObjectUrl from '@/hooks/useAssetObjectUrl';
-import useAssetPreviewUrl from '@/hooks/useAssetPreviewUrl';
+import { ColorManagedImagePreview } from './ColorManagedImagePreview';
+import { ColorManagedVideoPreview } from './ColorManagedVideoPreview';
+import { ExecuteButton } from './ExecuteButton';
 
-export type AssetViewerMediaKind = 'image' | 'image_sequence' | 'video';
+const Scene3DAssetPreview = lazy(() => import('./Scene3DAssetPreview'));
+
+export type AssetViewerMediaKind = 'image' | 'image_sequence' | 'video' | 'model_3d';
 
 export interface AssetViewerMedia {
   id: string;
@@ -20,6 +23,8 @@ export interface AssetViewerMedia {
   detail?: string;
   source?: string;
   createdAt?: number;
+  mediaColorManagement?: MediaColorManagement;
+  scene3dAsset?: Scene3DAssetReference;
 }
 
 interface PlaybackState {
@@ -65,6 +70,7 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
   const mediaKind = media?.mediaKind ?? 'image';
   const isSequence = mediaKind === 'image_sequence' && frameAssetIds.length > 1;
   const isVideo = mediaKind === 'video';
+  const isModel3D = mediaKind === 'model_3d';
   const fps = Math.max(1, Math.round(media?.fps ?? 30));
   const renderLockRef = useRef(false);
 
@@ -110,9 +116,6 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
 
   const currentFrame = Math.min(playbackState.currentFrame, Math.max(0, frameAssetIds.length - 1));
   const frameAssetId = frameAssetIds[currentFrame] ?? null;
-  const imageUrl = useAssetPreviewUrl(frameAssetId ?? '', 2048);
-  const videoUrl = useAssetObjectUrl(isVideo ? (media?.assetId ?? null) : null);
-
   const stopSequencePlayback = () => {
     setPlaybackState((prev) => {
       const next = { ...prev, isPlaying: false };
@@ -145,7 +148,15 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
   const displayTitle = media?.label || media?.detail || 'Gallery preview';
   const dimensions = media?.width && media.height ? `${media.width} x ${media.height}` : null;
   const durationLabel = isVideo && media?.duration ? formatDuration(media.duration) : null;
-  const typeLabel = isVideo ? 'Video' : isSequence ? 'Image sequence' : 'Image';
+  const typeLabel = isModel3D
+    ? media?.scene3dAsset?.kind === 'splat'
+      ? 'Gaussian splat'
+      : '3D model'
+    : isVideo
+      ? 'Video'
+      : isSequence
+        ? 'Image sequence'
+        : 'Image';
 
   return (
     <section
@@ -157,28 +168,44 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
             <Icons.Photo className="h-10 w-10" />
             <p className="text-sm font-medium text-gray-300">Select a gallery item</p>
           </div>
+        ) : isModel3D && media.scene3dAsset ? (
+          <Suspense
+            fallback={
+              <div className="flex h-full w-full items-center justify-center text-gray-500">
+                <Icons.CubeTransparent className="h-8 w-8 animate-pulse text-cyan-300" />
+              </div>
+            }
+          >
+            <Scene3DAssetPreview asset={media.scene3dAsset} />
+          </Suspense>
+        ) : isModel3D ? (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 px-6 text-center">
+            <Icons.CubeTransparent className="h-8 w-8 text-rose-300" />
+            <p className="text-xs text-rose-200">This gallery item has no 3D asset metadata.</p>
+          </div>
         ) : isVideo ? (
-          videoUrl ? (
-            <video
+          media.width && media.height && media.mediaColorManagement ? (
+            <ColorManagedVideoPreview
               key={media.id}
-              src={videoUrl}
-              className="max-h-full max-w-full rounded-md object-contain shadow-2xl shadow-black/40"
-              loop
-              muted
-              playsInline
-              controls
+              assetId={media.assetId}
+              width={media.width}
+              height={media.height}
+              fps={media.fps}
+              mediaColorManagement={media.mediaColorManagement}
+              className="h-full"
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center text-gray-500">
-              <Icons.CubeTransparent className="h-8 w-8 animate-pulse text-primary-300" />
+            <div className="flex h-full w-full items-center justify-center px-6 text-center text-xs text-rose-200">
+              Video preview requires dimensions and an explicit color assignment.
             </div>
           )
-        ) : imageUrl ? (
-          <img
-            key={`${media.id}-${frameAssetId}`}
-            src={imageUrl}
-            alt=""
-            className="max-h-full max-w-full rounded-md object-contain shadow-2xl shadow-black/40"
+        ) : frameAssetId && media.width && media.height && media.mediaColorManagement ? (
+          <ColorManagedImagePreview
+            assetId={frameAssetId}
+            width={media.width}
+            height={media.height}
+            mediaColorManagement={media.mediaColorManagement}
+            className="h-full w-full"
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-gray-500">
@@ -192,7 +219,13 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
               <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.06] text-gray-300">
-                {isVideo ? (
+                {isModel3D ? (
+                  media.scene3dAsset?.kind === 'splat' ? (
+                    <Icons.Sparkles className="h-3.5 w-3.5" />
+                  ) : (
+                    <Icons.CubeTransparent className="h-3.5 w-3.5" />
+                  )
+                ) : isVideo ? (
                   <Icons.Video className="h-3.5 w-3.5" />
                 ) : isSequence ? (
                   <Icons.FolderOpen className="h-3.5 w-3.5" />
@@ -207,17 +240,25 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
               {dimensions ? <span>{dimensions}</span> : null}
               {isSequence ? <span>{frameAssetIds.length} frames</span> : null}
               {durationLabel ? <span>{durationLabel}</span> : null}
-              {media.source ? <span>{media.source}</span> : null}
+              {media?.source ? <span>{media.source}</span> : null}
             </div>
           </div>
           {onOpenProject ? (
-            <button
-              type="button"
+            <ExecuteButton
               onClick={onOpenProject}
-              className="shrink-0 rounded-md border border-primary-300/25 bg-primary-300/10 px-3 py-1.5 text-xs font-medium text-primary-100 transition hover:border-primary-200/50 hover:bg-primary-300/15"
+              variant="prominent"
+              icon={false}
+              trailingIcon={<Icons.ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+              className="min-w-44 !min-h-11"
+              actionClassName="justify-between !py-1.5"
             >
-              Open project
-            </button>
+              <span className="min-w-0 text-left">
+                <span className="block text-xs font-semibold">Open project</span>
+                <span className="block text-[9px] font-normal text-primary-200/65">
+                  Continue editing in Studio
+                </span>
+              </span>
+            </ExecuteButton>
           ) : null}
         </div>
 

@@ -5,12 +5,19 @@ import ImageSequenceAdjustments from './ImageSequenceAdjustments';
 import * as Icons from '@blackboard/icons';
 import ImageSequenceToolButton from './ImageSequenceToolButton';
 import { createSourceTransformUpdate, sourceMediaNodeFlags } from '../../sourceNodeBehavior';
+import {
+  ColorManagementDefaults,
+  createProjectDefaultMediaColorManagement,
+  getMediaSourceColorSpace,
+  isDataMediaColorManagement,
+} from '@/color-management';
 
 export const imageSequenceNode: NodeDefinition = {
   type: NodeType.IMAGE_SEQUENCE,
   name: 'Image Sequence',
   category: 'Image',
   renderMode: 'media',
+  processingDomain: 'scene_linear',
   IconComponent: Icons.FolderOpen,
   ToolComponent: ImageSequenceToolButton,
   AdjustmentComponent: ImageSequenceAdjustments,
@@ -26,7 +33,8 @@ export const imageSequenceNode: NodeDefinition = {
     opacity: 100,
     operator: BlendMode.OVER,
     transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
-    colorSpace: 'sRGB Encoded Rec.709 (sRGB)',
+    colorSpace: ColorManagementDefaults.TEXTURE_SPACE,
+    mediaColorManagement: createProjectDefaultMediaColorManagement(),
     sourceAlphaMode: 'file',
     useOutputSizeAsScene: false,
     fps: 30,
@@ -53,7 +61,15 @@ export const imageSequenceNode: NodeDefinition = {
       const safeIdx = (idx + seq.frames.length) % seq.frames.length;
       return seq.frames[safeIdx] || '';
     },
-    getColorSpace: (node) => (node as ImageSequenceNode).colorSpace ?? 'sRGB',
+    getColorSpace: (node) => {
+      const sequenceNode = node as ImageSequenceNode;
+      return (
+        getMediaSourceColorSpace(sequenceNode.mediaColorManagement) ??
+        sequenceNode.colorSpace ??
+        ColorManagementDefaults.TEXTURE_SPACE
+      );
+    },
+    isData: (node) => isDataMediaColorManagement((node as ImageSequenceNode).mediaColorManagement),
   },
   onNodeUpdate: (node, changes, context) => {
     return createSourceTransformUpdate(node as ImageSequenceNode, changes, context) ?? { changes };

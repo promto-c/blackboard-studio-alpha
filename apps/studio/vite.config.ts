@@ -8,7 +8,10 @@ import {
   normalizePwaBasePath,
   type StudioServiceWorkerAsset,
 } from './pwa/buildServiceWorker';
-import { getOfflinePackAssetMetadata, getOfflinePackManualChunk } from './pwa/offlinePacks';
+import {
+  getManagedAssetManualChunk,
+  getManagedAssetMetadata as getRegisteredManagedAssetMetadata,
+} from './pwa/managedAssets';
 
 const onnxWasmSrc = path.resolve(__dirname, 'node_modules/onnxruntime-web/dist');
 const publicWasmDir = path.resolve(__dirname, 'public/wasm');
@@ -61,13 +64,10 @@ const isPwaShellAsset = (relativePath: string): boolean =>
 const isThreeRuntimeModule = (id: string): boolean =>
   id.includes('/node_modules/three/') || id.includes('\\node_modules\\three\\');
 
-const getOnDemandAssetMetadata = (
+const getManagedAssetMetadata = (
   relativePath: string,
-): Pick<
-  StudioServiceWorkerAsset,
-  'description' | 'group' | 'label' | 'removable' | 'source'
-> | null => {
-  return getOfflinePackAssetMetadata(relativePath);
+): Pick<StudioServiceWorkerAsset, 'description' | 'group' | 'label' | 'removable'> | null => {
+  return getRegisteredManagedAssetMetadata(relativePath);
 };
 
 function createStudioPwaBuildPlugin({ base, version }: { base: string; version: string }): Plugin {
@@ -93,10 +93,10 @@ function createStudioPwaBuildPlugin({ base, version }: { base: string; version: 
         };
       });
 
-      // Only classify large, optional packs as on-demand; everything else precaches automatically
+      // Only classify large feature assets as on-demand; everything else precaches automatically.
       const allAssetsWithMetadata = assets.map((asset) => {
         const relativePath = asset.url.slice(normalizedBase.length);
-        return { ...asset, relativePath, metadata: getOnDemandAssetMetadata(relativePath) };
+        return { ...asset, relativePath, metadata: getManagedAssetMetadata(relativePath) };
       });
 
       const precacheAssets = allAssetsWithMetadata
@@ -204,8 +204,8 @@ export default defineConfig(({ mode }) => {
     plugins,
 
     define: {
-      'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      'process.env.API_KEY': JSON.stringify(env.BUILD_API_KEY || env.VITE_BUILD_API_KEY || ''),
+
       __BLACKBOARD_STUDIO_VERSION__: JSON.stringify(studioVersion),
       __BLACKBOARD_STUDIO_BUILD_ID__: JSON.stringify(studioBuildId),
       __BLACKBOARD_STUDIO_DESKTOP__: JSON.stringify(isTauriDesktop),
@@ -235,9 +235,9 @@ export default defineConfig(({ mode }) => {
             if (isThreeRuntimeModule(id)) {
               return 'vendor-three';
             }
-            const offlinePackChunk = getOfflinePackManualChunk(id);
-            if (offlinePackChunk) {
-              return offlinePackChunk;
+            const managedAssetChunk = getManagedAssetManualChunk(id);
+            if (managedAssetChunk) {
+              return managedAssetChunk;
             }
             // Split heavy markdown libraries into their own chunk
             if (
@@ -256,10 +256,6 @@ export default defineConfig(({ mode }) => {
               id.includes('node_modules/character-entities')
             ) {
               return 'vendor-markdown';
-            }
-            // Split Google GenAI SDK into its own chunk
-            if (id.includes('node_modules/@google/genai')) {
-              return 'vendor-genai';
             }
           },
         },

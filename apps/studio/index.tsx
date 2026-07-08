@@ -7,11 +7,13 @@ import { initTheme } from '@/state/preferences';
 import { PreferencesProvider } from './state/preferencesContext';
 import { DebugLogProvider } from './utils/debugLogContext';
 import { EditorProvider } from './state/editorContext';
-import { OcioProvider } from './state/ocioContext';
+import { ProjectOcioProvider } from './state/ocioContext';
 import { InstalledOnnxModelsProvider } from './state/installedOnnxModelsContext';
+import { initComponentSurfaceLighting } from '@/utils/componentSurfaceLighting';
 
 // Initialize theme before React renders to avoid a flash of unstyled content
 initTheme();
+initComponentSurfaceLighting();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -24,13 +26,13 @@ root.render(
     <DebugLogProvider>
       <PreferencesProvider>
         <InstalledOnnxModelsProvider>
-          <OcioProvider>
-            <EditorProvider>
+          <EditorProvider>
+            <ProjectOcioProvider>
               <StudioHotkeysProvider>
                 <App />
               </StudioHotkeysProvider>
-            </EditorProvider>
-          </OcioProvider>
+            </ProjectOcioProvider>
+          </EditorProvider>
         </InstalledOnnxModelsProvider>
       </PreferencesProvider>
     </DebugLogProvider>

@@ -181,8 +181,6 @@ Assignment for ${input.delegation.assignee}:
 ${input.delegation.task}`;
           const subagentResult = await generateAssistantChatTurn(subagentPrompt, {
             provider: generationOptions.provider,
-            geminiApiKey: generationOptions.geminiApiKey,
-            geminiModel: generationOptions.geminiModel,
             openAiApiKey: generationOptions.openAiApiKey,
             openAiBaseUrl: generationOptions.openAiBaseUrl,
             openAiModel: generationOptions.openAiModel,

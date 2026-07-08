@@ -465,6 +465,40 @@ function Scene3DAdjustments({ node: anyNode }: { node: AnyNode }) {
               }
             />
           </SettingRow>
+          <SettingRow label="Environment">
+            <input
+              type="color"
+              value={scene3d.world.environmentColor}
+              className={COLOR_INPUT_CLASS}
+              onChange={(event) => updateWorld({ environmentColor: event.target.value })}
+            />
+          </SettingRow>
+          <SettingRow label="Ground">
+            <input
+              type="color"
+              value={scene3d.world.environmentGroundColor}
+              className={COLOR_INPUT_CLASS}
+              onChange={(event) => updateWorld({ environmentGroundColor: event.target.value })}
+            />
+          </SettingRow>
+          <SettingRow label="Environment Intensity">
+            <input
+              type="number"
+              value={scene3d.world.environmentIntensity}
+              min={0}
+              step={0.1}
+              className={NUMBER_INPUT_CLASS}
+              onChange={(event) =>
+                updateWorld({
+                  environmentIntensity: numberOrFallback(
+                    Number(event.target.value),
+                    scene3d.world.environmentIntensity,
+                    0,
+                  ),
+                })
+              }
+            />
+          </SettingRow>
           <ToggleRow
             label="Output Plane"
             checked={scene3d.world.showOutputPlane}

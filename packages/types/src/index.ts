@@ -105,12 +105,33 @@ export interface RotoPointRef {
   pointIndex: number;
 }
 
-export interface Grade {
-  brightness: AnimatableNumber;
-  contrast: AnimatableNumber;
+export type GradeProcessingDomain = 'scene_linear' | 'log';
+export type GradeOutOfGamutMode = 'preserve' | 'clamp_negative';
+
+export interface GradeRgbControl {
+  r: AnimatableNumber;
+  g: AnimatableNumber;
+  b: AnimatableNumber;
+}
+
+export interface GradeCdl {
+  slope: GradeRgbControl;
+  offset: GradeRgbControl;
+  power: GradeRgbControl;
   saturation: AnimatableNumber;
-  gain: AnimatableNumber;
-  gamma: AnimatableNumber;
+}
+
+export interface Grade {
+  processingDomain: GradeProcessingDomain;
+  outOfGamut: GradeOutOfGamutMode;
+  exposure: AnimatableNumber;
+  contrast: AnimatableNumber;
+  contrastPivot: AnimatableNumber;
+  saturation: AnimatableNumber;
+  lift: GradeRgbControl;
+  gamma: GradeRgbControl;
+  gain: GradeRgbControl;
+  cdl: GradeCdl;
 }
 
 export enum BlurMethod {
@@ -191,6 +212,9 @@ export interface Scene3DCameraSettings {
 
 export interface Scene3DWorldSettings {
   pixelScale: number;
+  environmentColor: string;
+  environmentGroundColor: string;
+  environmentIntensity: number;
   gridEnabled: boolean;
   gridSize: number;
   gridDivisions: number;
@@ -210,7 +234,7 @@ export type AiChatRole = 'user' | 'assistant';
 export type AiChatMessageStatus = 'pending' | 'complete' | 'error';
 export type AiChatAttachmentKind = 'image' | 'text' | 'file';
 export type AiChatBranchSource = 'original' | 'edit' | 'regenerate';
-export type AiProvider = 'gemini' | 'ollama' | 'openai';
+export type AiProvider = 'ollama' | 'openai';
 export type AiAgentSandboxMode = 'project-branch' | 'snapshot';
 export type AiAgentAmbiguityFallbackAction = 'use-recommended' | 'pause';
 export type AiAgentRunStatus =
@@ -347,7 +371,7 @@ export interface AiChatShaderArtifact {
 export interface AiChatGradePreviewArtifact {
   type: 'grade-preview';
   values: {
-    brightness: number;
+    exposure: number;
     contrast: number;
     saturation: number;
   };
@@ -466,13 +490,166 @@ export interface AiChatThread {
   };
 }
 
+export type DataChannelSemantic =
+  | 'alpha'
+  | 'mask'
+  | 'depth'
+  | 'normal'
+  | 'motion_vector'
+  | 'uv'
+  | 'position'
+  | 'id'
+  | 'cryptomatte'
+  | 'material_property';
+
+export type RenderOutputDomain =
+  | { kind: 'color' }
+  | {
+      kind: 'data';
+      sourceNodeId: NodeId;
+      sourcePort: string;
+      semantic?: DataChannelSemantic;
+    };
+
+export type ColorProcessingDomain =
+  | 'scene_linear'
+  | 'display_referred'
+  | 'log'
+  | 'data'
+  | 'alpha'
+  | 'vector'
+  | 'depth';
+
+export interface RenderSceneSize {
+  width: number;
+  height: number;
+}
+
+export interface RenderSceneSizeBehavior<TNode, TContext> {
+  getInputSize?: (node: TNode, fallback: RenderSceneSize) => RenderSceneSize | null | undefined;
+  getOutputSize?: (node: TNode, context: TContext) => RenderSceneSize | null | undefined;
+}
+
+export type GeneratedColorResolver<TNode, TContext> = (
+  node: TNode,
+  context: TContext,
+) => readonly [number, number, number] | null | undefined;
+
 export type InputPortType = 'texture' | 'mask' | 'data';
 export type NodeInputs = Record<string, string>;
 export type NodeInputSourcePorts = Record<string, string>;
 export type SourceAlphaMode = 'file' | 'opaque' | 'transparent';
-export type LegacyColorSpace = 'sRGB' | 'Linear' | 'Raw';
-export type OcioColorSpaceName = LegacyColorSpace | (string & {});
-export type OcioSceneColorSpace = Exclude<OcioColorSpaceName, 'Raw'>;
+export type OcioColorSpaceName = string;
+export type OcioSceneColorSpace = string;
+
+export const PROJECT_COLOR_MANAGEMENT_SCHEMA_VERSION = 1 as const;
+
+export type RequiredOcioRole = 'scene_linear' | 'texture_paint' | 'color_picking' | 'data';
+
+export type BuiltinColorConfigReference = {
+  kind: 'builtin';
+  id: string;
+  uri: string;
+};
+
+export type ExternalColorConfigReference = {
+  kind: 'external';
+  uri: string;
+};
+
+export type ColorConfigReference = BuiltinColorConfigReference | ExternalColorConfigReference;
+
+export type MediaColorAssignmentSource =
+  | 'user'
+  | 'pipeline'
+  | 'decoder'
+  | 'metadata'
+  | 'file_rule'
+  | 'path_convention'
+  | 'project_default'
+  | 'unassigned';
+
+export type AutomaticMediaColorAssignmentSource = Extract<
+  MediaColorAssignmentSource,
+  'decoder' | 'metadata' | 'file_rule' | 'path_convention' | 'project_default' | 'unassigned'
+>;
+
+export interface MediaColorAssignmentSnapshot {
+  sourceColorSpace: OcioColorSpaceName | null;
+  assignmentSource: AutomaticMediaColorAssignmentSource;
+  isData: boolean;
+  detail?: string;
+  ruleName?: string;
+  isDefaultRule?: boolean;
+}
+
+export interface MediaColorAssignmentEvidenceCandidate {
+  sourceColorSpace: OcioColorSpaceName;
+  assignmentSource: Exclude<AutomaticMediaColorAssignmentSource, 'unassigned'>;
+  isData: boolean;
+  detail?: string;
+  ruleName?: string;
+  isDefaultRule?: boolean;
+}
+
+export interface MediaColorAssignmentEvidence {
+  automatic: MediaColorAssignmentSnapshot;
+  candidates: MediaColorAssignmentEvidenceCandidate[];
+}
+
+export interface MediaColorManagement {
+  sourceColorSpace: OcioColorSpaceName | null;
+  assignmentSource: MediaColorAssignmentSource;
+  isData: boolean;
+  evidence?: MediaColorAssignmentEvidence;
+}
+
+export type VideoColorPrimaries = 'bt709' | 'bt470bg' | 'smpte170m' | 'bt2020' | 'display-p3';
+
+export type VideoTransferCharacteristics = 'bt709' | 'smpte170m' | 'srgb' | 'linear' | 'pq' | 'hlg';
+
+export type VideoMatrixCoefficients =
+  | 'rgb'
+  | 'bt709'
+  | 'bt470bg'
+  | 'smpte170m'
+  | 'bt2020-ncl'
+  | 'bt2020-cl';
+
+export type VideoColorRange = 'full' | 'limited';
+export type VideoColorMetadataSource = 'container' | 'decoder' | 'unavailable';
+
+export interface VideoColorMetadata {
+  primaries: VideoColorPrimaries | null;
+  transfer: VideoTransferCharacteristics | null;
+  matrix: VideoMatrixCoefficients | null;
+  range: VideoColorRange | null;
+  source: VideoColorMetadataSource;
+}
+
+export interface DisplayViewSelection {
+  display: string;
+  view: string;
+  look?: string;
+}
+
+export type DisplayOutputSelection =
+  | { kind: 'project_view' }
+  | { kind: 'current_viewer' }
+  | { kind: 'display_view'; displayView: DisplayViewSelection }
+  | { kind: 'direct_encoding'; colorSpace: OcioColorSpaceName };
+
+export interface ProjectColorManagement {
+  schemaVersion: typeof PROJECT_COLOR_MANAGEMENT_SCHEMA_VERSION;
+  config: ColorConfigReference;
+  workingSpace: {
+    role: 'scene_linear';
+    override?: OcioSceneColorSpace;
+  };
+  viewer: DisplayViewSelection;
+  roleOverrides?: Partial<Record<RequiredOcioRole, OcioColorSpaceName>>;
+  context?: Record<string, string>;
+}
 
 export interface BaseNode {
   id: NodeId;
@@ -500,6 +677,13 @@ export interface SceneNode extends BaseNode {
 export interface OutputNode extends BaseNode {
   kind?: typeof NodeKind.OUTPUT;
   type: typeof NodeType.OUTPUT;
+  technicalChannels?: OutputTechnicalChannel[];
+}
+
+export interface OutputTechnicalChannel {
+  id: string;
+  name: string;
+  semantic?: DataChannelSemantic;
 }
 
 export interface GroupExternalInput {
@@ -541,6 +725,8 @@ export interface MediaSourceNode extends EffectNode {
   operator: BlendMode;
   transform: ImageTransform;
   colorSpace?: OcioColorSpaceName;
+  mediaColorManagement?: MediaColorManagement;
+  videoColorMetadata?: VideoColorMetadata;
   sourceAlphaMode?: SourceAlphaMode;
   useOutputSizeAsScene?: boolean;
   duration?: number;
@@ -557,6 +743,7 @@ export interface ImageSequenceNode extends EffectNode {
   operator: BlendMode;
   transform: ImageTransform;
   colorSpace: OcioColorSpaceName;
+  mediaColorManagement?: MediaColorManagement;
   sourceAlphaMode?: SourceAlphaMode;
   useOutputSizeAsScene?: boolean;
   fps: number;
@@ -754,7 +941,12 @@ export enum RotoDrawMode {
 
 export type RotoMotionCueMode = 'gradient_trail' | 'speed_heatline';
 export type RotoMotionCueScope = 'selected' | 'all';
-export type RotoTrackingModel = 'translation' | 'similarity' | 'affine' | 'homography';
+export type RotoTrackingModel =
+  | 'translation'
+  | 'similarity'
+  | 'affine'
+  | 'homography'
+  | 'independent_scale';
 export type RotoTrackingMatrix4 = AnimatableNumber[][];
 
 export interface RotoTrackingTransform {
@@ -841,6 +1033,7 @@ export type PaintBrushChannels = PaintStrokeChannels | 'view';
 
 export interface PaintBrushSettings {
   size: number;
+  spacing: number;
   softness: number;
   opacity: number;
   color: [number, number, number];
@@ -907,6 +1100,7 @@ export interface PaintStroke {
   path?: PaintStrokePath | null;
   pointCount: number;
   size: number;
+  spacing: number;
   softness: number;
   opacity: number;
   color?: [number, number, number];
@@ -1146,6 +1340,8 @@ export interface GeneratedOutput {
   mediaKind?: 'image' | 'image_sequence' | 'video' | 'model_3d';
   scene3dAsset?: Scene3DAssetReference;
   colorSpace?: OcioColorSpaceName;
+  mediaColorManagement?: MediaColorManagement;
+  videoColorMetadata?: VideoColorMetadata;
   frames?: string[];
   width: number;
   height: number;
@@ -1253,7 +1449,18 @@ export interface ComfyNode extends EffectNode {
   operator: BlendMode;
   transform: ImageTransform;
   colorSpace: OcioColorSpaceName;
+  mediaColorManagement?: MediaColorManagement;
+  videoColorMetadata?: VideoColorMetadata;
   useOutputSizeAsScene?: boolean;
+  hiddenInputPortIds?: string[];
+  autoAlignOutputs?: boolean;
+  alignmentOptions?: {
+    skipEditedRegions?: boolean;
+    iterativeRefinement?: boolean;
+    highResRefinement?: boolean;
+    edgeAwareSampling?: boolean;
+    subPixelRefinement?: boolean;
+  };
   lastPromptId?: string;
   lastRunAt?: number;
   lastError?: string;
@@ -1387,6 +1594,7 @@ export interface OnnxModelNode extends EffectNode {
   operator: BlendMode;
   transform: ImageTransform;
   colorSpace: OcioColorSpaceName;
+  mediaColorManagement?: MediaColorManagement;
   useOutputSizeAsScene?: boolean;
   lastRunAt?: number;
   lastError?: string;
@@ -1455,10 +1663,8 @@ export interface Flow {
 export interface ViewerSettings {
   channels: 'RGB' | 'R' | 'G' | 'B' | 'A';
   alphaOverlay: boolean;
-  alphaMode: 'STRAIGHT' | 'TRANSPARENT' | 'FILL_BLACK' | 'FILL_WHITE';
+  gamutWarning: boolean;
   showOverlays: boolean;
-  ocioDisplay: string;
-  ocioView: string;
   gain: number;
   gamma: number;
   saturation: number;
@@ -1467,6 +1673,8 @@ export interface ViewerSettings {
   lastCustomSaturation: number;
 }
 
+export type OpenExrOutputPresetId = 'acescg_half' | 'aces2065_1_float';
+
 export const VIEWER_SLOTS = [1, 2, 3, 4] as const;
 export type ViewerSlot = (typeof VIEWER_SLOTS)[number];
 export type ViewerSlotAssignments = Partial<Record<ViewerSlot, NodeId>>;
@@ -1474,9 +1682,10 @@ export type ViewerSlotAssignments = Partial<Record<ViewerSlot, NodeId>>;
 export interface RenderSettings {
   exportMode?: 'single' | 'sequence';
   filename: string;
-  format: 'image/jpeg' | 'image/png' | 'image/webp';
+  format: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/x-exr';
   quality: number;
-  outputColorSpace: 'scene_linear' | 'srgb' | 'match_viewport';
+  displayOutput: DisplayOutputSelection;
+  openExrOutputPreset: OpenExrOutputPresetId;
   includeAlpha: boolean;
   sequenceFilenamePattern?: string;
   sequenceStartFrame?: number;
@@ -1484,11 +1693,15 @@ export interface RenderSettings {
   sequencePadding?: number;
 }
 
+export interface CacheNodeEntry {
+  cachedFrames: boolean[];
+  cachingFrames: boolean[];
+}
+
 export interface CacheStatus {
   memoryUsed: number;
   memoryLimit: number;
-  cachedFrames: boolean[];
-  cachingFrames: boolean[];
+  nodeEntries: Record<string, CacheNodeEntry>;
 }
 
 export interface RotoRefinement {
@@ -1571,6 +1784,7 @@ export type EditorStateSlice = Partial<{
   selectedRotoPointRefs: RotoPointRef[];
   selectedKeyframes: SelectedKeyframeRef[];
   activeTab: EditorTab;
+  colorManagement: ProjectColorManagement;
   aiChats: AiChatThread[];
   aiAgentRuns: AiAgentRun[];
   activeAiAgentRunId: string | null;
@@ -1604,7 +1818,7 @@ export interface HistoryEntry {
   consolidatedCount?: number;
 }
 
-export type PersistedProjectState = Omit<EditorStateSlice, 'projectId'>;
+export type PersistedProjectState = Omit<EditorStateSlice, 'projectId' | 'viewerSettings'>;
 
 export interface ProjectIndexEntry {
   id: string;

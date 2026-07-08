@@ -211,4 +211,43 @@ describe('Comfy output layers', () => {
       height: 100,
     });
   });
+
+  it('marks generated data outputs as data composite layers', () => {
+    const node = makeNode({
+      generatedOutputs: [
+        makeOutput({
+          id: 'depth_output',
+          src: 'depth_asset',
+          label: 'Depth.Z',
+        }),
+      ],
+    });
+
+    const layers = getComfyCompositeLayers(node, 0, { width: 1000, height: 1000 });
+
+    expect(layers[0]).toMatchObject({
+      id: 'depth_output',
+      textureKey: 'depth_asset',
+      isData: true,
+    });
+  });
+
+  it('marks named workflow mask inputs as data composite layers', () => {
+    const node = makeNode({
+      workflowInputImages: {
+        mask: {
+          assetId: 'mask_asset',
+          name: 'subject_matte.png',
+          width: 100,
+          height: 100,
+          createdAt: 1,
+        },
+      },
+    });
+
+    expect(getComfyCompositeLayers(node, 0, { width: 1000, height: 1000 })[0]).toMatchObject({
+      id: 'comfy_a:input:mask',
+      isData: true,
+    });
+  });
 });

@@ -1,12 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import PreferencesView from '@/features/projects/PreferencesView';
+import { usePreferencesNavigation } from '@/features/projects/preferencesNavigation';
 import * as Icons from '@blackboard/icons';
 import { BackgroundJobsMonitor } from '@/components';
 
 const COMPACT_JOBS_VIEWPORT_WIDTH = 980;
 
 function Header() {
-  const [isPreferencesOpen, setPreferencesOpen] = useState(false);
+  const {
+    isOpen: isPreferencesOpen,
+    requestId,
+    target,
+    openPreferences,
+    closePreferences,
+  } = usePreferencesNavigation();
   const [isJobsCompact, setIsJobsCompact] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const rightControlsRef = useRef<HTMLDivElement>(null);
@@ -81,13 +88,13 @@ function Header() {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setPreferencesOpen(false);
+        closePreferences();
       }
     };
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isPreferencesOpen]);
+  }, [closePreferences, isPreferencesOpen]);
 
   useEffect(() => {
     if (isPreferencesOpen) {
@@ -110,7 +117,7 @@ function Header() {
           <button
             ref={preferencesButtonRef}
             type="button"
-            onClick={() => setPreferencesOpen(true)}
+            onClick={() => openPreferences()}
             className="interactive-glow glass-component flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-gray-950/55 text-gray-300 shadow-2xl backdrop-blur-xl ring-1 ring-inset ring-white/10 transition hover:border-white/20 hover:bg-gray-900/70 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/60"
             title="Preferences"
             aria-label="Preferences"
@@ -130,12 +137,17 @@ function Header() {
           className="fixed inset-0 z-[70] flex items-start justify-center bg-black/55 p-3 backdrop-blur-sm sm:p-6"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
-              setPreferencesOpen(false);
+              closePreferences();
             }
           }}
         >
           <div className="w-full max-w-5xl">
-            <PreferencesView onBack={() => setPreferencesOpen(false)} />
+            <PreferencesView
+              key={requestId}
+              onBack={closePreferences}
+              initialSection={target.section}
+              initialColorScope={target.colorScope}
+            />
           </div>
         </div>
       ) : null}

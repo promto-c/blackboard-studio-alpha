@@ -13,7 +13,7 @@ import {
   type RotoMotionBlurPhase,
   type RotoMotionBlurSettings,
 } from '@blackboard/types';
-import { CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
+import { Badge, CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
 import { Slider, SegmentedControl } from '@/components';
 import { getValueAtFrame, hasKeyframeAt, setKeyframeOnValue } from '@blackboard/renderer';
 import { DEFAULT_ROTO_MOTION_BLUR, resolveRotoMotionBlurSettings } from '@/utils/rotoMotionBlur';
@@ -38,9 +38,14 @@ function TrackingMatrixSection({
       <div className="space-y-2">
         <div className="flex items-center justify-between text-[10px] text-gray-400">
           <span>Model</span>
-          <span className="rounded border border-gray-700 bg-gray-900 px-1.5 py-0.5 font-mono uppercase text-gray-200">
+          <Badge
+            size="sm"
+            uppercase
+            variant="neutral"
+            className="!border-gray-700 !bg-gray-900 font-mono"
+          >
             {transform.model}
-          </span>
+          </Badge>
         </div>
         <div className="text-[10px] text-gray-500">
           Source Shapes: {transform.sourcePathIds.length}
@@ -390,9 +395,9 @@ function RotoAdjustments({
 
   function MixedBadge() {
     return (
-      <span className="inline-flex items-center rounded bg-yellow-500/15 px-1 py-0.5 text-[9px] font-medium uppercase tracking-wider text-yellow-400">
+      <Badge size="sm" uppercase shrink noBorder className="!bg-yellow-500/15 !text-yellow-400">
         Mixed
-      </span>
+      </Badge>
     );
   }
 

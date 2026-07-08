@@ -9,6 +9,7 @@ import type {
   SpatialTransform,
 } from '@blackboard/types';
 import { NodeType } from '@blackboard/types';
+import { isFiniteNumber, hasPositiveSize } from '@/utils/guards';
 import {
   getComfyGeneratedOutputTextureKey,
   getVisibleComfyGeneratedOutputs,
@@ -54,17 +55,6 @@ export interface DataWindowProjection {
 }
 
 type Bounds = Pick<DataWindowRect, 'x' | 'y' | 'width' | 'height'>;
-
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value);
-
-const hasPositiveSize = (value: unknown): value is { width: number; height: number } =>
-  typeof value === 'object' &&
-  value !== null &&
-  isFiniteNumber((value as { width?: unknown }).width) &&
-  isFiniteNumber((value as { height?: unknown }).height) &&
-  (value as { width: number }).width > 0 &&
-  (value as { height: number }).height > 0;
 
 const toRect = (bounds: Bounds, native: Bounds): DataWindowRect => ({
   x: bounds.x,

@@ -104,6 +104,7 @@ export const matchMoveNode: NodeDefinition = {
   description: 'Track 2D features, solve planar motion, and prepare camera-track data.',
   category: 'Spatial',
   renderMode: 'utility',
+  processingDomain: 'data',
   IconComponent: Icons.OffsetRing,
   ToolComponent: MatchMoveTool,
   AdjustmentComponent: MatchMoveAdjustments,

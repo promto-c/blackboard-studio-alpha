@@ -8,6 +8,7 @@ import {
   RotoShapeType,
   type AnyNode,
 } from '@blackboard/types';
+import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
 import {
   MEDIA_SOURCE_UPSTREAM,
   getDefaultMediaSourceId,
@@ -67,13 +68,7 @@ const GRADE_NODE: AnyNode = {
   name: 'Look',
   enabled: true,
   stacked: true,
-  grade: {
-    brightness: 0,
-    contrast: 1,
-    saturation: 1,
-    gain: 1,
-    gamma: 1,
-  },
+  grade: createDefaultGrade(),
 };
 
 const ROTO_NODE: AnyNode = {
@@ -102,9 +97,24 @@ describe('mediaSourceSelection', () => {
     const nodes = [SCENE_NODE, IMAGE_NODE, GRADE_NODE, ROTO_NODE, VIDEO_NODE];
 
     expect(getMediaSourceOptions(nodes, 'roto-1')).toEqual([
-      { value: MEDIA_SOURCE_UPSTREAM, label: 'Upstream Result' },
-      { value: 'img-1', label: 'Plate' },
-      { value: 'vid-1', label: 'Alt Plate' },
+      {
+        value: MEDIA_SOURCE_UPSTREAM,
+        label: 'Upstream Result',
+        kind: 'upstream',
+        description: 'Composited upstream flow',
+      },
+      {
+        value: 'img-1',
+        label: 'Plate',
+        kind: 'media-source',
+        description: 'Media source node',
+      },
+      {
+        value: 'vid-1',
+        label: 'Alt Plate',
+        kind: 'media-source',
+        description: 'Media source node',
+      },
     ]);
   });
 
@@ -121,7 +131,12 @@ describe('mediaSourceSelection', () => {
 
     expect(getDefaultMediaSourceId(nodes, 'roto-1')).toBe(MEDIA_SOURCE_UPSTREAM);
     expect(getMediaSourceOptions(nodes, 'roto-1')).toEqual([
-      { value: MEDIA_SOURCE_UPSTREAM, label: 'Upstream Result' },
+      {
+        value: MEDIA_SOURCE_UPSTREAM,
+        label: 'Upstream Result',
+        kind: 'upstream',
+        description: 'Composited upstream flow',
+      },
     ]);
   });
 
@@ -135,7 +150,14 @@ describe('mediaSourceSelection', () => {
     const nodes = [SCENE_NODE, ROTO_NODE, IMAGE_NODE];
 
     expect(getDefaultMediaSourceId(nodes, 'roto-1')).toBe('');
-    expect(getMediaSourceOptions(nodes, 'roto-1')).toEqual([{ value: 'img-1', label: 'Plate' }]);
+    expect(getMediaSourceOptions(nodes, 'roto-1')).toEqual([
+      {
+        value: 'img-1',
+        label: 'Plate',
+        kind: 'media-source',
+        description: 'Media source node',
+      },
+    ]);
     expect(isValidMediaSourceId(nodes, 'roto-1', MEDIA_SOURCE_UPSTREAM)).toBe(false);
   });
 });

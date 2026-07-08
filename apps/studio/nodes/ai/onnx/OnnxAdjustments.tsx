@@ -1,14 +1,16 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
+import { useOcio } from '@/state/ocioContext';
 import { useInstalledOnnxModels } from '@/state/installedOnnxModelsContext';
 import { saveAsset } from '@/state/assetStorage';
 import { useNodeExecutionHandler } from '@/hooks/useNodeExecutionHandler';
+import { getScenePreviewColorSpace } from '@/color-management';
 import {
   isBackgroundJobActive,
   registerBackgroundJobCancelHandler,
 } from '@/state/editor/services/backgroundJobs';
-import { CollapsibleSection, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
+import { Badge, CollapsibleSection, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
 import { SegmentedControl, Slider } from '@/components';
 import {
   AnyNode,
@@ -98,6 +100,8 @@ function InputPreview({
   width?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { workingColorSpace } = useOcio();
+  const projectColorManagement = useEditorSelector((state) => state.colorManagement);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -121,8 +125,9 @@ function InputPreview({
           flows,
           sourceNodeId: sourceNode.id,
           sceneNode,
+          projectColorManagement,
           frame: currentFrame,
-          finalColorSpace: sceneNode.colorSpace === 'Linear' ? 'srgb' : 'raw_texture',
+          finalColorSpace: getScenePreviewColorSpace(sceneNode.colorSpace, workingColorSpace),
         });
         if (!blob || cancelled) return;
         const bitmap = await createImageBitmap(blob);
@@ -148,7 +153,15 @@ function InputPreview({
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [sourceNode, allNodes, flows, currentFrame, sceneNode]);
+  }, [
+    sourceNode,
+    allNodes,
+    flows,
+    currentFrame,
+    sceneNode,
+    workingColorSpace,
+    projectColorManagement,
+  ]);
 
   if (!sourceNode) return null;
 
@@ -200,6 +213,7 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
   const currentFrame = useEditorSelector((state) => state.currentFrame);
   const backgroundJobs = useEditorSelector((state) => state.backgroundJobs);
   const projectId = useEditorSelector((state) => state.projectId);
+  const projectColorManagement = useEditorSelector((state) => state.colorManagement);
   const { models: installedModels } = useInstalledOnnxModels();
   const [localError, setLocalError] = useState<string | null>(node.lastError ?? null);
   const [activeInferenceJobId, setActiveInferenceJobId] = useState<string | null>(null);
@@ -506,6 +520,7 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
                 flows,
                 sourceNodeId: sourceNode.id,
                 sceneNode,
+                projectColorManagement,
                 frame,
                 finalColorSpace: 'raw_texture',
               });
@@ -723,6 +738,7 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
       onnxRuntimeWasmEnabled,
       onnxRuntimeWebGpuEnabled,
       outputMetadata,
+      projectColorManagement,
       projectId,
       recipe.defaultInputSize,
       recipe.normalization,
@@ -1116,16 +1132,14 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
                           )}
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
-                          <span className="font-mono text-gray-100">{meta.dimsLabel}</span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                              meta.isDynamic
-                                ? 'border border-amber-400/20 bg-amber-500/10 text-amber-200'
-                                : 'border border-green-400/20 bg-green-500/10 text-green-100'
-                            }`}
+                          <span className="font-mono text-gray-100">{meta.dimsLabel}</span>{' '}
+                          <Badge
+                            size="md"
+                            variant={meta.isDynamic ? 'warning' : 'success'}
+                            className={meta.isDynamic ? 'text-amber-200' : ''}
                           >
                             {meta.isDynamic ? 'Dynamic' : 'Fixed'}
-                          </span>
+                          </Badge>
                           {meta.type !== 'unknown' ? (
                             <span className="text-gray-500">{meta.type}</span>
                           ) : null}
@@ -1305,20 +1319,18 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
                               ) : null}
                             </div>
                           ) : (
-                            <span className="rounded-full px-2 py-0.5 text-[10px] font-medium border border-white/10 bg-white/[0.04]">
+                            <Badge size="md" variant="neutral">
                               {meta.kind}
-                            </span>
+                            </Badge>
                           )}
-                          <span className="font-mono text-gray-100">{meta.dimsLabel}</span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                              meta.isDynamic
-                                ? 'border border-amber-400/20 bg-amber-500/10 text-amber-200'
-                                : 'border border-green-400/20 bg-green-500/10 text-green-100'
-                            }`}
+                          <span className="font-mono text-gray-100">{meta.dimsLabel}</span>{' '}
+                          <Badge
+                            size="md"
+                            variant={meta.isDynamic ? 'warning' : 'success'}
+                            className={meta.isDynamic ? 'text-amber-200' : ''}
                           >
                             {meta.isDynamic ? 'Dynamic' : 'Fixed'}
-                          </span>
+                          </Badge>
                           {meta.type !== 'unknown' ? (
                             <span className="text-gray-500">{meta.type}</span>
                           ) : null}
@@ -1338,22 +1350,19 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
               <div className="flex flex-wrap gap-2">
                 {(Object.entries(connectedImageInputs) as [string, AnyNode | null][]).map(
                   ([portName, sourceNode]) => (
-                    <span
-                      key={portName}
-                      className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1"
-                    >
+                    <Badge key={portName} size="md" variant="neutral" className="!py-1">
                       {portName}: {sourceNode?.name ?? 'not connected'}
-                    </span>
+                    </Badge>
                   ),
                 )}
                 {Object.keys(connectedImageInputs).length === 0 ? (
-                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1">
+                  <Badge size="md" variant="neutral" className="!py-1">
                     No input ports
-                  </span>
+                  </Badge>
                 ) : null}
-                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1">
+                <Badge size="md" variant="neutral" className="!py-1">
                   Output: {node.src ? `${node.width}\u00d7${node.height}` : 'not rendered'}
-                </span>
+                </Badge>
               </div>
               <p className="mt-2 leading-5">{recipe.preprocessing}</p>
               <p className="mt-1 leading-5">{recipe.postprocessing}</p>

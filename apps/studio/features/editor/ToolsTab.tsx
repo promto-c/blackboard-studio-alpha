@@ -31,9 +31,7 @@ function ToolSection({
             key={tool.type}
             id={`tool-wrapper-${tool.type}`}
             className={`relative rounded-md transition-all duration-150 ${
-              selectedToolType === tool.type
-                ? 'ring-1 ring-primary-500/80 '
-                : 'ring-0 ring-transparent'
+              selectedToolType === tool.type ? 'bg-primary-400/10' : 'bg-transparent'
             }`}
           >
             {tool.ToolComponent ? <tool.ToolComponent /> : null}
@@ -274,8 +272,8 @@ function ToolsTab() {
       <div>
         {/* Search Bar */}
         <div className="sticky top-0 z-10 bg-gray-900/35 px-2 py-2 backdrop-blur-sm">
-          <div className="relative group">
-            <div className="absolute inset-y-0 left-0 flex items-center pl-2.5 text-gray-500 transition-colors pointer-events-none group-focus-within:text-primary-400">
+          <div className="group relative">
+            <div className="pointer-events-none absolute inset-y-0 left-0 z-10 flex items-center pl-2.5 text-gray-500 transition-colors group-focus-within:text-primary-300">
               <Icons.MagnifyingGlass className="h-3.5 w-3.5" />
             </div>
             <input
@@ -287,15 +285,17 @@ function ToolsTab() {
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
               placeholder="Search tools..."
-              className="block w-full rounded-md border border-gray-700/50 bg-gray-800/50 py-1.5 pr-7 pl-8 text-xs text-gray-200 placeholder-gray-500 transition-all focus:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-primary-500/80"
+              aria-label="Search tools"
+              className="bb-control-input block h-8 !min-h-0 w-full rounded-lg border border-white/10 bg-gray-950/40 py-1.5 pl-8 pr-7 text-xs text-gray-200 outline-none backdrop-blur-md placeholder:text-gray-500 focus:border-primary-400/40 focus:ring-2 focus:ring-primary-400/20"
             />
             {filter && (
               <button
+                type="button"
                 onClick={() => {
                   setFilter('');
                   inputRef.current?.focus();
                 }}
-                className="absolute inset-y-0 right-0 flex items-center px-2 text-gray-500 hover:text-white"
+                className="absolute inset-y-0 right-0 z-10 flex items-center rounded-r-lg px-2 text-gray-500 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-400/35"
                 title="Clear search"
                 aria-label="Clear search"
               >

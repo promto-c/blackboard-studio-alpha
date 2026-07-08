@@ -23,6 +23,7 @@ import {
   type WindowWithDirectoryPicker,
 } from '@/utils/directoryPickerSupport';
 import { IMPORT_MEDIA_ACCEPT } from '@/utils/mediaFiles';
+import { getErrorMessage } from '@/utils/guards';
 import {
   PROJECT_BUNDLE_ACCEPT,
   inspectProjectBundle,
@@ -33,6 +34,7 @@ import NewProjectView from './NewProjectView';
 import PreferencesView from './PreferencesView';
 import WelcomeGalleryView from './WelcomeGalleryView';
 import ProjectReferenceImportModal from './ProjectReferenceImportModal';
+import ProjectVersionDialog from './ProjectVersionDialog';
 import { BackgroundJobsMonitor, NativeDesktopStatusButton, PwaStatusButton } from '@/components';
 import * as Icons from '@blackboard/icons';
 
@@ -46,6 +48,9 @@ type PendingProjectImport = {
   referenceGroups: ProjectBundleReferenceGroup[];
   selectedDirectoriesByGroupId: Map<string, FileSystemDirectoryHandle>;
 };
+
+const RECENT_PROJECT_ACTION_CLASS =
+  'flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-gray-500 transition hover:bg-white/[0.055] focus-visible:ring-2 focus-visible:ring-primary-300/35 disabled:cursor-wait disabled:opacity-50';
 
 function WelcomeScreen() {
   const {
@@ -72,10 +77,20 @@ function WelcomeScreen() {
   const [view, setView] = useState<'main' | 'newProject' | 'preferences' | 'gallery'>('main');
   const [isImportingProject, setIsImportingProject] = useState(false);
   const [exportingProjectId, setExportingProjectId] = useState<string | null>(null);
+  const [versionProject, setVersionProject] = useState<ProjectIndexEntry | null>(null);
+  const [isRecentProjectSearchOpen, setIsRecentProjectSearchOpen] = useState(false);
+  const [recentProjectSearchQuery, setRecentProjectSearchQuery] = useState('');
+  const recentProjectSearchInputRef = useRef<HTMLInputElement>(null);
   const [pendingProjectImport, setPendingProjectImport] = useState<PendingProjectImport | null>(
     null,
   );
   const directoryPickerSupport = getDirectoryPickerSupport();
+  const normalizedRecentProjectSearchQuery = recentProjectSearchQuery.trim().toLocaleLowerCase();
+  const filteredRecentProjects = normalizedRecentProjectSearchQuery
+    ? projects.filter((project) =>
+        project.name.toLocaleLowerCase().includes(normalizedRecentProjectSearchQuery),
+      )
+    : projects;
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -201,9 +216,6 @@ function WelcomeScreen() {
 
   const handleOpenMediaClick = () => mediaInputRef.current?.click();
   const handleOpenProjectClick = () => projectInputRef.current?.click();
-
-  const getErrorMessage = (error: unknown, fallback: string) =>
-    error instanceof Error && error.message ? error.message : fallback;
 
   const handleImportProject = async (
     file: File,
@@ -413,8 +425,10 @@ function WelcomeScreen() {
 
   return (
     <ScrollArea
-      className={`w-screen h-screen bg-gray-900 flex flex-col items-center text-gray-200 overflow-y-auto px-4 sm:px-6 lg:px-8 ${
-        isMainView ? 'justify-center py-8' : 'justify-start py-6 sm:py-8'
+      className={`w-screen h-screen bg-gray-900 flex flex-col items-center text-gray-200 px-4 sm:px-6 lg:px-8 ${
+        isMainView
+          ? 'justify-start overflow-y-hidden pb-8 pt-16 sm:pb-10 sm:pt-20'
+          : 'justify-start overflow-y-auto py-6 sm:py-8'
       }`}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
@@ -439,8 +453,11 @@ function WelcomeScreen() {
         </button>
       </div>
       {view === 'main' ? (
-        <div key="main" className="w-full max-w-3xl animate-[fadeIn_250ms_ease-in-out]">
-          <div className="text-center mb-12">
+        <div
+          key="main"
+          className="flex h-full min-h-0 w-full max-w-3xl flex-col animate-[fadeIn_250ms_ease-in-out]"
+        >
+          <div className="mb-12 shrink-0 text-center">
             <h1 className="text-5xl font-bold text-white">Blackboard Studio</h1>
             <p className="text-gray-400 mt-2">A modern, web-based media compositor.</p>
             <a
@@ -455,7 +472,7 @@ function WelcomeScreen() {
               <span>promto-c</span>
             </a>
           </div>
-          <div className="flex flex-wrap justify-center gap-6 mb-12">
+          <div className="mb-12 flex shrink-0 flex-wrap justify-center gap-6">
             <button
               onClick={() => setView('newProject')}
               className="flex flex-col items-center justify-center w-40 h-40 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-all focus:outline-none focus:ring-2 focus:ring-primary-500"
@@ -468,7 +485,7 @@ function WelcomeScreen() {
               disabled={isImportingProject}
               className="flex flex-col items-center justify-center w-40 h-40 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-all focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-wait disabled:opacity-60"
             >
-              <Icons.ArrowUpTray className="w-16 h-16 mb-2 text-emerald-400" />
+              <Icons.ArrowDownTray className="w-16 h-16 mb-2 text-emerald-400" />
               <span className="text-lg font-semibold">
                 {isImportingProject ? 'Importing...' : 'Import Project'}
               </span>
@@ -491,15 +508,72 @@ function WelcomeScreen() {
             </button>
           </div>
           {projects.length > 0 && (
-            <div className="w-full max-w-2xl mx-auto">
-              <h2 className="text-lg font-semibold text-gray-300 mb-4 text-center">
-                Recent Projects
-              </h2>
+            <div className="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col">
+              <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center px-1">
+                <span aria-hidden="true" />
+                <h2 className="text-center text-lg font-semibold text-gray-300">Recent Projects</h2>
+                <div className="justify-self-end">
+                  {isRecentProjectSearchOpen ? (
+                    <div className="flex h-8 w-52 items-center gap-1 border-b border-white/15 text-gray-400 transition-colors focus-within:border-primary-300/60">
+                      <Icons.MagnifyingGlass className="h-3.5 w-3.5 shrink-0 text-gray-500" />
+                      <input
+                        ref={recentProjectSearchInputRef}
+                        autoFocus
+                        type="search"
+                        value={recentProjectSearchQuery}
+                        onChange={(event) => setRecentProjectSearchQuery(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Escape') return;
+                          setRecentProjectSearchQuery('');
+                          setIsRecentProjectSearchOpen(false);
+                        }}
+                        className="min-w-0 flex-1 appearance-none border-0 bg-transparent px-1 py-1 text-xs text-gray-200 outline-none placeholder:text-gray-600 [&::-webkit-search-cancel-button]:hidden"
+                        placeholder="Search projects"
+                        aria-label="Search recent projects"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (recentProjectSearchQuery) {
+                            setRecentProjectSearchQuery('');
+                            recentProjectSearchInputRef.current?.focus();
+                            return;
+                          }
+                          setIsRecentProjectSearchOpen(false);
+                        }}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center text-gray-500 transition hover:text-gray-200 focus-visible:ring-2 focus-visible:ring-primary-300/35"
+                        title={recentProjectSearchQuery ? 'Clear search' : 'Close search'}
+                        aria-label={
+                          recentProjectSearchQuery ? 'Clear project search' : 'Close search'
+                        }
+                      >
+                        <Icons.XMark className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setIsRecentProjectSearchOpen(true)}
+                      className="flex h-8 w-8 items-center justify-center text-gray-500 transition hover:text-gray-200 focus-visible:ring-2 focus-visible:ring-primary-300/35"
+                      title="Search recent projects"
+                      aria-label="Search recent projects"
+                    >
+                      <Icons.MagnifyingGlass className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
               <ScrollArea
+                axis="y"
                 fadeEdges
-                className="bg-gray-800/50 rounded-lg p-2 space-y-2 max-h-64 overflow-y-auto"
+                rootClassName="min-h-0 flex-1"
+                viewportClassName="max-h-full"
+                className="space-y-2 overflow-y-auto rounded-lg bg-gray-800/50 p-2"
               >
-                {projects.map((project, projectIndex) => {
+                {filteredRecentProjects.map((project) => {
+                  const projectIndex = projects.findIndex(
+                    (candidate) => candidate.id === project.id,
+                  );
                   const storage = projectStorageById[project.id];
                   const isCalculating = calculatingProjectIds.has(project.id);
                   const canAutoCalc = shouldAutoCalculate(project, projectIndex);
@@ -511,7 +585,7 @@ function WelcomeScreen() {
                     <div
                       key={project.id}
                       onClick={() => loadProject(project.id)}
-                      className="group flex items-center p-3 rounded-md hover:bg-gray-700 cursor-pointer transition-colors"
+                      className="group flex items-center p-3 rounded-md hover:bg-gray-750 cursor-pointer transition-colors"
                     >
                       <div className="flex min-w-0 flex-1 items-center gap-4">
                         {(() => {
@@ -601,17 +675,33 @@ function WelcomeScreen() {
                       </div>
                       <div className="ml-auto flex flex-shrink-0 items-center gap-1">
                         <button
-                          onClick={(e) => handleExportProject(e, project)}
-                          disabled={exportingProjectId === project.id}
-                          className="p-2 rounded-full text-gray-500 hover:text-emerald-300 hover:bg-gray-600 opacity-0 group-hover:opacity-100 transition-all disabled:cursor-wait disabled:opacity-100"
-                          title="Export Project"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setVersionProject(project);
+                          }}
+                          className={`${RECENT_PROJECT_ACTION_CLASS} hover:text-primary-300`}
+                          title="Open branch or earlier version"
+                          aria-label={`Open a branch or earlier version of ${project.name}`}
                         >
-                          <Icons.ArrowDownTray className="h-4 w-4" />
+                          <Icons.Branch className="h-4 w-4" />
                         </button>
                         <button
+                          type="button"
+                          onClick={(e) => handleExportProject(e, project)}
+                          disabled={exportingProjectId === project.id}
+                          className={`${RECENT_PROJECT_ACTION_CLASS} hover:text-emerald-300`}
+                          title="Export Project"
+                          aria-label={`Export ${project.name}`}
+                        >
+                          <Icons.ArrowUpTray className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
                           onClick={(e) => handleDeleteProject(e, project.id)}
-                          className="p-2 rounded-full text-gray-500 hover:text-red-400 hover:bg-gray-600 opacity-0 group-hover:opacity-100 transition-all"
+                          className={`${RECENT_PROJECT_ACTION_CLASS} hover:text-red-400`}
                           title="Delete Project"
+                          aria-label={`Delete ${project.name}`}
                         >
                           <Icons.Trash className="h-4 w-4" />
                         </button>
@@ -619,6 +709,22 @@ function WelcomeScreen() {
                     </div>
                   );
                 })}
+                {filteredRecentProjects.length === 0 ? (
+                  <div className="flex min-h-28 flex-col items-center justify-center px-4 text-center">
+                    <Icons.MagnifyingGlass className="h-5 w-5 text-gray-600" />
+                    <p className="mt-2 text-xs text-gray-400">No matching projects</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecentProjectSearchQuery('');
+                        recentProjectSearchInputRef.current?.focus();
+                      }}
+                      className="mt-1 text-[10px] text-primary-400 transition hover:text-primary-300"
+                    >
+                      Clear search
+                    </button>
+                  </div>
+                ) : null}
               </ScrollArea>
             </div>
           )}
@@ -655,6 +761,13 @@ function WelcomeScreen() {
           }
         }}
       />
+      {versionProject && (
+        <ProjectVersionDialog
+          project={versionProject}
+          onClose={() => setVersionProject(null)}
+          onOpen={(projectId, target) => loadProject(projectId, target)}
+        />
+      )}
       <input
         type="file"
         ref={mediaInputRef}

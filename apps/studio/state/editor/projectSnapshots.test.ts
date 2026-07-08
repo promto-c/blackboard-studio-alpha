@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { NodeType, type SceneNode } from '@blackboard/types';
 import { getInitialState } from '@/state/editor/initialState';
-import { buildPersistedProjectState } from '@/state/editor/projectSnapshots';
+import {
+  buildPersistedProjectState,
+  restorePersistedProjectHistoryEntry,
+} from '@/state/editor/projectSnapshots';
+import { buildFlowFromNodes, ROOT_FLOW_ID } from '@/state/editor/flowModel';
 
 describe('buildPersistedProjectState', () => {
   it('persists full history and historyIndex', () => {
@@ -26,6 +31,9 @@ describe('buildPersistedProjectState', () => {
 
     const persistedState = buildPersistedProjectState(state);
 
+    expect(persistedState.colorManagement).toBe(state.colorManagement);
+    expect(persistedState).not.toHaveProperty('viewerSettings');
+    expect(persistedState).not.toHaveProperty('viewerColorManagement');
     expect(persistedState.history.map((entry) => entry.id)).toEqual(['hist-1', 'hist-2']);
     expect(persistedState.historyIndex).toBe(1);
   });
@@ -43,6 +51,7 @@ describe('buildPersistedProjectState', () => {
             selectedNodeId: 'node-a',
             history: [{ id: 'nested' } as never],
             historyIndex: 0,
+            viewerSettings: getInitialState().viewerSettings,
           },
         },
       ],
@@ -53,6 +62,7 @@ describe('buildPersistedProjectState', () => {
 
     expect(persistedState.history[0]?.state).not.toHaveProperty('history');
     expect(persistedState.history[0]?.state).not.toHaveProperty('historyIndex');
+    expect(persistedState.history[0]?.state).not.toHaveProperty('viewerSettings');
   });
 
   it('limits history to maxHistoryEntries if set', () => {
@@ -94,5 +104,64 @@ describe('buildPersistedProjectState', () => {
 
     expect(persistedState.history.map((entry) => entry.id)).toEqual(['hist-1', 'hist-2', 'hist-3']);
     expect(persistedState.historyIndex).toBe(1);
+  });
+
+  it('restores a node-only history entry into the canonical flow model', () => {
+    const latestScene: SceneNode = {
+      id: 'scene-latest',
+      type: NodeType.SCENE,
+      name: 'Latest scene',
+      enabled: true,
+      width: 1920,
+      height: 1080,
+      bitDepth: 16,
+      colorSpace: 'Linear',
+      maxFrames: 120,
+      fps: 30,
+    };
+    const olderScene: SceneNode = { ...latestScene, id: 'scene-older', name: 'Older scene' };
+    const flow = buildFlowFromNodes([latestScene], ROOT_FLOW_ID, 'Root Flow');
+    const projectState = {
+      ...buildPersistedProjectState({
+        ...getInitialState(),
+        maxFrames: 120,
+        flows: { [ROOT_FLOW_ID]: flow },
+        rootFlowId: ROOT_FLOW_ID,
+        activeFlowId: ROOT_FLOW_ID,
+      }),
+      history: [
+        { id: 'older', label: 'Older edit', state: { nodes: [olderScene] } },
+        { id: 'latest', label: 'Latest edit', state: { nodes: [latestScene] } },
+      ],
+      historyIndex: 1,
+    };
+
+    const restored = restorePersistedProjectHistoryEntry(projectState, 'older');
+
+    expect(restored?.flows?.[ROOT_FLOW_ID]?.nodes.map((node) => node.id)).toContain('scene-older');
+    expect(restored?.flows?.[ROOT_FLOW_ID]?.nodes.map((node) => node.id)).not.toContain(
+      'scene-latest',
+    );
+    expect(restored?.historyIndex).toBe(0);
+    expect(restored?.history).toHaveLength(2);
+  });
+
+  it('can make the selected history entry the head of a recovery snapshot', () => {
+    const state = {
+      ...buildPersistedProjectState({ ...getInitialState(), maxFrames: 0 }),
+      history: [
+        { id: 'older', label: 'Older edit', state: { selectedNodeId: 'older-node' } },
+        { id: 'failed', label: 'Failed edit', state: { selectedNodeId: 'failed-node' } },
+      ],
+      historyIndex: 1,
+    };
+
+    const restored = restorePersistedProjectHistoryEntry(state, 'older', {
+      truncateFutureHistory: true,
+    });
+
+    expect(restored?.selectedNodeId).toBe('older-node');
+    expect(restored?.history.map((entry) => entry.id)).toEqual(['older']);
+    expect(restored?.historyIndex).toBe(0);
   });
 });

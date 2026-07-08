@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { configureRawStraightAlphaTexture } from '@blackboard/renderer';
 import type { DecodedPart, ExrPart, ExrStructure } from '@bb-studio/exr';
 
 type ExrCoreModule = typeof import('@bb-studio/exr');
@@ -239,47 +240,20 @@ export const createExrTexture = async (
   options?: { cacheKey?: string },
 ): Promise<THREE.DataTexture> => {
   const decoded = await decodeExrImage(blob, options);
-  const texture = new THREE.DataTexture(
-    decoded.rgba,
-    decoded.width,
-    decoded.height,
-    THREE.RGBAFormat,
-    THREE.FloatType,
+  const texture = configureRawStraightAlphaTexture(
+    new THREE.DataTexture(
+      decoded.rgba,
+      decoded.width,
+      decoded.height,
+      THREE.RGBAFormat,
+      THREE.FloatType,
+    ),
   );
-  texture.minFilter = THREE.LinearFilter;
-  texture.magFilter = THREE.LinearFilter;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.generateMipmaps = false;
   texture.flipY = true;
   texture.unpackAlignment = 1;
-  texture.colorSpace = THREE.NoColorSpace;
-  texture.needsUpdate = true;
   return texture;
-};
-
-export const createExrPreviewDataUrl = async (
-  blob: BlobLike,
-  options?: { cacheKey?: string; maxDimension?: number },
-): Promise<string> => {
-  const decoded = await decodeExrImage(blob, options);
-  const maxDimension = Math.max(1, options?.maxDimension ?? 512);
-  const scale = Math.min(1, maxDimension / Math.max(decoded.width, decoded.height));
-  const width = Math.max(1, Math.round(decoded.width * scale));
-  const height = Math.max(1, Math.round(decoded.height * scale));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-
-  const context = canvas.getContext('2d');
-  if (!context) {
-    throw new Error('Failed to create a canvas context for EXR preview generation.');
-  }
-
-  const imageData = new ImageData(createDisplayPixelBuffer(decoded, width, height), width, height);
-  context.putImageData(imageData, 0, 0);
-  return canvas.toDataURL('image/png');
 };
 
 export const readExrPixelData = async (

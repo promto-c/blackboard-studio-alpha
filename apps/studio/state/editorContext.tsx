@@ -10,8 +10,10 @@ import {
 } from 'react';
 import { usePreferences } from '@/state/preferencesContext';
 import { getInitialState } from '@/state/editor/initialState';
+import { cloneProjectColorManagement } from '@/color-management';
 import { createProjectAutosave } from '@/state/editor/services/autosave';
 import { buildPersistedProjectState } from '@/state/editor/projectSnapshots';
+import { syncComfyGalleryEntriesAfterHistoryRestore } from '@/state/editor/services/comfySync';
 import {
   createProjectBranchRecord,
   createScopedProjectBranchName,
@@ -177,14 +179,21 @@ export const useOptionalEditorActions = () => {
 // ---------------------------------------------------------------------------
 
 export function EditorProvider({ children }: { children: ReactNode }) {
-  const { playbackMode, undoHistoryLimit, reopenHistoryLimit, autoCheckpointEnabled } =
-    usePreferences();
+  const {
+    playbackMode,
+    undoHistoryLimit,
+    reopenHistoryLimit,
+    autoCheckpointEnabled,
+    newProjectColorManagement,
+  } = usePreferences();
   const undoHistoryLimitRef = useRef(undoHistoryLimit);
   undoHistoryLimitRef.current = undoHistoryLimit;
   const reopenHistoryLimitRef = useRef(reopenHistoryLimit);
   reopenHistoryLimitRef.current = reopenHistoryLimit;
   const autoCheckpointEnabledRef = useRef(autoCheckpointEnabled);
   autoCheckpointEnabledRef.current = autoCheckpointEnabled;
+  const newProjectColorManagementRef = useRef(newProjectColorManagement);
+  newProjectColorManagementRef.current = newProjectColorManagement;
 
   // Create the store once — it lives for the lifetime of the provider.
   const storeRef = useRef<EditorStore | null>(null);
@@ -263,6 +272,21 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       backupRedoHistory,
       getUndoHistoryLimit: () =>
         undoHistoryLimitRef.current === 'unlimited' ? null : undoHistoryLimitRef.current,
+      onHistoryStateRestored: ({ fromEntry, toEntry }) => {
+        void syncComfyGalleryEntriesAfterHistoryRestore({
+          fromState: fromEntry.state,
+          toState: toEntry.state,
+          editorState: get(),
+        })
+          .then((changed) => {
+            if (changed) {
+              set(() => ({ galleryUpdatedAt: Date.now() }));
+            }
+          })
+          .catch((error) => {
+            console.warn('Could not sync gallery entries after history restore.', error);
+          });
+      },
     });
     const backgroundJobActions = createBackgroundJobActions(set);
 
@@ -293,6 +317,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       }),
       ...createProjectActions(set, get, {
         commitMutation,
+        getNewProjectColorManagement: () =>
+          cloneProjectColorManagement(newProjectColorManagementRef.current),
         getReopenHistoryLimit: () => reopenHistoryLimitRef.current,
         getAutoCheckpointEnabled: () => autoCheckpointEnabledRef.current,
         trackingAbortController,

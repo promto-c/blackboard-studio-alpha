@@ -9,6 +9,7 @@ import { getNodeAssetIds } from '@/nodes/helpers';
 import type { PersistedProjectState } from '@blackboard/types';
 import { validateRootFlow } from '@blackboard/types';
 import { getAllProjectNodes } from '@/state/editor/flowModel';
+import { assertPersistedProjectColorManagementState } from '@/color-management';
 
 type StoredProjectState = PersistedProjectState;
 
@@ -159,6 +160,8 @@ const assertStoredProjectState = (state: StoredProjectState): void => {
   if (!state || typeof state !== 'object') {
     throw new Error('Project file is missing state data.');
   }
+
+  assertPersistedProjectColorManagementState(state);
 
   if (state.rootFlowId && state.flows?.[state.rootFlowId]) {
     const issues = validateRootFlow(state.flows[state.rootFlowId]);

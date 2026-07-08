@@ -2,7 +2,18 @@
 // These are structurally compatible with the full NodeDefinition from apps/studio.
 
 import * as THREE from 'three';
-import type { AnyNode, SceneNode } from '@blackboard/types';
+import type {
+  AnimatableNumber,
+  AnyNode,
+  ColorProcessingDomain,
+  DataChannelSemantic,
+  GeneratedColorResolver,
+  ImageTransform,
+  RenderSceneSize,
+  RenderSceneSizeBehavior,
+  SceneNode,
+  SourceAlphaMode,
+} from '@blackboard/types';
 
 export type ShaderUniformMap = Record<string, { value: unknown }>;
 
@@ -28,13 +39,25 @@ export interface RenderContext {
   scene: { width: number; height: number };
   nodes: unknown[];
   flow?: unknown;
+  transformColorPickingToSceneLinear: (
+    color: readonly [number, number, number],
+  ) => [number, number, number];
 }
+
+/**
+ * Declarative scene-size behavior for nodes that establish or change the
+ * pipeline format. The renderer validates returned dimensions before use.
+ */
+export type RendererSceneSize = RenderSceneSize;
+export type RendererSceneSizeBehavior = RenderSceneSizeBehavior<AnyNode, RenderContext>;
 
 /** Minimal input port descriptor for the render pipeline. */
 export interface RendererInputPort {
   name: string;
   label: string;
   type: 'texture' | 'mask' | 'data';
+  dataSemantic?: DataChannelSemantic;
+  processingDomain?: ColorProcessingDomain;
   required: boolean;
   description?: string;
   uniformName?: string;
@@ -54,6 +77,8 @@ type RendererInputPorts = RendererInputPort[] | ((node: unknown) => RendererInpu
 export interface RendererOutputPort {
   name: string;
   label: string;
+  dataSemantic?: DataChannelSemantic;
+  processingDomain?: ColorProcessingDomain;
   description?: string;
 }
 
@@ -96,27 +121,31 @@ interface RendererNodeFlags {
  */
 interface RendererMediaDescriptor {
   /** Extract asset IDs that this node references. */
-  getAssetIds: (node: any) => string[];
+  getAssetIds: (node: AnyNode) => string[];
   /**
    * Return the texture key used to look up/store this node's media texture
    * in the pipeline's texture cache.
    */
-  getMediaTextureKey?: (node: any, frame: number) => string;
+  getMediaTextureKey?: (node: AnyNode, frame: number) => string;
   /** Optional visible media layers that should be composited inside this media node. */
   getCompositeLayers?: (
-    node: any,
+    node: AnyNode,
     frame: number,
     context: RendererMediaCompositeContext,
   ) => RendererMediaCompositeLayer[];
   /** Return true when this node's active media should be decoded as a video file. */
-  isVideoFile?: (node: any) => boolean;
-  /** Optional color space identifier for this media (e.g. 'sRGB', 'Linear'). */
-  getColorSpace?: (node: any) => string | undefined;
+  isVideoFile?: (node: AnyNode) => boolean;
+  /** Return true when this media should bypass RGB color transforms. */
+  isData?: (node: AnyNode) => boolean;
+  /** Optional canonical OCIO color-space identifier for this media. */
+  getColorSpace?: (node: AnyNode) => string | undefined;
 }
 
 interface RendererMediaCompositeContext {
   frame: number;
-  sceneNode: { width: number; height: number; colorSpace?: string; fps?: number };
+  sceneNode: SceneNode;
+  /** Full node list from the render context, for resolving graph-edge inputs. */
+  nodes?: readonly AnyNode[];
 }
 
 export interface RendererMediaCompositeLayer {
@@ -126,15 +155,11 @@ export interface RendererMediaCompositeLayer {
   isVideoFile?: boolean;
   width: number;
   height: number;
-  transform?: {
-    x?: any;
-    y?: any;
-    scaleX?: any;
-    scaleY?: any;
-  };
-  opacity?: any;
+  transform?: Partial<Pick<ImageTransform, 'x' | 'y' | 'scaleX' | 'scaleY'>>;
+  opacity?: AnimatableNumber;
   colorSpace?: string;
-  sourceAlphaMode?: string;
+  isData?: boolean;
+  sourceAlphaMode?: SourceAlphaMode;
 }
 
 export interface RendererOcioGpuTexture {
@@ -168,21 +193,29 @@ export interface RendererOcioShaderInfo {
 }
 
 export interface RendererColorManagement {
-  getColorSpaceTransform?: (
+  getColorSpaceTransform: (
     source: string | undefined,
     destination: string | undefined,
   ) => RendererOcioShaderInfo | null;
-  getDisplayViewTransform?: (
+  getDisplayViewTransform: (
     source: string | undefined,
     display: string | undefined,
     view: string | undefined,
+    look?: string,
   ) => RendererOcioShaderInfo | null;
-  resolveColorSpaceName?: (value: string | undefined) => string;
-  defaultDisplay?: string;
-  defaultView?: string;
-  workingColorSpace?: string;
-  textureColorSpace?: string;
-  dataColorSpace?: string;
+  transformRgb: (
+    source: string,
+    destination: string,
+    color: readonly [number, number, number],
+  ) => [number, number, number];
+  resolveColorSpaceName: (value: string | undefined) => string;
+  defaultDisplay: string;
+  defaultView: string;
+  workingColorSpace: string;
+  textureColorSpace: string;
+  colorPickingColorSpace: string;
+  dataColorSpace: string;
+  logColorSpace?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,11 +230,9 @@ export interface PaintTextureBundle {
 
 /** One hard-edged matte layer, composited and feathered by the GPU pipeline. */
 export interface RendererMaskLayer {
-  samples: readonly {
-    texture: THREE.Texture;
-    weight: number;
-    prepare?: () => void;
-  }[];
+  /** One already-composited texture, including any temporal shutter samples. */
+  texture: THREE.Texture;
+  prepare?: () => void;
   feather: number;
   opacity: number;
   operation: 'add' | 'subtract';
@@ -213,6 +244,8 @@ export interface RendererMaskLayer {
  * any node's output to a utility target.
  */
 export interface ResolveOutputContext {
+  /** Whether this render may await asset preparation or must complete in the current frame. */
+  executionMode?: 'sync' | 'async';
   frame: number;
   nodes: AnyNode[];
   sceneNode: SceneNode;
@@ -222,7 +255,13 @@ export interface ResolveOutputContext {
   quad: THREE.Mesh;
   getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial;
   /** Recursively resolve any upstream node's output texture by node ID + port name. */
-  resolveOutput: (nodeId: string, portName?: string) => THREE.Texture | undefined;
+  resolveOutput: (
+    nodeId: string,
+    portName?: string,
+  ) => THREE.Texture | undefined | Promise<THREE.Texture | undefined>;
+  transformColorPickingToSceneLinear: (
+    color: readonly [number, number, number],
+  ) => [number, number, number];
   /** The current composite buffer (implicit pipeline input). Undefined outside main loop. */
   compositeBuffer?: THREE.WebGLRenderTarget;
   getMediaTexture: (node: AnyNode, frame: number) => THREE.Texture | undefined;
@@ -250,8 +289,9 @@ export interface ResolveOutputContext {
 export interface RendererNodeEntry {
   renderMode: RenderMode;
   category: RendererToolCategory;
-  getShader?: (node: any) => string | { horizontal: string; vertical: string };
-  getUniforms?: (node: any, context: RenderContext) => ShaderUniformMap;
+  processingDomain: ColorProcessingDomain | ((node: AnyNode) => ColorProcessingDomain);
+  getShader?: (node: AnyNode) => string | { horizontal: string; vertical: string };
+  getUniforms?: (node: AnyNode, context: RenderContext) => ShaderUniformMap;
   inputPorts?: RendererInputPorts;
   outputPorts?: RendererOutputPorts;
 
@@ -262,22 +302,21 @@ export interface RendererNodeEntry {
   /** Media descriptor for texture key resolution, asset IDs, color space. */
   mediaDescriptor?: RendererMediaDescriptor;
 
+  /** Declarative scene-size behavior for format-changing nodes. */
+  sceneSize?: RendererSceneSizeBehavior;
+
+  /**
+   * Return a scene-linear color for generated alpha-mask sources. When
+   * omitted, the generated source keeps the RGB values from its texture.
+   */
+  getGeneratedColor?: GeneratedColorResolver<AnyNode, RenderContext>;
+
   /**
    * Optional render scale hint — return a value in (0, 1] to render at
    * reduced resolution. Used by large-kernel effects like blur.
    */
-  renderScale?: (node: any, context: RenderContext) => number;
+  renderScale?: (node: AnyNode, context: RenderContext) => number;
 
-  /**
-   * Optional custom render handler. When provided, the pipeline calls this
-   * to render the node's output to a target. If not provided, the pipeline
-   * uses a generic path based on renderMode + getShader/getUniforms.
-   */
-  /**
-   * Optional custom render handler. When provided, the pipeline calls this
-   * to render the node's output to a target. If not provided, the pipeline
-   * uses a generic path based on renderMode + getShader/getUniforms.
-   */
   /**
    * Optional custom render handler. When provided, the pipeline calls this
    * to render the node's output to a target. If not provided, the pipeline
@@ -300,4 +339,4 @@ export interface RendererNodeEntry {
   ) => boolean | Promise<boolean>;
 }
 
-export type NodeRegistryLike = Map<string, RendererNodeEntry>;
+export type NodeRegistryLike = Pick<ReadonlyMap<string, RendererNodeEntry>, 'get'>;

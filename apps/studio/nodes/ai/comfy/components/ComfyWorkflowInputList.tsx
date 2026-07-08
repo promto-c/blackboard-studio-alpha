@@ -1,5 +1,5 @@
 import React from 'react';
-import { CollapsibleSection } from '@blackboard/ui';
+import { Badge, CollapsibleSection } from '@blackboard/ui';
 import type {
   AnyNode,
   ComfyWorkflow,
@@ -109,9 +109,9 @@ export function ComfyWorkflowInputList({
                   <span className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate text-xs font-medium">{candidate.label}</span>
                     {candidate.scope === 'internal' ? (
-                      <span className="shrink-0 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-semibold text-gray-500">
+                      <Badge size="sm" variant="neutral">
                         Internal
-                      </span>
+                      </Badge>
                     ) : null}
                   </span>
                   <span className="mt-0.5 block truncate font-mono text-[10px] text-gray-500">
@@ -135,7 +135,7 @@ export function ComfyWorkflowInputList({
                     }`}
                     title={`Load image for ${candidate.label}`}
                   >
-                    <Icons.ArrowUpTray className="h-3.5 w-3.5" />
+                    <Icons.ArrowDownTray className="h-3.5 w-3.5" />
                     Load
                     <input
                       type="file"

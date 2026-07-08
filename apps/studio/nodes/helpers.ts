@@ -8,7 +8,12 @@
  */
 
 import { nodeRegistry } from './registry';
-import type { NodeFlags, MediaDescriptor, InputPortDescriptor } from './NodeDefinition';
+import type {
+  NodeFlags,
+  MediaDescriptor,
+  InputPortDescriptor,
+  RenderOutputContract,
+} from './NodeDefinition';
 import { type AnyNode, NodeType, type ComfyNode } from '@blackboard/types';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +58,12 @@ export function nodeFlags(type: string): Required<NodeFlags> {
  */
 export function hasRenderableNodes(nodes: { type: string }[]): boolean {
   return nodes.some((node) => nodeFlags(node.type).isRenderable);
+}
+
+export function getRenderOutputContract(type: string): RenderOutputContract {
+  const definition = nodeRegistry.get(type);
+  if (definition?.renderOutputContract) return definition.renderOutputContract;
+  return definition?.flags?.isRenderable ? 'pipeline' : 'none';
 }
 
 /**

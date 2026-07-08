@@ -2,7 +2,9 @@ import { createNodePredicates, hasStackedFlag } from '@blackboard/renderer';
 import type { AnyNode } from '@blackboard/types';
 import { nodeRegistry } from '@/nodes/registry';
 
-const predicates = createNodePredicates(nodeRegistry);
+const predicates = createNodePredicates({
+  get: (type) => nodeRegistry.get(type),
+});
 
 export const isStackAdjustmentType = predicates.isStackAdjustmentType;
 export const isExportAdjustmentType = predicates.isExportAdjustmentType;

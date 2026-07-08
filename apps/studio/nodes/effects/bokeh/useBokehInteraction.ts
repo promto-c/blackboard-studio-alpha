@@ -5,6 +5,7 @@
 
 import { useCallback } from 'react';
 import { NodeType, type BokehBlurNode, type AnyNode, type SceneNode } from '@blackboard/types';
+import { getAcesCgLuminance } from '@/color-management/effectColorMath';
 
 // ---------------------------------------------------------------------------
 // Params
@@ -57,9 +58,7 @@ export function useBokehInteraction({
       } else if (bokehNode.depthSource === 'linear_v') {
         depthVal = uvY;
       } else if (pixelInfo) {
-        depthVal =
-          1.0 -
-          (0.2126 * pixelInfo.color[0] + 0.7152 * pixelInfo.color[1] + 0.0722 * pixelInfo.color[2]);
+        depthVal = 1.0 - getAcesCgLuminance(pixelInfo.color);
       }
       setKeyframe(
         bokehNode.id,

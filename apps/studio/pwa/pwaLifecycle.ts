@@ -1,3 +1,5 @@
+import { getErrorMessage } from '@/utils/guards';
+
 type InstallOutcome = 'accepted' | 'dismissed' | null;
 type ServiceWorkerState = 'disabled' | 'error' | 'ready' | 'registering' | 'unsupported';
 type PwaUpdatePhase = 'applying' | 'checking' | 'downloading' | 'error' | 'idle' | 'ready';
@@ -32,7 +34,6 @@ export interface PwaAssetGroupSnapshot {
   id: string;
   label: string;
   description: string;
-  source: 'bundle' | 'marketplace';
   removable: boolean;
   assetCount: number;
   size: number;
@@ -151,7 +152,7 @@ const getOnlineStatus = () => (canUseDom() ? navigator.onLine : true);
 
 const getServiceWorkerSupport = () => canUseDom() && 'serviceWorker' in navigator;
 
-let snapshot: PwaSnapshot = {
+export let snapshot: PwaSnapshot = {
   appVersion: getAppVersion(),
   buildId: getBuildId(),
   availableVersion: null,
@@ -206,9 +207,6 @@ const patchSnapshot = (updates: Partial<PwaSnapshot>) => {
   };
   emit();
 };
-
-const getErrorMessage = (error: unknown, fallback: string) =>
-  error instanceof Error && error.message ? error.message : fallback;
 
 const requestWorkerMessage = <T>(
   worker: ServiceWorker,
@@ -269,10 +267,6 @@ const normalizeAssetGroups = (groups: unknown): PwaAssetGroupSnapshot[] => {
           typeof candidate.description === 'string' && candidate.description.trim()
             ? candidate.description
             : 'Optional files cached when the related feature is used.',
-        source:
-          candidate.source === 'bundle' || candidate.source === 'marketplace'
-            ? candidate.source
-            : 'bundle',
         removable: candidate.removable !== false,
         assetCount: candidate.assetCount,
         size: candidate.size,
@@ -577,8 +571,6 @@ const registerServiceWorker = async () => {
   }
 };
 
-export const getPwaSnapshot = () => snapshot;
-
 export const subscribeToPwa = (listener: PwaListener) => {
   listeners.add(listener);
   listener(snapshot);
@@ -639,8 +631,8 @@ const getPwaAssetOperationMessageType = (operation: PwaAssetOperation) =>
 
 const getPwaAssetOperationFallback = (operation: PwaAssetOperation) =>
   operation === 'remove'
-    ? 'Could not remove offline assets.'
-    : 'Could not download offline assets.';
+    ? 'Could not remove on-demand assets.'
+    : 'Could not download on-demand assets.';
 
 const runPwaAssetGroupOperation = async (
   operation: PwaAssetOperation,
@@ -652,7 +644,7 @@ const runPwaAssetGroupOperation = async (
     patchSnapshot({
       assetOperationPhase: 'error',
       operatingAssetGroupId: null,
-      assetOperationError: 'Offline pack management is unavailable in this browser.',
+      assetOperationError: 'On-demand asset caching is unavailable in this browser.',
     });
     return false;
   }
@@ -661,7 +653,7 @@ const runPwaAssetGroupOperation = async (
     patchSnapshot({
       assetOperationPhase: 'error',
       operatingAssetGroupId: null,
-      assetOperationError: 'Download offline packs when the network is online.',
+      assetOperationError: 'Download on-demand assets when the network is online.',
     });
     return false;
   }
@@ -698,8 +690,8 @@ const runPwaAssetGroupOperation = async (
     if (!result || result.type !== 'BLACKBOARD_STUDIO_SW_CACHE_RESULT') {
       throw new Error(
         operation === 'remove'
-          ? 'Offline asset removal did not respond.'
-          : 'Offline asset download did not respond.',
+          ? 'On-demand asset removal did not respond.'
+          : 'On-demand asset download did not respond.',
       );
     }
     if (!result.ok) {

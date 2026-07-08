@@ -13,7 +13,6 @@ const getSharedPaintSnapshotRenderer = (): THREE.WebGLRenderer => {
       antialias: false,
       depth: false,
       stencil: false,
-      premultipliedAlpha: false,
     });
   }
 

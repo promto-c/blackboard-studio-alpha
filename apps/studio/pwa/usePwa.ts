@@ -3,7 +3,7 @@ import {
   applyPwaUpdate,
   checkForPwaUpdate,
   downloadPwaAssetGroup,
-  getPwaSnapshot,
+  snapshot as initialPwaSnapshot,
   registerPwa,
   removePwaAssetGroup,
   requestPwaInstall,
@@ -12,7 +12,7 @@ import {
 } from './pwaLifecycle';
 
 export function usePwa() {
-  const [snapshot, setSnapshot] = useState(getPwaSnapshot);
+  const [snapshot, setSnapshot] = useState(initialPwaSnapshot);
 
   useEffect(() => {
     registerPwa();

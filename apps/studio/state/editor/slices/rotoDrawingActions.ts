@@ -205,11 +205,11 @@ export function createRotoDrawingActions(
       threshold: number,
       targetPathId?: string,
     ) => {
-      const { nodes, currentFrame, fps } = get();
+      const { nodes, currentFrame, fps, colorManagement } = get();
       const rotoNode = nodes.find((node) => node.id === rotoNodeId) as RotoNode | undefined;
       if (!rotoNode) return;
 
-      const source = resolveSourcePixelSource(nodes, rotoNodeId, sourceId);
+      const source = resolveSourcePixelSource(nodes, rotoNodeId, sourceId, colorManagement);
       if (!source) return;
 
       const pixelData = await getSourcePixelDataForFrame(source, currentFrame, fps || 30);

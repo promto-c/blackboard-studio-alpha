@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { getComfyEndpoint } from '@/utils/aiRouting';
+import { DEFAULT_COMFY_ENDPOINT } from '@/services/comfy/client';
 import { AnyNode, ComfyNode, ComfyWorkflow, Flow, NodeType } from '@blackboard/types';
 import { getOrderedNodesFromFlow, getRootFlow } from '@/state/editor/flowModel';
 import {
@@ -9,6 +11,7 @@ import {
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import {
+  cancelComfyPrompt,
   fetchComfyPromptStatus,
   normalizeComfyEndpoint,
   waitForComfyOutputFiles,
@@ -175,11 +178,12 @@ export const useSyncComfyBackgroundJobs = () => {
   const currentFlows = useEditorSelector((state) => state.flows);
   const currentRootFlowId = useEditorSelector((state) => state.rootFlowId);
   const currentNodes = useEditorSelector((state) => state.nodes);
-  const { comfyEndpoint } = usePreferences();
+  const { integrationConnections } = usePreferences();
   const { updateBackgroundJob, finishBackgroundJob, applyComfyNodeRunResult } = useEditorActions();
   const [recheckNow, setRecheckNow] = useState(() => Date.now());
   const syncingJobIdsRef = useRef<Set<string>>(new Set());
   const syncControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const cancellingJobIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -205,6 +209,45 @@ export const useSyncComfyBackgroundJobs = () => {
   );
 
   useEffect(() => {
+    backgroundJobs.forEach((job) => {
+      const promptId = job.source?.promptId;
+      if (
+        job.type !== 'comfy' ||
+        job.status !== 'cancelling' ||
+        !promptId ||
+        cancellingJobIdsRef.current.has(job.id)
+      ) {
+        return;
+      }
+
+      cancellingJobIdsRef.current.add(job.id);
+      const endpoint = normalizeComfyEndpoint(
+        job.source?.comfyEndpoint ??
+          getComfyEndpoint({ integrationConnections }) ??
+          DEFAULT_COMFY_ENDPOINT,
+      );
+      const source = {
+        ...(job.source ?? {}),
+        comfyEndpoint: endpoint,
+        promptId,
+      };
+
+      syncControllersRef.current.get(job.id)?.abort();
+
+      void cancelComfyPrompt(promptId, endpoint).finally(() => {
+        finishBackgroundJob(job.id, {
+          status: 'cancelled',
+          detail: 'ComfyUI prompt cancelled',
+          progress: job.progress ?? 0,
+          indeterminate: false,
+          source,
+        });
+        cancellingJobIdsRef.current.delete(job.id);
+      });
+    });
+  }, [backgroundJobs, integrationConnections, finishBackgroundJob]);
+
+  useEffect(() => {
     syncableJobs.forEach((job) => {
       const promptId = job.source?.promptId;
       if (!promptId || syncingJobIdsRef.current.has(job.id)) return;
@@ -216,7 +259,11 @@ export const useSyncComfyBackgroundJobs = () => {
       void (async () => {
         const source = { ...(job.source ?? {}) };
         delete source.restoredFromStorage;
-        const endpoint = normalizeComfyEndpoint(job.source?.comfyEndpoint ?? comfyEndpoint);
+        const endpoint = normalizeComfyEndpoint(
+          job.source?.comfyEndpoint ??
+            getComfyEndpoint({ integrationConnections }) ??
+            DEFAULT_COMFY_ENDPOINT,
+        );
         const baseSource = {
           ...source,
           comfyEndpoint: endpoint,
@@ -230,7 +277,7 @@ export const useSyncComfyBackgroundJobs = () => {
             detail: 'Syncing ComfyUI prompt state',
             progress: job.progress ?? 35,
             indeterminate: true,
-            cancellable: false,
+            cancellable: true,
             source: baseSource,
           });
 
@@ -295,7 +342,7 @@ export const useSyncComfyBackgroundJobs = () => {
                 : 'Waiting for ComfyUI output',
             progress: status.status === 'queued' ? 15 : Math.max(job.progress ?? 35, 35),
             indeterminate: true,
-            cancellable: false,
+            cancellable: true,
             source: baseSource,
           });
 
@@ -314,7 +361,7 @@ export const useSyncComfyBackgroundJobs = () => {
                       detail: `Waiting for ComfyUI output. History check ${attempt}.`,
                       progress: 35,
                       indeterminate: true,
-                      cancellable: false,
+                      cancellable: true,
                       source: baseSource,
                     });
                   },
@@ -326,7 +373,7 @@ export const useSyncComfyBackgroundJobs = () => {
             detail: 'Downloading ComfyUI output',
             progress: 92,
             indeterminate: true,
-            cancellable: false,
+            cancellable: true,
             source: baseSource,
           });
 
@@ -415,7 +462,7 @@ export const useSyncComfyBackgroundJobs = () => {
     });
   }, [
     applyComfyNodeRunResult,
-    comfyEndpoint,
+    integrationConnections,
     currentNodes,
     currentBranchId,
     currentFlows,

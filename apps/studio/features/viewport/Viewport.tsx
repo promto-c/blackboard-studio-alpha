@@ -18,6 +18,7 @@ import {
   type SceneNode,
 } from '@blackboard/types';
 import ViewportSettingsBar from './ViewportSettingsBar';
+import ViewportBackground from '@/components/ViewportBackground';
 import * as THREE from 'three';
 import { simplifyPath, resamplePath } from '@/utils/bspline';
 import FreehandSmoothnessControl from '@/nodes/builtin/roto/FreehandSmoothnessControl';
@@ -26,6 +27,7 @@ import { nodeRegistry } from '@/nodes/registry';
 import { useViewportInteractions } from './useViewportInteractions';
 import { useViewportOverlayContext } from './useViewportOverlayContext';
 import { getDataWindowProjection } from './dataWindow';
+import { resolveCurrentViewerDisplayView } from '@/color-management';
 import { useViewportRenderer } from '@/hooks/viewport/useViewportRenderer';
 import { useViewportMediaResources } from '@/hooks/viewport/useViewportMediaResources';
 import { useViewportTextTextures } from '@/hooks/viewport/useViewportTextTextures';
@@ -34,8 +36,10 @@ import { useViewportRotoMasks } from '@/hooks/viewport/useViewportRotoMasks';
 import { useViewportVideoSync } from '@/hooks/viewport/useViewportVideoSync';
 import { useViewportGestures } from '@/hooks/viewport/useViewportGestures';
 import { useViewportRenderLoop } from '@/hooks/viewport/useViewportRenderLoop';
+import { useViewportScene3DAssets } from '@/hooks/viewport/useViewportScene3DAssets';
 import { useViewportScrubbing } from '@/hooks/viewport/useViewportScrubbing';
 import { useViewportMotionCues } from '@/hooks/viewport/useViewportMotionCues';
+import { useRotoTemporalPreview } from '@/hooks/viewport/useRotoTemporalPreview';
 import { useViewportStabilization } from '@/hooks/viewport/useViewportStabilization';
 import {
   useViewportPixelInspector,
@@ -51,7 +55,11 @@ import {
 } from '@/hotkeys';
 import { hasRenderableNodes, nodeFlags } from '@/nodes/helpers';
 import { getMediaFileKind } from '@/utils/mediaFiles';
-import { getNodeInputRenderNodes, getViewportRenderNodes } from '@/utils/viewerSlots';
+import {
+  getNodeInputRenderNodes,
+  getScene3DProjectionRenderNodes,
+  getViewportRenderNodes,
+} from '@/utils/viewerSlots';
 import { expandGroupNodesForRender } from '@/utils/groupRenderProjection';
 import { useRotoItemsClipboard } from '@/nodes/builtin/roto/rotoItemsClipboard';
 import { usePaintItemsClipboard } from '@/nodes/builtin/paint/paintItemsClipboard';
@@ -61,6 +69,7 @@ import {
 } from '@/utils/standardClipboardHotkeys';
 import { stabilizePoint } from '@/utils/rotoTracking';
 import { getAllProjectNodes } from '@/state/editor/flowModel';
+import { resolveRenderOutputDomain } from '@/color-management';
 
 type ViewportMouseEvent = MouseEvent | React.MouseEvent<HTMLDivElement>;
 
@@ -96,6 +105,13 @@ function Viewport() {
   const targetZoom = useEditorSelector((s) => s.targetZoom);
   const targetPan = useEditorSelector((s) => s.targetPan);
   const viewerSettings = useEditorSelector((s) => s.viewerSettings);
+  const projectColorManagement = useEditorSelector((s) => s.colorManagement);
+  const projectDisplayView = projectColorManagement.viewer;
+  const viewerColorManagement = useEditorSelector((s) => s.viewerColorManagement);
+  const currentViewerDisplayView = useMemo(
+    () => resolveCurrentViewerDisplayView(projectDisplayView, viewerColorManagement),
+    [projectDisplayView, viewerColorManagement],
+  );
   const viewerNodeId = useEditorSelector((s) => s.viewerNodeId);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const hierarchySelections = useEditorSelector((s) => s.hierarchySelections);
@@ -136,8 +152,7 @@ function Viewport() {
   // — Actions: stable references, never cause re-renders.
   const {
     loadImage,
-    setZoom,
-    setPan,
+    setViewportTransform,
     setAnimationTarget,
     setProjectThumbnail,
     updateNode,
@@ -170,6 +185,10 @@ function Viewport() {
     rotoMotionBlurPathVisible,
     rotoMotionTrailFrames,
     rotoMotionBlurInteractivePreviewEnabled,
+    rotoFrameChangePreviewEnabled,
+    rotoPreviewRefineDelayMs,
+    rotoPlaybackPreviewMode,
+    rotoInteractivePreviewMaxDimension,
     rotoMotionBlurInteractivePreviewSamples,
     rotoPointWeightMode,
     paintBrush,
@@ -180,6 +199,8 @@ function Viewport() {
     alphaOverlayBgDarken,
     paintStrokePathsVisible,
     paintStrokePathsMode,
+    viewportBackgroundMode,
+    viewportBackgroundColor,
     viewportInterpolation,
     setPreferences,
   } = usePreferences();
@@ -217,6 +238,13 @@ function Viewport() {
     [selectedViewportNode],
   );
   const isScene3DMode = activeScene3DNode?.viewportMode === 'scene3d';
+  const renderOutputDomain = useMemo(
+    () =>
+      isScene3DMode
+        ? ({ kind: 'color' } as const)
+        : resolveRenderOutputDomain({ nodes, flow: activeFlow, viewerNodeId, nodeRegistry }),
+    [activeFlow, isScene3DMode, nodes, viewerNodeId],
+  );
   const [scene3DViewportCameraMode, setScene3DViewportCameraMode] =
     useState<Scene3DViewportCameraMode>('sceneCamera');
   const [cachedScene3DViewportNodeId, setCachedScene3DViewportNodeId] = useState<string | null>(
@@ -229,7 +257,16 @@ function Viewport() {
       flows,
     );
   }, [activeFlow, activeScene3DNode, flows, nodes]);
-  const renderNodes = scene3DBackdropNodes ?? viewportNodes;
+  const scene3DProjectionNodes = useMemo(() => {
+    if (!activeScene3DNode) return null;
+    return expandGroupNodesForRender(
+      getScene3DProjectionRenderNodes(nodes, activeScene3DNode.id, activeFlow),
+      flows,
+    );
+  }, [activeFlow, activeScene3DNode, flows, nodes]);
+  const renderNodes = isScene3DMode
+    ? (scene3DBackdropNodes ?? viewportNodes)
+    : (scene3DProjectionNodes ?? viewportNodes);
   const cacheRetentionNodes = useMemo(() => getAllProjectNodes(flows), [flows]);
   const renderSceneNode = useMemo(
     () => renderNodes.find((node): node is SceneNode => node.type === NodeType.SCENE) ?? sceneNode,
@@ -351,6 +388,16 @@ function Viewport() {
     updateCacheStatus,
     fps,
   });
+  const { temporalPreviewActive, reportPrepareDuration, reportRenderDuration } =
+    useRotoTemporalPreview({
+      currentFrame,
+      fps,
+      isPlaying,
+      isFrameScrubbing,
+      frameChangePreviewEnabled: rotoFrameChangePreviewEnabled,
+      refineDelayMs: rotoPreviewRefineDelayMs,
+      playbackMode: rotoPlaybackPreviewMode,
+    });
   const dataWindowProjection = useMemo(
     () => (sceneNode ? getDataWindowProjection(sceneNode, viewportNodes, visualFrame) : null),
     [sceneNode, viewportNodes, visualFrame],
@@ -381,6 +428,30 @@ function Viewport() {
     setFrameScrubbing,
   });
 
+  // Capture-phase pointerdown: only stopPropagation to block OrbitControls in
+  // 3D perspective mode. Never call startScrub here or preventDefault, because
+  // preventDefault() on pointerdown can suppress compatibility mouse events
+  // (mousemove/mouseup) that the scrub session depends on.
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+
+    const handlePointerDown = (e: PointerEvent) => {
+      if (e.button !== 1 || !e.ctrlKey) return;
+      if (!isScene3DMode) return;
+      if (isScene3DProjectionViewActive) return;
+      if (!gestureSceneNode) return;
+
+      // Only stop propagation — no preventDefault to avoid suppressing
+      // compatibility mouse events. preventDefault is handled on mousedown
+      // in handleViewportPanMouseDown via handleMouseDown.
+      e.stopPropagation();
+    };
+
+    element.addEventListener('pointerdown', handlePointerDown, { capture: true });
+    return () => element.removeEventListener('pointerdown', handlePointerDown, { capture: true });
+  }, [isScene3DMode, isScene3DProjectionViewActive, gestureSceneNode]);
+
   const { stabilizationMatrix, stabilizedSceneStyle, viewportToSceneCentered } =
     useViewportStabilization({
       isStabilized,
@@ -407,6 +478,7 @@ function Viewport() {
     selectedNodeId,
     nodes,
     sceneNode,
+    projectColorManagement,
     selectedRotoLayerIds,
     selectedRotoPathIds,
     selectedRotoPointRefs,
@@ -452,6 +524,7 @@ function Viewport() {
     nodes: renderNodes,
     currentFrame: visualFrame,
     sceneNode: renderSceneNode,
+    projectColorManagement,
     livePreview: paintLivePreview,
     bumpMediaUpdate: bumpMediaUpdateTrigger,
   });
@@ -465,10 +538,15 @@ function Viewport() {
   const rotoMaskTexturesRef = useViewportRotoMasks({
     nodes: renderNodes,
     sceneNode: renderSceneNode,
+    viewportSize,
     currentFrame: visualFrame,
     interactiveMotionBlurPreviewEnabled: rotoMotionBlurInteractivePreviewEnabled,
     interactiveMotionBlurPreviewActive: isInteractiveRotoPreviewActive,
+    interactiveNodeId: isInteractiveRotoPreviewActive ? (selectedNodeId ?? null) : null,
+    interactiveMaxDimension: rotoInteractivePreviewMaxDimension,
     interactiveMotionBlurPreviewSamples: rotoMotionBlurInteractivePreviewSamples,
+    temporalPreviewActive,
+    reportPrepareDuration,
     rotoPointWeightMode,
     suspendMaskUpdatesWhileEditing: freezeRotoMaskWhileEditing,
     bumpMediaUpdate: bumpMediaUpdateTrigger,
@@ -515,6 +593,14 @@ function Viewport() {
     handleRendererError,
   );
 
+  useViewportScene3DAssets({
+    renderer: gl,
+    nodes: renderNodes,
+    sceneNode: renderSceneNode,
+    projectColorManagement,
+    onAssetsReady: bumpMediaUpdateTrigger,
+  });
+
   const { finalCompBufferRef } = useViewportRenderLoop({
     gl,
     canvasRef,
@@ -523,6 +609,9 @@ function Viewport() {
     sceneNode: renderSceneNode,
     visualFrame,
     viewerSettings,
+    displayView: currentViewerDisplayView,
+    projectColorManagement,
+    outputDomain: renderOutputDomain,
     alphaOverlayStyle,
     hasRenderableNodes: hasRenderableOutput,
     isRenderReady,
@@ -536,6 +625,7 @@ function Viewport() {
     deferProjectThumbnailCapture:
       isScene3DMode || isFrameScrubbing || isInteractiveRotoPreviewActive,
     signalFrameRendered: handleFrameRendered,
+    reportRenderDuration,
     setProjectThumbnail,
   });
 
@@ -632,8 +722,7 @@ function Viewport() {
     viewportSize,
     viewportRef,
     projectId,
-    setZoom,
-    setPan,
+    setViewportTransform,
     setAnimationTarget,
   });
 
@@ -804,6 +893,11 @@ function Viewport() {
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isScene3DMode) {
       if (isScene3DProjectionViewActive) {
+        handleViewportPanMouseDown(e);
+      } else if (e.button === 1 && e.ctrlKey) {
+        // Perspective mode: Ctrl+MMB → scrub (same as 2D view).
+        // preventDefault on mousedown prevents auto-scroll without
+        // suppressing pointer compatibility events.
         handleViewportPanMouseDown(e);
       }
       return;
@@ -1180,6 +1274,7 @@ function Viewport() {
         <Scene3DViewport
           sceneNode={renderSceneNode}
           scene3DNode={activeScene3DNode}
+          projectColorManagement={projectColorManagement}
           selectedItemId={selectedScene3DItemId}
           backdropCanvas={gl?.domElement ?? canvasRef.current}
           hasBackdropOutput={hasScene3DBackdropOutput}
@@ -1195,17 +1290,11 @@ function Viewport() {
         className="absolute inset-0 overflow-hidden pointer-events-none"
         style={{ visibility: isScene3DMode ? 'hidden' : 'visible' }}
       >
-        {viewerSettings.alphaMode === 'TRANSPARENT' && (
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundImage:
-                'linear-gradient(45deg, #404040 25%, transparent 25%), linear-gradient(-45deg, #404040 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #404040 75%), linear-gradient(-45deg, transparent 75%, #404040 75%)',
-              backgroundSize: '20px 20px',
-              backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px',
-            }}
-          />
-        )}
+        <ViewportBackground
+          mode={viewportBackgroundMode}
+          color={viewportBackgroundColor}
+          className="absolute inset-0"
+        />
         {sceneNode ? (
           <div style={canvasContainerStyle}>
             <div style={stabilizedSceneStyle}>

@@ -59,20 +59,21 @@ describe('Comfy workflow controls', () => {
     expect(candidates.some((candidate) => candidate.inputName === 'latent_image')).toBe(false);
   });
 
-  it('keeps internal controls available but marks only graph-surface fields visible by default', () => {
+  it('keeps internal controls available while making graph-surface and seed fields visible by default', () => {
     const workflow = {
       id: 'workflow_a',
       name: 'Workflow A',
       createdAt: 1,
       defaultControlKeys: ['3:steps'],
       prompt: {
-        '3': { class_type: 'KSampler', inputs: { steps: 8, hidden_cfg: 1.5 } },
+        '3': { class_type: 'KSampler', inputs: { seed: 123, steps: 8, hidden_cfg: 1.5 } },
         internal: { class_type: 'InternalNode', inputs: { hidden_model: 'secret.safetensors' } },
       },
     };
     const candidates = getComfyWorkflowControlCandidates(workflow);
     expect(candidates).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ key: '3:seed', defaultVisible: true }),
         expect.objectContaining({ key: '3:steps', defaultVisible: true }),
         expect.objectContaining({ key: '3:hidden_cfg', defaultVisible: false }),
         expect.objectContaining({ key: 'internal:hidden_model', defaultVisible: false }),

@@ -9,17 +9,14 @@ import {
   ViewerSlotAssignments,
   BlendMode,
 } from '@blackboard/types';
-import { ImageThumbnail, LiveThumbnail, ConnectionBadge, ViewerSlotBadges } from '@/components';
+import { LiveThumbnail, ConnectionBadge, ViewerSlotBadges } from '@/components';
 import { usePreferences } from '@/state/preferencesContext';
 import type { ThumbnailMode } from '@/state/preferences';
 import * as Icons from '@blackboard/icons';
 import { NodeActionMenu, NodeAction } from './NodeActionMenu';
 import { createExecutionAction, createStackingAction } from './nodeActionFactories';
 import NodeIcon from './NodeIcon';
-import {
-  getStaticThumbnailAssetId,
-  hasMediaThumbnail as nodeHasMediaThumbnail,
-} from './nodeVisualHelpers';
+import { nodeFlags } from '@/nodes/helpers';
 import { getActiveNodeJobMap, NodeProgressBackground } from './NodeProgressBackground';
 import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
 import { participatesInImplicitPipeline } from '@/utils/nodePredicates';
@@ -36,7 +33,6 @@ const DETACHED_ROW_RAIL_GUTTER_CLASS = 'right-8';
 /** Render the thumbnail for a media node stack based on the current thumbnail mode. */
 function renderMediaThumbnail(
   stack: AnyNode[],
-  baseNode: AnyNode,
   sceneNode: SceneNode,
   thumbnailMode: ThumbnailMode,
 ) {
@@ -47,8 +43,7 @@ function renderMediaThumbnail(
     return <LiveThumbnail stack={stack} sceneNode={sceneNode} staticFrame={0} />;
   }
 
-  const assetId = getStaticThumbnailAssetId(baseNode);
-  return <ImageThumbnail assetId={assetId} className="w-full h-full object-contain" />;
+  return null;
 }
 
 /** Payload passed from the pointer-down handler to `onDragStart` via a ref. */
@@ -569,7 +564,8 @@ function NodeList({
           !isPreview &&
           !!directMergeNode &&
           (directMergeNode.id === selectedNodeId || selectedNodeIdSet.has(directMergeNode.id));
-        const showMediaThumbnail = !isPreview && nodeHasMediaThumbnail(baseNode);
+        const showMediaThumbnail =
+          !isPreview && thumbnailMode !== 'off' && !!nodeFlags(baseNode.type).hasThumbnail;
         const directMergeActions = directMergeNode
           ? getNodeActions(directMergeNode, true, true)
           : [];
@@ -709,7 +705,7 @@ function NodeList({
                           <div className="flex items-center gap-2 truncate">
                             {isBase && showMediaThumbnail && sceneNode ? (
                               <div className="flex-shrink-0 w-10 h-8 bg-gray-900 rounded overflow-hidden flex items-center justify-center text-gray-500">
-                                {renderMediaThumbnail(stack, baseNode, sceneNode, thumbnailMode)}
+                                {renderMediaThumbnail(stack, sceneNode, thumbnailMode)}
                               </div>
                             ) : (
                               <NodeIcon node={node} />

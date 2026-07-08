@@ -4,18 +4,28 @@ import type {
   PaintBrushChannels,
   PaintStrokeChannels,
   PaintStrokePathsMode,
+  ProjectColorManagement,
   RotoMotionCueScope,
   RotoMotionCueMode,
 } from '@blackboard/types';
 import { clampRotoMotionBlurSamples } from '@/utils/rotoMotionBlur';
 import {
+  clampRotoInteractivePreviewSize,
+  RotoInteractivePreviewSize,
+} from '@/utils/rotoPreviewQuality';
+export { RotoInteractivePreviewSize };
+import {
+  clampRotoPreviewRefineDelay,
+  RotoPreviewRefineDelay,
+  type RotoPlaybackPreviewMode,
+} from '@/utils/rotoTemporalPreview';
+export { RotoPreviewRefineDelay };
+import {
   DEFAULT_ROTO_POINT_WEIGHT_MODE,
   isRotoPointWeightMode,
   type RotoPointWeightMode,
 } from '@/utils/rotoPointWeights';
-import { DEFAULT_COMFY_ENDPOINT, normalizeComfyEndpoint } from '@/services/comfy/client';
 import {
-  DEFAULT_OPENAI_BASE_URL,
   normalizeAiTaskRoutes,
   normalizeOpenAiBaseUrl,
   type AiTaskRoutes,
@@ -26,13 +36,20 @@ import {
   EditorSubPanelWidth,
   EditorSubPanelHeight,
   EditorItemsPanelPercent,
-  clampEditorItemsPanelPercent,
-  clampEditorPanelWidth,
-  clampEditorSubPanelHeight,
-  clampEditorSubPanelWidth,
-  clampEditorTimelineHeight,
+  clampEditor,
 } from '@/utils/editorLayout';
-import { colors, applyTheme, applyUiStyle } from '@/utils/colors';
+import {
+  colors,
+  applyComponentStyle,
+  applyTheme,
+  applyUiStyle,
+  type ComponentStyle,
+} from '@/utils/colors';
+import {
+  assertProjectColorManagement,
+  cloneProjectColorManagement,
+  createDefaultProjectColorManagement,
+} from '@/color-management/project';
 
 // ─── Storage key ────────────────────────────────────────────────
 
@@ -65,8 +82,6 @@ const MaxCachedFrames = {
   MAX: 480,
   DEFAULT: 48,
 } as const;
-const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
-const DEFAULT_OCIO_CONFIG_NAME = 'ocio://cg-config-v4.0.0_aces-v2.0_ocio-v2.5';
 export const AgentMaxSubagentSpawns = {
   MIN: 0,
   MAX: 8,
@@ -80,6 +95,7 @@ export const DEFAULT_AUTO_CHECKPOINT_ENABLED = true;
 
 export const DEFAULT_PAINT_BRUSH_SETTINGS: PaintBrushSettings = {
   size: 24,
+  spacing: 20,
   softness: 30,
   opacity: 100,
   color: [1, 1, 1],
@@ -92,7 +108,9 @@ export const DEFAULT_PAINT_BRUSH_SETTINGS: PaintBrushSettings = {
 export type ThumbnailMode = 'live' | 'static' | 'off';
 export type BackgroundPrefetchMode = 'on_demand' | 'auto' | 'forward' | 'bidirectional';
 export type CacheBudgetMode = 'auto_memory' | 'manual_memory' | 'frame_count';
-export type IntegrationConnectionProviderId = 'gemini' | 'openai' | 'ollama' | 'comfy';
+export type TimelineCacheMode = 'consolidated' | 'separate';
+export type ViewportBackgroundMode = 'none' | 'checkerboard' | 'grid' | 'custom';
+export type IntegrationConnectionProviderId = 'openai' | 'ollama' | 'comfy';
 
 export interface IntegrationConnection {
   id: string;
@@ -110,6 +128,7 @@ export interface Preferences {
   thumbnailMode: ThumbnailMode;
   flowPanelHeight: number;
   uiStyle: 'glass' | 'solid';
+  componentStyle: ComponentStyle;
   editorPanelWidth: number;
   editorTimelineHeight: number;
   editorSubPanelWidth: number;
@@ -126,15 +145,10 @@ export interface Preferences {
   cacheBudgetMode: CacheBudgetMode;
   maxCacheSizeMB: number;
   maxCachedFrames: number;
-  geminiApiKey: string;
-  openAiApiKey: string;
-  openAiBaseUrl: string;
-  ollamaEndpoint: string;
   aiTaskRoutes: AiTaskRoutes;
   integrationConnections: IntegrationConnection[];
   agentMaxSubagentSpawns: number;
-  comfyEndpoint: string;
-  ocioConfigName: string;
+  newProjectColorManagement: ProjectColorManagement;
   comfyMissingModelDetailsVisible: boolean;
   enableToolSorting: boolean;
   toolUsageCounts: Record<string, number>;
@@ -145,6 +159,10 @@ export interface Preferences {
   rotoMotionBlurPathVisible: boolean;
   rotoMotionTrailFrames: number;
   rotoMotionBlurInteractivePreviewEnabled: boolean;
+  rotoFrameChangePreviewEnabled: boolean;
+  rotoPreviewRefineDelayMs: number;
+  rotoPlaybackPreviewMode: RotoPlaybackPreviewMode;
+  rotoInteractivePreviewMaxDimension: number;
   rotoMotionBlurInteractivePreviewSamples: number;
   rotoPointWeightMode: RotoPointWeightMode;
   rotoTrackingBackgroundEnabled: boolean;
@@ -160,9 +178,15 @@ export interface Preferences {
   paintBrush: PaintBrushSettings;
   paintStrokePathsVisible: boolean;
   paintStrokePathsMode: PaintStrokePathsMode;
+  viewportBackgroundMode: ViewportBackgroundMode;
+  viewportBackgroundColor: [number, number, number];
   viewportInterpolation: 'nearest' | 'linear';
+  timelineCacheMode: TimelineCacheMode;
   onnxRuntimeWebGpuEnabled: boolean;
   onnxRuntimeWasmEnabled: boolean;
+
+  // Viewport view auto-detection
+  autoDetectViewportView: boolean;
 
   // Debug
   debugMode: boolean;
@@ -233,7 +257,7 @@ const isCacheBudgetMode = (value: unknown): value is CacheBudgetMode =>
 const isIntegrationConnectionProviderId = (
   value: unknown,
 ): value is IntegrationConnectionProviderId =>
-  value === 'gemini' || value === 'openai' || value === 'ollama' || value === 'comfy';
+  value === 'openai' || value === 'ollama' || value === 'comfy';
 
 const sanitizeConnectionIdPart = (value: string): string =>
   value
@@ -334,12 +358,12 @@ const clampUnit = (value: unknown, fallback: number): number => {
   return Math.max(0, Math.min(1, numericValue));
 };
 
-const normalizeStringPreference = (value: unknown, fallback: string): string =>
-  typeof value === 'string' ? value.trim() : fallback;
-
-const normalizeOllamaEndpoint = (value: unknown): string => {
-  const trimmedValue = typeof value === 'string' ? value.trim() : '';
-  return trimmedValue || DEFAULT_OLLAMA_ENDPOINT;
+const normalizeNewProjectColorManagement = (value: unknown): ProjectColorManagement => {
+  try {
+    return cloneProjectColorManagement(assertProjectColorManagement(value));
+  } catch {
+    return createDefaultProjectColorManagement();
+  }
 };
 
 const cloneRgbTriplet = (value: [number, number, number]): [number, number, number] => [
@@ -364,6 +388,7 @@ const normalizePaintBrushSettings = (value: unknown): PaintBrushSettings => {
       256,
     ),
     softness: clampPercent(candidate.softness, DEFAULT_PAINT_BRUSH_SETTINGS.softness),
+    spacing: clampPositiveInteger(candidate.spacing, DEFAULT_PAINT_BRUSH_SETTINGS.spacing, 1, 200),
     opacity: clampPercent(candidate.opacity, DEFAULT_PAINT_BRUSH_SETTINGS.opacity),
     color: isNormalizedRgbTriplet(candidate.color)
       ? cloneRgbTriplet(candidate.color)
@@ -393,11 +418,6 @@ const numberField = (defaultValue: number): PreferenceField<number> => ({
   normalize: (v) => (typeof v === 'number' ? v : defaultValue),
 });
 
-const stringField = (defaultValue: string): PreferenceField<string> => ({
-  defaultValue,
-  normalize: (v) => (typeof v === 'string' ? v.trim() : defaultValue),
-});
-
 const enumField = <T extends string>(
   defaultValue: T,
   validValues: readonly T[],
@@ -418,16 +438,19 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
   thumbnailMode: enumField('live' as ThumbnailMode, ['live', 'static', 'off'] as const),
   flowPanelHeight: numberField(50),
   uiStyle: enumField('glass' as 'glass' | 'solid', ['glass', 'solid'] as const),
-  editorPanelWidth: customField(EditorPanelWidth.DEFAULT, (v) => clampEditorPanelWidth(v)),
+  componentStyle: enumField('glass' as ComponentStyle, ['glass', 'flat'] as const),
+  editorPanelWidth: customField(EditorPanelWidth.DEFAULT, (v) => clampEditor(v, EditorPanelWidth)),
   editorTimelineHeight: customField(EditorTimelineHeight.DEFAULT, (v) =>
-    clampEditorTimelineHeight(v),
+    clampEditor(v, EditorTimelineHeight),
   ),
-  editorSubPanelWidth: customField(EditorSubPanelWidth.DEFAULT, (v) => clampEditorSubPanelWidth(v)),
+  editorSubPanelWidth: customField(EditorSubPanelWidth.DEFAULT, (v) =>
+    clampEditor(v, EditorSubPanelWidth),
+  ),
   editorSubPanelHeight: customField(EditorSubPanelHeight.DEFAULT, (v) =>
-    clampEditorSubPanelHeight(v),
+    clampEditor(v, EditorSubPanelHeight),
   ),
   editorItemsPanelPercent: customField(EditorItemsPanelPercent.DEFAULT, (v) =>
-    clampEditorItemsPanelPercent(v),
+    clampEditor(v, EditorItemsPanelPercent),
   ),
   codeEditorWordWrap: boolField(false),
   flowListDirection: enumField(
@@ -457,18 +480,12 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
   ),
   maxCacheSizeMB: customField(1024, (v) => (typeof v === 'number' ? v : 1024)),
   maxCachedFrames: customField(MaxCachedFrames.DEFAULT, (v) => clampMaxCachedFrames(v)),
-  geminiApiKey: stringField(''),
-  openAiApiKey: stringField(''),
-  openAiBaseUrl: customField(DEFAULT_OPENAI_BASE_URL, (v) =>
-    normalizeOpenAiBaseUrl(normalizeStringPreference(v, DEFAULT_OPENAI_BASE_URL)),
-  ),
-  ollamaEndpoint: customField(DEFAULT_OLLAMA_ENDPOINT, (v) => normalizeOllamaEndpoint(v)),
   aiTaskRoutes: customField(
     {
-      assistantChat: { provider: 'gemini', model: '' },
-      shaderGeneration: { provider: 'gemini', model: '' },
-      shaderPromptTools: { provider: 'gemini', model: '' },
-      imagePromptTools: { provider: 'gemini', model: '' },
+      assistantChat: { provider: 'ollama', model: '' },
+      shaderGeneration: { provider: 'ollama', model: '' },
+      shaderPromptTools: { provider: 'ollama', model: '' },
+      imagePromptTools: { provider: 'ollama', model: '' },
     } as AiTaskRoutes,
     (v) => normalizeAiTaskRoutes(v),
   ),
@@ -478,13 +495,9 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
   agentMaxSubagentSpawns: customField(AgentMaxSubagentSpawns.DEFAULT, (v) =>
     clampAgentMaxSubagentSpawns(v),
   ),
-  comfyEndpoint: customField(DEFAULT_COMFY_ENDPOINT, (v) =>
-    normalizeComfyEndpoint(typeof v === 'string' ? v : DEFAULT_COMFY_ENDPOINT),
+  newProjectColorManagement: customField(createDefaultProjectColorManagement(), (v) =>
+    normalizeNewProjectColorManagement(v),
   ),
-  ocioConfigName: customField(DEFAULT_OCIO_CONFIG_NAME, (v) => {
-    const value = normalizeStringPreference(v, DEFAULT_OCIO_CONFIG_NAME);
-    return value.startsWith('ocio://') ? value : `ocio://${value}`;
-  }),
   comfyMissingModelDetailsVisible: boolField(true),
   enableToolSorting: boolField(true),
   toolUsageCounts: customField({} as Record<string, number>, (v) =>
@@ -503,6 +516,19 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
   rotoMotionBlurPathVisible: boolField(true),
   rotoMotionTrailFrames: customField(RotoTrailFrames.DEFAULT, (v) => clampRotoTrailFrames(v)),
   rotoMotionBlurInteractivePreviewEnabled: boolField(true),
+  rotoFrameChangePreviewEnabled: boolField(true),
+  rotoPreviewRefineDelayMs: customField(
+    RotoPreviewRefineDelay.DEFAULT,
+    clampRotoPreviewRefineDelay,
+  ),
+  rotoPlaybackPreviewMode: enumField(
+    'auto' as RotoPlaybackPreviewMode,
+    ['auto', 'optimized', 'full'] as const,
+  ),
+  rotoInteractivePreviewMaxDimension: customField(
+    RotoInteractivePreviewSize.DEFAULT,
+    clampRotoInteractivePreviewSize,
+  ),
   rotoMotionBlurInteractivePreviewSamples: customField(
     ROTO_MOTION_BLUR_INTERACTIVE_DEFAULT_SAMPLES,
     (v) =>
@@ -540,9 +566,21 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
     'all' as PaintStrokePathsMode,
     ['all', 'selected_layer'] as const,
   ),
+  viewportBackgroundMode: enumField(
+    'none' as ViewportBackgroundMode,
+    ['none', 'checkerboard', 'grid', 'custom'] as const,
+  ),
+  viewportBackgroundColor: customField([0.08, 0.08, 0.09] as [number, number, number], (v) =>
+    isNormalizedRgbTriplet(v) ? v : [0.08, 0.08, 0.09],
+  ),
   viewportInterpolation: enumField(
     'nearest' as 'nearest' | 'linear',
     ['nearest', 'linear'] as const,
+  ),
+  autoDetectViewportView: boolField(true),
+  timelineCacheMode: enumField(
+    'consolidated' as TimelineCacheMode,
+    ['consolidated', 'separate'] as const,
   ),
   onnxRuntimeWebGpuEnabled: boolField(true),
   onnxRuntimeWasmEnabled: boolField(true),
@@ -610,4 +648,5 @@ export const initTheme = () => {
   const prefs = loadPreferences();
   applyTheme(prefs.primaryColor);
   applyUiStyle(prefs.uiStyle);
+  applyComponentStyle(prefs.componentStyle);
 };

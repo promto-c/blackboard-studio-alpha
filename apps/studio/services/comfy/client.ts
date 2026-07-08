@@ -51,6 +51,27 @@ export interface ComfyImageWorkflowMetadata {
   source: 'png' | 'webp' | 'exif' | 'unknown';
 }
 
+export class ComfyPromptInputValidationError extends Error {
+  readonly invalidImageNames: string[];
+  readonly promptId?: string;
+
+  constructor(message: string, invalidImageNames: string[], promptId?: string) {
+    super(message);
+    this.name = 'ComfyPromptInputValidationError';
+    this.invalidImageNames = invalidImageNames;
+    this.promptId = promptId;
+  }
+}
+
+export const isComfyPromptInputValidationError = (
+  error: unknown,
+): error is ComfyPromptInputValidationError =>
+  error instanceof ComfyPromptInputValidationError ||
+  (!!error &&
+    typeof error === 'object' &&
+    (error as { name?: unknown }).name === 'ComfyPromptInputValidationError' &&
+    Array.isArray((error as { invalidImageNames?: unknown }).invalidImageNames));
+
 type JsonObject = Record<string, unknown>;
 type ComfyObjectInfo = Record<string, JsonObject>;
 type GraphNodeId = string | number;
@@ -177,7 +198,11 @@ const getErrorMessageFromBody = (body: unknown, fallback: string): string => {
   if (typeof body === 'string' && body.trim()) return body;
   if (typeof body === 'object' && body !== null) {
     const bodyObject = body as { error?: unknown; message?: unknown };
-    const message = bodyObject.error ?? bodyObject.message;
+    const error = bodyObject.error;
+    const message =
+      typeof error === 'object' && error !== null && 'message' in error
+        ? (error as { message?: unknown }).message
+        : (error ?? bodyObject.message);
     if (typeof message === 'string' && message.trim()) return message;
   }
   return fallback;
@@ -185,6 +210,54 @@ const getErrorMessageFromBody = (body: unknown, fallback: string): string => {
 
 const getErrorMessage = async (response: Response, fallback: string): Promise<string> =>
   getErrorMessageFromBody(await readJson(response), fallback);
+
+const INVALID_COMFY_IMAGE_FILE_PATTERN = /Invalid image file:\s*([^\n\r]+)/gi;
+
+const normalizeInvalidComfyImageName = (value: string): string =>
+  value
+    .trim()
+    .replace(/^["'`]+|["'`.,;:]+$/g, '')
+    .trim();
+
+const collectInvalidComfyImageNames = (value: unknown, names = new Set<string>()): Set<string> => {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(INVALID_COMFY_IMAGE_FILE_PATTERN)) {
+      const imageName = normalizeInvalidComfyImageName(match[1] ?? '');
+      if (imageName) names.add(imageName);
+    }
+    return names;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectInvalidComfyImageNames(item, names));
+    return names;
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    Object.values(value).forEach((item) => collectInvalidComfyImageNames(item, names));
+  }
+
+  return names;
+};
+
+const createComfyPromptInputValidationError = (
+  body: unknown,
+  fallback: string,
+  promptId?: string,
+): ComfyPromptInputValidationError | null => {
+  const message = getErrorMessageFromBody(body, fallback);
+  const invalidImageNames = [...collectInvalidComfyImageNames(body)];
+  return invalidImageNames.length > 0
+    ? new ComfyPromptInputValidationError(message, invalidImageNames, promptId)
+    : null;
+};
+
+const createComfyPromptQueueError = (body: unknown, fallback: string): Error => {
+  return (
+    createComfyPromptInputValidationError(body, fallback) ??
+    new Error(getErrorMessageFromBody(body, fallback))
+  );
+};
 
 const getBrowserConnectionErrorMessage = (endpoint: string): string =>
   [
@@ -761,8 +834,7 @@ const getDynamicComboOptionInputDefinitions = (option: JsonObject): Map<string, 
   return definitions;
 };
 
-const getPromptInputNameForGraphInput = (_info: JsonObject, graphInputName: string): string =>
-  graphInputName;
+const getPromptInputNameForGraphInput = (graphInputName: string): string => graphInputName;
 
 const isWidgetInputDefinition = (definition: unknown): boolean => {
   if (!Array.isArray(definition) || definition.length === 0) return false;
@@ -783,7 +855,7 @@ const getGraphWidgetInputNames = (node: ComfyGraphNode): string[] =>
     .map((input) => input.widget?.name ?? input.name)
     .filter((name): name is string => typeof name === 'string' && name.trim().length > 0);
 
-const getWidgetInputNames = (_node: ComfyGraphNode, info: JsonObject): string[] =>
+const getWidgetInputNames = (info: JsonObject): string[] =>
   getOrderedInputNames(info).filter((name) => {
     const definition = getObjectInfoInputDefinition(info, name);
     return isWidgetInputDefinition(definition);
@@ -1621,7 +1693,7 @@ const applyObjectInfoWidgetValues = (
   linkedInputNames: Set<string>,
   widgetValues: unknown[],
 ): boolean => {
-  const widgetNames = getWidgetInputNames(node, info);
+  const widgetNames = getWidgetInputNames(info);
   if (widgetNames.length === 0) return false;
 
   let valueIndex = getFirstCompatibleWidgetValueIndex(widgetNames, info, widgetValues);
@@ -1688,7 +1760,7 @@ const applyWidgetValues = (
 
   if (isJsonObject(widgetValues)) {
     for (const [name, value] of Object.entries(widgetValues)) {
-      const promptInputName = getPromptInputNameForGraphInput(info, name);
+      const promptInputName = getPromptInputNameForGraphInput(name);
       if (!linkedInputNames.has(name) && !linkedInputNames.has(promptInputName)) {
         inputs[promptInputName] = value;
       }
@@ -1728,7 +1800,7 @@ const convertGraphNode = (context: ComfyGraphContext, node: ComfyGraphNode): voi
     const link = resolveGraphLink(context, input.link);
     if (!link) continue;
 
-    const promptInputName = getPromptInputNameForGraphInput(info, input.name);
+    const promptInputName = getPromptInputNameForGraphInput(input.name);
     inputs[promptInputName] = link;
     linkedInputNames.add(input.name);
     linkedInputNames.add(promptInputName);
@@ -2650,11 +2722,79 @@ export const testComfyConnection = async (endpoint: string): Promise<void> => {
   );
 };
 
-export const interruptComfyPrompt = async (_promptId: string, endpoint: string): Promise<void> => {
+export const createComfyPromptId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  const randomHex = (length: number): string =>
+    Array.from({ length }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+
+  return [
+    randomHex(8),
+    randomHex(4),
+    `4${randomHex(3)}`,
+    `${(8 + Math.floor(Math.random() * 4)).toString(16)}${randomHex(3)}`,
+    randomHex(12),
+  ].join('-');
+};
+
+export const interruptComfyPrompt = async (promptId: string, endpoint: string): Promise<void> => {
+  if (!promptId) return;
+
   try {
-    await fetchComfy(endpoint, '/interrupt', { method: 'POST' });
+    await fetchComfy(endpoint, '/interrupt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt_id: promptId }),
+    });
   } catch {
     console.warn('Failed to interrupt prompt in ComfyUI');
+  }
+};
+
+export const deleteComfyQueuedPrompt = async (
+  promptId: string,
+  endpoint: string,
+): Promise<void> => {
+  if (!promptId) return;
+
+  try {
+    await fetchComfy(endpoint, '/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delete: [promptId] }),
+    });
+  } catch {
+    console.warn('Failed to remove queued prompt in ComfyUI');
+  }
+};
+
+export const cancelComfyPrompt = async (promptId: string, endpoint: string): Promise<void> => {
+  if (!promptId) return;
+
+  try {
+    const response = await fetchComfy(
+      endpoint,
+      `/api/jobs/${encodeURIComponent(promptId)}/cancel`,
+      {
+        method: 'POST',
+      },
+    );
+    if (response.ok) return;
+  } catch {
+    // Older ComfyUI servers may not expose the job API; fall back below.
+  }
+
+  await deleteComfyQueuedPrompt(promptId, endpoint);
+  await interruptComfyPrompt(promptId, endpoint);
+};
+
+export const clearComfyQueue = async (endpoint: string): Promise<void> => {
+  try {
+    await fetchComfy(endpoint, '/queue', { method: 'POST', body: JSON.stringify({ clear: true }) });
+  } catch {
+    console.warn('Failed to clear ComfyUI queue');
   }
 };
 
@@ -2663,11 +2803,13 @@ export const queueComfyPrompt = async ({
   prompt,
   clientId,
   extraData,
+  promptId,
 }: {
   endpoint: string;
   prompt: JsonObject;
   clientId: string;
   extraData?: JsonObject;
+  promptId?: string;
 }): Promise<ComfyPromptQueueResult> => {
   const response = await fetchComfy(endpoint, '/prompt', {
     method: 'POST',
@@ -2675,18 +2817,29 @@ export const queueComfyPrompt = async ({
     body: JSON.stringify({
       prompt,
       client_id: clientId,
+      ...(promptId ? { prompt_id: promptId } : {}),
       ...(extraData ? { extra_data: extraData } : {}),
     }),
   });
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'ComfyUI rejected the workflow prompt.'));
+    throw createComfyPromptQueueError(
+      await readJson(response),
+      'ComfyUI rejected the workflow prompt.',
+    );
   }
 
   const body = await readJson(response);
   if (!isJsonObject(body) || typeof body.prompt_id !== 'string') {
     throw new Error('ComfyUI returned an unexpected queue response.');
   }
+
+  const inputValidationError = createComfyPromptInputValidationError(
+    body.node_errors,
+    'ComfyUI accepted the prompt, but ignored one or more output nodes because an input image was missing.',
+    body.prompt_id,
+  );
+  if (inputValidationError) throw inputValidationError;
 
   return {
     promptId: body.prompt_id,

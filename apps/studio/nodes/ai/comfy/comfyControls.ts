@@ -35,6 +35,12 @@ const toTitleCase = (value: string): string =>
 export const isSeedLikeComfyInput = (inputName: string): boolean =>
   inputName.toLowerCase().includes('seed');
 
+const isDefaultVisibleComfyControl = (
+  key: string,
+  inputName: string,
+  defaultControlKeys: Set<string> | null,
+): boolean => !defaultControlKeys || defaultControlKeys.has(key) || isSeedLikeComfyInput(inputName);
+
 const normalizeComfyFieldText = (value: string): string =>
   value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -208,10 +214,11 @@ export const getComfyWorkflowControlCandidates = (
       return Object.entries(inputs)
         .filter((entry): entry is [string, ComfyWorkflowControlValue] => isControlValue(entry[1]))
         .map(([inputName, value]) => {
+          const key = getComfyControlKey(nodeId, inputName);
           const range = typeof value === 'number' ? getNumericRange(value, inputName) : {};
 
           return {
-            key: getComfyControlKey(nodeId, inputName),
+            key,
             nodeId,
             classType: promptNode.class_type as string,
             inputName,
@@ -222,9 +229,8 @@ export const getComfyWorkflowControlCandidates = (
               inputName,
             }),
             value,
-            defaultVisible:
-              !defaultControlKeys || defaultControlKeys.has(getComfyControlKey(nodeId, inputName)),
-            options: optionsByControlKey.get(getComfyControlKey(nodeId, inputName)),
+            defaultVisible: isDefaultVisibleComfyControl(key, inputName, defaultControlKeys),
+            options: optionsByControlKey.get(key),
             ...range,
           };
         });

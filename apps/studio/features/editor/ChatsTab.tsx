@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import { usePreferences } from '@/state/preferencesContext';
+import { usePreferencesNavigation } from '@/features/projects/preferencesNavigation';
 import { formatHotkeyCombo, isMacPlatform } from '@/hotkeys/strings';
 import { getAiTaskRouteError, resolveAiTaskRoute } from '@/utils/aiRouting';
 import { getAiProviderLabel } from '@/utils/aiProviders';
@@ -47,8 +48,12 @@ import type {
   NodePositions,
   PersistedProjectState,
 } from '@blackboard/types';
-import { CodeBlock, ResizableScrollTextarea, ScrollArea, Spinner } from '@blackboard/ui';
+import { Badge, CodeBlock, ResizableScrollTextarea, ScrollArea, Spinner } from '@blackboard/ui';
 import { useDebugLog } from '@/utils/debugLogContext';
+import {
+  SlidingSegmentedControl,
+  type SlidingSegmentedControlOption,
+} from '@/components/SlidingSegmentedControl';
 import SubPanelHeader from './SubPanelHeader';
 import ChatMarkdown from './ChatMarkdown';
 import {
@@ -63,6 +68,23 @@ import {
   type QueuedDraft,
 } from './chatAttachments';
 
+type ChatExecutionMode = 'chat' | 'agent';
+
+const CHAT_EXECUTION_MODE_OPTIONS: SlidingSegmentedControlOption<ChatExecutionMode>[] = [
+  {
+    value: 'chat',
+    label: 'Chat',
+    Icon: Icons.ChatBubble,
+    title: 'Chat mode',
+  },
+  {
+    value: 'agent',
+    label: 'Agent',
+    Icon: Icons.Branch,
+    title: 'Agent mode',
+  },
+];
+
 function ScopeChip({
   children,
   tone = 'neutral',
@@ -70,19 +92,10 @@ function ScopeChip({
   children: React.ReactNode;
   tone?: 'neutral' | 'accent' | 'success';
 }) {
-  const toneClassName =
-    tone === 'accent'
-      ? 'border-primary-400/25 bg-primary-500/10 text-primary-100'
-      : tone === 'success'
-        ? 'border-green-400/25 bg-green-500/10 text-green-100'
-        : 'border-white/10 bg-white/[0.04] text-gray-300';
-
   return (
-    <span
-      className={`inline-flex min-w-0 max-w-full items-center overflow-hidden whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${toneClassName}`}
-    >
-      <span className="min-w-0 truncate">{children}</span>
-    </span>
+    <Badge variant={tone} size="sm" uppercase className="font-semibold">
+      {children}
+    </Badge>
   );
 }
 
@@ -138,12 +151,11 @@ function KeyHint({ keys, label = 'Send with' }: { keys: string[]; label?: string
     <span className="hidden shrink-0 items-center gap-1 text-[10px] text-gray-500 sm:inline-flex">
       <span>{label}</span>
       {keys.map((key) => (
-        <span
-          key={key}
-          className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-medium leading-none text-gray-400"
-        >
-          {key}
-        </span>
+        <React.Fragment key={key}>
+          <Badge size="sm" noBorder className="!bg-white/[0.04] !text-gray-400 leading-none">
+            {key}
+          </Badge>
+        </React.Fragment>
       ))}
     </span>
   );
@@ -159,14 +171,15 @@ function MessageMetaChip({
   const title = typeof children === 'string' ? children : undefined;
 
   return (
-    <span
+    <Badge
+      size="sm"
+      truncate
+      noBorder
       title={title}
-      className={`inline-flex min-w-0 max-w-full items-center overflow-hidden whitespace-nowrap rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-medium normal-case tracking-normal text-gray-300 ${
-        mono ? 'font-mono' : ''
-      }`}
+      className={`!bg-white/[0.04] !text-gray-300 ${mono ? 'font-mono' : ''}`}
     >
-      <span className="min-w-0 truncate">{children}</span>
-    </span>
+      {children}
+    </Badge>
   );
 }
 
@@ -936,11 +949,9 @@ function AgentRunCard({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="min-w-0 flex-1 truncate font-medium text-green-50">{run.title}</span>
-              <span
-                className={`inline-flex shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${statusTone}`}
-              >
+              <Badge size="sm" uppercase shrink className={`font-semibold ${statusTone}`}>
                 {harnessStatusLabel}
-              </span>
+              </Badge>
             </div>
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] text-green-100/70">
               <span className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-green-200/10 bg-black/10 px-1.5 py-0.5">
@@ -950,31 +961,35 @@ function AgentRunCard({
                 </span>
               </span>
               {isActiveBranch ? (
-                <span className="rounded-md border border-green-200/10 bg-black/10 px-1.5 py-0.5">
+                <Badge size="sm" className="!bg-black/10 !text-green-100/70 border-green-200/10">
                   Current
-                </span>
+                </Badge>
               ) : null}
-              <span
-                className={`rounded-md border px-1.5 py-0.5 ${
+              <Badge
+                size="sm"
+                className={
                   reviewState.isSatisfied
-                    ? 'border-cyan-200/10 bg-cyan-400/10 text-cyan-50/75'
-                    : 'border-amber-300/20 bg-amber-500/10 text-amber-50/85'
-                }`}
+                    ? '!border-cyan-200/10 !bg-cyan-400/10 !text-cyan-50/75'
+                    : '!border-amber-300/20 !bg-amber-500/10 !text-amber-50/85'
+                }
               >
                 {reviewState.label}
-              </span>
+              </Badge>
             </div>
             {!compact ? (
               <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-green-50/75">
-                <span className="rounded-md border border-green-200/10 bg-black/10 px-1.5 py-0.5">
+                <Badge size="sm" className="!bg-black/10 !text-green-100/70 border-green-200/10">
                   {ownerLabel}
-                </span>
-                <span className="rounded-md border border-cyan-200/10 bg-cyan-400/10 px-1.5 py-0.5 text-cyan-50/75">
+                </Badge>
+                <Badge size="sm" className="!bg-cyan-400/10 !text-cyan-50/75 border-cyan-200/10">
                   {userAccessLabel}
-                </span>
-                <span className="rounded-md border border-primary-200/10 bg-primary-400/10 px-1.5 py-0.5 text-primary-50/75">
+                </Badge>
+                <Badge
+                  size="sm"
+                  className="!bg-primary-400/10 !text-primary-50/75 border-primary-200/10"
+                >
                   Next: {getAgentRunNextActionLabel(run.recommendedNextAction)}
-                </span>
+                </Badge>
               </div>
             ) : null}
             {compact || visibleSteps.length === 0 ? null : (
@@ -995,9 +1010,14 @@ function AgentRunCard({
                       />
                       <span className="min-w-0 flex-1 truncate text-green-50/85">{step.title}</span>
                       {step.kind ? (
-                        <span className="shrink-0 rounded border border-white/10 bg-white/[0.04] px-1 py-0.5 text-[9px] uppercase tracking-[0.1em] text-green-100/40">
+                        <Badge
+                          size="sm"
+                          uppercase
+                          shrink
+                          className="!px-1 !bg-white/[0.04] !text-green-100/40 border-white/10 tracking-[0.1em]"
+                        >
                           {step.kind}
-                        </span>
+                        </Badge>
                       ) : null}
                       {step.reviewAssetIds?.length ? (
                         <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-cyan-200/10 bg-cyan-400/10 px-1.5 py-0.5 text-[10px] text-cyan-50/75">
@@ -1020,9 +1040,14 @@ function AgentRunCard({
                                   {question.prompt}
                                 </p>
                                 {isAnswered ? (
-                                  <span className="shrink-0 rounded border border-green-200/10 bg-green-400/10 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.1em] text-green-50/70">
+                                  <Badge
+                                    size="sm"
+                                    uppercase
+                                    shrink
+                                    className="!bg-green-400/10 !text-green-50/70 border-green-200/10 tracking-[0.1em]"
+                                  >
                                     Answered
-                                  </span>
+                                  </Badge>
                                 ) : null}
                               </div>
                               {isAnswered ? (
@@ -2107,16 +2132,9 @@ function ChatsTab() {
   const projectId = useEditorSelector((state) => state.projectId);
   const projectBranches = useEditorSelector((state) => state.projectBranches);
   const selectedNode = useSelectedEditorNode();
-  const {
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
-    ollamaEndpoint,
-    aiTaskRoutes,
-    integrationConnections,
-    agentMaxSubagentSpawns,
-    debugMode,
-  } = usePreferences();
+  const { aiTaskRoutes, integrationConnections, agentMaxSubagentSpawns, debugMode } =
+    usePreferences();
+  const { openPreferences } = usePreferencesNavigation();
   const { entries: debugLogEntries } = useDebugLog();
 
   const latestAiRequestEvents = useMemo(
@@ -2276,20 +2294,12 @@ function ChatsTab() {
   const activeRouteError = getAiTaskRouteError(activeRouteTask, {
     aiTaskRoutes,
     integrationConnections,
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
-    ollamaEndpoint,
   });
   const activeRoute = activeRouteError
     ? null
     : resolveAiTaskRoute(activeRouteTask, {
         aiTaskRoutes,
         integrationConnections,
-        geminiApiKey,
-        openAiApiKey,
-        openAiBaseUrl,
-        ollamaEndpoint,
       });
   const canToggleThinkingMode = activeRoute?.provider === 'ollama';
   const canCreateNodeFromActiveChat = Boolean(
@@ -2350,18 +2360,12 @@ function ChatsTab() {
           const route = resolveAiTaskRoute('shaderGeneration', {
             aiTaskRoutes,
             integrationConnections,
-            geminiApiKey,
-            openAiApiKey,
-            openAiBaseUrl,
-            ollamaEndpoint,
           });
           await startShaderChat(
             targetNode.id,
             nextPrompt,
             {
               provider: route.provider,
-              geminiApiKey: route.geminiApiKey,
-              geminiModel: route.geminiModel,
               openAiApiKey: route.openAiApiKey,
               openAiBaseUrl: route.openAiBaseUrl,
               openAiModel: route.openAiModel,
@@ -2380,16 +2384,10 @@ function ChatsTab() {
           const route = resolveAiTaskRoute('imagePromptTools', {
             aiTaskRoutes,
             integrationConnections,
-            geminiApiKey,
-            openAiApiKey,
-            openAiBaseUrl,
-            ollamaEndpoint,
           });
 
           await continueAiChatPromptPreview(chatForPrompt.id, nextPrompt, {
             provider: route.provider,
-            geminiApiKey: route.geminiApiKey,
-            geminiModel: route.geminiModel,
             openAiApiKey: route.openAiApiKey,
             openAiBaseUrl: route.openAiBaseUrl,
             openAiModel: route.openAiModel,
@@ -2402,10 +2400,6 @@ function ChatsTab() {
         const route = resolveAiTaskRoute('assistantChat', {
           aiTaskRoutes,
           integrationConnections,
-          geminiApiKey,
-          openAiApiKey,
-          openAiBaseUrl,
-          ollamaEndpoint,
         });
         const agentSettings =
           isAgentModeEnabled || options.forceAgentMode
@@ -2471,8 +2465,6 @@ function ChatsTab() {
           nextPrompt,
           {
             provider: route.provider,
-            geminiApiKey: route.geminiApiKey,
-            geminiModel: route.geminiModel,
             openAiApiKey: route.openAiApiKey,
             openAiBaseUrl: route.openAiBaseUrl,
             openAiModel: route.openAiModel,
@@ -2512,11 +2504,7 @@ function ChatsTab() {
       aiTaskRoutes,
       integrationConnections,
       agentMaxSubagentSpawns,
-      geminiApiKey,
       nodes,
-      openAiApiKey,
-      openAiBaseUrl,
-      ollamaEndpoint,
       pendingContextNode,
       canToggleThinkingMode,
       isThinkingModeEnabled,
@@ -2943,10 +2931,6 @@ function ChatsTab() {
     const routeError = getAiTaskRouteError('assistantChat', {
       aiTaskRoutes,
       integrationConnections,
-      geminiApiKey,
-      openAiApiKey,
-      openAiBaseUrl,
-      ollamaEndpoint,
     });
     if (routeError) {
       setComposerError(routeError);
@@ -2956,10 +2940,6 @@ function ChatsTab() {
     const route = resolveAiTaskRoute('assistantChat', {
       aiTaskRoutes,
       integrationConnections,
-      geminiApiKey,
-      openAiApiKey,
-      openAiBaseUrl,
-      ollamaEndpoint,
     });
     const canRunSelfFix = route.provider === 'ollama' && Boolean(run.branchId);
     const reviewPolicy = agentSelfReviewPolicy;
@@ -2994,8 +2974,6 @@ function ChatsTab() {
             buildSelfReviewPrompt(passIndex),
             {
               provider: route.provider,
-              geminiApiKey: route.geminiApiKey,
-              geminiModel: route.geminiModel,
               openAiApiKey: route.openAiApiKey,
               openAiBaseUrl: route.openAiBaseUrl,
               openAiModel: route.openAiModel,
@@ -3343,10 +3321,6 @@ function ChatsTab() {
       const promptRouteError = getAiTaskRouteError('imagePromptTools', {
         aiTaskRoutes,
         integrationConnections,
-        geminiApiKey,
-        openAiApiKey,
-        openAiBaseUrl,
-        ollamaEndpoint,
       });
       if (promptRouteError) {
         setComposerError(promptRouteError);
@@ -3356,17 +3330,11 @@ function ChatsTab() {
       const route = resolveAiTaskRoute('imagePromptTools', {
         aiTaskRoutes,
         integrationConnections,
-        geminiApiKey,
-        openAiApiKey,
-        openAiBaseUrl,
-        ollamaEndpoint,
       });
 
       setComposerError(null);
       await regenerateAiChatPromptPreview(chat.id, message.id, {
         provider: route.provider,
-        geminiApiKey: route.geminiApiKey,
-        geminiModel: route.geminiModel,
         openAiApiKey: route.openAiApiKey,
         openAiBaseUrl: route.openAiBaseUrl,
         openAiModel: route.openAiModel,
@@ -3474,10 +3442,6 @@ function ChatsTab() {
         ? getAiTaskRouteError('imagePromptTools', {
             aiTaskRoutes,
             integrationConnections,
-            geminiApiKey,
-            openAiApiKey,
-            openAiBaseUrl,
-            ollamaEndpoint,
           })
         : activeRouteError;
     const canRegenerateMessage =
@@ -3745,28 +3709,49 @@ function ChatsTab() {
         {gradePreviewArtifact ? (
           <PreviewArtifactPanel color="yellow">
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-amber-100">
-              <span className="rounded-full border border-amber-300/20 bg-amber-200/10 px-2 py-1">
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-amber-300/20 !bg-amber-200/10 !text-amber-100"
+              >
                 Grade Preview
-              </span>
+              </Badge>
               {activeChat?.id === chat.id && activeGradePreview ? (
-                <span className="rounded-full border border-amber-300/20 bg-amber-200/10 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-amber-50">
+                <Badge
+                  size="sm"
+                  uppercase
+                  noBorder
+                  className="!px-2 !py-1 text-[10px] !border-amber-300/20 !bg-amber-200/10 !text-amber-50"
+                >
                   Staged
-                </span>
+                </Badge>
               ) : null}
             </div>
             <p className="text-[13px] leading-5 text-amber-50">
               {gradePreviewArtifact.summary || 'A staged Grade preview is ready for review.'}
             </p>
             <div className="flex flex-wrap gap-1.5 text-[11px] text-amber-50/90">
-              <span className="rounded-full border border-amber-300/15 bg-black/10 px-2 py-1">
-                Brightness {gradePreviewArtifact.values.brightness}
-              </span>
-              <span className="rounded-full border border-amber-300/15 bg-black/10 px-2 py-1">
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-amber-300/15 !bg-black/10 !text-amber-50/90"
+              >
+                Exposure {gradePreviewArtifact.values.exposure} stops
+              </Badge>
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-amber-300/15 !bg-black/10 !text-amber-50/90"
+              >
                 Contrast {gradePreviewArtifact.values.contrast}
-              </span>
-              <span className="rounded-full border border-amber-300/15 bg-black/10 px-2 py-1">
+              </Badge>
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-amber-300/15 !bg-black/10 !text-amber-50/90"
+              >
                 Saturation {gradePreviewArtifact.values.saturation}
-              </span>
+              </Badge>
             </div>
             {activeChat?.id === chat.id && activeGradePreview ? (
               <div className="flex flex-wrap gap-2">
@@ -3791,12 +3776,20 @@ function ChatsTab() {
         {promptPreviewArtifact ? (
           <PreviewArtifactPanel color="cyan">
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-cyan-50">
-              <span className="rounded-full border border-cyan-200/20 bg-cyan-100/[0.08] px-2 py-1">
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-cyan-200/20 !bg-cyan-100/[0.08] !text-cyan-50"
+              >
                 Prompt Draft
-              </span>
-              <span className="rounded-full border border-cyan-200/10 bg-black/10 px-2 py-1 text-cyan-100/85">
+              </Badge>
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-cyan-200/10 !bg-black/10 !text-cyan-100/85"
+              >
                 {promptPreviewArtifact.target.controlLabel}
-              </span>
+              </Badge>
             </div>
             <p className="text-[13px] leading-5 text-cyan-50">
               {promptPreviewArtifact.summary ||
@@ -3877,16 +3870,28 @@ function ChatsTab() {
         {renderPreviewArtifact ? (
           <PreviewArtifactPanel color="skyblue">
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-cyan-50">
-              <span className="rounded-full border border-cyan-200/20 bg-cyan-100/[0.08] px-2 py-1">
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-cyan-200/20 !bg-cyan-100/[0.08] !text-cyan-50"
+              >
                 Render Preview
-              </span>
-              <span className="rounded-full border border-cyan-200/10 bg-black/10 px-2 py-1 text-cyan-100/85">
+              </Badge>
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-cyan-200/10 !bg-black/10 !text-cyan-100/85"
+              >
                 Frame {renderPreviewArtifact.frame}
-              </span>
+              </Badge>
               {renderPreviewArtifact.nodeName ? (
-                <span className="rounded-full border border-cyan-200/10 bg-black/10 px-2 py-1 text-cyan-100/85">
+                <Badge
+                  size="sm"
+                  noBorder
+                  className="!px-2 !py-1 !border-cyan-200/10 !bg-black/10 !text-cyan-100/85"
+                >
                   {renderPreviewArtifact.nodeName}
-                </span>
+                </Badge>
               ) : null}
             </div>
             <div className="overflow-hidden rounded-lg border border-white/[0.08] bg-black/20">
@@ -3905,16 +3910,28 @@ function ChatsTab() {
         {renderComparisonArtifact ? (
           <PreviewArtifactPanel color="skyblue">
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-cyan-50">
-              <span className="rounded-full border border-cyan-200/20 bg-cyan-100/[0.08] px-2 py-1">
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-cyan-200/20 !bg-cyan-100/[0.08] !text-cyan-50"
+              >
                 Render Comparison
-              </span>
-              <span className="rounded-full border border-cyan-200/10 bg-black/10 px-2 py-1 text-cyan-100/85">
+              </Badge>
+              <Badge
+                size="sm"
+                noBorder
+                className="!px-2 !py-1 !border-cyan-200/10 !bg-black/10 !text-cyan-100/85"
+              >
                 Frame {renderComparisonArtifact.after.frame}
-              </span>
+              </Badge>
               {renderComparisonArtifact.after.nodeName ? (
-                <span className="rounded-full border border-cyan-200/10 bg-black/10 px-2 py-1 text-cyan-100/85">
+                <Badge
+                  size="sm"
+                  noBorder
+                  className="!px-2 !py-1 !border-cyan-200/10 !bg-black/10 !text-cyan-100/85"
+                >
                   {renderComparisonArtifact.after.nodeName}
-                </span>
+                </Badge>
               ) : null}
             </div>
             <div className="grid gap-2 md:grid-cols-2">
@@ -4038,6 +4055,7 @@ function ChatsTab() {
     (!activeDraft.trim() && activeAttachments.length === 0) ||
     (activeChat?.feature === 'shader' && !isCustomShaderNode(activeChatNode)) ||
     Boolean(activeRouteError);
+  const visibleComposerError = composerError === activeRouteError ? null : composerError;
   const sendButtonLabel = isActiveChatGenerating ? 'Queue Message' : 'Send';
   const sendHotkeyLabel = isActiveChatGenerating ? 'Queue with' : 'Send with';
   const contextButtonNodeName = canClearContext
@@ -4264,22 +4282,28 @@ function ChatsTab() {
             </span>
           </div>
 
-          {composerError ? (
+          {visibleComposerError ? (
             <div
               data-selectable-text
               className="mb-2 rounded-md border border-red-500/20 bg-red-500/10 p-2 text-xs text-red-200"
             >
-              {composerError}
+              {visibleComposerError}
             </div>
           ) : null}
 
           {activeRouteError ? (
-            <div
-              data-selectable-text
-              className="mb-2 rounded-md border border-yellow-500/20 bg-yellow-500/10 p-2 text-xs text-yellow-100"
+            <button
+              type="button"
+              onClick={() => openPreferences({ section: 'integrations' })}
+              className="group mb-2 flex w-full items-center gap-2 rounded-lg bg-amber-400/[0.08] px-2.5 py-2 text-left text-xs text-amber-100 transition hover:bg-amber-400/[0.12] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/50"
+              aria-label={`${activeRouteError} Open Integrations preferences`}
+              title="Open Preferences > Integrations"
             >
-              {activeRouteError}
-            </div>
+              <Icons.ExclamationCircle className="h-4 w-4 shrink-0 text-amber-300/80" />
+              <span className="min-w-0 flex-1 truncate">{activeRouteError}</span>
+              <span className="shrink-0 font-medium text-amber-200">Open integrations</span>
+              <Icons.ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60 transition-transform group-hover:translate-x-0.5 group-hover:opacity-100" />
+            </button>
           ) : null}
 
           {isActiveChatGenerating || activeQueuedDraft ? (
@@ -4408,35 +4432,36 @@ function ChatsTab() {
                   <Icons.LightBulb className="h-3.5 w-3.5" />
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => setIsAgentModeEnabled((enabled) => !enabled)}
-                disabled={activeRouteTask !== 'assistantChat'}
-                aria-pressed={isAgentModeEnabled}
-                aria-label={isAgentModeEnabled ? 'Disable Agent Mode' : 'Enable Agent Mode'}
-                title={
-                  isAgentModeEffective
-                    ? `Agent Mode on: ${agentCapabilitySummary}`
-                    : activeRouteTask === 'assistantChat'
-                      ? 'Agent Mode off'
-                      : 'Agent Mode applies to assistant chats'
-                }
-                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-45 ${
-                  isAgentModeEffective
-                    ? 'border-green-400/30 bg-green-500/10 text-green-100 hover:bg-green-500/15'
-                    : 'border-white/[0.08] bg-white/[0.03] text-gray-500 hover:bg-white/[0.06] hover:text-gray-300'
-                }`}
-              >
-                <Icons.Branch className="h-3.5 w-3.5" />
-                <span>{isAgentModeEffective ? 'Agent' : 'Chat'}</span>
-              </button>
-              <p className="min-w-0 flex-1 truncate text-[11px] text-gray-500">
-                {activeRouteError
-                  ? activeRouteError
-                  : activeRoute
+              <SlidingSegmentedControl
+                options={CHAT_EXECUTION_MODE_OPTIONS.map((option) =>
+                  option.value === 'agent'
+                    ? {
+                        ...option,
+                        disabled: activeRouteTask !== 'assistantChat',
+                        title:
+                          activeRouteTask === 'assistantChat'
+                            ? `Agent mode: ${agentCapabilitySummary}`
+                            : 'Agent mode applies to assistant chats',
+                      }
+                    : option,
+                )}
+                value={isAgentModeEffective ? 'agent' : 'chat'}
+                onChange={(mode) => setIsAgentModeEnabled(mode === 'agent')}
+                activeWidth={64}
+                inactiveWidth={28}
+                height={28}
+                iconClassName="h-3.5 w-3.5"
+                labelMaxWidthClassName="max-w-10"
+              />
+              {activeRouteError ? (
+                <span className="min-w-0 flex-1" />
+              ) : (
+                <p className="min-w-0 flex-1 truncate text-[11px] text-gray-500">
+                  {activeRoute
                     ? `Using ${getAiProviderLabel(activeRoute.provider)}${activeRoute.model ? ` (${activeRoute.model})` : ''}.`
                     : 'Choose an AI route in Preferences > Integrations.'}
-              </p>
+                </p>
+              )}
               {!isSendDisabled ? <KeyHint keys={sendHotkeyKeys} label={sendHotkeyLabel} /> : null}
               <button
                 type="button"

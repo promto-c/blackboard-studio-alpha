@@ -44,22 +44,18 @@ describe('autoLayoutGraph output node identity', () => {
     const sceneNode = createSceneNode('scene-1');
     const imageNode = createImageNode('image-1');
 
-    const positions = computeAutoLayout([sceneNode, imageNode], [[imageNode]]);
+    const positions = computeAutoLayout([[imageNode]]);
 
     expect(positions[sceneNode.id]).toBeUndefined();
-    expect(positions[OUTPUT_NODE_ID]).toEqual({ x: -96, y: 212 });
+    expect(positions[OUTPUT_NODE_ID]).toEqual({ x: -96, y: 182 });
     expect(positions['@output']).toBeUndefined();
   });
 
   it('omits scene and keeps the canonical output node id at the end of the pipeline order', () => {
-    const sceneNode = createSceneNode('scene-1');
     const firstImageNode = createImageNode('image-1');
     const secondImageNode = createImageNode('image-2');
 
-    const pipelineOrder = buildPipelineOrder(
-      [sceneNode, firstImageNode, secondImageNode],
-      [[firstImageNode], [secondImageNode]],
-    );
+    const pipelineOrder = buildPipelineOrder([[firstImageNode], [secondImageNode]]);
 
     expect(pipelineOrder).toEqual([firstImageNode.id, secondImageNode.id, OUTPUT_NODE_ID]);
   });

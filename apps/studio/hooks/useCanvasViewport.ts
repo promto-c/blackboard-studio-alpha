@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useKeyPressed } from '@/hotkeys';
+import { useSmoothAnimation } from '@/hooks/useSmoothAnimation';
 
 interface ViewportState {
   panX: number;
@@ -25,7 +26,13 @@ export function useCanvasViewport() {
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const isSpacePressed = useKeyPressed('Space');
 
-  // Wheel zoom (focal-point zoom toward cursor)
+  const { targetRef, scheduleAnimation, stopAnimation, snapTo } = useSmoothAnimation(
+    viewport,
+    (v: ViewportState) => setViewport(v),
+    { epsilons: { zoom: 0.001, panX: 0.25, panY: 0.25 } },
+  );
+
+  // --- Wheel zoom (focal-point zoom toward cursor) with smooth animation ---
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -36,38 +43,46 @@ export function useCanvasViewport() {
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
 
-      setViewport((prev) => {
-        const zoomDelta = -e.deltaY * ZOOM_SPEED;
-        const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev.zoom * (1 + zoomDelta)));
-        const scale = newZoom / prev.zoom;
+      const currentTarget = targetRef.current;
+      const zoomDelta = -e.deltaY * ZOOM_SPEED;
+      const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, currentTarget.zoom * (1 + zoomDelta)));
+      const scale = newZoom / currentTarget.zoom;
 
-        return {
-          panX: cx - (cx - prev.panX) * scale,
-          panY: cy - (cy - prev.panY) * scale,
-          zoom: newZoom,
-        };
-      });
+      targetRef.current = {
+        panX: cx - (cx - currentTarget.panX) * scale,
+        panY: cy - (cy - currentTarget.panY) * scale,
+        zoom: newZoom,
+      };
+
+      scheduleAnimation();
     };
 
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
-  }, []);
+  }, [scheduleAnimation]);
 
+  // --- Panning (middle mouse / Space+left click) ---
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       // Middle mouse or Space+Left click starts panning
       if (e.button === 1 || (e.button === 0 && isSpacePressed)) {
         e.preventDefault();
+
+        // Snap to animation target immediately to avoid rubber-banding
+        const target = targetRef.current;
+        stopAnimation();
+        snapTo(target);
+
         isPanningRef.current = true;
         panStartRef.current = {
           x: e.clientX,
           y: e.clientY,
-          panX: viewport.panX,
-          panY: viewport.panY,
+          panX: target.panX,
+          panY: target.panY,
         };
       }
     },
-    [isSpacePressed, viewport.panX, viewport.panY],
+    [isSpacePressed, stopAnimation, snapTo],
   );
 
   useEffect(() => {
@@ -75,11 +90,11 @@ export function useCanvasViewport() {
       if (!isPanningRef.current) return;
       const dx = e.clientX - panStartRef.current.x;
       const dy = e.clientY - panStartRef.current.y;
-      setViewport((prev) => ({
-        ...prev,
-        panX: panStartRef.current.panX + dx,
-        panY: panStartRef.current.panY + dy,
-      }));
+      const newPanX = panStartRef.current.panX + dx;
+      const newPanY = panStartRef.current.panY + dy;
+
+      targetRef.current = { ...targetRef.current, panX: newPanX, panY: newPanY };
+      setViewport((prev) => ({ ...prev, panX: newPanX, panY: newPanY }));
     };
 
     const handleMouseUp = () => {
@@ -102,7 +117,7 @@ export function useCanvasViewport() {
     [viewport],
   );
 
-  /** Reset viewport to fit given bounds within the container. */
+  /** Immediately snap viewport to fit given bounds within the container. */
   const fitAll = useCallback(
     (bounds: { minX: number; minY: number; maxX: number; maxY: number }, insets?: FitInsets) => {
       const container = containerRef.current;
@@ -132,13 +147,14 @@ export function useCanvasViewport() {
       const centerX = (bounds.minX + bounds.maxX) / 2;
       const centerY = (bounds.minY + bounds.maxY) / 2;
 
-      setViewport({
+      // Snap immediately so the viewport is correct on the next render
+      snapTo({
         zoom,
         panX: insetLeft + availableWidth / 2 - centerX * zoom,
         panY: insetTop + availableHeight / 2 - centerY * zoom,
       });
     },
-    [],
+    [snapTo],
   );
 
   const getCursorStyle = useCallback((): string => {

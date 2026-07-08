@@ -127,7 +127,7 @@ const getNodeInputEdges = (
   flow: Flow | null,
 ): Array<Pick<FlowEdge, 'sourceNodeId' | 'sourcePort' | 'targetPort'>> => {
   const flowEdges = getFlowInputEdgesForNode(flow, node.id);
-  if (flowEdges.length > 0 || flow) {
+  if (flowEdges.length > 0) {
     return flowEdges;
   }
 
@@ -204,8 +204,12 @@ const resolveRenderBranchNodes = (
   };
 
   const includeExplicitInputDependencies = (node: AnyNode, exceptPortName?: string) => {
+    const hiddenPorts = new Set(
+      (node as { hiddenInputPortIds?: string[] }).hiddenInputPortIds ?? [],
+    );
     for (const edge of getNodeInputEdges(node, flow)) {
       if (edge.targetPort === exceptPortName) continue;
+      if (hiddenPorts.has(edge.targetPort)) continue;
       includeNodeOutput(edge.sourceNodeId);
     }
   };
@@ -278,10 +282,7 @@ const resolveRenderBranchNodes = (
   return resolveRenderFormatNodes([...sceneNodes, ...orderedNodes]);
 };
 
-const resolveViewerRenderTargetNodeId = (
-  _nodes: AnyNode[],
-  viewerNodeId: string,
-): string | null => {
+const resolveViewerRenderTargetNodeId = (viewerNodeId: string): string | null => {
   if (viewerNodeId === OUTPUT_NODE_ID) return null;
   return viewerNodeId;
 };
@@ -322,7 +323,7 @@ export const getViewerRenderNodes = (
 ): AnyNode[] => {
   if (!viewerNodeId) return nodes;
 
-  const renderTargetNodeId = resolveViewerRenderTargetNodeId(nodes, viewerNodeId);
+  const renderTargetNodeId = resolveViewerRenderTargetNodeId(viewerNodeId);
   if (!renderTargetNodeId) return nodes;
 
   const viewerIndex = nodes.findIndex((node) => node.id === renderTargetNodeId);
@@ -330,6 +331,17 @@ export const getViewerRenderNodes = (
 
   const viewerNode = nodes[viewerIndex];
   if (isSourceNodeType(viewerNode.type)) {
+    // Source nodes like Comfy can have explicit input ports connected to
+    // upstream image sources (workflow input images). When these exist,
+    // use resolveRenderBranchNodes to include them as backdrop so the
+    // inputs are visible behind the node's own output in the viewport.
+    const explicitInputs = getNodeInputEdges(viewerNode, flow).filter(
+      (edge) => edge.targetPort !== 'pipe',
+    );
+    if (explicitInputs.length > 0) {
+      return resolveRenderBranchNodes(nodes, flow, renderTargetNodeId);
+    }
+
     const sceneNodes = nodes.slice(0, viewerIndex).filter((node) => node.type === NodeType.SCENE);
     const renderViewerNode = (viewerNode as { detachedFromPipe?: boolean }).detachedFromPipe
       ? withoutDetachedFromPipe(viewerNode)
@@ -339,6 +351,13 @@ export const getViewerRenderNodes = (
 
   return resolveRenderBranchNodes(nodes, flow, renderTargetNodeId);
 };
+
+/** Resolves a Scene 3D node itself, rather than its backdrop-only editor branch. */
+export const getScene3DProjectionRenderNodes = (
+  nodes: AnyNode[],
+  scene3DNodeId: string,
+  flow: Flow | null = null,
+): AnyNode[] => getViewerRenderNodes(nodes, scene3DNodeId, flow);
 
 export const getOutputRenderNodes = (nodes: AnyNode[], flow: Flow | null): AnyNode[] => {
   const outputEdge = getOutputPipeEdge(flow);

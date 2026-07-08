@@ -1,13 +1,28 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { createStudioRenderer } from '@blackboard/renderer';
+import { createStudioRenderer, readRenderTargetRgbaFloat } from '@blackboard/renderer';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { colors } from '@/utils/colors';
 import { usePreferences } from '@/state/preferencesContext';
-import { RenderSettings, SceneNode } from '@blackboard/types';
+import type {
+  DataChannelSemantic,
+  DisplayOutputSelection,
+  OpenExrOutputPresetId,
+  OutputTechnicalChannel,
+  RenderSettings,
+  SceneNode,
+} from '@blackboard/types';
 import { CollapsibleSection, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
-import { InspectorLogFooter, SegmentedControl, SettingRow, Slider } from '@/components';
+import {
+  DisplayViewSelector,
+  ExecuteButton,
+  InspectorLogFooter,
+  SegmentedControl,
+  SettingRow,
+  Slider,
+} from '@/components';
+import { OcioColorSpaceDropdown } from '@/components/OcioColorSpaceDropdown';
 import { renderWithSharedPipeline, type RenderPipelineResult } from '@/renderer/pipeline';
 import { hasRenderableNodes } from '@/nodes/helpers';
 import { isBackgroundJobActive } from '@/state/editor/services/backgroundJobs';
@@ -20,10 +35,44 @@ import {
   type WindowWithDirectoryPicker,
 } from '@/utils/directoryPickerSupport';
 import { encodePngRgba, type RgbaByteImage } from '@/utils/pngRgba';
+import { encodeRenderTargetOpenExr } from '@/utils/exrExport';
 import { expandGroupNodesForRender } from '@/utils/groupRenderProjection';
-import { getOutputRenderNodes } from '@/utils/viewerSlots';
+import { getOutputRenderNodes, getViewerRenderNodes } from '@/utils/viewerSlots';
+import { nodeRegistry } from '@/nodes/registry';
+import {
+  DISPLAY_OUTPUT_PRESET_OPTIONS,
+  OPEN_EXR_OUTPUT_PRESETS,
+  createDisplayOutputSelection,
+  formatUnassignedMediaColorIssueMessage,
+  getTechnicalOutputChannelName,
+  getOutputNodeTechnicalChannels,
+  getConnectedOutputTechnicalChannels,
+  getUnassignedMediaColorIssues,
+  getTechnicalOutputFormatIssue,
+  resolveDisplayOutput,
+  resolveCurrentViewerDisplayView,
+  resolveOpenExrOutputPreset,
+  resolveRenderOutputDomain,
+} from '@/color-management';
+import { useOcio } from '@/state/ocioContext';
 
 type ExportMode = NonNullable<RenderSettings['exportMode']>;
+
+const TECHNICAL_SEMANTIC_OPTIONS: Array<{
+  value: DataChannelSemantic;
+  label: string;
+}> = [
+  { value: 'alpha', label: 'Alpha' },
+  { value: 'mask', label: 'Mask' },
+  { value: 'depth', label: 'Depth' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'motion_vector', label: 'Motion Vector' },
+  { value: 'uv', label: 'UV' },
+  { value: 'position', label: 'Position' },
+  { value: 'id', label: 'ID' },
+  { value: 'cryptomatte', label: 'Cryptomatte' },
+  { value: 'material_property', label: 'Material Property' },
+];
 
 let outputRenderQueue: Promise<void> = Promise.resolve();
 const cancelledOutputRenderJobIds = new Set<string>();
@@ -38,7 +87,6 @@ function getSharedRenderer(): THREE.WebGLRenderer {
       antialias: false,
       depth: false,
       stencil: false,
-      premultipliedAlpha: false,
     });
   }
   return sharedRenderer;
@@ -63,31 +111,30 @@ const enqueueOutputRender = async (task: () => Promise<void>): Promise<void> => 
 
 function OutputRenderButton({
   disabled,
+  disabledReason,
   exportMode,
   onRender,
 }: {
   disabled: boolean;
+  disabledReason?: string | null;
   exportMode: ExportMode;
   onRender: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <ExecuteButton
       onClick={onRender}
       disabled={disabled}
-      title={exportMode === 'sequence' ? 'Render sequence' : 'Render image'}
-      className="inline-flex min-w-0 items-center justify-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:border-gray-700 disabled:bg-gray-900/70 disabled:text-gray-500"
+      title={disabledReason ?? (exportMode === 'sequence' ? 'Render sequence' : 'Render image')}
     >
-      <Icons.Play className="h-3.5 w-3.5" />
       Render
-    </button>
+    </ExecuteButton>
   );
 }
 
 const DEFAULT_SEQUENCE_PADDING = 4;
 
 const getRenderExtension = (format: RenderSettings['format']): string =>
-  format === 'image/jpeg' ? 'jpg' : format.split('/')[1];
+  format === 'image/jpeg' ? 'jpg' : format === 'image/x-exr' ? 'exr' : format.split('/')[1];
 
 const sanitizeFilenamePart = (value: string, fallback: string): string => {
   const sanitized = value
@@ -98,7 +145,7 @@ const sanitizeFilenamePart = (value: string, fallback: string): string => {
 };
 
 const stripKnownImageExtension = (value: string): string =>
-  value.replace(/\.(?:jpe?g|png|webp)$/i, '');
+  value.replace(/\.(?:jpe?g|png|webp|exr)$/i, '');
 
 const clampFrame = (value: number, maxFrames: number): number =>
   Math.max(0, Math.min(Math.max(0, maxFrames), Math.round(value)));
@@ -354,64 +401,17 @@ const readRenderTargetToRgbaBytes = (
   target: NonNullable<RenderPipelineResult['finalOutputTarget']>,
 ): RgbaByteImage => {
   const { width, height } = target;
-  const pixelCount = width * height;
-  const output = new Uint8Array(pixelCount * 4);
-  const textureType = target.texture.type;
-
-  if (textureType === THREE.FloatType) {
-    const buffer = new Float32Array(pixelCount * 4);
-    result.renderer.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-    for (let sourceY = 0; sourceY < height; sourceY += 1) {
-      const targetY = height - sourceY - 1;
-      for (let x = 0; x < width; x += 1) {
-        const sourceOffset = (sourceY * width + x) * 4;
-        const targetOffset = (targetY * width + x) * 4;
-        writeStraightPixel(
-          output,
-          targetOffset,
-          buffer[sourceOffset],
-          buffer[sourceOffset + 1],
-          buffer[sourceOffset + 2],
-          buffer[sourceOffset + 3],
-        );
-      }
-    }
-  } else if (textureType === THREE.HalfFloatType) {
-    const buffer = new Uint16Array(pixelCount * 4);
-    result.renderer.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-    for (let sourceY = 0; sourceY < height; sourceY += 1) {
-      const targetY = height - sourceY - 1;
-      for (let x = 0; x < width; x += 1) {
-        const sourceOffset = (sourceY * width + x) * 4;
-        const targetOffset = (targetY * width + x) * 4;
-        writeStraightPixel(
-          output,
-          targetOffset,
-          THREE.DataUtils.fromHalfFloat(buffer[sourceOffset]),
-          THREE.DataUtils.fromHalfFloat(buffer[sourceOffset + 1]),
-          THREE.DataUtils.fromHalfFloat(buffer[sourceOffset + 2]),
-          THREE.DataUtils.fromHalfFloat(buffer[sourceOffset + 3]),
-        );
-      }
-    }
-  } else {
-    const buffer = new Uint8Array(pixelCount * 4);
-    result.renderer.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-    for (let sourceY = 0; sourceY < height; sourceY += 1) {
-      const targetY = height - sourceY - 1;
-      for (let x = 0; x < width; x += 1) {
-        const sourceOffset = (sourceY * width + x) * 4;
-        const targetOffset = (targetY * width + x) * 4;
-        writeStraightPixel(
-          output,
-          targetOffset,
-          buffer[sourceOffset] / 255,
-          buffer[sourceOffset + 1] / 255,
-          buffer[sourceOffset + 2] / 255,
-          buffer[sourceOffset + 3] / 255,
-        );
-      }
-    }
+  const source = readRenderTargetRgbaFloat(result.renderer, target);
+  const output = new Uint8Array(source.length);
+  for (let offset = 0; offset < source.length; offset += 4) {
+    writeStraightPixel(
+      output,
+      offset,
+      source[offset],
+      source[offset + 1],
+      source[offset + 2],
+      source[offset + 3],
+    );
   }
 
   return { data: output, width, height };
@@ -434,6 +434,13 @@ function RenderSettingsPanel() {
     return flowId ? s.flows[flowId] : null;
   });
   const sceneNode = useSceneNode();
+  const projectColorManagement = useEditorSelector((s) => s.colorManagement);
+  const projectDisplayView = projectColorManagement.viewer;
+  const viewerColorManagement = useEditorSelector((s) => s.viewerColorManagement);
+  const currentViewerDisplayView = resolveCurrentViewerDisplayView(
+    projectDisplayView,
+    viewerColorManagement,
+  );
   const projectId = useEditorSelector((s) => s.projectId);
   const viewerSettings = useEditorSelector((s) => s.viewerSettings);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
@@ -443,13 +450,30 @@ function RenderSettingsPanel() {
     () => expandGroupNodesForRender(getOutputRenderNodes(nodes, activeFlow), flows),
     [activeFlow, flows, nodes],
   );
+  const connectedOutputTechnicalChannels = useMemo(
+    () => getConnectedOutputTechnicalChannels(activeFlow),
+    [activeFlow],
+  );
+  const technicalChannelSourceNodes = useMemo(() => {
+    const channelNodes = connectedOutputTechnicalChannels.flatMap((channel) =>
+      getViewerRenderNodes(nodes, channel.nodeId, activeFlow),
+    );
+    const uniqueNodes = [...new Map(channelNodes.map((node) => [node.id, node] as const)).values()];
+    return expandGroupNodesForRender(uniqueNodes, flows);
+  }, [activeFlow, connectedOutputTechnicalChannels, flows, nodes]);
+  const renderOutputDomain = useMemo(
+    () => resolveRenderOutputDomain({ nodes, flow: activeFlow, nodeRegistry }),
+    [activeFlow, nodes],
+  );
   const {
     setRenderSettings,
     startBackgroundJob,
     updateBackgroundJob,
     finishBackgroundJob,
     requestBackgroundJobCancel,
+    setOutputTechnicalChannels,
   } = useEditorActions();
+  const ocio = useOcio();
   const backgroundJobsRef = useRef(backgroundJobs);
   const [directoryHandle, setDirectoryHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [directoryName, setDirectoryName] = useState('');
@@ -482,6 +506,10 @@ function RenderSettingsPanel() {
 
   const directoryPickerSupport = useMemo(() => getDirectoryPickerSupport(), []);
   const exportMode = renderSettings.exportMode ?? 'single';
+  const outputTechnicalChannels = useMemo(
+    () => getOutputNodeTechnicalChannels(activeFlow),
+    [activeFlow],
+  );
 
   useEffect(() => {
     backgroundJobsRef.current = backgroundJobs;
@@ -517,6 +545,39 @@ function RenderSettingsPanel() {
 
   const handleFilenameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setRenderSettings({ filename: e.target.value, sequenceFilenamePattern: undefined });
+  };
+
+  const updateOutputTechnicalChannel = (
+    channelId: string,
+    updates: Partial<OutputTechnicalChannel>,
+    withHistory = true,
+  ) => {
+    setOutputTechnicalChannels(
+      outputTechnicalChannels.map((channel) =>
+        channel.id === channelId ? { ...channel, ...updates } : channel,
+      ),
+      withHistory,
+    );
+  };
+
+  const addOutputTechnicalChannel = () => {
+    const existingIds = new Set(outputTechnicalChannels.map((channel) => channel.id));
+    let index = outputTechnicalChannels.length + 1;
+    while (existingIds.has(`channel_${index}`)) index += 1;
+    setOutputTechnicalChannels([
+      ...outputTechnicalChannels,
+      {
+        id: `channel_${index}`,
+        name: index === 1 ? 'Z' : `channel${index}`,
+        semantic: index === 1 ? 'depth' : 'material_property',
+      },
+    ]);
+  };
+
+  const removeOutputTechnicalChannel = (channelId: string) => {
+    setOutputTechnicalChannels(
+      outputTechnicalChannels.filter((channel) => channel.id !== channelId),
+    );
   };
 
   const handleSequenceNumberChange = (
@@ -562,14 +623,36 @@ function RenderSettingsPanel() {
     { value: 'image/jpeg', label: 'JPEG' },
     { value: 'image/png', label: 'PNG' },
     { value: 'image/webp', label: 'WebP' },
+    { value: 'image/x-exr', label: 'OpenEXR' },
   ];
 
-  const outputColorSpaceOptions: { value: RenderSettings['outputColorSpace']; label: string }[] = [
-    { value: 'scene_linear', label: 'Scene Linear' },
-    { value: 'srgb', label: 'sRGB (Standard)' },
-    { value: 'match_viewport', label: 'Match Viewport' },
-  ];
+  const outputPresetOptions = useMemo(() => [...DISPLAY_OUTPUT_PRESET_OPTIONS], []);
+  const selectedDisplayView =
+    renderSettings.displayOutput.kind === 'display_view'
+      ? renderSettings.displayOutput.displayView
+      : projectDisplayView;
+  const resolvedDisplayOutput = useMemo(
+    () =>
+      resolveDisplayOutput(renderSettings.displayOutput, {
+        projectDisplayView,
+        currentViewerDisplayView,
+        currentViewerSettings: viewerSettings,
+      }),
+    [currentViewerDisplayView, projectDisplayView, renderSettings.displayOutput, viewerSettings],
+  );
   const hasRenderableOutput = useMemo(() => hasRenderableNodes(nodes), [nodes]);
+  const unassignedMediaColorIssues = useMemo(
+    () => getUnassignedMediaColorIssues(renderNodes),
+    [renderNodes],
+  );
+  const unassignedMediaColorMessage = useMemo(
+    () => formatUnassignedMediaColorIssueMessage(unassignedMediaColorIssues),
+    [unassignedMediaColorIssues],
+  );
+  const technicalOutputFormatMessage = getTechnicalOutputFormatIssue(
+    renderOutputDomain,
+    renderSettings.format,
+  );
   const activeOutputRenderJob = useMemo(
     () =>
       backgroundJobs
@@ -585,22 +668,63 @@ function RenderSettingsPanel() {
   );
 
   const renderFrameBlob = async (sceneNode: SceneNode, frame: number): Promise<Blob> => {
+    const isOpenExr = renderSettings.format === 'image/x-exr';
+    const technicalChannelName = getTechnicalOutputChannelName(renderOutputDomain);
+    const openExrPreset =
+      isOpenExr && !technicalChannelName
+        ? resolveOpenExrOutputPreset(renderSettings.openExrOutputPreset, ocio.colorSpaces)
+        : null;
     const result = await renderWithSharedPipeline({
       nodes: renderNodes,
       sceneNode,
+      projectColorManagement,
       frame,
       width: sceneNode.width,
       height: sceneNode.height,
-      finalColorSpace: renderSettings.outputColorSpace,
-      viewerSettings,
-      alphaOverlayStyle: renderSettings.includeAlpha ? undefined : alphaOverlayStyle,
+      finalColorSpace: isOpenExr ? 'color_space' : resolvedDisplayOutput.finalColorSpace,
+      viewerSettings: isOpenExr ? undefined : resolvedDisplayOutput.viewerSettings,
+      displayView: isOpenExr ? undefined : resolvedDisplayOutput.displayView,
+      outputColorSpace: isOpenExr
+        ? openExrPreset?.colorSpace
+        : resolvedDisplayOutput.outputColorSpace,
+      outputDomain: renderOutputDomain,
+      captureOutputs: isOpenExr
+        ? connectedOutputTechnicalChannels.map((channel) => ({
+            id: channel.id,
+            nodeId: channel.nodeId,
+            sourcePort: channel.sourcePort,
+          }))
+        : undefined,
+      captureSourceNodes: isOpenExr ? technicalChannelSourceNodes : undefined,
+      alphaOverlayStyle: isOpenExr || renderSettings.includeAlpha ? undefined : alphaOverlayStyle,
       textureCacheMode: 'none',
       preserveAlpha: renderSettings.includeAlpha,
-      captureFinalOutput: renderSettings.includeAlpha && renderSettings.format === 'image/png',
+      captureFinalOutput:
+        isOpenExr || (renderSettings.includeAlpha && renderSettings.format === 'image/png'),
+      presentToCanvas: !isOpenExr,
       renderer: getSharedRenderer(),
     });
 
     try {
+      if (isOpenExr) {
+        if (!result.finalOutputTarget) {
+          throw new Error('OpenEXR export did not produce a floating-point output target.');
+        }
+        return encodeRenderTargetOpenExr(result.renderer, result.finalOutputTarget, {
+          precision: openExrPreset?.precision ?? 'float',
+          includeAlpha: technicalChannelName ? false : renderSettings.includeAlpha,
+          ...(openExrPreset ? { attributes: openExrPreset.attributes } : {}),
+          ...(technicalChannelName ? { technicalChannelName } : {}),
+          namedChannelTargets: connectedOutputTechnicalChannels.map((channel) => {
+            const target = result.capturedOutputTargets.get(channel.id);
+            if (!target) {
+              throw new Error(`Technical output channel "${channel.name}" was not captured.`);
+            }
+            return { name: channel.name, target };
+          }),
+        });
+      }
+
       const shouldPreservePngAlpha =
         renderSettings.includeAlpha && renderSettings.format === 'image/png';
       const blob =
@@ -783,6 +907,14 @@ function RenderSettingsPanel() {
       alert('Error: No scene found to determine export dimensions.');
       return;
     }
+    if (unassignedMediaColorMessage) {
+      alert(unassignedMediaColorMessage);
+      return;
+    }
+    if (technicalOutputFormatMessage) {
+      alert(technicalOutputFormatMessage);
+      return;
+    }
 
     const jobId = startBackgroundJob({
       type: 'render',
@@ -829,6 +961,8 @@ function RenderSettingsPanel() {
 
   const isRenderActionDisabled =
     !hasRenderableOutput ||
+    Boolean(unassignedMediaColorMessage) ||
+    Boolean(technicalOutputFormatMessage) ||
     (exportMode === 'sequence' && !directoryPickerSupport.canUseDirectoryPicker);
 
   useNodeExecutionHandler(OUTPUT_NODE_ID, () => {
@@ -839,6 +973,7 @@ function RenderSettingsPanel() {
   const renderActions = (
     <OutputRenderButton
       disabled={isRenderActionDisabled}
+      disabledReason={unassignedMediaColorMessage ?? technicalOutputFormatMessage}
       exportMode={exportMode}
       onRender={() => void handleExport()}
     />
@@ -884,7 +1019,7 @@ function RenderSettingsPanel() {
                 name="filename"
                 value={renderSettings.filename}
                 onChange={handleFilenameChange}
-                className="w-44 bg-gray-700/50 text-gray-200 text-xs rounded-md focus:outline-none focus:ring-1 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block px-2.5 py-1.5 font-mono border-0"
+                className="bb-control-input block w-44 rounded-md border-0 bg-gray-700/50 px-2.5 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-700 focus:ring-offset-0 focus:ring-offset-gray-900"
               />
             </SettingRow>
 
@@ -895,7 +1030,7 @@ function RenderSettingsPanel() {
                     type="button"
                     onClick={() => void chooseDirectory()}
                     disabled={!directoryPickerSupport.canUseDirectoryPicker}
-                    className="inline-flex w-44 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-gray-700/50 px-2.5 py-1.5 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="bb-control-button inline-flex w-44 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-gray-700/50 px-2.5 py-1.5 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
                     title={directoryName || directoryPickerSupport.reason || 'Bind output folder'}
                   >
                     <Icons.FolderOpen className="h-3.5 w-3.5 shrink-0" />
@@ -913,7 +1048,7 @@ function RenderSettingsPanel() {
                       }
                       min={0}
                       max={maxFrames}
-                      className="min-w-0 flex-1 bg-gray-700/50 text-gray-200 text-xs rounded-md focus:outline-none focus:ring-1 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block px-2 py-1.5 font-mono border-0"
+                      className="bb-control-input block min-w-0 flex-1 rounded-md border-0 bg-gray-700/50 px-2 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-700 focus:ring-offset-0 focus:ring-offset-gray-900"
                     />
                     <span className="shrink-0 text-gray-500">-</span>
                     <input
@@ -924,7 +1059,7 @@ function RenderSettingsPanel() {
                       }
                       min={0}
                       max={maxFrames}
-                      className="min-w-0 flex-1 bg-gray-700/50 text-gray-200 text-xs rounded-md focus:outline-none focus:ring-1 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block px-2 py-1.5 font-mono border-0"
+                      className="bb-control-input block min-w-0 flex-1 rounded-md border-0 bg-gray-700/50 px-2 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-700 focus:ring-offset-0 focus:ring-offset-gray-900"
                     />
                   </div>
                 </SettingRow>
@@ -938,7 +1073,7 @@ function RenderSettingsPanel() {
                     }
                     min={1}
                     max={8}
-                    className="w-44 bg-gray-700/50 text-gray-200 text-xs rounded-md focus:outline-none focus:ring-1 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block px-2.5 py-1.5 font-mono border-0"
+                    className="bb-control-input block w-44 rounded-md border-0 bg-gray-700/50 px-2.5 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-700 focus:ring-offset-0 focus:ring-offset-gray-900"
                   />
                 </SettingRow>
               </>
@@ -955,19 +1090,146 @@ function RenderSettingsPanel() {
               />
             </SettingRow>
 
-            <SettingRow label="Output Color Space">
-              <StyledDropdown
-                value={renderSettings.outputColorSpace}
-                options={outputColorSpaceOptions}
-                onChange={(value) =>
-                  handleSettingChange(
-                    'outputColorSpace',
-                    value as RenderSettings['outputColorSpace'],
-                  )
-                }
-                widthClass="w-44"
-              />
-            </SettingRow>
+            {renderSettings.format !== 'image/x-exr' && (
+              <SettingRow label="Output Transform">
+                <StyledDropdown
+                  value={renderSettings.displayOutput.kind}
+                  options={outputPresetOptions}
+                  onChange={(value) => {
+                    const kind = String(value) as DisplayOutputSelection['kind'];
+                    handleSettingChange(
+                      'displayOutput',
+                      createDisplayOutputSelection(kind, {
+                        projectDisplayView,
+                        directColorSpace: ocio.textureColorSpace,
+                      }),
+                    );
+                  }}
+                  widthClass="w-44"
+                  popoverWidthClass="w-80"
+                />
+              </SettingRow>
+            )}
+
+            {renderSettings.format === 'image/x-exr' && renderOutputDomain.kind === 'color' && (
+              <SettingRow label="EXR Preset">
+                <StyledDropdown
+                  value={renderSettings.openExrOutputPreset}
+                  options={OPEN_EXR_OUTPUT_PRESETS.map((preset) => ({
+                    value: preset.id,
+                    label: preset.label,
+                  }))}
+                  onChange={(value) =>
+                    handleSettingChange(
+                      'openExrOutputPreset',
+                      String(value) as OpenExrOutputPresetId,
+                    )
+                  }
+                  widthClass="w-44"
+                />
+              </SettingRow>
+            )}
+
+            {renderSettings.format === 'image/x-exr' && renderOutputDomain.kind === 'data' && (
+              <SettingRow label="EXR Channel">
+                <span className="w-44 truncate text-right font-mono text-xs text-gray-300">
+                  {getTechnicalOutputChannelName(renderOutputDomain)}
+                </span>
+              </SettingRow>
+            )}
+
+            {renderSettings.format === 'image/x-exr' && (
+              <div className="space-y-2 border-t border-white/10 pt-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-gray-400">Technical Channels</span>
+                  <button
+                    type="button"
+                    onClick={addOutputTechnicalChannel}
+                    title="Add technical output channel"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-gray-400 transition hover:bg-white/10 hover:text-gray-100"
+                  >
+                    <Icons.Plus className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                {outputTechnicalChannels.map((channel) => (
+                  <div
+                    key={channel.id}
+                    className="grid grid-cols-[minmax(0,1fr)_7rem_1.75rem] items-center gap-1.5"
+                  >
+                    <input
+                      value={channel.name}
+                      onChange={(event) =>
+                        updateOutputTechnicalChannel(
+                          channel.id,
+                          {
+                            name: event.currentTarget.value,
+                          },
+                          false,
+                        )
+                      }
+                      aria-label="EXR channel name"
+                      className="bb-control-input min-w-0 rounded bg-gray-700/50 px-2 py-2 font-mono text-xs text-gray-200 outline-none focus:ring-1 focus:ring-primary-700"
+                    />
+                    <StyledDropdown
+                      value={channel.semantic ?? 'material_property'}
+                      options={TECHNICAL_SEMANTIC_OPTIONS}
+                      onChange={(value) =>
+                        updateOutputTechnicalChannel(channel.id, {
+                          semantic: String(value) as DataChannelSemantic,
+                        })
+                      }
+                      widthClass="w-28"
+                      popoverWidthClass="w-48"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeOutputTechnicalChannel(channel.id)}
+                      title={`Remove ${channel.name || 'technical channel'}`}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded text-gray-500 transition hover:bg-red-500/10 hover:text-red-200"
+                    >
+                      <Icons.Trash className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {renderSettings.format !== 'image/x-exr' &&
+              renderSettings.displayOutput.kind === 'display_view' && (
+                <div className="border-t border-white/10 pt-3">
+                  <div className="mb-2 text-xs font-medium text-gray-400">Export View</div>
+                  <DisplayViewSelector
+                    value={selectedDisplayView}
+                    onChange={(displayView) =>
+                      handleSettingChange('displayOutput', {
+                        kind: 'display_view',
+                        displayView,
+                      })
+                    }
+                    controlWidthClass="w-full"
+                    popoverWidthClass="w-80"
+                  />
+                </div>
+              )}
+
+            {renderSettings.format !== 'image/x-exr' &&
+              renderSettings.displayOutput.kind === 'direct_encoding' && (
+                <SettingRow label="Encoding">
+                  <div className="w-44">
+                    <OcioColorSpaceDropdown
+                      value={renderSettings.displayOutput.colorSpace}
+                      onChange={(colorSpace) =>
+                        handleSettingChange('displayOutput', {
+                          kind: 'direct_encoding',
+                          colorSpace,
+                        })
+                      }
+                      includeData={false}
+                      popoverWidthClass="w-80"
+                    />
+                  </div>
+                </SettingRow>
+              )}
 
             {(renderSettings.format === 'image/jpeg' || renderSettings.format === 'image/webp') && (
               <Slider
@@ -981,19 +1243,22 @@ function RenderSettingsPanel() {
               />
             )}
 
-            {(renderSettings.format === 'image/png' || renderSettings.format === 'image/webp') && (
-              <div className="py-1">
-                <ToggleSwitch
-                  checked={renderSettings.includeAlpha}
-                  onCheckedChange={(checked) => handleSettingChange('includeAlpha', checked)}
-                  label="Alpha Channel"
-                  description={
-                    renderSettings.includeAlpha ? 'Transparent background' : 'Solid background'
-                  }
-                  size="sm"
-                />
-              </div>
-            )}
+            {renderOutputDomain.kind === 'color' &&
+              (renderSettings.format === 'image/png' ||
+                renderSettings.format === 'image/webp' ||
+                renderSettings.format === 'image/x-exr') && (
+                <div className="py-1">
+                  <ToggleSwitch
+                    checked={renderSettings.includeAlpha}
+                    onCheckedChange={(checked) => handleSettingChange('includeAlpha', checked)}
+                    label="Alpha Channel"
+                    description={
+                      renderSettings.includeAlpha ? 'Transparent background' : 'Solid background'
+                    }
+                    size="sm"
+                  />
+                </div>
+              )}
           </div>
         </CollapsibleSection>
       </div>
@@ -1022,6 +1287,16 @@ function RenderSettingsPanel() {
             </div>
             {exportMode === 'sequence' && !directoryPickerSupport.canUseDirectoryPicker && (
               <p className="mt-1 text-red-300">{directoryPickerSupport.reason}</p>
+            )}
+            {unassignedMediaColorMessage && (
+              <p className="mt-2 rounded-md border border-red-400/20 bg-red-500/10 px-2 py-1.5 text-[11px] leading-5 text-red-100">
+                {unassignedMediaColorMessage}
+              </p>
+            )}
+            {technicalOutputFormatMessage && (
+              <p className="mt-2 rounded border border-amber-400/20 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-5 text-amber-100">
+                {technicalOutputFormatMessage}
+              </p>
             )}
             {!hasRenderableOutput && (
               <p className="mt-2 text-center text-xs text-gray-500">

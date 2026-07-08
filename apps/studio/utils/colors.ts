@@ -106,3 +106,9 @@ export const applyUiStyle = (style: 'glass' | 'solid') => {
   document.body.classList.remove('ui-glass', 'ui-solid');
   document.body.classList.add(`ui-${style}`);
 };
+
+export type ComponentStyle = 'glass' | 'flat';
+
+export const applyComponentStyle = (style: ComponentStyle) => {
+  document.documentElement.dataset.componentStyle = style;
+};

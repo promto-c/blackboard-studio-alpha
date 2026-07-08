@@ -3,8 +3,14 @@ import { createRef } from 'react';
 import { renderHook } from '@testing-library/react';
 import * as THREE from 'three';
 import { describe, expect, it, vi } from 'vitest';
-import { NodeType, type SceneNode, type ViewerSettings } from '@blackboard/types';
+import {
+  NodeType,
+  type DisplayViewSelection,
+  type SceneNode,
+  type ViewerSettings,
+} from '@blackboard/types';
 import { useViewportRenderLoop } from './useViewportRenderLoop';
+import { createDefaultProjectColorManagement } from '@/color-management';
 
 const { renderViewportFrameMock } = vi.hoisted(() => ({
   renderViewportFrameMock: vi.fn(),
@@ -28,10 +34,7 @@ const sceneNode = {
 const viewerSettings = {
   channels: 'RGB',
   alphaOverlay: false,
-  alphaMode: 'FILL_BLACK',
   showOverlays: true,
-  ocioDisplay: '',
-  ocioView: '',
   gain: 1,
   gamma: 1,
   saturation: 1,
@@ -39,6 +42,11 @@ const viewerSettings = {
   lastCustomGamma: 1,
   lastCustomSaturation: 1,
 } as ViewerSettings;
+
+const displayView: DisplayViewSelection = {
+  display: 'sRGB - Display',
+  view: 'ACES 2.0 - SDR 100 nits (Rec.709)',
+};
 
 describe('useViewportRenderLoop', () => {
   it('preserves the completed drawing buffer while a new viewer request is pending', () => {
@@ -81,6 +89,9 @@ describe('useViewportRenderLoop', () => {
           sceneNode,
           visualFrame: 0,
           viewerSettings,
+          displayView,
+          projectColorManagement: createDefaultProjectColorManagement(),
+          outputDomain: { kind: 'color' },
           alphaOverlayStyle: { color: [0, 0, 0], opacity: 0, bgDarken: 0 },
           hasRenderableNodes: true,
           isRenderReady: ready,

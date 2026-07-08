@@ -2,12 +2,14 @@ import { NodeType, SceneNode } from '@blackboard/types';
 import { NodeDefinition } from '../../NodeDefinition';
 import SceneAdjustments from './SceneAdjustments';
 import * as Icons from '@blackboard/icons';
+import { ColorManagementDefaults } from '@/color-management';
 
 export const sceneNode: NodeDefinition = {
   type: NodeType.SCENE,
   name: 'Scene',
   category: 'Image', // Not really, but doesn't have a tool
   renderMode: 'scene',
+  processingDomain: 'scene_linear',
   IconComponent: Icons.BuildingStorefront,
   AdjustmentComponent: SceneAdjustments,
   flags: {
@@ -19,7 +21,7 @@ export const sceneNode: NodeDefinition = {
     width: 1920,
     height: 1080,
     bitDepth: 8,
-    colorSpace: 'ACEScg',
+    colorSpace: ColorManagementDefaults.WORKING_SPACE,
     maxFrames: 120,
     fps: 30,
   }),

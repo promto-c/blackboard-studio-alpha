@@ -68,36 +68,66 @@ export const clampKeyframeTangents = (keyframes: Keyframe[], index: number): Key
   };
 };
 
-// Helper to set nested properties immutably
-export const setImmutable = (obj: any, path: string, value: any): any => {
-  const keys = path.replace(/\[(\d+)\]/g, '.$1').split('.');
-  if (!obj) return undefined;
-  const newObj = Array.isArray(obj) ? [...obj] : { ...obj };
-  let current: any = newObj;
+type PathContainer = Record<string, unknown>;
 
-  for (let i = 0; i < keys.length - 1; i++) {
-    const key = keys[i];
-    const nextKeyIsNumber = /^\d+$/.test(keys[i + 1]);
-    const currentValue = current[key];
+const isRecord = (value: unknown): value is PathContainer =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
-    if (currentValue === undefined || currentValue === null) {
-      // If the path doesn't exist, create it.
-      current[key] = nextKeyIsNumber ? [] : {};
-    } else {
-      // If it exists, clone it to maintain immutability.
-      current[key] = Array.isArray(currentValue) ? [...currentValue] : { ...currentValue };
-    }
-    current = current[key];
+const toPathSegments = (path: string): string[] =>
+  path
+    .replace(/\[(\d+)\]/g, '.$1')
+    .split('.')
+    .filter(Boolean);
+
+const clonePathContainer = (value: unknown, preferArray = false): PathContainer => {
+  if (Array.isArray(value)) {
+    return [...value] as unknown as PathContainer;
+  }
+  if (isRecord(value)) {
+    return { ...value };
+  }
+  return preferArray ? ([] as unknown as PathContainer) : {};
+};
+
+/** Set a nested property while preserving the input object's type and immutability. */
+export const setImmutable = <T>(obj: T, path: string, value: unknown): T => {
+  if (typeof obj !== 'object' || obj === null) return obj;
+
+  const keys = toPathSegments(path);
+  if (keys.length === 0) return obj;
+
+  const root = clonePathContainer(obj);
+  let current = root;
+
+  for (let index = 0; index < keys.length - 1; index++) {
+    const key = keys[index];
+    const nextKeyIsIndex = /^\d+$/.test(keys[index + 1]);
+    const clonedChild = clonePathContainer(current[key], nextKeyIsIndex);
+    current[key] = clonedChild;
+    current = clonedChild;
   }
 
   current[keys[keys.length - 1]] = value;
-  return newObj;
+  return root as T;
 };
 
-// Helper to get nested properties
-export const getImmutable = (obj: any, path: string): any => {
-  const keys = path.replace(/\[(\d+)\]/g, '.$1').split('.');
-  return keys.reduce((acc, part) => acc && acc[part], obj);
+/** Read a nested property without weakening the caller to `any`. */
+export const getImmutable = (obj: unknown, path: string): unknown => {
+  const keys = toPathSegments(path);
+  let current = obj;
+
+  for (const key of keys) {
+    if (Array.isArray(current)) {
+      const index = Number(key);
+      if (!Number.isInteger(index)) return undefined;
+      current = current[index];
+      continue;
+    }
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+
+  return current;
 };
 
 export const getSortedKeyframes = (prop: AnimatableNumber): Keyframe[] => {

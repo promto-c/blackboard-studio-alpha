@@ -1,63 +1,108 @@
-import { useEffect, useState } from 'react';
-import { getAsset } from '@/state/assetStorage';
-import { createExrPreviewDataUrl } from '@/utils/exr';
-import { type MediaBlobLike, getBlobName, isExrFileLike } from '@/utils/mediaFiles';
+import { useEffect, useRef, useState } from 'react';
+import { useEditorSelector } from '@/state/editorContext';
+import {
+  createAssetPreviewCacheKey,
+  isAbortError,
+  requestAssetPreview,
+  type AssetPreviewMode,
+  type AssetPreviewSource,
+  type PreviewPriority,
+  type PreviewStrategy,
+} from '@/services/assetPreview';
 
-export const useAssetPreviewUrl = (assetId: string, maxDimension = 512): string | null => {
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+export type { AssetPreviewSource };
+
+export const GALLERY_THUMBNAIL_MAX_DIMENSION = 320;
+
+export interface UseAssetPreviewOptions {
+  mode: AssetPreviewMode;
+  maxDimension: number;
+  priority: PreviewPriority;
+  enabled?: boolean;
+}
+
+export interface UseAssetPreviewResult {
+  url: string | null;
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  error: Error | null;
+  strategy: PreviewStrategy | null;
+}
+
+const IDLE_RESULT: UseAssetPreviewResult = {
+  url: null,
+  status: 'idle',
+  error: null,
+  strategy: null,
+};
+
+export const useAssetPreview = (
+  source: AssetPreviewSource | null,
+  options: UseAssetPreviewOptions,
+): UseAssetPreviewResult => {
+  const projectColorManagement = useEditorSelector((state) => state.colorManagement);
+  const [result, setResult] = useState<UseAssetPreviewResult>(IDLE_RESULT);
+  const enabled = options.enabled ?? true;
+  const previewKey = source
+    ? createAssetPreviewCacheKey(source, projectColorManagement, {
+        mode: options.mode,
+        maxDimension: options.maxDimension,
+      })
+    : null;
+  const requestRef = useRef({ source, projectColorManagement, options });
+  requestRef.current = { source, projectColorManagement, options };
 
   useEffect(() => {
-    if (!assetId) {
-      setPreviewUrl(null);
+    const current = requestRef.current;
+    if (!enabled || !previewKey || !current.source) {
+      setResult(IDLE_RESULT);
       return;
     }
 
-    let isCancelled = false;
-    let cleanup: (() => void) | null = null;
-
-    const loadPreview = async () => {
-      try {
-        const blob = await getAsset(assetId);
-        if (!blob || isCancelled) {
-          if (!isCancelled) setPreviewUrl(null);
-          return;
-        }
-
-        const assetBlob = blob as MediaBlobLike;
-
-        if (isExrFileLike(assetBlob, getBlobName(assetBlob))) {
-          const dataUrl = await createExrPreviewDataUrl(assetBlob, {
-            cacheKey: assetId,
-            maxDimension,
+    const controller = new AbortController();
+    const lease = requestAssetPreview({
+      source: current.source,
+      projectColorManagement: current.projectColorManagement,
+      mode: current.options.mode,
+      maxDimension: current.options.maxDimension,
+      priority: current.options.priority,
+      signal: controller.signal,
+    });
+    setResult({ url: null, status: 'loading', error: null, strategy: null });
+    void lease.promise
+      .then((preview) => {
+        if (!controller.signal.aborted) {
+          setResult({
+            url: preview.url,
+            status: 'ready',
+            error: null,
+            strategy: preview.strategy,
           });
-          if (!isCancelled) {
-            setPreviewUrl(dataUrl);
-          }
-          return;
         }
-
-        const objectUrl = URL.createObjectURL(blob);
-        cleanup = () => URL.revokeObjectURL(objectUrl);
-        if (!isCancelled) {
-          setPreviewUrl(objectUrl);
-        }
-      } catch (error) {
-        console.error(`Failed to load asset preview ${assetId}`, error);
-        if (!isCancelled) {
-          setPreviewUrl(null);
-        }
-      }
-    };
-
-    void loadPreview();
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted || isAbortError(cause)) return;
+        const error = cause instanceof Error ? cause : new Error('Asset preview failed.');
+        console.error(`Failed to render asset preview ${current.source?.assetId}`, error);
+        setResult({ url: null, status: 'error', error, strategy: null });
+      });
 
     return () => {
-      isCancelled = true;
-      cleanup?.();
+      controller.abort();
+      lease.release();
     };
-  }, [assetId, maxDimension]);
+  }, [enabled, options.priority, previewKey]);
 
-  return previewUrl;
+  return result;
 };
+
+export const useAssetPreviewUrl = (
+  source: AssetPreviewSource | null,
+  maxDimension = 512,
+): string | null =>
+  useAssetPreview(source, {
+    mode: 'viewer-preview',
+    maxDimension,
+    priority: 'viewer',
+  }).url;
 
 export default useAssetPreviewUrl;

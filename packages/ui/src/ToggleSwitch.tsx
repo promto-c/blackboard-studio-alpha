@@ -58,10 +58,12 @@ function ToggleSwitch({
       aria-label={hasLabel ? undefined : ariaLabel}
       aria-labelledby={hasLabel ? labelId : undefined}
       aria-describedby={hasDescription ? descriptionId : undefined}
+      className="bb-toggle-switch rounded-full align-middle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/45 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
     >
       <span
+        data-state={checked ? 'checked' : 'unchecked'}
         className={[
-          'relative inline-flex items-center rounded-full transition-colors',
+          'bb-control-well bb-toggle-track relative inline-flex items-center rounded-full transition-colors',
           checked ? 'bg-primary-600' : 'bg-gray-600',
           classes.track,
           trackClassName,
@@ -70,8 +72,9 @@ function ToggleSwitch({
           .join(' ')}
       >
         <span
+          data-state={checked ? 'checked' : 'unchecked'}
           className={[
-            'inline-block transform rounded-full bg-white transition-transform',
+            'bb-toggle-thumb inline-block transform rounded-full bg-white transition-transform',
             classes.thumb,
             checked ? classes.checked : classes.unchecked,
             thumbClassName,

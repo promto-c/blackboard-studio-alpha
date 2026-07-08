@@ -1,8 +1,8 @@
 import React from 'react';
-import type { AnyNode } from '@blackboard/types';
+import { BlendMode, type AnyNode } from '@blackboard/types';
 import { NodeActionMenu, type NodeAction } from './NodeActionMenu';
 import NodeIcon from './NodeIcon';
-import { getNodeBlendModeLabel } from './nodeVisualHelpers';
+import { getBlendModeLabel } from './nodeVisualHelpers';
 
 export function DirectMergeInlineNode({
   mergeNode,
@@ -35,11 +35,11 @@ export function DirectMergeInlineNode({
             ? 'border-primary-400/70 bg-primary-950/45 text-primary-100'
             : 'border-white/10 bg-gray-900/45 text-gray-400 hover:border-gray-600 hover:bg-gray-900/70'
         }`}
-        title={`Merge: ${getNodeBlendModeLabel(mergeNode)}`}
+        title={`Merge: ${getBlendModeLabel((mergeNode as { operator?: BlendMode }).operator)}`}
       >
         <NodeIcon node={mergeNode} />
         <span className="min-w-0 flex-1 truncate font-medium uppercase">
-          {getNodeBlendModeLabel(mergeNode)}
+          {getBlendModeLabel((mergeNode as { operator?: BlendMode }).operator)}
         </span>
         <NodeActionMenu actions={actions} />
       </div>

@@ -10,21 +10,23 @@ describe('paint softness helpers', () => {
     expect(resolvePaintSoftness({})).toBe(DEFAULT_PAINT_SOFTNESS);
   });
 
-  it('merges brush updates and keeps softness clamped', () => {
+  it('merges brush updates and clamps softness and spacing', () => {
     expect(
       mergePaintBrushSettings(
         {
           size: 24,
+          spacing: 20,
           softness: 120,
           opacity: 100,
           color: [1, 1, 1],
           alpha: 1,
           channels: 'rgb',
         },
-        { size: 48 },
+        { size: 48, spacing: 500 },
       ),
     ).toEqual({
       size: 48,
+      spacing: 200,
       softness: 100,
       opacity: 100,
       color: [1, 1, 1],

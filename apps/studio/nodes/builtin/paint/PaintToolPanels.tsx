@@ -95,6 +95,16 @@ function DrawingToolsPanel({ onClose }: { onClose: () => void }) {
           displayFormatter={(value) => `${Math.round(value)}%`}
         />
         <Slider
+          label="Spacing"
+          value={paintBrush.spacing}
+          min={1}
+          max={200}
+          step={1}
+          onChange={(value) => updateBrush({ spacing: value })}
+          onReset={() => updateBrush({ spacing: DEFAULT_PAINT_BRUSH_SETTINGS.spacing })}
+          displayFormatter={(value) => `${Math.round(value)}%`}
+        />
+        <Slider
           label="Opacity"
           value={paintBrush.opacity}
           min={1}

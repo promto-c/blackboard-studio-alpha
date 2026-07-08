@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CollapsibleSection, Popover } from '@blackboard/ui';
+import { Badge, CollapsibleSection, Popover } from '@blackboard/ui';
 import type {
   ComfyWorkflowControl,
   ComfyWorkflowControlValue,
@@ -445,15 +445,17 @@ export function ComfyWorkflowOutputPicker({
                   <span className="min-w-0 flex-1">
                     <span className="flex min-w-0 items-center gap-1.5">
                       <span className="truncate text-xs font-medium">{candidate.label}</span>
-                      <span
-                        className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-semibold ${
+                      <Badge
+                        size="sm"
+                        variant={candidate.kind === 'synthetic' ? 'accent' : 'neutral'}
+                        className={
                           candidate.kind === 'synthetic'
-                            ? 'border-primary-300/20 bg-primary-300/10 text-primary-100/80'
-                            : 'border-white/10 bg-white/[0.04] text-gray-400'
-                        }`}
+                            ? 'shrink-0 !border-primary-300/20 !bg-primary-300/10 !text-primary-100/80'
+                            : 'shrink-0'
+                        }
                       >
                         {sourceLabel}
-                      </span>
+                      </Badge>
                     </span>
                     <span className="mt-0.5 block truncate font-mono text-[10px] text-gray-500">
                       {outputNodeType} #{candidate.previewNodeId} · {outputNodeMode} · source #

@@ -4,7 +4,10 @@ import {
   NodeType,
   RotoAlphaMode,
   type AnyNode,
+  type DisplayViewSelection,
   type PaintNode,
+  type ProjectColorManagement,
+  type RenderOutputDomain,
   type RotoNode,
   type SceneNode,
   type ViewerSettings,
@@ -16,38 +19,9 @@ import { getPaintTextureCommittedState } from '@/nodes/builtin/paint/paintTextur
 import { renderViewportFrameWithSharedPipeline } from '@/renderer/pipeline';
 import type { TextTextureEntry } from './useViewportTextTextures';
 import type { TextureCache } from '@/utils/textureCache';
+import { renderStackToDataURL } from '@/utils/thumbnailRenderer';
 
 const THUMBNAIL_CAPTURE_DELAY_MS = 1000;
-
-const canvasToDataUrl = async (canvas: HTMLCanvasElement): Promise<string | null> => {
-  if (typeof canvas.toBlob !== 'function') {
-    try {
-      return canvas.toDataURL('image/jpeg', 0.5);
-    } catch {
-      return null;
-    }
-  }
-
-  return new Promise((resolve) => {
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          resolve(null);
-          return;
-        }
-
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          resolve(typeof reader.result === 'string' ? reader.result : null);
-        };
-        reader.onerror = () => resolve(null);
-        reader.readAsDataURL(blob);
-      },
-      'image/jpeg',
-      0.5,
-    );
-  });
-};
 
 const isVideoFileNode = (node: AnyNode): boolean => {
   const descriptor = getMediaDescriptor(node.type);
@@ -73,6 +47,9 @@ interface UseViewportRenderLoopParams {
   sceneNode: SceneNode | undefined;
   visualFrame: number;
   viewerSettings: ViewerSettings;
+  displayView: DisplayViewSelection;
+  projectColorManagement: ProjectColorManagement;
+  outputDomain: RenderOutputDomain;
   alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
   hasRenderableNodes: boolean;
   isRenderReady: boolean;
@@ -94,6 +71,7 @@ interface UseViewportRenderLoopParams {
   freezeImageWhileEditing: boolean;
   deferProjectThumbnailCapture: boolean;
   signalFrameRendered: () => void;
+  reportRenderDuration?: (durationMs: number) => void;
   setProjectThumbnail: (url: string | null) => void;
 }
 
@@ -156,6 +134,9 @@ export function useViewportRenderLoop({
   sceneNode,
   visualFrame,
   viewerSettings,
+  displayView,
+  projectColorManagement,
+  outputDomain,
   alphaOverlayStyle,
   hasRenderableNodes,
   isRenderReady,
@@ -168,6 +149,7 @@ export function useViewportRenderLoop({
   freezeImageWhileEditing,
   deferProjectThumbnailCapture,
   signalFrameRendered,
+  reportRenderDuration,
   setProjectThumbnail,
 }: UseViewportRenderLoopParams): UseViewportRenderLoopResult {
   const finalCompBufferRef = useRef<THREE.WebGLRenderTarget | null>(null);
@@ -179,6 +161,9 @@ export function useViewportRenderLoop({
     nodes: typeof nodes;
     visualFrame: number;
     viewerSettings: typeof viewerSettings;
+    displayView: typeof displayView;
+    projectColorManagement: typeof projectColorManagement;
+    outputDomain: typeof outputDomain;
     alphaOverlayStyle: typeof alphaOverlayStyle;
     sceneNode: typeof sceneNode;
     mediaUpdateTrigger: number;
@@ -212,6 +197,9 @@ export function useViewportRenderLoop({
       prev &&
       prev.visualFrame === visualFrame &&
       prev.viewerSettings === viewerSettings &&
+      prev.displayView === displayView &&
+      prev.projectColorManagement === projectColorManagement &&
+      prev.outputDomain === outputDomain &&
       prev.alphaOverlayStyle === alphaOverlayStyle &&
       prev.sceneNode === sceneNode &&
       prev.mediaUpdateTrigger === mediaUpdateTrigger &&
@@ -228,6 +216,7 @@ export function useViewportRenderLoop({
       return;
     }
 
+    const renderStartedAt = performance.now();
     const result = renderViewportFrameWithSharedPipeline({
       resources: {
         renderer: gl,
@@ -243,6 +232,9 @@ export function useViewportRenderLoop({
       sceneNode,
       frame: visualFrame,
       viewerSettings,
+      displayView,
+      projectColorManagement,
+      outputDomain,
       alphaOverlayStyle,
       getMediaTexture: (node, frame) => {
         const desc = getMediaDescriptor(node.type);
@@ -296,6 +288,9 @@ export function useViewportRenderLoop({
       nodes,
       visualFrame,
       viewerSettings,
+      displayView,
+      projectColorManagement,
+      outputDomain,
       alphaOverlayStyle,
       sceneNode,
       mediaUpdateTrigger,
@@ -303,6 +298,7 @@ export function useViewportRenderLoop({
       rendererSurfaceWidth: rendererSurfaceSize.width,
       rendererSurfaceHeight: rendererSurfaceSize.height,
     };
+    reportRenderDuration?.(performance.now() - renderStartedAt);
     signalFrameRendered();
   }, [
     gl,
@@ -313,12 +309,16 @@ export function useViewportRenderLoop({
     sceneNode,
     threeStuff,
     viewerSettings,
+    displayView,
+    projectColorManagement,
+    outputDomain,
     alphaOverlayStyle,
     hasRenderableNodes,
     isRenderReady,
     visualFrame,
     freezeImageWhileEditing,
     signalFrameRendered,
+    reportRenderDuration,
     canvasRef,
     paintTexturesRef,
     rotoMaskTexturesRef,
@@ -343,12 +343,17 @@ export function useViewportRenderLoop({
         return;
       }
 
-      void canvasToDataUrl(gl.domElement).then((thumbnailUrl) => {
-        if (thumbnailCaptureIdRef.current !== captureId) {
-          return;
-        }
-        setProjectThumbnail(thumbnailUrl);
-      });
+      const thumbnailNodes = nodes.filter((node) => !nodeFlags(node.type).isSceneLike);
+      void renderStackToDataURL(thumbnailNodes, sceneNode, projectColorManagement, visualFrame)
+        .then((thumbnailUrl) => {
+          if (thumbnailCaptureIdRef.current !== captureId) {
+            return;
+          }
+          setProjectThumbnail(thumbnailUrl);
+        })
+        .catch((error) => {
+          console.error('Project thumbnail generation failed:', error);
+        });
     }, THUMBNAIL_CAPTURE_DELAY_MS);
 
     return () => {
@@ -364,6 +369,8 @@ export function useViewportRenderLoop({
     hasRenderableNodes,
     visualFrame,
     mediaUpdateTrigger,
+    nodes,
+    projectColorManagement,
     deferProjectThumbnailCapture,
     isRenderReady,
   ]);

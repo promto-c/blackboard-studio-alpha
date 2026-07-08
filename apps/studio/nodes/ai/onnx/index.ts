@@ -4,6 +4,12 @@ import { type ResolveOutputContext } from '@blackboard/renderer';
 import { NodeDefinition, InputPortDescriptor, OutputPortDescriptor } from '../../NodeDefinition';
 import { mediaTransformAnimation } from '../../animationHelpers';
 import { GENERIC_ONNX_RECIPE } from '@/services/onnx/modelRegistry';
+import {
+  ColorManagementDefaults,
+  createProjectDefaultMediaColorManagement,
+  getMediaSourceColorSpace,
+  isDataMediaColorManagement,
+} from '@/color-management';
 import { getResolvedInputMetadata } from '@/services/onnx/onnxMetadataCache';
 import OnnxAdjustments from './OnnxAdjustments';
 import { OnnxTool } from './OnnxTool';
@@ -26,6 +32,7 @@ export const onnxNode: NodeDefinition = {
   name: 'ONNX Model',
   category: 'Image',
   renderMode: 'media',
+  processingDomain: 'scene_linear',
   description: 'Run an installed browser ONNX model and render its output as a node.',
   IconComponent: Icons.CubeTransparent,
   ToolComponent: OnnxTool,
@@ -63,7 +70,11 @@ export const onnxNode: NodeDefinition = {
     opacity: 100,
     operator: BlendMode.OVER,
     transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
-    colorSpace: 'Raw',
+    colorSpace: ColorManagementDefaults.DATA_SPACE,
+    mediaColorManagement: createProjectDefaultMediaColorManagement(
+      ColorManagementDefaults.DATA_SPACE,
+      { isData: true },
+    ),
     useOutputSizeAsScene: false,
     lastRunAt: undefined,
     lastError: undefined,
@@ -226,7 +237,11 @@ export const onnxNode: NodeDefinition = {
       }
       return onnxNode.src || '';
     },
-    getColorSpace: (node) => (node as OnnxModelNode).colorSpace,
+    getColorSpace: (node) => {
+      const onnxNode = node as OnnxModelNode;
+      return getMediaSourceColorSpace(onnxNode.mediaColorManagement) ?? onnxNode.colorSpace;
+    },
+    isData: (node) => isDataMediaColorManagement((node as OnnxModelNode).mediaColorManagement),
   },
   onNodeUpdate: (node, changes, context) => {
     return createSourceTransformUpdate(node as OnnxModelNode, changes, context) ?? { changes };

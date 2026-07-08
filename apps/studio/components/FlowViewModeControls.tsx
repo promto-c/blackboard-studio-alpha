@@ -3,6 +3,7 @@ import {
   SlidingSegmentedControl,
   type SlidingSegmentedControlOption,
 } from './SlidingSegmentedControl';
+import { SegmentedControlAction, SegmentedControlSeparator } from './SegmentedControl';
 
 export interface FlowViewModeControlsProps {
   viewMode: 'list' | 'graph';
@@ -14,14 +15,9 @@ export interface FlowViewModeControlsProps {
 }
 
 const STYLES = {
-  container: 'flex items-center rounded-md border border-white/10 bg-black/20 text-xs',
-  segment: 'border-0 bg-transparent',
-  actionButton:
-    'inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white/5 hover:text-white',
-  divider: 'h-4 w-px bg-gray-600/50',
   icon: 'h-3.5 w-3.5',
-  activeWidth: 68,
-  height: '100%',
+  activeWidth: 64,
+  height: 28,
   inactiveWidth: 28,
 } as const;
 
@@ -38,24 +34,20 @@ export function FlowViewModeControls({
   onAutoArrange,
 }: FlowViewModeControlsProps) {
   return (
-    <div className={STYLES.container}>
-      <SlidingSegmentedControl
-        options={VIEW_MODE_OPTIONS}
-        value={viewMode}
-        onChange={onSelectViewMode}
-        activeWidth={STYLES.activeWidth}
-        height={STYLES.height}
-        inactiveWidth={STYLES.inactiveWidth}
-        className={STYLES.segment}
-        iconClassName={STYLES.icon}
-        labelMaxWidthClassName="max-w-10"
-      />
-      <div className={STYLES.divider} />
+    <SlidingSegmentedControl
+      options={VIEW_MODE_OPTIONS}
+      value={viewMode}
+      onChange={onSelectViewMode}
+      activeWidth={STYLES.activeWidth}
+      height={STYLES.height}
+      inactiveWidth={STYLES.inactiveWidth}
+      iconClassName={STYLES.icon}
+      labelMaxWidthClassName="max-w-10"
+    >
+      <SegmentedControlSeparator />
       {viewMode === 'list' ? (
-        <button
-          type="button"
+        <SegmentedControlAction
           onClick={onToggleFlowDirection}
-          className={STYLES.actionButton}
           title={`Flow Direction: ${flowListDirection === 'bottom-up' ? 'Bottom to Top' : 'Top to Bottom'}`}
         >
           {flowListDirection === 'bottom-up' ? (
@@ -63,17 +55,12 @@ export function FlowViewModeControls({
           ) : (
             <Icons.ArrowDown className={STYLES.icon} />
           )}
-        </button>
+        </SegmentedControlAction>
       ) : (
-        <button
-          type="button"
-          onClick={onAutoArrange}
-          className={STYLES.actionButton}
-          title="Reset Layout"
-        >
+        <SegmentedControlAction onClick={onAutoArrange} title="Reset Layout">
           <Icons.ArrowsPointingOut className={STYLES.icon} />
-        </button>
+        </SegmentedControlAction>
       )}
-    </div>
+    </SlidingSegmentedControl>
   );
 }

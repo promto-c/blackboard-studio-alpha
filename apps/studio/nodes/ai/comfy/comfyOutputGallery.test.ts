@@ -68,12 +68,57 @@ describe('Comfy output gallery jobs', () => {
     expect(getPendingComfyOutputSlots(jobs, 'region-1')).toEqual([
       {
         id: 'batch:2',
+        jobId: 'batch',
         label: 'Generating',
         detail: 'Run 2/3',
         active: true,
       },
       {
         id: 'batch:3',
+        jobId: 'batch',
+        label: 'Queued 3',
+        detail: 'Run 3/3',
+        active: false,
+      },
+    ]);
+  });
+
+  it('creates one cancellable placeholder per per-run batch job', () => {
+    const jobs = [
+      createJob('run-2', {
+        status: 'running',
+        source: {
+          nodeId: 'node-1',
+          comfyRegionId: 'region-1',
+          batchId: 'batch-1',
+          promptId: 'prompt-2',
+          runIndex: 2,
+          runCount: 3,
+        },
+      }),
+      createJob('run-3', {
+        source: {
+          nodeId: 'node-1',
+          comfyRegionId: 'region-1',
+          batchId: 'batch-1',
+          promptId: 'prompt-3',
+          runIndex: 3,
+          runCount: 3,
+        },
+      }),
+    ];
+
+    expect(getPendingComfyOutputSlots(jobs, 'region-1')).toEqual([
+      {
+        id: 'run-2',
+        jobId: 'run-2',
+        label: 'Generating',
+        detail: 'Run 2/3',
+        active: true,
+      },
+      {
+        id: 'run-3',
+        jobId: 'run-3',
         label: 'Queued 3',
         detail: 'Run 3/3',
         active: false,

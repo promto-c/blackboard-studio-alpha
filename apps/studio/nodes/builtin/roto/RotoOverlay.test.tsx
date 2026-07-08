@@ -1,10 +1,8 @@
 // @vitest-environment jsdom
 
-import React from 'react';
 import { render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { NodeType, type RotoNode } from '@blackboard/types';
-import type { RotoTransformSelection } from '@/features/viewport/viewportOverlayTypes';
 import RotoOverlay from './RotoOverlay';
 
 vi.hoisted(() => {
@@ -40,23 +38,8 @@ const createRotoNode = (): RotoNode =>
     paths: [],
   }) as RotoNode;
 
-const createTransformSelection = (): RotoTransformSelection => ({
-  mode: 'paths',
-  refs: [],
-  points: [],
-  bounds: {
-    minX: 10,
-    minY: 20,
-    maxX: 130,
-    maxY: 100,
-    width: 120,
-    height: 80,
-    centerX: 70,
-    centerY: 60,
-  },
-});
-
-const createProps = (activeTransformHandle: string | null = null) =>
+/** Build the minimum context needed to render the transform selection bbox. */
+const createMinimalProps = (activeTransformHandle: string | null) =>
   ({
     node: createRotoNode(),
     frame: 0,
@@ -67,6 +50,7 @@ const createProps = (activeTransformHandle: string | null = null) =>
     activeTool: 'select',
     context: {
       viewport: {
+        showOverlays: true,
         altPressed: false,
         affineModifierPressed: false,
         mouseScenePos: null,
@@ -74,13 +58,30 @@ const createProps = (activeTransformHandle: string | null = null) =>
         transformInputDataWindowRect: null,
         stabilizationMatrix: null,
         activeViewportTool: 'select',
-        showOverlays: true,
       },
       roto: {
         interaction: {
           isRotoSelectActive: true,
-          rotoTransformSelection: createTransformSelection(),
+          rotoTransformSelection: {
+            mode: 'paths',
+            refs: [],
+            points: [],
+            bounds: {
+              minX: 10,
+              minY: 20,
+              maxX: 130,
+              maxY: 100,
+              width: 120,
+              height: 80,
+              centerX: 70,
+              centerY: 60,
+            },
+          },
           transformIsDegenerate: false,
+          activeTransformHandle,
+          // Fields below are destructured but only used inside JSX event handlers
+          // or conditional branches that won't fire during this test.
+          // Providing sensible defaults to avoid runtime errors.
           transformMoveHandleRadius: 7,
           transformRotateHitRadius: 14,
           transformHandleSize: 8,
@@ -88,7 +89,6 @@ const createProps = (activeTransformHandle: string | null = null) =>
           transformHandlePositions: [],
           transformRotateHandlePoint: null,
           transformInteractionLabel: null,
-          activeTransformHandle,
           hoveredTransformHandle: null,
           isMoveTransformActive: activeTransformHandle === 'move',
           isMoveTransformHovered: false,
@@ -96,8 +96,8 @@ const createProps = (activeTransformHandle: string | null = null) =>
           isRotateTransformHovered: false,
           beginRotoTransformDrag: vi.fn(),
           setHoveredTransformHandle: vi.fn(),
-          hoveredRotoPathId: null,
           setHoveredRotoPathId: vi.fn(),
+          hoveredRotoPathId: null,
           dragPointState: null,
           hoveredPointInfo: null,
           handlePointMouseDown: vi.fn(),
@@ -134,7 +134,7 @@ const createProps = (activeTransformHandle: string | null = null) =>
         selectedPointRefs: [],
         setSelectedPointRefs: vi.fn(),
         setHierarchySelection: vi.fn(),
-        motionCueTargetPathIdSet: new Set<string>(),
+        motionCueTargetPathIdSet: new Set(),
         gradientTrailsByPath: new Map(),
         speedHeatSegmentsByPath: new Map(),
         motionBlurCuePathsByPath: new Map(),
@@ -158,7 +158,7 @@ describe('RotoOverlay transform selection', () => {
   it('hides the transform bbox while a transform drag is active', () => {
     const inactive = render(
       <svg>
-        <RotoOverlay {...createProps(null)} />
+        <RotoOverlay {...createMinimalProps(null)} />
       </svg>,
     );
     expect(inactive.container.querySelectorAll('rect').length).toBeGreaterThan(0);
@@ -167,7 +167,7 @@ describe('RotoOverlay transform selection', () => {
 
     const active = render(
       <svg>
-        <RotoOverlay {...createProps('move')} />
+        <RotoOverlay {...createMinimalProps('move')} />
       </svg>,
     );
     expect(active.container.querySelectorAll('rect')).toHaveLength(0);

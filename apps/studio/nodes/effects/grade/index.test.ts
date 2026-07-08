@@ -1,62 +1,68 @@
-import { describe, it, expect } from 'vitest';
-import { NodeType } from '@blackboard/types';
-import { GRADE_SHADER } from './gradeShader';
+import { describe, expect, it } from 'vitest';
 import { getValueAtFrame } from '@blackboard/renderer';
-
-// Test the grade effect's logic directly, without importing the full
-// NodeDefinition (which transitively pulls in the entire app).
+import { GRADE_SHADER } from './gradeShader';
+import { createDefaultGrade, getGradeRgbAtFrame } from './gradeModel';
 
 describe('grade effect', () => {
-  it('GRADE_SHADER contains expected uniforms', () => {
-    expect(GRADE_SHADER).toContain('u_brightness');
-    expect(GRADE_SHADER).toContain('u_contrast');
-    expect(GRADE_SHADER).toContain('u_saturation');
-    expect(GRADE_SHADER).toContain('u_gain');
-    expect(GRADE_SHADER).toContain('u_gamma');
-    expect(GRADE_SHADER).toContain('void main()');
+  it('defines the complete scene-linear and log grading shader contract', () => {
+    [
+      'u_exposure',
+      'u_contrast',
+      'u_contrastPivot',
+      'u_saturation',
+      'u_lift',
+      'u_gamma',
+      'u_gain',
+      'u_cdlSlope',
+      'u_cdlOffset',
+      'u_cdlPower',
+      'u_cdlSaturation',
+      'u_outOfGamutMode',
+    ].forEach((uniform) => expect(GRADE_SHADER).toContain(uniform));
+
+    expect(GRADE_SHADER).toContain('acescg_luminance');
+    expect(GRADE_SHADER).toContain('signed_power');
+    expect(GRADE_SHADER).toContain('exp2(u_exposure)');
+    expect(GRADE_SHADER).not.toContain('vec3(0.2126, 0.7152, 0.0722)');
+    expect(GRADE_SHADER).not.toContain('clamp(');
   });
 
-  it('initial grade props have correct defaults', () => {
-    // Matches gradeEffect.getInitialNodeProps()
-    const initialProps = {
-      grade: { brightness: 0, contrast: 1, saturation: 1, gain: 1, gamma: 1 },
-    };
-    expect(initialProps.grade.brightness).toBe(0);
-    expect(initialProps.grade.contrast).toBe(1);
-    expect(initialProps.grade.saturation).toBe(1);
-    expect(initialProps.grade.gain).toBe(1);
-    expect(initialProps.grade.gamma).toBe(1);
+  it('creates independent canonical defaults', () => {
+    const first = createDefaultGrade();
+    const second = createDefaultGrade();
+
+    expect(first).toMatchObject({
+      processingDomain: 'scene_linear',
+      outOfGamut: 'preserve',
+      exposure: 0,
+      contrast: 1,
+      contrastPivot: 0.18,
+      saturation: 1,
+      lift: { r: 0, g: 0, b: 0 },
+      gamma: { r: 1, g: 1, b: 1 },
+      gain: { r: 1, g: 1, b: 1 },
+      cdl: {
+        slope: { r: 1, g: 1, b: 1 },
+        offset: { r: 0, g: 0, b: 0 },
+        power: { r: 1, g: 1, b: 1 },
+        saturation: 1,
+      },
+    });
+    expect(first.lift).not.toBe(second.lift);
+    expect(first.cdl.slope).not.toBe(second.cdl.slope);
   });
 
-  it('computes uniforms from grade node props', () => {
-    // Replicate the getUniforms logic from gradeEffect
-    const gradeNode = {
-      id: '1',
-      type: NodeType.GRADE,
-      name: 'Grade',
-      visible: true,
-      grade: { brightness: 0.5, contrast: 1, saturation: 0.75, gain: 1.25, gamma: 0.9 },
-    };
-    const frame = 0;
-    const brightness = getValueAtFrame(gradeNode.grade.brightness, frame);
-    const contrast = getValueAtFrame(gradeNode.grade.contrast, frame);
-    const saturation = getValueAtFrame(gradeNode.grade.saturation, frame);
-    const gain = getValueAtFrame(gradeNode.grade.gain, frame);
-    const gamma = getValueAtFrame(gradeNode.grade.gamma, frame);
-
-    expect(brightness).toBeCloseTo(0.5);
-    expect(contrast).toBeCloseTo(1.0);
-    expect(saturation).toBeCloseTo(0.75);
-    expect(gain).toBeCloseTo(1.25);
-    expect(gamma).toBeCloseTo(0.9);
-  });
-
-  it('handles animated grade properties', () => {
-    const keyframes = [
+  it('resolves scalar and RGB animation values at the render frame', () => {
+    const grade = createDefaultGrade();
+    grade.exposure = [
       { frame: 0, value: 0 },
-      { frame: 100, value: 100 },
+      { frame: 10, value: 2 },
     ];
-    expect(getValueAtFrame(keyframes, 0)).toBe(0);
-    expect(getValueAtFrame(keyframes, 100)).toBe(100);
+    grade.gain.r = 1.25;
+    grade.gain.g = 0.9;
+    grade.gain.b = 1.1;
+
+    expect(getValueAtFrame(grade.exposure, 10)).toBe(2);
+    expect(getGradeRgbAtFrame(grade.gain, 10)).toEqual([1.25, 0.9, 1.1]);
   });
 });

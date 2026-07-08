@@ -4,6 +4,7 @@ import { usePreferences } from '@/state/preferencesContext';
 import { AnyNode, CustomShaderNode, UniformUIType, AnyUniform } from '@blackboard/types';
 import { RendererShader, parseUniformsFromGLSL } from '@blackboard/renderer';
 import {
+  Badge,
   CodeBlock,
   CollapsibleSection,
   ColorPicker,
@@ -12,7 +13,7 @@ import {
   Spinner,
   ToggleSwitch,
 } from '@blackboard/ui';
-import { AttentionPulse, SegmentedControl, Slider } from '@/components';
+import { AttentionPulse, ExecuteButton, SegmentedControl, Slider } from '@/components';
 import { suggestShaderIdeas, enhanceShaderPrompt } from '@/utils/ai';
 import { getAiTaskRouteError, resolveAiTaskRoute } from '@/utils/aiRouting';
 import * as Icons from '@blackboard/icons';
@@ -74,14 +75,7 @@ const CustomShaderAdjustments = ({
   const aiChats = useEditorSelector((s) => s.aiChats);
   const aiApplyNotice = useEditorSelector((s) => s.aiApplyNotice);
   const { updateNode, setKeyframe, openShaderChat, startShaderChat } = useEditorActions();
-  const {
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
-    ollamaEndpoint,
-    aiTaskRoutes,
-    integrationConnections,
-  } = usePreferences();
+  const { aiTaskRoutes, integrationConnections } = usePreferences();
   const [code, setCode] = useState(node.fragmentShader);
   const [showWarning, setShowWarning] = useState(true);
 
@@ -132,38 +126,22 @@ const CustomShaderAdjustments = ({
   const shaderPromptRouteError = getAiTaskRouteError('shaderPromptTools', {
     aiTaskRoutes,
     integrationConnections,
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
-    ollamaEndpoint,
   });
   const shaderPromptRoute = shaderPromptRouteError
     ? null
     : resolveAiTaskRoute('shaderPromptTools', {
         aiTaskRoutes,
         integrationConnections,
-        geminiApiKey,
-        openAiApiKey,
-        openAiBaseUrl,
-        ollamaEndpoint,
       });
   const shaderGenerationRouteError = getAiTaskRouteError('shaderGeneration', {
     aiTaskRoutes,
     integrationConnections,
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
-    ollamaEndpoint,
   });
   const shaderGenerationRoute = shaderGenerationRouteError
     ? null
     : resolveAiTaskRoute('shaderGeneration', {
         aiTaskRoutes,
         integrationConnections,
-        geminiApiKey,
-        openAiApiKey,
-        openAiBaseUrl,
-        ollamaEndpoint,
       });
   const isAiGenerationMissingConfig = Boolean(shaderGenerationRouteError);
 
@@ -271,8 +249,6 @@ const CustomShaderAdjustments = ({
     try {
       await startShaderChat(node.id, aiPrompt, {
         provider: shaderGenerationRoute.provider,
-        geminiApiKey: shaderGenerationRoute.geminiApiKey,
-        geminiModel: shaderGenerationRoute.geminiModel,
         openAiApiKey: shaderGenerationRoute.openAiApiKey,
         openAiBaseUrl: shaderGenerationRoute.openAiBaseUrl,
         openAiModel: shaderGenerationRoute.openAiModel,
@@ -488,15 +464,18 @@ const CustomShaderAdjustments = ({
                     {chatTitle}
                   </span>
                   {chatStatusBadge ? (
-                    <span
-                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none ${
+                    <Badge
+                      size="sm"
+                      variant={chatStatusTone === 'error' ? 'danger' : 'neutral'}
+                      shrink
+                      className={
                         chatStatusTone === 'error'
-                          ? 'bg-red-300/15 text-red-100'
-                          : 'bg-white/10 text-gray-200'
-                      }`}
+                          ? '!bg-red-300/15 !text-red-100 border-0'
+                          : '!bg-white/10 !text-gray-200 border-0'
+                      }
                     >
                       {chatStatusBadge}
-                    </span>
+                    </Badge>
                   ) : null}
                 </span>
                 <span
@@ -515,20 +494,23 @@ const CustomShaderAdjustments = ({
               </span>
             </button>
 
-            <button
-              type="button"
+            <ExecuteButton
               onClick={handleGenerate}
               disabled={!aiPrompt || isGenerating || isAiGenerationMissingConfig}
               title="Execute prompt and generate shader code"
-              className="inline-flex min-h-16 w-32 shrink-0 items-center justify-center gap-2 rounded-md border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs font-medium text-cyan-100 transition hover:border-cyan-300/40 hover:bg-cyan-300/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/30 disabled:cursor-not-allowed disabled:border-cyan-300/10 disabled:bg-cyan-300/[0.04] disabled:text-cyan-100/35"
+              className="min-h-16 w-32"
+              actionClassName="justify-center px-3 py-2 text-xs"
+              variant="prominent"
+              icon={
+                isGenerating ? (
+                  <Spinner className="h-3.5 w-3.5 text-white" />
+                ) : (
+                  <Icons.Play className="h-4 w-4 text-primary-200" />
+                )
+              }
             >
-              {isGenerating ? (
-                <Spinner className="h-3.5 w-3.5 text-white" />
-              ) : (
-                <Icons.Play className="h-4 w-4" />
-              )}
               <span className="truncate">{isGenerating ? 'Generating' : 'Generate'}</span>
-            </button>
+            </ExecuteButton>
           </div>
 
           {shaderGenerationRouteError && (

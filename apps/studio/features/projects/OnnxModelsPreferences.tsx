@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import * as Icons from '@blackboard/icons';
+import { Badge } from '@blackboard/ui';
 import { useEditorSelector, useOptionalEditorActions } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import { useInstalledOnnxModels } from '@/state/installedOnnxModelsContext';
@@ -59,33 +60,6 @@ const formatBytes = (bytes?: number): string => {
   }
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 };
-
-function StatusBadge({
-  children,
-  tone = 'neutral',
-}: {
-  children: React.ReactNode;
-  tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'accent';
-}) {
-  const toneClassName =
-    tone === 'success'
-      ? 'border-green-400/20 bg-green-500/10 text-green-100'
-      : tone === 'warning'
-        ? 'border-amber-400/20 bg-amber-500/10 text-amber-100'
-        : tone === 'danger'
-          ? 'border-red-400/20 bg-red-500/10 text-red-100'
-          : tone === 'accent'
-            ? 'border-primary-400/20 bg-primary-500/10 text-primary-100'
-            : 'border-white/10 bg-white/[0.05] text-gray-300';
-
-  return (
-    <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${toneClassName}`}
-    >
-      {children}
-    </span>
-  );
-}
 
 const baseFieldClassName =
   'block w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] outline-none transition placeholder:text-gray-500 focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20';
@@ -531,7 +505,9 @@ function OnnxModelsPreferences() {
               Paste a repo name or search for ONNX models.
             </p>
           </div>
-          <StatusBadge tone="accent">{GENERIC_ONNX_RECIPE.name}</StatusBadge>
+          <Badge variant="accent" size="lg">
+            {GENERIC_ONNX_RECIPE.name}
+          </Badge>
         </div>
 
         <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
@@ -776,7 +752,9 @@ function OnnxModelsPreferences() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-medium text-white truncate">{model.name}</p>
-                        <StatusBadge tone="accent">{model.variant.label}</StatusBadge>
+                        <Badge variant="accent" size="lg">
+                          {model.variant.label}
+                        </Badge>
                         <span
                           className={`shrink-0 transition-transform duration-200 ${isSelected ? 'rotate-90 text-primary-400' : 'text-gray-600 group-hover:text-gray-400'}`}
                         >
@@ -850,15 +828,14 @@ function OnnxModelsPreferences() {
                                         <span className="font-mono text-gray-300">
                                           {input.dimsLabel}
                                         </span>
-                                        <span
-                                          className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium ${
-                                            input.isDynamic
-                                              ? 'border border-amber-400/20 bg-amber-500/10 text-amber-200'
-                                              : 'border border-green-400/20 bg-green-500/10 text-green-100'
-                                          }`}
+                                        <Badge
+                                          size="sm"
+                                          variant={input.isDynamic ? 'warning' : 'success'}
+                                          shrink
+                                          className={input.isDynamic ? 'text-amber-200' : ''}
                                         >
                                           {input.isDynamic ? 'Dynamic' : 'Fixed'}
-                                        </span>
+                                        </Badge>
                                         {input.type !== 'unknown' && (
                                           <span className="shrink-0 text-gray-500">
                                             {input.type}
@@ -889,15 +866,14 @@ function OnnxModelsPreferences() {
                                         <span className="font-mono text-gray-300">
                                           {output.dimsLabel}
                                         </span>
-                                        <span
-                                          className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium ${
-                                            output.isDynamic
-                                              ? 'border border-amber-400/20 bg-amber-500/10 text-amber-200'
-                                              : 'border border-green-400/20 bg-green-500/10 text-green-100'
-                                          }`}
+                                        <Badge
+                                          size="sm"
+                                          variant={output.isDynamic ? 'warning' : 'success'}
+                                          shrink
+                                          className={output.isDynamic ? 'text-amber-200' : ''}
                                         >
                                           {output.isDynamic ? 'Dynamic' : 'Fixed'}
-                                        </span>
+                                        </Badge>
                                         {output.type !== 'unknown' && (
                                           <span className="shrink-0 text-gray-500">
                                             {output.type}

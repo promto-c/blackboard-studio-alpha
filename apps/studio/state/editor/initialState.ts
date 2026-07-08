@@ -25,6 +25,12 @@ import {
   type BackgroundJob,
 } from '@/state/editor/services/backgroundJobs';
 import { MAIN_PROJECT_BRANCH_ID, type ProjectBranchRecord } from '@/state/projectBranches';
+import {
+  createDefaultProjectColorManagement,
+  createDefaultViewerColorManagement,
+  DEFAULT_DISPLAY_OUTPUT,
+  DEFAULT_OPEN_EXR_OUTPUT_PRESET,
+} from '@/color-management';
 
 export const getInitialHistoryEntry = (): HistoryEntry => ({
   id: `init_${Date.now()}`,
@@ -52,6 +58,8 @@ export const getInitialState = () => ({
   selectedRotoPointRefs: [] as RotoPointRef[],
   selectedKeyframes: [] as SelectedKeyframeRef[],
   activeTab: EditorTab.Tools,
+  colorManagement: createDefaultProjectColorManagement(),
+  viewerColorManagement: createDefaultViewerColorManagement(),
   zoom: 1,
   pan: { x: 0, y: 0 },
   targetZoom: 1,
@@ -88,9 +96,8 @@ export const getInitialState = () => ({
   viewerSettings: {
     channels: 'RGB' as const,
     alphaOverlay: false,
-    alphaMode: 'STRAIGHT' as const,
+    gamutWarning: false,
     showOverlays: true,
-    ocioDisplay: 'sRGB - Display',
     gain: 1,
     gamma: 1,
     saturation: 1,
@@ -103,7 +110,8 @@ export const getInitialState = () => ({
     filename: 'export',
     format: 'image/jpeg' as const,
     quality: 90,
-    outputColorSpace: 'srgb' as const,
+    displayOutput: DEFAULT_DISPLAY_OUTPUT,
+    openExrOutputPreset: DEFAULT_OPEN_EXR_OUTPUT_PRESET,
     includeAlpha: false,
     sequenceStartFrame: 0,
     sequencePadding: 4,
@@ -111,8 +119,7 @@ export const getInitialState = () => ({
   cacheStatus: {
     memoryUsed: 0,
     memoryLimit: 512 * 1024 * 1024,
-    cachedFrames: [],
-    cachingFrames: [],
+    nodeEntries: {},
   } as CacheStatus,
   activeTrackingPoints: null as { x: number; y: number }[] | null,
   fps: 30,

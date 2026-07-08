@@ -1,20 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { ComfyNode, ComfyWorkflow, EditorTab, GroupNode, NodeType } from '@blackboard/types';
-import { ScrollArea, SplitterHandle } from '@blackboard/ui';
+import { Badge, ScrollArea, SplitterHandle } from '@blackboard/ui';
 import { FlowViewModeControls } from '@/components/FlowViewModeControls';
 import { NodeItemsPanel, getNodeItemsComponent } from '@/components/NodeItemsPanel';
 import { SlidingSegmentedControl } from '@/components/SlidingSegmentedControl';
-import { SegmentedControl, SegmentedControlButton } from '@/components/SegmentedControl';
+import {
+  SegmentedControl,
+  SegmentedControlAction,
+  SegmentedControlButton,
+} from '@/components/SegmentedControl';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import { usePreferences } from '@/state/preferencesContext';
 import {
   EditorSubPanelWidth,
   EditorSubPanelHeight,
   EditorItemsPanelPercent,
-  clampEditorItemsPanelPercent,
-  clampEditorSubPanelHeight,
-  clampEditorSubPanelWidth,
+  clampEditor,
 } from '@/utils/editorLayout';
 import {
   useAutoSyncRotoInspectorLevel,
@@ -62,7 +64,6 @@ const DESKTOP_PANEL_TABS: DesktopPanelTabItem[] = [
 const DESKTOP_PANEL_ACTIVE_TAB_WIDTH = 68;
 const DESKTOP_PANEL_INACTIVE_TAB_WIDTH = 28;
 const DESKTOP_PANEL_TAB_GAP = 2;
-const DESKTOP_PANEL_TAB_PADDING = 4;
 const DESKTOP_HEADER_CONTROL_HEIGHT = 28;
 
 const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -285,9 +286,9 @@ function ProjectBranchSwitcher({ compact = false }: { compact?: boolean }) {
                     />
                     <span className="min-w-0 flex-1 truncate">{branch.name}</span>
                     {branch.kind === 'agent' ? (
-                      <span className="rounded bg-primary-500/10 px-1.5 py-0.5 text-[10px] uppercase text-primary-200">
+                      <Badge size="sm" variant="accent" uppercase className="!bg-primary-500/10">
                         agent
-                      </span>
+                      </Badge>
                     ) : null}
                   </button>
                   {canDeleteBranch ? (
@@ -352,13 +353,13 @@ function Panel({ isMobilePortrait }: PanelProps) {
   const toolsPopupRef = useRef<HTMLDivElement>(null);
   const [panelContentSize, setPanelContentSize] = useState({ width: 0, height: 0 });
   const [subPanelWidth, setSubPanelWidth] = useState(() =>
-    clampEditorSubPanelWidth(editorSubPanelWidth),
+    clampEditor(editorSubPanelWidth, EditorSubPanelWidth),
   );
   const [subPanelHeight, setSubPanelHeight] = useState(() =>
-    clampEditorSubPanelHeight(editorSubPanelHeight),
+    clampEditor(editorSubPanelHeight, EditorSubPanelHeight),
   );
   const [itemsPanelPercent, setItemsPanelPercent] = useState(() =>
-    clampEditorItemsPanelPercent(editorItemsPanelPercent),
+    clampEditor(editorItemsPanelPercent, EditorItemsPanelPercent),
   );
   const [rotoInspectorLevel, setRotoInspectorLevel] = useState<RotoInspectorLevel>('node');
   const [activeComfyGraph, setActiveComfyGraph] = useState<ActiveComfyGraph | null>(null);
@@ -571,17 +572,17 @@ function Panel({ isMobilePortrait }: PanelProps) {
   const [isDesktopToolsPopupOpen, setDesktopToolsPopupOpen] = useState(false);
 
   useEffect(() => {
-    const nextSubPanelWidth = clampEditorSubPanelWidth(editorSubPanelWidth);
+    const nextSubPanelWidth = clampEditor(editorSubPanelWidth, EditorSubPanelWidth);
     setSubPanelWidth((current) => (current === nextSubPanelWidth ? current : nextSubPanelWidth));
   }, [editorSubPanelWidth]);
 
   useEffect(() => {
-    const nextSubPanelHeight = clampEditorSubPanelHeight(editorSubPanelHeight);
+    const nextSubPanelHeight = clampEditor(editorSubPanelHeight, EditorSubPanelHeight);
     setSubPanelHeight((current) => (current === nextSubPanelHeight ? current : nextSubPanelHeight));
   }, [editorSubPanelHeight]);
 
   useEffect(() => {
-    const nextItemsPanelPercent = clampEditorItemsPanelPercent(editorItemsPanelPercent);
+    const nextItemsPanelPercent = clampEditor(editorItemsPanelPercent, EditorItemsPanelPercent);
     setItemsPanelPercent((current) =>
       current === nextItemsPanelPercent ? current : nextItemsPanelPercent,
     );
@@ -594,9 +595,9 @@ function Panel({ isMobilePortrait }: PanelProps) {
         editorSubPanelHeight: number;
         editorItemsPanelPercent: number;
       }> = {};
-      const nextSubPanelWidth = clampEditorSubPanelWidth(subPanelWidth);
-      const nextSubPanelHeight = clampEditorSubPanelHeight(subPanelHeight);
-      const nextItemsPanelPercent = clampEditorItemsPanelPercent(itemsPanelPercent);
+      const nextSubPanelWidth = clampEditor(subPanelWidth, EditorSubPanelWidth);
+      const nextSubPanelHeight = clampEditor(subPanelHeight, EditorSubPanelHeight);
+      const nextItemsPanelPercent = clampEditor(itemsPanelPercent, EditorItemsPanelPercent);
 
       if (nextSubPanelWidth !== editorSubPanelWidth) {
         nextPrefs.editorSubPanelWidth = nextSubPanelWidth;
@@ -1222,24 +1223,22 @@ function Panel({ isMobilePortrait }: PanelProps) {
               activeWidth={DESKTOP_PANEL_ACTIVE_TAB_WIDTH}
               inactiveWidth={DESKTOP_PANEL_INACTIVE_TAB_WIDTH}
               gap={DESKTOP_PANEL_TAB_GAP}
-              padding={DESKTOP_PANEL_TAB_PADDING}
               height={DESKTOP_HEADER_CONTROL_HEIGHT}
             />
-            <div className="flex h-7 items-center gap-1 bg-black/20 border border-white/10 rounded-md p-0.5">
-              <button
+            <SegmentedControl
+              className="bb-segmented-control-compact h-7"
+              style={{ height: DESKTOP_HEADER_CONTROL_HEIGHT }}
+            >
+              <SegmentedControlAction
                 ref={addToolsButtonRef}
                 onClick={toggleToolsPopup}
-                className={`flex h-full aspect-square items-center justify-center rounded transition-all ${
-                  isDesktopToolsPopupOpen
-                    ? 'bg-gray-700 text-white shadow-sm'
-                    : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
-                }`}
+                className={isDesktopToolsPopupOpen ? 'bg-gray-700 text-white shadow-sm' : undefined}
                 title="Add tools"
                 aria-label="Add tools"
               >
                 <Icons.Plus className="h-3.5 w-3.5" />
-              </button>
-            </div>
+              </SegmentedControlAction>
+            </SegmentedControl>
           </div>
         </div>
 

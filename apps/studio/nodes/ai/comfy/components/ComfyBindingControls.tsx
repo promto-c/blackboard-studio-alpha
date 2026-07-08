@@ -3,7 +3,7 @@ import type {
   ComfyWorkflowFieldTarget,
   FieldBinding,
 } from '@blackboard/types';
-import { StyledDropdown } from '@blackboard/ui';
+import { Badge, StyledDropdown } from '@blackboard/ui';
 import { comfyViewportBindingFieldLabels } from '../comfyViewportBindings';
 
 export const getComfyBindingTargetKey = (target: ComfyWorkflowFieldTarget | undefined): string =>
@@ -30,11 +30,14 @@ export const comfyBindingFieldToneClassName: Record<ComfyViewportBindingField, s
 
 export function ComfyBindingFieldBadge({ field }: { field: ComfyViewportBindingField }) {
   return (
-    <span
-      className={`inline-flex h-5 shrink-0 items-center rounded border px-1.5 text-[10px] font-semibold uppercase ${comfyBindingFieldToneClassName[field]}`}
+    <Badge
+      size="sm"
+      uppercase
+      shrink
+      className={`h-5 text-[10px] font-semibold ${comfyBindingFieldToneClassName[field]}`}
     >
       {comfyViewportBindingFieldLabels[field]}
-    </span>
+    </Badge>
   );
 }
 

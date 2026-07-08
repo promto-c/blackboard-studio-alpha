@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { NodeType, type AnyNode, type TextNode } from '@blackboard/types';
-import { getValueAtFrame } from '@blackboard/renderer';
+import { configureStraightAlphaTexture, getValueAtFrame } from '@blackboard/renderer';
 
 export interface TextTextureEntry {
   texture: THREE.Texture;
@@ -31,13 +31,7 @@ export const useViewportTextTextures = ({
     textNodes.forEach((node) => {
       const fontSizeAtFrame = getValueAtFrame(node.fontSize, currentFrame);
       const rotationAtFrame = getValueAtFrame(node.rotation, currentFrame);
-      const key = [
-        node.text,
-        node.fontFamily,
-        fontSizeAtFrame,
-        rotationAtFrame,
-        node.color.join(','),
-      ].join('|');
+      const key = [node.text, node.fontFamily, fontSizeAtFrame, rotationAtFrame].join('|');
 
       const existing = textTexturesRef.current.get(node.id);
       if (existing && existing.key === key) {
@@ -69,14 +63,14 @@ export const useViewportTextTextures = ({
       canvas.width = canvasWidth * FONT_PADDING;
       canvas.height = canvasHeight * FONT_PADDING;
       ctx.font = font;
-      ctx.fillStyle = `rgb(${node.color.map((c) => c * 255).join(',')})`;
+      ctx.fillStyle = 'white';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.translate(canvas.width / 2, canvas.height / 2);
       ctx.rotate(rad);
       ctx.fillText(node.text, 0, 0);
 
-      const texture = new THREE.CanvasTexture(canvas);
+      const texture = configureStraightAlphaTexture(new THREE.CanvasTexture(canvas));
       texture.needsUpdate = true;
 
       nextTextures.set(node.id, {

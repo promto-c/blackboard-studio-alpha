@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import * as Icons from '@blackboard/icons';
-import { Popover } from '@blackboard/ui';
+import { Badge, Popover } from '@blackboard/ui';
 import { getNativeDesktopVersion, isNativeDesktopApp } from '@/desktop/nativeDesktop';
 
 interface NativeDesktopStatusButtonProps {
@@ -48,9 +48,14 @@ export function NativeDesktopStatusButton({ className = '' }: NativeDesktopStatu
                 Blackboard Studio v{version}
               </p>
             </div>
-            <span className="shrink-0 rounded-md border border-white/10 bg-black/20 px-1.5 py-1 text-[10px] font-semibold text-emerald-200">
+            <Badge
+              size="sm"
+              variant="neutral"
+              shrink
+              className="!py-1 text-[10px] font-semibold !bg-black/20 !text-emerald-200"
+            >
               Tauri
-            </span>
+            </Badge>
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-[11px]">

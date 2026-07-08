@@ -1,130 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@google/genai', () => ({
-  GoogleGenAI: vi.fn(),
-  Modality: {},
-  Type: {},
-}));
-
-vi.mock('@/nodes/registry', () => ({
-  nodeRegistry: new Map([
-    [
-      'scene',
-      {
-        name: 'Scene',
-        category: 'Scene',
-        renderMode: 'scene',
-        flags: { isSceneLike: true },
-        getInitialNodeProps: () => ({}),
-      },
-    ],
-    [
-      'media_source',
-      {
-        name: 'Image',
-        category: 'Image',
-        renderMode: 'source',
-        flags: { isSource: true, hasThumbnail: true },
-        getInitialNodeProps: () => ({}),
-      },
-    ],
-    [
-      'onnx_model',
-      {
-        name: 'ONNX Model',
-        category: 'Image',
-        renderMode: 'media',
-        flags: { isSource: true },
-        inputPorts: [
-          {
-            name: 'image',
-            label: 'Image',
-            type: 'texture',
-            required: true,
-          },
-        ],
-        getInitialNodeProps: () => ({}),
-      },
-    ],
-    [
-      'grade',
-      {
-        name: 'Grade',
-        category: 'Adjustment',
-        renderMode: 'shader',
-        getInitialNodeProps: () => ({}),
-      },
-    ],
-    [
-      'blur',
-      {
-        name: 'Blur',
-        category: 'Effect',
-        renderMode: 'multipass',
-        getInitialNodeProps: () => ({}),
-      },
-    ],
-    [
-      'reformat',
-      {
-        name: 'Reformat',
-        category: 'Spatial',
-        renderMode: 'shader',
-        getInitialNodeProps: () => ({ width: 1920, height: 1080, resizeMode: 'fit' }),
-      },
-    ],
-    [
-      'extract_channels',
-      {
-        name: 'Extract Channels',
-        category: 'Effect',
-        renderMode: 'utility',
-        getInitialNodeProps: () => ({}),
-      },
-    ],
-    [
-      'merge_channels',
-      {
-        name: 'Merge Channels',
-        category: 'Effect',
-        renderMode: 'utility',
-        flags: { isRenderable: true },
-        inputPorts: [
-          { name: 'r', label: 'R', type: 'texture', required: false },
-          { name: 'g', label: 'G', type: 'texture', required: false },
-          { name: 'b', label: 'B', type: 'texture', required: false },
-          { name: 'a', label: 'A', type: 'texture', required: false },
-        ],
-        getInitialNodeProps: () => ({}),
-      },
-    ],
-    [
-      'merge',
-      { name: 'Merge', category: 'Effect', renderMode: 'merge', getInitialNodeProps: () => ({}) },
-    ],
-    [
-      'scene_3d',
-      {
-        name: 'Scene 3D',
-        category: 'Utility',
-        renderMode: 'utility',
-        inputPorts: [
-          {
-            name: 'backdrop',
-            label: 'Backdrop',
-            type: 'texture',
-            required: false,
-          },
-        ],
-        getInitialNodeProps: () => ({
-          viewportMode: 'scene3d',
-          scene3d: { items: [] },
-        }),
-      },
-    ],
-  ]),
-}));
-
 import { NodeType } from '@blackboard/types';
 import type { AnyNode, GroupNode } from '@blackboard/types';
 import {
@@ -134,6 +9,8 @@ import {
 } from '@/state/editor/flowModel';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import { createNodeActions } from '@/state/editor/slices/nodeActions';
+import { getOutputTechnicalChannelPort } from '@/color-management/outputTechnicalChannels';
+import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
 
 type TestState = {
   nodes: AnyNode[];
@@ -219,7 +96,14 @@ const image = (id: string): AnyNode =>
   }) as AnyNode;
 
 const grade = (id: string, stacked = false): AnyNode =>
-  ({ id, type: NodeType.GRADE, name: id, enabled: true, stacked }) as AnyNode;
+  ({
+    id,
+    type: NodeType.GRADE,
+    name: id,
+    enabled: true,
+    stacked,
+    grade: createDefaultGrade(),
+  }) as AnyNode;
 
 const blur = (id: string, stacked = false): AnyNode =>
   ({ id, type: NodeType.BLUR, name: id, enabled: true, stacked }) as AnyNode;
@@ -502,7 +386,7 @@ describe('createNodeActions addNode', () => {
     );
     expect(pushHistory).toHaveBeenCalledWith(
       expect.objectContaining({
-        label: 'Add Merge Image 2',
+        label: 'Add Merge Media Source 2',
       }),
     );
   });
@@ -575,7 +459,7 @@ describe('createNodeActions addNode', () => {
     );
     expect(pushHistory).toHaveBeenCalledWith(
       expect.objectContaining({
-        label: 'Add Merge Image 2',
+        label: 'Add Merge Media Source 2',
       }),
     );
   });
@@ -679,7 +563,7 @@ describe('createNodeActions addNode', () => {
     );
     expect(pushHistory).toHaveBeenCalledWith(
       expect.objectContaining({
-        label: 'Add Merge Image 2',
+        label: 'Add Merge Media Source 2',
       }),
     );
   });
@@ -758,7 +642,7 @@ describe('createNodeActions addNode', () => {
     );
     expect(pushHistory).toHaveBeenCalledWith(
       expect.objectContaining({
-        label: 'Add Merge Image 2',
+        label: 'Add Merge Media Source 2',
       }),
     );
   });
@@ -798,7 +682,7 @@ describe('createNodeActions addNode', () => {
     );
     expect(pushHistory).toHaveBeenCalledWith(
       expect.objectContaining({
-        label: 'Add Merge Image 3',
+        label: 'Add Merge Media Source 3',
       }),
     );
   });
@@ -836,7 +720,7 @@ describe('createNodeActions addNode', () => {
     );
     expect(pushHistory).toHaveBeenCalledWith(
       expect.objectContaining({
-        label: 'Add Merge Image 2',
+        label: 'Add Merge Media Source 2',
       }),
     );
   });
@@ -944,7 +828,65 @@ describe('createNodeActions addNode', () => {
   });
 });
 
+describe('createNodeActions batchUpdateNodes', () => {
+  it('supports per-node update functions in one history mutation', () => {
+    const first = image('image-a');
+    const second = image('image-b');
+    const { actions, getState, pushHistory } = createHarness([first, second]);
+
+    actions.batchUpdateNodes(
+      [first.id, second.id],
+      (node) => ({ name: `${node.name} updated` }),
+      true,
+    );
+
+    expect(getState().nodes.map((node) => node.name)).toEqual([
+      'image-a updated',
+      'image-b updated',
+    ]);
+    expect(pushHistory).toHaveBeenCalledOnce();
+  });
+});
+
+describe('createNodeActions output technical channels', () => {
+  it('removes graph edges when their output channel slot is removed', () => {
+    const source = image('depth-source');
+    const { actions, getState } = createHarness(source);
+    const outputId = getState().flows[ROOT_FLOW_ID].outputNodeId;
+    const port = getOutputTechnicalChannelPort('depth');
+
+    actions.setOutputTechnicalChannels([{ id: 'depth', name: 'Z', semantic: 'depth' }]);
+    actions.connectNodeInput(outputId, port, source.id, 'output');
+
+    expect(
+      getState().flows[ROOT_FLOW_ID].edges.some(
+        (edge) => edge.targetNodeId === outputId && edge.targetPort === port,
+      ),
+    ).toBe(true);
+
+    actions.setOutputTechnicalChannels([]);
+
+    expect(
+      getState().flows[ROOT_FLOW_ID].edges.some(
+        (edge) => edge.targetNodeId === outputId && edge.targetPort === port,
+      ),
+    ).toBe(false);
+  });
+});
+
 describe('createNodeActions connectNodeInput', () => {
+  it('rejects technical outputs connected to scene-linear effect pipes', () => {
+    const extract = { ...image('extract'), type: NodeType.EXTRACT_CHANNELS } as AnyNode;
+    const gradeNode = grade('grade');
+    const { actions, getState, pushHistory } = createHarness([scene(), extract, gradeNode]);
+
+    actions.connectNodeInput('grade', 'pipe', 'extract', 'r');
+
+    expect(getState().nodes.find((node) => node.id === 'grade')).not.toHaveProperty('inputs');
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual([]);
+    expect(pushHistory).not.toHaveBeenCalled();
+  });
+
   it('rejects connections that would make the persisted flow cyclic', () => {
     const source = { ...image('source'), inputs: { mask: 'target' } } as AnyNode;
     const nodes = [scene(), image('target'), source];

@@ -1,5 +1,5 @@
 import { AnyNode, BlendMode } from '@blackboard/types';
-import { getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
+import { nodeFlags } from '@/nodes/helpers';
 
 export const getBlendModeLabel = (mode?: BlendMode): string => {
   if (!mode) return 'Over';
@@ -16,14 +16,4 @@ export const getBlendModeLabel = (mode?: BlendMode): string => {
     default:
       return 'Over';
   }
-};
-
-export const getNodeBlendModeLabel = (node: AnyNode): string =>
-  getBlendModeLabel((node as { operator?: BlendMode }).operator);
-
-export const hasMediaThumbnail = (node: AnyNode): boolean => !!nodeFlags(node.type).hasThumbnail;
-
-export const getStaticThumbnailAssetId = (node: AnyNode): string => {
-  const assetIds = getNodeAssetIds(node);
-  return assetIds[0] ?? '';
 };

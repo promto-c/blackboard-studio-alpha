@@ -1,6 +1,13 @@
 import * as THREE from 'three';
-import { AnyNode, ImageSequenceNode, MediaSourceNode, SceneNode } from '@blackboard/types';
+import {
+  AnyNode,
+  ImageSequenceNode,
+  MediaSourceNode,
+  ProjectColorManagement,
+  SceneNode,
+} from '@blackboard/types';
 import { renderWithSharedPipeline } from '@/renderer/pipeline';
+import { colorManagementService, getScenePreviewColorSpace } from '@/color-management';
 import { type PixelDataResult, createPixelDataReader } from './pixelData';
 import {
   getUpstreamMediaSourceNode,
@@ -9,12 +16,18 @@ import {
   isUpstreamMediaSourceId,
 } from '@/utils/mediaSourceSelection';
 import { findSceneNode } from '@/utils/graphCommands';
+import { readRenderTargetRgbaFloat } from '@blackboard/renderer';
 
 type SourcePixelMediaNode = MediaSourceNode | ImageSequenceNode;
 
 export type SourcePixelSource =
   | { kind: 'media-node'; node: SourcePixelMediaNode }
-  | { kind: 'upstream'; nodes: AnyNode[]; sceneNode: SceneNode };
+  | {
+      kind: 'upstream';
+      nodes: AnyNode[];
+      sceneNode: SceneNode;
+      projectColorManagement: ProjectColorManagement;
+    };
 
 export interface SourcePixelDataReader {
   getFramePixelData: (frame: number) => Promise<PixelDataResult | null>;
@@ -28,49 +41,10 @@ const readRenderTargetPixelData = (
   renderTarget: THREE.WebGLRenderTarget,
 ): PixelDataResult => {
   const { width, height } = renderTarget;
-  const pixelCount = width * height * 4;
-  const pixels = new Uint8ClampedArray(pixelCount);
-  const textureType = renderTarget.texture.type;
-
-  if (textureType === THREE.FloatType) {
-    const source = new Float32Array(pixelCount);
-    renderer.readRenderTargetPixels(renderTarget, 0, 0, width, height, source);
-
-    for (let y = 0; y < height; y += 1) {
-      const srcRow = (height - 1 - y) * width * 4;
-      const dstRow = y * width * 4;
-      for (let x = 0; x < width * 4; x += 1) {
-        pixels[dstRow + x] = Math.round(clampUnit(source[srcRow + x]) * 255);
-      }
-    }
-
-    return { data: pixels, width, height };
-  }
-
-  if (textureType === THREE.HalfFloatType) {
-    const source = new Uint16Array(pixelCount);
-    renderer.readRenderTargetPixels(renderTarget, 0, 0, width, height, source);
-
-    for (let y = 0; y < height; y += 1) {
-      const srcRow = (height - 1 - y) * width * 4;
-      const dstRow = y * width * 4;
-      for (let x = 0; x < width * 4; x += 1) {
-        pixels[dstRow + x] = Math.round(
-          clampUnit(THREE.DataUtils.fromHalfFloat(source[srcRow + x])) * 255,
-        );
-      }
-    }
-
-    return { data: pixels, width, height };
-  }
-
-  const source = new Uint8Array(pixelCount);
-  renderer.readRenderTargetPixels(renderTarget, 0, 0, width, height, source);
-
-  for (let y = 0; y < height; y += 1) {
-    const srcRow = (height - 1 - y) * width * 4;
-    const dstRow = y * width * 4;
-    pixels.set(source.subarray(srcRow, srcRow + width * 4), dstRow);
+  const source = readRenderTargetRgbaFloat(renderer, renderTarget);
+  const pixels = new Uint8ClampedArray(source.length);
+  for (let index = 0; index < source.length; index += 1) {
+    pixels[index] = Math.round(clampUnit(source[index]) * 255);
   }
 
   return { data: pixels, width, height };
@@ -80,6 +54,7 @@ export const resolveSourcePixelSource = (
   nodes: AnyNode[],
   currentNodeId: string,
   sourceId: string,
+  projectColorManagement: ProjectColorManagement,
 ): SourcePixelSource | null => {
   if (isUpstreamMediaSourceId(sourceId)) {
     const upstreamMediaNode = getUpstreamMediaSourceNode(nodes, currentNodeId);
@@ -101,6 +76,7 @@ export const resolveSourcePixelSource = (
       kind: 'upstream',
       nodes: upstreamNodes,
       sceneNode,
+      projectColorManagement,
     };
   }
 
@@ -153,10 +129,15 @@ export const createSourcePixelDataReader = (
         captureFinalOutput: true,
         nodes: source.nodes,
         sceneNode: source.sceneNode,
+        projectColorManagement: source.projectColorManagement,
         frame,
         width: source.sceneNode.width,
         height: source.sceneNode.height,
-        finalColorSpace: source.sceneNode.colorSpace === 'Linear' ? 'srgb' : 'raw_texture',
+        finalColorSpace: getScenePreviewColorSpace(
+          source.sceneNode.colorSpace,
+          colorManagementService.resolveProjectColorManagement(source.projectColorManagement)
+            .workingColorSpace,
+        ),
         textureCacheMode: 'persistent',
         presentToCanvas: false,
         keepRendererAlive: true,

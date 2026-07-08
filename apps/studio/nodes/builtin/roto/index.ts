@@ -344,6 +344,7 @@ export const rotoNode: NodeDefinition = {
   name: 'Roto',
   category: 'Effect',
   renderMode: 'mask',
+  processingDomain: 'scene_linear',
   description: 'Create masks using vector shapes.',
   IconComponent: RotoIcon,
   ToolComponent: RotoTool,

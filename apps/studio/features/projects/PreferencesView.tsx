@@ -1,43 +1,67 @@
 import React from 'react';
 import {
+  RotoInteractivePreviewSize,
+  RotoPreviewRefineDelay,
   RotoTrackingDriftTolerance,
   getRecommendedCacheSizeMB,
   type BackgroundPrefetchMode,
   type CacheBudgetMode,
   type ReopenHistoryLimitPreference,
+  type TimelineCacheMode,
   type UndoHistoryLimitPreference,
+  type ViewportBackgroundMode,
 } from '@/state/preferences';
+import type { RotoPlaybackPreviewMode } from '@/utils/rotoTemporalPreview';
 import { usePreferences } from '@/state/preferencesContext';
 import { useOcio } from '@/state/ocioContext';
+import { useEditorActions, useEditorSelector } from '@/state/editorContext';
+import {
+  cloneProjectColorManagement,
+  colorManagementService,
+  createProjectColorManagementFromOcioDefaults,
+  stripBuiltinConfigPrefix,
+} from '@/color-management';
+import { useOcioConfigSnapshot } from '@/hooks/useOcioConfigSnapshot';
 import { colors } from '@/utils/colors';
 import { useDebugLog } from '@/utils/debugLogContext';
-import { ColorPicker, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
-import { SegmentedControl, SettingsPanelFrame, Slider } from '@/components';
+import { getComfyEndpoint } from '@/utils/aiRouting';
+import { DEFAULT_COMFY_ENDPOINT } from '@/services/comfy/client';
+import { Badge, ColorPicker, ToggleSwitch } from '@blackboard/ui';
+import {
+  ColorManagementSettingsEditor,
+  PreferenceBentoCard,
+  PreferenceBentoControl,
+  PreferenceBentoEmptyState,
+  PreferenceBentoResetButton,
+  SegmentedControl,
+  SettingsPanelFrame,
+  Slider,
+} from '@/components';
+import ViewportBackground from '@/components/ViewportBackground';
 import { normalizeComfyEndpoint } from '@/services/comfy/client';
 import OnnxModelsPreferences from './OnnxModelsPreferences';
 import IntegrationsPreferences from './IntegrationsPreferences';
+import {
+  getDefaultPreferencesColorScope,
+  type PreferencesColorScope,
+  type PreferencesSectionId,
+} from './preferencesNavigation';
 import * as Icons from '@blackboard/icons';
 import type {
   AiProvider,
+  ColorConfigReference,
   DirectoryImportModePreference,
+  ProjectColorManagement,
   RotoMotionCueScope,
   RotoMotionCueMode,
 } from '@blackboard/types';
 
 interface PreferencesViewProps {
   onBack: () => void;
+  initialSection?: PreferencesSectionId;
+  initialColorScope?: PreferencesColorScope;
 }
 
-type PreferencesSectionId =
-  | 'appearance'
-  | 'colorManagement'
-  | 'editing'
-  | 'recovery'
-  | 'integrations'
-  | 'models'
-  | 'rotoMotion'
-  | 'performance'
-  | 'debug';
 type PreferenceSectionIcon = React.ComponentType<{ className?: string }>;
 type PreferenceSectionGroup = 'app' | 'node';
 
@@ -51,14 +75,21 @@ const preferenceSections: {
   {
     id: 'appearance',
     label: 'Appearance',
-    description: 'Theme, panel finish, and preview styling',
+    description: 'Theme, panel finish, and control styling',
     icon: Icons.Sun,
+    group: 'app',
+  },
+  {
+    id: 'viewport',
+    label: 'Viewport',
+    description: 'Canvas background, sampling, and alpha overlays',
+    icon: Icons.Photo,
     group: 'app',
   },
   {
     id: 'colorManagement',
     label: 'Color',
-    description: 'OpenColorIO config, displays, and working spaces',
+    description: 'New project defaults and per-project overrides',
     icon: Icons.Eye,
     group: 'app',
   },
@@ -135,65 +166,8 @@ const rgbToHex = (rgbString: string) => {
   );
 };
 
-function StatusBadge({
-  children,
-  tone = 'neutral',
-  className,
-}: {
-  children: React.ReactNode;
-  tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'accent';
-  className?: string;
-}) {
-  const toneClassName =
-    tone === 'success'
-      ? 'border-green-400/20 bg-green-500/10 text-green-100'
-      : tone === 'warning'
-        ? 'border-amber-400/20 bg-amber-500/10 text-amber-100'
-        : tone === 'danger'
-          ? 'border-red-400/20 bg-red-500/10 text-red-100'
-          : tone === 'accent'
-            ? 'border-primary-400/20 bg-primary-500/10 text-primary-100'
-            : 'border-white/10 bg-white/[0.05] text-gray-300';
-
-  return (
-    <span
-      className={`inline-flex min-w-0 max-w-full items-center rounded-full border px-2.5 py-1 text-[11px] font-medium tracking-wide ${toneClassName} ${className ?? ''}`}
-    >
-      <span className="min-w-0 truncate">{children}</span>
-    </span>
-  );
-}
-
-function OcioStatusBadges({
-  isInitialized,
-  isLoading,
-  error,
-  version,
-  workingColorSpace,
-  textureColorSpace,
-  dataColorSpace,
-}: {
-  isInitialized: boolean;
-  isLoading: boolean;
-  error: string | null;
-  version: string;
-  workingColorSpace: string;
-  textureColorSpace: string;
-  dataColorSpace: string;
-}) {
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-      <StatusBadge tone={isInitialized ? 'success' : error ? 'danger' : 'neutral'}>
-        {isInitialized ? `OCIO ${version}` : isLoading ? 'Loading' : 'Unavailable'}
-      </StatusBadge>
-      <StatusBadge tone="accent">{workingColorSpace}</StatusBadge>
-      <StatusBadge tone="neutral" className="max-w-[min(100%,16rem)]">
-        {textureColorSpace}
-      </StatusBadge>
-      <StatusBadge tone="neutral">{dataColorSpace}</StatusBadge>
-    </div>
-  );
-}
+const formatColorConfigLabel = (config: ColorConfigReference): string =>
+  config.kind === 'builtin' ? stripBuiltinConfigPrefix(config.uri) : config.uri;
 
 function ToggleField({
   checked,
@@ -210,9 +184,9 @@ function ToggleField({
 }) {
   return (
     <div className="flex items-center justify-end gap-3">
-      <StatusBadge tone={checked ? 'accent' : 'neutral'}>
+      <Badge variant={checked ? 'accent' : 'neutral'}>
         {checked ? activeLabel : inactiveLabel}
-      </StatusBadge>
+      </Badge>
       <ToggleSwitch checked={checked} ariaLabel={ariaLabel} onCheckedChange={onCheckedChange} />
     </div>
   );
@@ -317,8 +291,15 @@ function SettingsRow({
   );
 }
 
-function PreferencesView({ onBack }: PreferencesViewProps) {
+function PreferencesView({
+  onBack,
+  initialSection = 'appearance',
+  initialColorScope,
+}: PreferencesViewProps) {
   const ocio = useOcio();
+  const projectId = useEditorSelector((state) => state.projectId);
+  const projectColorManagement = useEditorSelector((state) => state.colorManagement);
+  const { setProjectColorManagement } = useEditorActions();
   const {
     primaryColor,
     thumbnailMode,
@@ -333,17 +314,19 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
     cacheBudgetMode,
     maxCacheSizeMB,
     maxCachedFrames,
-    ollamaEndpoint,
     aiTaskRoutes,
     integrationConnections,
-    comfyEndpoint,
-    ocioConfigName,
+    newProjectColorManagement,
     enableToolSorting,
     rotoMotionCueEnabled,
     rotoMotionCueMode,
     rotoMotionCueScope,
     rotoMotionTrailFrames,
     rotoMotionBlurInteractivePreviewEnabled,
+    rotoFrameChangePreviewEnabled,
+    rotoPreviewRefineDelayMs,
+    rotoPlaybackPreviewMode,
+    rotoInteractivePreviewMaxDimension,
     rotoMotionBlurInteractivePreviewSamples,
     rotoPointWeightMode,
     rotoTrackingBackgroundEnabled,
@@ -353,17 +336,47 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
     alphaOverlayCustomColor,
     alphaOverlayOpacity,
     alphaOverlayBgDarken,
+    viewportBackgroundMode,
+    viewportBackgroundColor,
     viewportInterpolation,
+    autoDetectViewportView,
+    timelineCacheMode,
+    componentStyle,
     debugMode,
     setPreferences,
   } = usePreferences();
   const { entries: debugLogEntries, clearLog: clearDebugLog } = useDebugLog();
-  const [activeSection, setActiveSection] = React.useState<PreferencesSectionId>('appearance');
+  const [activeSection, setActiveSection] = React.useState<PreferencesSectionId>(initialSection);
+  const [colorScope, setColorScope] = React.useState<PreferencesColorScope>(
+    getDefaultPreferencesColorScope(projectId, initialColorScope),
+  );
+  const [configSelection, setConfigSelection] = React.useState<{
+    scope: 'application' | 'project';
+    isLoading: boolean;
+    error: string | null;
+  } | null>(null);
+  const configSelectionRevisionRef = React.useRef(0);
   const recommendedCacheSizeMB = getRecommendedCacheSizeMB();
 
+  React.useEffect(() => {
+    if (!projectId && colorScope === 'project') setColorScope('application');
+  }, [colorScope, projectId]);
+
+  React.useEffect(
+    () => () => {
+      configSelectionRevisionRef.current += 1;
+    },
+    [],
+  );
+
   const uiStyleOptions = [
-    { value: 'glass', label: 'Glass' },
+    { value: 'glass', label: 'Frosted' },
     { value: 'solid', label: 'Solid' },
+  ];
+
+  const componentStyleOptions = [
+    { value: 'glass', label: 'Glass' },
+    { value: 'flat', label: 'Flat' },
   ];
 
   const playbackOptions = [
@@ -421,10 +434,26 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
     { value: 'all', label: 'All' },
   ];
 
+  const rotoPlaybackPreviewModeOptions = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'optimized', label: 'Optimized' },
+    { value: 'full', label: 'Full' },
+  ];
+
+  const rotoTrackingRunModeOptions = [
+    { value: 'inline', label: 'Inline' },
+    { value: 'background', label: 'Background' },
+  ];
+
   const rotoPointWeightModeOptions = [
     { value: 'global', label: 'Global Pull' },
     { value: 'local', label: 'Local Pull' },
   ];
+
+  const rotoPreviewOptimizationEnabled =
+    rotoMotionBlurInteractivePreviewEnabled ||
+    rotoFrameChangePreviewEnabled ||
+    rotoPlaybackPreviewMode !== 'full';
 
   const alphaOverlayColorSourceOptions = [
     { value: 'accent', label: 'Accent' },
@@ -436,21 +465,95 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
     { value: 'linear', label: 'Linear' },
   ];
 
-  const ocioConfigOptions = React.useMemo(
-    () =>
-      ocio.builtinConfigs.map((config) => ({
-        value: `ocio://${config.name}`,
-        label: config.name,
-        secondaryLabel: config.uiName,
-        badges: config.recommended ? ['Recommended'] : [],
-        searchText: `${config.name} ${config.uiName}`,
-      })),
-    [ocio.builtinConfigs],
-  );
+  const viewportBackgroundOptions = [
+    {
+      value: 'none',
+      label: 'None',
+      description: 'Workspace default',
+    },
+    {
+      value: 'checkerboard',
+      label: 'Checkerboard',
+      description: 'Reveal transparency',
+    },
+    {
+      value: 'grid',
+      label: 'Grid',
+      description: 'Alignment guide',
+    },
+    {
+      value: 'custom',
+      label: 'Custom color',
+      description: 'Choose a solid color',
+    },
+  ];
 
-  const trimmedComfyEndpoint = normalizeComfyEndpoint(comfyEndpoint);
+  const {
+    snapshot: selectedNewProjectOcio,
+    isLoading: isSelectedNewProjectOcioLoading,
+    error: selectedNewProjectOcioError,
+  } = useOcioConfigSnapshot(newProjectColorManagement.config);
+  const setNewProjectColorManagement = React.useCallback(
+    (nextValue: ProjectColorManagement) => {
+      setPreferences({
+        newProjectColorManagement: cloneProjectColorManagement(nextValue),
+      });
+    },
+    [setPreferences],
+  );
+  const setColorConfig = React.useCallback(
+    async (scope: 'application' | 'project', config: ColorConfigReference) => {
+      const revision = ++configSelectionRevisionRef.current;
+      setConfigSelection({ scope, isLoading: true, error: null });
+      const runtime = await colorManagementService.inspectConfig(config);
+      if (revision !== configSelectionRevisionRef.current) return;
+      if (!runtime.isInitialized || runtime.error) {
+        setConfigSelection({
+          scope,
+          isLoading: false,
+          error: runtime.error ?? `Could not load OCIO config "${config.uri}".`,
+        });
+        return;
+      }
+
+      const currentValue = scope === 'project' ? projectColorManagement : newProjectColorManagement;
+      const nextValue = createProjectColorManagementFromOcioDefaults(config, runtime);
+      if (currentValue.context) nextValue.context = { ...currentValue.context };
+
+      if (scope === 'project') {
+        setProjectColorManagement(nextValue, {
+          historyLabel: 'Change Project OCIO Config',
+        });
+      } else {
+        setNewProjectColorManagement(nextValue);
+      }
+      setConfigSelection(null);
+    },
+    [
+      newProjectColorManagement,
+      projectColorManagement,
+      setNewProjectColorManagement,
+      setProjectColorManagement,
+    ],
+  );
+  const isProjectColorScope = colorScope === 'project' && Boolean(projectId);
+  const scopedColorManagement = isProjectColorScope
+    ? projectColorManagement
+    : newProjectColorManagement;
+  const scopedColorRuntime = isProjectColorScope ? ocio : selectedNewProjectOcio;
+  const scopedConfigSelection =
+    configSelection?.scope === (isProjectColorScope ? 'project' : 'application')
+      ? configSelection
+      : null;
+  const scopedColorLoading =
+    scopedConfigSelection?.isLoading || (!isProjectColorScope && isSelectedNewProjectOcioLoading);
+  const scopedColorError =
+    scopedConfigSelection?.error || (!isProjectColorScope ? selectedNewProjectOcioError : null);
+  const trimmedComfyEndpoint = normalizeComfyEndpoint(
+    getComfyEndpoint({ integrationConnections }) ?? DEFAULT_COMFY_ENDPOINT,
+  );
   const aiRouteCountsByProvider = React.useMemo(() => {
-    const counts: Record<AiProvider, number> = { gemini: 0, openai: 0, ollama: 0 };
+    const counts: Record<AiProvider, number> = { openai: 0, ollama: 0 };
     Object.values(aiTaskRoutes).forEach((route) => {
       counts[route.provider] += 1;
     });
@@ -461,17 +564,23 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
   const activeSectionHighlights: Record<PreferencesSectionId, string[]> = {
     appearance: [
       `${colorDisplayNames[primaryColor] ?? primaryColor} accent`,
-      uiStyle === 'glass' ? 'Glass panels' : 'Solid panels',
+      uiStyle === 'glass' ? 'Frosted panels' : 'Solid panels',
+      componentStyle === 'glass' ? 'Glass controls' : 'Flat controls',
+    ],
+    viewport: [
+      viewportBackgroundMode === 'none'
+        ? 'Default background'
+        : (viewportBackgroundOptions.find((option) => option.value === viewportBackgroundMode)
+            ?.label ?? viewportBackgroundMode),
       viewportInterpolation === 'nearest' ? 'Nearest sampling' : 'Linear sampling',
     ],
     colorManagement: [
-      ocio.isInitialized
-        ? `OCIO ${ocio.version}`
-        : ocio.isLoading
-          ? 'Loading OCIO'
-          : 'OCIO offline',
-      ocio.workingColorSpace,
-      `${ocio.displays.length} displays`,
+      colorScope === 'project' && projectId ? 'Current project' : 'App defaults',
+      `Config: ${formatColorConfigLabel(
+        colorScope === 'project' && projectId
+          ? projectColorManagement.config
+          : newProjectColorManagement.config,
+      )}`,
     ],
     editing: [
       playbackMode === 'realtime' ? 'Realtime playback' : 'Every-frame playback',
@@ -496,7 +605,7 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
     integrations: [
       `${integrationConnections.length} connection${integrationConnections.length === 1 ? '' : 's'}`,
       `${Object.keys(aiTaskRoutes).length} task routes`,
-      `Gemini ${aiRouteCountsByProvider.gemini} · OpenAI ${aiRouteCountsByProvider.openai} · Ollama ${aiRouteCountsByProvider.ollama}`,
+      `OpenAI ${aiRouteCountsByProvider.openai} · Ollama ${aiRouteCountsByProvider.ollama}`,
       `Comfy ${trimmedComfyEndpoint}`,
     ],
     models: ['ONNX Runtime Web', 'Hugging Face import', 'WebGPU with WASM fallback'],
@@ -507,8 +616,13 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
       rotoTrackingBackgroundEnabled ? 'Background tracking' : 'Inline tracking',
       `Drift stop ${rotoTrackingDriftTolerance !== null ? rotoTrackingDriftTolerance.toFixed(1) : '∞'}`,
       rotoMotionBlurInteractivePreviewEnabled
-        ? `Interactive cap ${rotoMotionBlurInteractivePreviewSamples}`
-        : 'Full samples while editing',
+        ? `${rotoInteractivePreviewMaxDimension}px · ${rotoMotionBlurInteractivePreviewSamples} samples`
+        : 'Full quality while editing',
+      rotoPlaybackPreviewMode === 'auto'
+        ? 'Adaptive playback quality'
+        : rotoPlaybackPreviewMode === 'optimized'
+          ? 'Optimized playback'
+          : 'Full-quality playback',
     ],
     performance: [
       backgroundPrefetchMode === 'on_demand'
@@ -528,6 +642,7 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
         : cacheBudgetMode === 'frame_count'
           ? `${maxCachedFrames} cached frames`
           : `${recommendedCacheSizeMB} MB detected`,
+      timelineCacheMode === 'consolidated' ? 'Merged cache bar' : 'Per-node cache bars',
     ],
     debug: [
       debugMode ? 'Debug mode on' : 'Debug mode off',
@@ -564,7 +679,7 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
 
             <SettingsRow
               title="Panel style"
-              description="Choose between translucent glass and dense solid panels."
+              description="Frosted panels are translucent with blur; Solid panels are fully opaque."
             >
               <SegmentedControl
                 options={uiStyleOptions}
@@ -574,7 +689,99 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
             </SettingsRow>
 
             <SettingsRow
-              title="Viewport interpolation"
+              title="Component style"
+              description="Glass controls sit above the surface with depth, rim lighting, and backdrop blur; Flat keeps them minimal and clean."
+            >
+              <SegmentedControl
+                options={componentStyleOptions}
+                value={componentStyle}
+                onChange={(style) => setPreferences({ componentStyle: style as 'glass' | 'flat' })}
+              />
+            </SettingsRow>
+          </SettingsGroup>
+        );
+      case 'viewport':
+        return (
+          <SettingsGroup
+            title="Viewport"
+            description="Choose how transparent and empty areas read while you work. These settings only affect the editor viewport."
+            icon={Icons.Photo}
+            highlights={activeSectionHighlights.viewport}
+          >
+            <SettingsRow
+              title="Background"
+              description="None keeps the current workspace background. Checkerboard and grid improve transparency and alignment visibility."
+              stacked
+            >
+              <div className="space-y-4">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {viewportBackgroundOptions.map((option) => {
+                    const mode = option.value as ViewportBackgroundMode;
+                    const isActive = viewportBackgroundMode === mode;
+
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setPreferences({ viewportBackgroundMode: mode })}
+                        aria-pressed={isActive}
+                        className={`group flex min-w-0 items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50 ${
+                          isActive
+                            ? 'border-primary-400/35 bg-primary-500/10 shadow-[0_12px_30px_rgba(0,0,0,0.28)] ring-1 ring-inset ring-primary-300/20'
+                            : 'border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.05]'
+                        }`}
+                      >
+                        <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl border border-white/15 bg-gray-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.15)]">
+                          <ViewportBackground
+                            mode={mode}
+                            color={viewportBackgroundColor}
+                            className="absolute inset-0"
+                          />
+                          {mode === 'none' && (
+                            <span className="absolute inset-0 grid place-items-center text-lg text-gray-600">
+                              —
+                            </span>
+                          )}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span
+                            className={`block truncate text-sm font-medium ${
+                              isActive ? 'text-white' : 'text-gray-200'
+                            }`}
+                          >
+                            {option.label}
+                          </span>
+                          <span className="mt-0.5 block truncate text-[11px] text-gray-500">
+                            {option.description}
+                          </span>
+                        </span>
+                        <span
+                          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition ${
+                            isActive
+                              ? 'border-primary-300/30 bg-primary-500/20 text-primary-100'
+                              : 'border-white/10 bg-black/20 text-transparent group-hover:text-gray-400'
+                          }`}
+                        >
+                          <Icons.Check className="h-3.5 w-3.5" />
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {viewportBackgroundMode === 'custom' && (
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <ColorPicker
+                      label="Viewport background color"
+                      value={viewportBackgroundColor}
+                      onChange={(value) => setPreferences({ viewportBackgroundColor: value })}
+                    />
+                  </div>
+                )}
+              </div>
+            </SettingsRow>
+
+            <SettingsRow
+              title="Image interpolation"
               description="Nearest preserves sharp pixels; linear smooths between them."
             >
               <SegmentedControl
@@ -643,95 +850,81 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
         return (
           <SettingsGroup
             title="Color Management"
-            description="OpenColorIO runtime and default project color pipeline."
+            description={
+              isProjectColorScope
+                ? 'Color management stored in the current project.'
+                : 'Defaults copied into each project when it is created.'
+            }
             icon={Icons.Eye}
             highlights={activeSectionHighlights.colorManagement}
           >
-            <SettingsRow
-              title="OCIO Config"
-              description="Built-in configs are loaded by the OpenColorIO 2.5 wasm runtime."
-              controlClassName="lg:max-w-[34rem]"
+            <nav
+              aria-label="Color settings scope"
+              className="mb-3 flex min-w-0 items-center gap-2 rounded-lg border border-white/10 bg-black/20 p-2"
             >
-              <div className="min-w-0 space-y-2">
-                {!ocio.isInitialized ? (
-                  <button
-                    type="button"
-                    onClick={() => void ocio.load()}
-                    disabled={ocio.isLoading}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-gray-100 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60"
-                  >
-                    {ocio.isLoading ? (
-                      <Icons.RotateLoop className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Icons.ArrowDownTray className="h-4 w-4" />
-                    )}
-                    <span>{ocio.isLoading ? 'Loading OCIO runtime' : 'Load OCIO runtime'}</span>
-                  </button>
-                ) : null}
-                <StyledDropdown
-                  value={ocioConfigName}
-                  options={
-                    ocioConfigOptions.length > 0
-                      ? ocioConfigOptions
-                      : [{ value: ocioConfigName, label: ocioConfigName }]
-                  }
-                  onChange={(value) => setPreferences({ ocioConfigName: String(value) })}
-                  popoverWidthClass="w-[34rem]"
-                  searchable
-                  showSelectedBadges={false}
-                />
-                <OcioStatusBadges
-                  isInitialized={ocio.isInitialized}
-                  isLoading={ocio.isLoading}
-                  error={ocio.error}
-                  version={ocio.version}
-                  workingColorSpace={ocio.workingColorSpace}
-                  textureColorSpace={ocio.textureColorSpace}
-                  dataColorSpace={ocio.dataColorSpace}
-                />
-                {ocio.error ? (
-                  <div className="rounded-xl border border-red-400/20 bg-red-500/10 p-3 text-xs leading-5 text-red-100">
-                    {ocio.error}
-                  </div>
-                ) : null}
-              </div>
-            </SettingsRow>
-
-            <SettingsRow
-              title="Displays"
-              description="Available display devices and view transforms from the active config."
-              stacked
-            >
-              {ocio.isInitialized ? (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {ocio.displays.map((display) => (
-                    <div
-                      key={display}
-                      className="rounded-xl border border-white/10 bg-black/20 p-3"
-                    >
-                      <div className="truncate text-sm font-medium text-gray-100">{display}</div>
-                      <div className="mt-1 text-xs text-gray-500">
-                        {ocio.getViews(display).length} views
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
+              <span className="shrink-0 px-1 text-xs font-medium text-gray-500">Color</span>
+              <Icons.ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-600" />
+              <div className="flex min-w-0 flex-wrap gap-1" role="tablist">
                 <button
                   type="button"
-                  onClick={() => void ocio.load()}
-                  disabled={ocio.isLoading}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-gray-100 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60"
+                  role="tab"
+                  aria-selected={!isProjectColorScope}
+                  onClick={() => setColorScope('application')}
+                  className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition ${
+                    !isProjectColorScope
+                      ? 'bg-primary-500/15 text-primary-100'
+                      : 'text-gray-400 hover:bg-white/[0.06] hover:text-gray-200'
+                  }`}
                 >
-                  {ocio.isLoading ? (
-                    <Icons.RotateLoop className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Icons.ArrowDownTray className="h-4 w-4" />
-                  )}
-                  <span>{ocio.isLoading ? 'Loading displays' : 'Load displays'}</span>
+                  App defaults
                 </button>
-              )}
-            </SettingsRow>
+                {projectId ? (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isProjectColorScope}
+                    onClick={() => setColorScope('project')}
+                    className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition ${
+                      isProjectColorScope
+                        ? 'bg-primary-500/15 text-primary-100'
+                        : 'text-gray-400 hover:bg-white/[0.06] hover:text-gray-200'
+                    }`}
+                  >
+                    Current project
+                  </button>
+                ) : null}
+              </div>
+            </nav>
+
+            <ColorManagementSettingsEditor
+              scope={isProjectColorScope ? 'project' : 'application'}
+              value={scopedColorManagement}
+              runtime={scopedColorRuntime}
+              builtinConfigs={ocio.builtinConfigs}
+              isLoading={Boolean(scopedColorLoading)}
+              configError={scopedColorError}
+              onChange={
+                isProjectColorScope ? setProjectColorManagement : setNewProjectColorManagement
+              }
+              onConfigChange={(config) =>
+                void setColorConfig(isProjectColorScope ? 'project' : 'application', config)
+              }
+            />
+
+            <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+              <SettingsRow
+                title="Auto-detect viewport view from input"
+                description="When enabled, the viewport view is automatically selected based on the first input source's color space. Rec.709 / sRGB sources use the Video (colorimetric) view. Other sources fall back to the manual preference."
+              >
+                <ToggleField
+                  checked={autoDetectViewportView}
+                  ariaLabel="Toggle auto-detect viewport view"
+                  activeLabel="Auto"
+                  inactiveLabel="Manual"
+                  onCheckedChange={(checked) => setPreferences({ autoDetectViewportView: checked })}
+                />
+              </SettingsRow>
+            </div>
           </SettingsGroup>
         );
       case 'editing':
@@ -883,173 +1076,349 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
         return (
           <SettingsGroup
             title="Roto"
-            description="Tune rotoscoping feedback so cue overlays and motion blur stay readable while editing."
+            description="Tune Roto interaction, timeline, playback, and motion feedback."
             icon={Icons.Curve}
             highlights={activeSectionHighlights.rotoMotion}
           >
-            <SettingsRow
-              title="Default point pull mode"
-              description="Used as the starting mode for point-weight drags. You can override individual pulled points inline in the viewport with Global Pull or Local Pull."
-            >
-              <SegmentedControl
-                options={rotoPointWeightModeOptions}
-                value={rotoPointWeightMode}
-                onChange={(mode) =>
-                  setPreferences({
-                    rotoPointWeightMode: mode as 'global' | 'local',
-                  })
+            <div className="grid items-start gap-3 lg:grid-cols-12">
+              <PreferenceBentoCard
+                title="Preview performance"
+                description="Balance interaction latency with final matte quality across editing, seeking, and playback."
+                icon={Icons.Play}
+                headerAction={
+                  <div className="flex items-center gap-2">
+                    <ToggleSwitch
+                      checked={rotoPreviewOptimizationEnabled}
+                      ariaLabel="Toggle all optimized Roto preview modes"
+                      onCheckedChange={(checked) =>
+                        setPreferences(
+                          checked
+                            ? {
+                                rotoMotionBlurInteractivePreviewEnabled: true,
+                                rotoFrameChangePreviewEnabled: true,
+                                rotoPlaybackPreviewMode: 'auto',
+                              }
+                            : {
+                                rotoMotionBlurInteractivePreviewEnabled: false,
+                                rotoFrameChangePreviewEnabled: false,
+                                rotoPlaybackPreviewMode: 'full',
+                              },
+                        )
+                      }
+                    />
+                    <PreferenceBentoResetButton
+                      label="Reset preview performance settings"
+                      onReset={() =>
+                        setPreferences({
+                          rotoMotionBlurInteractivePreviewEnabled: true,
+                          rotoFrameChangePreviewEnabled: true,
+                          rotoPlaybackPreviewMode: 'auto',
+                          rotoInteractivePreviewMaxDimension: RotoInteractivePreviewSize.DEFAULT,
+                          rotoPreviewRefineDelayMs: RotoPreviewRefineDelay.DEFAULT,
+                          rotoMotionBlurInteractivePreviewSamples: 16,
+                        })
+                      }
+                    />
+                  </div>
                 }
-              />
-            </SettingsRow>
-
-            <SettingsRow
-              title="Tracking run mode"
-              description="Run longer roto tracks through the background jobs monitor so the playhead can stay put while progress and cancel stay available."
-            >
-              <ToggleField
-                checked={rotoTrackingBackgroundEnabled}
-                ariaLabel="Toggle background roto tracking"
-                activeLabel="Background"
-                inactiveLabel="Inline"
-                onCheckedChange={(checked) =>
-                  setPreferences({ rotoTrackingBackgroundEnabled: checked })
-                }
-              />
-            </SettingsRow>
-
-            <SettingsRow
-              title="Tracking drift tolerance"
-              description="Stop roto tracking when the average optical-flow error for a frame rises above this value. Drag to the far end for unlimited tolerance."
-              stacked
-            >
-              <Slider
-                label="Tracking Drift Tolerance"
-                value={rotoTrackingDriftTolerance ?? RotoTrackingDriftTolerance.OVERFLOW}
-                min={RotoTrackingDriftTolerance.MIN}
-                max={RotoTrackingDriftTolerance.MAX}
-                step={RotoTrackingDriftTolerance.STEP}
-                overflowLabel="∞"
-                onChange={(value) =>
-                  setPreferences({
-                    rotoTrackingDriftTolerance:
-                      value >= RotoTrackingDriftTolerance.OVERFLOW ? null : value,
-                  })
-                }
-                onReset={() =>
-                  setPreferences({
-                    rotoTrackingDriftTolerance: RotoTrackingDriftTolerance.DEFAULT,
-                  })
-                }
-                displayFormatter={(value) => value.toFixed(1)}
-              />
-            </SettingsRow>
-
-            <SettingsRow
-              title="Reduced samples while editing"
-              description="Temporarily cap roto motion blur samples during viewport roto edits such as dragging shapes or points."
-            >
-              <ToggleField
-                checked={rotoMotionBlurInteractivePreviewEnabled}
-                ariaLabel="Toggle reduced roto motion blur samples while editing"
-                activeLabel="Reduced while editing"
-                inactiveLabel="Always full quality"
-                onCheckedChange={(checked) =>
-                  setPreferences({ rotoMotionBlurInteractivePreviewEnabled: checked })
-                }
-              />
-            </SettingsRow>
-
-            <div
-              className={`space-y-2 transition-opacity ${rotoMotionBlurInteractivePreviewEnabled ? 'opacity-100' : 'opacity-60 pointer-events-none'}`}
-            >
-              <SettingsRow
-                title="Interactive sample cap"
-                description="Upper limit for motion blur samples during active roto edits. Lower values trade quality for faster feedback."
-                stacked
+                className="lg:col-span-7"
               >
-                <Slider
-                  label="Interactive Sample Cap"
-                  value={rotoMotionBlurInteractivePreviewSamples}
-                  min={2}
-                  max={64}
-                  step={1}
-                  onChange={(value) =>
-                    setPreferences({
-                      rotoMotionBlurInteractivePreviewSamples: Math.round(value),
-                    })
-                  }
-                  onReset={() =>
-                    setPreferences({
-                      rotoMotionBlurInteractivePreviewSamples: 16,
-                    })
-                  }
-                  displayFormatter={(value) => `${Math.round(value)}`}
-                />
-              </SettingsRow>
-            </div>
+                <PreferenceBentoControl
+                  title="Shape editing"
+                  description="Use a lighter matte while dragging points and shapes."
+                >
+                  <ToggleField
+                    checked={rotoMotionBlurInteractivePreviewEnabled}
+                    ariaLabel="Toggle optimized Roto preview while editing"
+                    activeLabel="Optimized"
+                    inactiveLabel="Full"
+                    onCheckedChange={(checked) =>
+                      setPreferences({ rotoMotionBlurInteractivePreviewEnabled: checked })
+                    }
+                  />
+                </PreferenceBentoControl>
 
-            <SettingsRow
-              title="Enable motion cue overlay"
-              description="Show path motion directly in the viewport."
-            >
-              <ToggleField
-                checked={rotoMotionCueEnabled}
-                ariaLabel="Toggle motion cue overlay"
-                activeLabel="Overlay on"
-                inactiveLabel="Overlay off"
-                onCheckedChange={(checked) => setPreferences({ rotoMotionCueEnabled: checked })}
-              />
-            </SettingsRow>
+                <PreferenceBentoControl
+                  title="Frame changes"
+                  description="Preview coarse while scrubbing or seeking, then refine after the playhead settles."
+                >
+                  <ToggleField
+                    checked={rotoFrameChangePreviewEnabled}
+                    ariaLabel="Toggle optimized Roto preview during frame changes"
+                    activeLabel="Coarse to fine"
+                    inactiveLabel="Full"
+                    onCheckedChange={(checked) =>
+                      setPreferences({ rotoFrameChangePreviewEnabled: checked })
+                    }
+                  />
+                </PreferenceBentoControl>
 
-            <div
-              className={`space-y-2 transition-opacity ${rotoMotionCueEnabled ? 'opacity-100' : 'opacity-60 pointer-events-none'}`}
-            >
-              <SettingsRow
-                title="Cue mode"
-                description="Choose temporal trails or speed-mapped per-segment lines."
+                <PreferenceBentoControl
+                  title="Playback quality"
+                  description="Auto stays full quality while the renderer meets the frame budget."
+                  stacked
+                >
+                  <SegmentedControl
+                    options={rotoPlaybackPreviewModeOptions}
+                    value={rotoPlaybackPreviewMode}
+                    onChange={(mode) =>
+                      setPreferences({
+                        rotoPlaybackPreviewMode: mode as RotoPlaybackPreviewMode,
+                      })
+                    }
+                  />
+                </PreferenceBentoControl>
+
+                {rotoPreviewOptimizationEnabled ? (
+                  <>
+                    <PreferenceBentoControl
+                      title="Optimized mask size"
+                      description="Maximum long-edge resolution for temporary mattes."
+                      stacked
+                    >
+                      <Slider
+                        label="Optimized Mask Size"
+                        value={rotoInteractivePreviewMaxDimension}
+                        min={RotoInteractivePreviewSize.MIN}
+                        max={RotoInteractivePreviewSize.MAX}
+                        step={RotoInteractivePreviewSize.STEP}
+                        onChange={(value) =>
+                          setPreferences({
+                            rotoInteractivePreviewMaxDimension: Math.round(value),
+                          })
+                        }
+                        onReset={() =>
+                          setPreferences({
+                            rotoInteractivePreviewMaxDimension: RotoInteractivePreviewSize.DEFAULT,
+                          })
+                        }
+                        displayFormatter={(value) => `${Math.round(value)} px`}
+                      />
+                    </PreferenceBentoControl>
+
+                    <PreferenceBentoControl
+                      title="Full-quality refine delay"
+                      description="Quiet time before a temporary matte is replaced by its full-resolution result."
+                      stacked
+                    >
+                      <Slider
+                        label="Refine Delay"
+                        value={rotoPreviewRefineDelayMs}
+                        min={RotoPreviewRefineDelay.MIN}
+                        max={RotoPreviewRefineDelay.MAX}
+                        step={RotoPreviewRefineDelay.STEP}
+                        onChange={(value) =>
+                          setPreferences({ rotoPreviewRefineDelayMs: Math.round(value) })
+                        }
+                        onReset={() =>
+                          setPreferences({
+                            rotoPreviewRefineDelayMs: RotoPreviewRefineDelay.DEFAULT,
+                          })
+                        }
+                        displayFormatter={(value) => `${Math.round(value)} ms`}
+                      />
+                    </PreferenceBentoControl>
+
+                    <PreferenceBentoControl
+                      title="Motion-blur sample cap"
+                      description="Maximum samples used by optimized mattes."
+                      stacked
+                    >
+                      <Slider
+                        label="Optimized Sample Cap"
+                        value={rotoMotionBlurInteractivePreviewSamples}
+                        min={2}
+                        max={64}
+                        step={1}
+                        onChange={(value) =>
+                          setPreferences({
+                            rotoMotionBlurInteractivePreviewSamples: Math.round(value),
+                          })
+                        }
+                        onReset={() =>
+                          setPreferences({
+                            rotoMotionBlurInteractivePreviewSamples: 16,
+                          })
+                        }
+                        displayFormatter={(value) => `${Math.round(value)}`}
+                      />
+                    </PreferenceBentoControl>
+                  </>
+                ) : (
+                  <PreferenceBentoEmptyState icon={Icons.Sparkles}>
+                    Optimized quality controls will appear when an optimized preview path is
+                    enabled.
+                  </PreferenceBentoEmptyState>
+                )}
+              </PreferenceBentoCard>
+
+              <PreferenceBentoCard
+                title="Interaction & tracking"
+                description="Choose how point edits behave and how tracking work is scheduled and validated."
+                icon={Icons.CursorArrow}
+                headerAction={
+                  <PreferenceBentoResetButton
+                    label="Reset interaction and tracking settings"
+                    onReset={() =>
+                      setPreferences({
+                        rotoPointWeightMode: 'global',
+                        rotoTrackingBackgroundEnabled: false,
+                        rotoTrackingDriftTolerance: RotoTrackingDriftTolerance.DEFAULT,
+                      })
+                    }
+                  />
+                }
+                className="lg:col-span-5"
               >
-                <SegmentedControl
-                  options={rotoMotionModeOptions}
-                  value={rotoMotionCueMode}
-                  onChange={(mode) =>
-                    setPreferences({
-                      rotoMotionCueMode: mode as RotoMotionCueMode,
-                    })
-                  }
-                />
-              </SettingsRow>
+                <PreferenceBentoControl
+                  title="Default point pull"
+                  description="Starting influence mode for point-weight drags."
+                  stacked
+                >
+                  <SegmentedControl
+                    options={rotoPointWeightModeOptions}
+                    value={rotoPointWeightMode}
+                    onChange={(mode) =>
+                      setPreferences({
+                        rotoPointWeightMode: mode as 'global' | 'local',
+                      })
+                    }
+                  />
+                </PreferenceBentoControl>
 
-              <SettingsRow
-                title="Scope"
-                description="Control which paths receive dynamic motion visualization."
-              >
-                <SegmentedControl
-                  options={rotoMotionScopeOptions}
-                  value={rotoMotionCueScope}
-                  onChange={(scope) =>
-                    setPreferences({
-                      rotoMotionCueScope: scope as RotoMotionCueScope,
-                    })
-                  }
-                />
-              </SettingsRow>
+                <PreferenceBentoControl
+                  title="Tracking run mode"
+                  description="Background jobs keep the playhead free during longer tracks."
+                  stacked
+                >
+                  <SegmentedControl
+                    options={rotoTrackingRunModeOptions}
+                    value={rotoTrackingBackgroundEnabled ? 'background' : 'inline'}
+                    onChange={(mode) =>
+                      setPreferences({
+                        rotoTrackingBackgroundEnabled: mode === 'background',
+                      })
+                    }
+                  />
+                </PreferenceBentoControl>
 
-              <SettingsRow
-                title="Trail window"
-                description="Used by gradient mode. Larger windows show more context but can add clutter."
-                stacked
+                <PreferenceBentoControl
+                  title="Drift tolerance"
+                  description="Stop when average optical-flow error crosses this threshold. Use ∞ to never stop automatically."
+                  stacked
+                >
+                  <Slider
+                    label="Tracking Drift Tolerance"
+                    value={rotoTrackingDriftTolerance ?? RotoTrackingDriftTolerance.OVERFLOW}
+                    min={RotoTrackingDriftTolerance.MIN}
+                    max={RotoTrackingDriftTolerance.MAX}
+                    step={RotoTrackingDriftTolerance.STEP}
+                    overflowLabel="∞"
+                    onChange={(value) =>
+                      setPreferences({
+                        rotoTrackingDriftTolerance:
+                          value >= RotoTrackingDriftTolerance.OVERFLOW ? null : value,
+                      })
+                    }
+                    onReset={() =>
+                      setPreferences({
+                        rotoTrackingDriftTolerance: RotoTrackingDriftTolerance.DEFAULT,
+                      })
+                    }
+                    displayFormatter={(value) => value.toFixed(1)}
+                  />
+                </PreferenceBentoControl>
+              </PreferenceBentoCard>
+
+              <PreferenceBentoCard
+                title="Motion cue overlay"
+                description="Visualize direction and speed around the current frame without changing the rendered result."
+                icon={Icons.Sparkles}
+                headerAction={
+                  <div className="flex items-center gap-2">
+                    <ToggleSwitch
+                      checked={rotoMotionCueEnabled}
+                      ariaLabel="Toggle motion cue overlay"
+                      onCheckedChange={(checked) =>
+                        setPreferences({ rotoMotionCueEnabled: checked })
+                      }
+                    />
+                    <PreferenceBentoResetButton
+                      label="Reset motion cue overlay settings"
+                      onReset={() =>
+                        setPreferences({
+                          rotoMotionCueEnabled: false,
+                          rotoMotionCueMode: 'gradient_trail',
+                          rotoMotionCueScope: 'selected',
+                          rotoMotionTrailFrames: 3,
+                        })
+                      }
+                    />
+                  </div>
+                }
+                className="lg:col-span-12"
               >
-                <Slider
-                  label="Trail Window"
-                  value={rotoMotionTrailFrames}
-                  min={1}
-                  max={8}
-                  step={1}
-                  onChange={(value) => setPreferences({ rotoMotionTrailFrames: value })}
-                  onReset={() => setPreferences({ rotoMotionTrailFrames: 3 })}
-                  displayFormatter={(value) => `±${Math.round(value)}f`}
-                />
-              </SettingsRow>
+                {rotoMotionCueEnabled ? (
+                  <div className="grid md:grid-cols-3 md:divide-x md:divide-white/[0.07]">
+                    <div className="md:pr-4">
+                      <PreferenceBentoControl
+                        title="Cue style"
+                        description="Temporal trails or speed-mapped lines."
+                        stacked
+                      >
+                        <SegmentedControl
+                          options={rotoMotionModeOptions}
+                          value={rotoMotionCueMode}
+                          onChange={(mode) =>
+                            setPreferences({
+                              rotoMotionCueMode: mode as RotoMotionCueMode,
+                            })
+                          }
+                        />
+                      </PreferenceBentoControl>
+                    </div>
+                    <div className="md:px-4">
+                      <PreferenceBentoControl
+                        title="Path scope"
+                        description="Show cues for selected or all paths."
+                        stacked
+                      >
+                        <SegmentedControl
+                          options={rotoMotionScopeOptions}
+                          value={rotoMotionCueScope}
+                          onChange={(scope) =>
+                            setPreferences({
+                              rotoMotionCueScope: scope as RotoMotionCueScope,
+                            })
+                          }
+                        />
+                      </PreferenceBentoControl>
+                    </div>
+                    <div className="md:pl-4">
+                      <PreferenceBentoControl
+                        title="Trail window"
+                        description="More frames add context and visual density."
+                        stacked
+                      >
+                        <Slider
+                          label="Trail Window"
+                          value={rotoMotionTrailFrames}
+                          min={1}
+                          max={8}
+                          step={1}
+                          onChange={(value) => setPreferences({ rotoMotionTrailFrames: value })}
+                          onReset={() => setPreferences({ rotoMotionTrailFrames: 3 })}
+                          displayFormatter={(value) => `±${Math.round(value)}f`}
+                        />
+                      </PreferenceBentoControl>
+                    </div>
+                  </div>
+                ) : (
+                  <PreferenceBentoEmptyState icon={Icons.EyeSlash}>
+                    Turn on the overlay to configure cue style, path scope, and trail length.
+                  </PreferenceBentoEmptyState>
+                )}
+              </PreferenceBentoCard>
             </div>
           </SettingsGroup>
         );
@@ -1260,6 +1629,26 @@ function PreferencesView({ onBack }: PreferencesViewProps) {
                 />
               </SettingsRow>
             )}
+
+            <SettingsRow
+              title="Timeline cache display"
+              description="Consolidated merges all media cache into one combined bar. Separate shows each media node as a distinct colored bar."
+            >
+              <SegmentedControl
+                options={[
+                  {
+                    value: 'consolidated',
+                    label: 'Consolidated',
+                    description: 'Single merged bar',
+                  },
+                  { value: 'separate', label: 'Separate', description: 'Per-node colored bars' },
+                ]}
+                value={timelineCacheMode}
+                onChange={(mode) =>
+                  setPreferences({ timelineCacheMode: mode as TimelineCacheMode })
+                }
+              />
+            </SettingsRow>
           </SettingsGroup>
         );
     }

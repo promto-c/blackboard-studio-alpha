@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   applyComfyWorkflowInputImages,
   buildComfyWebSocketUrl,
+  cancelComfyPrompt,
   collectComfyHistoryOutputFiles,
+  ComfyPromptInputValidationError,
   extractComfyImageWorkflowMetadata,
   extractComfyPrompt,
   extractComfyPromptWithOutputs,
@@ -2778,6 +2780,157 @@ describe('Comfy prompt queue', () => {
       prompt,
       client_id: 'client-1',
       extra_data: extraData,
+    });
+  });
+
+  it('sends a caller-provided prompt id when queueing a prompt', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ prompt_id: 'prompt-1' }), { status: 200 }),
+      );
+    const prompt = { '1': { class_type: 'PreviewImage', inputs: {} } };
+
+    await queueComfyPrompt({
+      endpoint: 'http://127.0.0.1:8188',
+      prompt,
+      clientId: 'client-1',
+      promptId: 'prompt-1',
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      prompt_id: 'prompt-1',
+    });
+  });
+
+  it('extracts missing cached input image names from Comfy validation errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            type: 'prompt_outputs_failed_validation',
+            message: 'Prompt outputs failed validation',
+          },
+          node_errors: {
+            blackboard_input_load_76_source_video: {
+              errors: [
+                {
+                  message:
+                    'Custom validation failed for node: image - Invalid image file: blackboard/Cat_png_region_76_source_video_1782361658570.png',
+                },
+              ],
+            },
+            blackboard_input_load_76_reference_video: {
+              errors: [
+                {
+                  message:
+                    'Custom validation failed for node: image - Invalid image file: blackboard/export_jpg_region_76_reference_video_1782361658618.png',
+                },
+              ],
+            },
+          },
+        }),
+        { status: 400 },
+      ),
+    );
+    const prompt = { '1': { class_type: 'PreviewImage', inputs: {} } };
+
+    let error: unknown;
+    try {
+      await queueComfyPrompt({
+        endpoint: 'http://127.0.0.1:8188',
+        prompt,
+        clientId: 'client-1',
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ComfyPromptInputValidationError);
+    expect(error).toMatchObject({
+      name: 'ComfyPromptInputValidationError',
+      invalidImageNames: [
+        'blackboard/Cat_png_region_76_source_video_1782361658570.png',
+        'blackboard/export_jpg_region_76_reference_video_1782361658618.png',
+      ],
+    });
+  });
+
+  it('extracts missing cached input image names from successful queue warnings', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          prompt_id: 'prompt-accepted-with-ignored-output',
+          number: 4,
+          node_errors: {
+            blackboard_input_load_76_reference_images_reference_image_0: {
+              errors: [
+                {
+                  message: 'Custom validation failed for node: image',
+                  details:
+                    'Invalid image file: blackboard/guitar_png_region_76_reference_images_reference_image_0_1782361658675.png',
+                },
+              ],
+              dependent_outputs: ['blackboard_exr_76_0'],
+              class_type: 'LoadImage',
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const prompt = { '1': { class_type: 'PreviewImage', inputs: {} } };
+
+    let error: unknown;
+    try {
+      await queueComfyPrompt({
+        endpoint: 'http://127.0.0.1:8188',
+        prompt,
+        clientId: 'client-1',
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ComfyPromptInputValidationError);
+    expect(error).toMatchObject({
+      promptId: 'prompt-accepted-with-ignored-output',
+      invalidImageNames: [
+        'blackboard/guitar_png_region_76_reference_images_reference_image_0_1782361658675.png',
+      ],
+    });
+  });
+});
+
+describe('Comfy prompt cancellation', () => {
+  it('cancels a single prompt through the Comfy job API', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ cancelled: true }), { status: 200 }));
+
+    await cancelComfyPrompt('prompt-1', 'http://127.0.0.1:8188');
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://127.0.0.1:8188/api/jobs/prompt-1/cancel',
+      expect.objectContaining({ method: 'POST', cache: 'no-cache' }),
+    );
+  });
+
+  it('falls back to queue delete and targeted interrupt when the job API is unavailable', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockResolvedValueOnce(new Response('', { status: 200 }))
+      .mockResolvedValueOnce(new Response('', { status: 200 }));
+
+    await cancelComfyPrompt('prompt-1', 'http://127.0.0.1:8188');
+
+    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({
+      delete: ['prompt-1'],
+    });
+    expect(JSON.parse(String(fetchSpy.mock.calls[2]?.[1]?.body))).toEqual({
+      prompt_id: 'prompt-1',
     });
   });
 });

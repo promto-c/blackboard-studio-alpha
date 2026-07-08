@@ -4,8 +4,13 @@ import type { ResolveOutputContext } from '@blackboard/renderer';
 import {
   AnimatableNumber,
   AnyNode,
+  ColorProcessingDomain,
+  DataChannelSemantic,
+  GeneratedColorResolver,
   ImageTransform,
   InputPortType,
+  RenderSceneSize,
+  RenderSceneSizeBehavior,
   RotoPointRef,
   SceneNode,
   SourceAlphaMode,
@@ -30,13 +35,21 @@ export type RenderMode =
   | 'text'
   | 'scene';
 
+export type RenderOutputContract = 'pipeline' | 'viewport_preview' | 'none';
+
 export interface RenderContext {
   frame: number;
   fps: number;
   scene: { width: number; height: number };
   flow?: unknown;
   nodes: AnyNode[];
+  transformColorPickingToSceneLinear: (
+    color: readonly [number, number, number],
+  ) => [number, number, number];
 }
+
+export type RendererSceneSize = RenderSceneSize;
+export type RendererSceneSizeBehavior = RenderSceneSizeBehavior<AnyNode, RenderContext>;
 
 // A function that takes a node and render context and returns shader uniforms.
 export type UniformsGetter = (node: AnyNode, context: RenderContext) => ShaderUniformMap;
@@ -49,6 +62,10 @@ export interface InputPortDescriptor {
   label: string;
   /** What kind of data this port accepts. */
   type: InputPortType;
+  /** Optional technical channel semantic for data/alpha/vector/depth ports. */
+  dataSemantic?: DataChannelSemantic;
+  /** Accepted color/data processing domain. Omit only for intentionally polymorphic inputs. */
+  processingDomain?: ColorProcessingDomain;
   /** Whether this input is required for the node to function. */
   required: boolean;
   /** Tooltip / description for the port. */
@@ -74,6 +91,10 @@ export interface OutputPortDescriptor {
   name: string;
   /** Human-readable label for UI. */
   label: string;
+  /** Optional technical channel semantic for data/alpha/vector/depth outputs. */
+  dataSemantic?: DataChannelSemantic;
+  /** Output processing domain. Port declarations override the node-level domain. */
+  processingDomain?: ColorProcessingDomain;
   /** Tooltip / description for the port. */
   description?: string;
 }
@@ -215,6 +236,12 @@ export interface MediaCacheContext {
 export interface MediaCompositeContext {
   frame: number;
   sceneNode: SceneNode;
+  /**
+   * The full list of nodes from the render context. Provided by the pipeline
+   * when available so getCompositeLayers implementations can resolve
+   * graph-edge connected inputs as additional layers.
+   */
+  nodes?: readonly AnyNode[];
 }
 
 export interface MediaCompositeLayer {
@@ -227,6 +254,7 @@ export interface MediaCompositeLayer {
   transform?: ImageTransform;
   opacity?: AnimatableNumber;
   colorSpace?: string;
+  isData?: boolean;
   sourceAlphaMode?: SourceAlphaMode;
 }
 
@@ -253,7 +281,9 @@ export interface MediaDescriptor {
   ) => MediaCompositeLayer[];
   /** Return true when this node's active media should be decoded as a video file. */
   isVideoFile?: (node: AnyNode) => boolean;
-  /** Optional color space identifier for this media (e.g. 'sRGB', 'Linear'). */
+  /** Return true when this media should bypass RGB color transforms. */
+  isData?: (node: AnyNode) => boolean;
+  /** Optional canonical OCIO color-space identifier for this media. */
   getColorSpace?: (node: AnyNode) => string | undefined;
 }
 
@@ -524,6 +554,13 @@ export interface NodeDefinition {
   description?: string;
   category: ToolCategory;
   renderMode: RenderMode;
+  /**
+   * Declares whether this node participates in the compositing pipeline,
+   * owns a viewport-only preview, or produces no visual output.
+   */
+  renderOutputContract?: RenderOutputContract;
+  /** Domain in which this node reads and produces its primary image pipe. */
+  processingDomain: ColorProcessingDomain | ((node: AnyNode) => ColorProcessingDomain);
 
   // UI components
   IconComponent: React.ComponentType<{ className?: string }>;
@@ -686,6 +723,15 @@ export interface NodeDefinition {
 
   /** Studio-side animation behavior used by timeline property lookup and keyed mutations. */
   animation?: NodeAnimationBehavior;
+
+  /** Declarative scene-size behavior for nodes that establish or change the render format. */
+  sceneSize?: RendererSceneSizeBehavior;
+
+  /**
+   * Return the scene-linear color applied to a generated alpha-mask source.
+   * Omit this hook when the source texture already contains its final RGB.
+   */
+  getGeneratedColor?: GeneratedColorResolver<AnyNode, RenderContext>;
 
   /**
    * Optional render scale hint for the pipeline.

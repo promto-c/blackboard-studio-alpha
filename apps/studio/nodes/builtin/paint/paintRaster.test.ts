@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { BlendMode, ImageFitMode, NodeType, type AnyNode, type PaintNode } from '@blackboard/types';
 import {
-  compositePaintRasterOntoCanvas,
+  applyPaintStrokeToRaster,
+  buildPaintStrokeRaster,
+  collectPaintStampPoints,
+  compositePaintRaster,
+  createPaintRaster,
   createPaintStrokePath,
   getPaintTextureCacheKey,
   isStoredPaintAssetId,
@@ -10,43 +14,51 @@ import {
 } from './paintRaster';
 import { getPaintTextureCommittedState } from './paintTextureKeys';
 
-const createMockCanvasContext = () => {
-  const drawCompositeOperations: string[] = [];
-  let compositeOperation: GlobalCompositeOperation = 'source-over';
-
-  const ctx = {
-    createRadialGradient: () => ({
-      addColorStop: () => undefined,
-    }),
-    beginPath: () => undefined,
-    arc: () => undefined,
-    fill: () => undefined,
-    drawImage: () => {
-      drawCompositeOperations.push(compositeOperation);
-    },
-    clearRect: () => undefined,
-    set fillStyle(_value: string | CanvasGradient | CanvasPattern) {},
-    get fillStyle() {
-      return '';
-    },
-    set globalCompositeOperation(value: GlobalCompositeOperation) {
-      compositeOperation = value;
-    },
-    get globalCompositeOperation() {
-      return compositeOperation;
-    },
-  } as unknown as CanvasRenderingContext2D;
-
-  const canvas = {
-    width: 128,
-    height: 128,
-    getContext: () => ctx,
-  } as unknown as HTMLCanvasElement;
-
-  return { canvas, drawCompositeOperations, ctx };
-};
-
 describe('paint raster helpers', () => {
+  it('builds unclamped scene-linear brush stamps without CSS color quantization', () => {
+    const raster = buildPaintStrokeRaster({
+      tool: 'brush',
+      points: [{ x: 0, y: 0 }],
+      width: 1,
+      height: 1,
+      size: 1,
+      softness: 0,
+      opacity: 50,
+      color: [-0.5, 2, 4],
+    });
+
+    expect(Array.from(raster?.rgba ?? [])).toEqual([-0.5, 2, 4, 0.5]);
+  });
+
+  it('feathers brush coverage while preserving scene-linear RGB', () => {
+    const raster = buildPaintStrokeRaster({
+      tool: 'brush',
+      points: [{ x: 0, y: 0 }],
+      width: 3,
+      height: 3,
+      size: 3,
+      softness: 100,
+      opacity: 100,
+      color: [0.25, 1.5, -0.25],
+    });
+    const pixels = raster?.rgba ?? new Float32Array();
+    const centerOffset = (1 * 3 + 1) * 4;
+    const cornerOffset = 0;
+
+    expect(Array.from(pixels.slice(centerOffset, centerOffset + 4))).toEqual([0.25, 1.5, -0.25, 1]);
+    expect(pixels[cornerOffset + 3]).toBeLessThan(1);
+  });
+
+  it('uses configurable brush spacing when collecting stamps', () => {
+    const path = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ];
+
+    expect(collectPaintStampPoints(path, 10)).toHaveLength(11);
+    expect(collectPaintStampPoints(path, 25)).toHaveLength(5);
+  });
+
   it('returns null when a stroke has no points', () => {
     expect(createPaintStrokePath([], 24)).toBeNull();
   });
@@ -98,6 +110,7 @@ describe('paint raster helpers', () => {
             raster: 'asset_a',
             pointCount: 2,
             size: 24,
+            spacing: 20,
             softness: 50,
             opacity: 100,
           },
@@ -119,6 +132,7 @@ describe('paint raster helpers', () => {
             raster: 'asset_a',
             pointCount: 2,
             size: 24,
+            spacing: 20,
             softness: 50,
             opacity: 100,
           },
@@ -144,6 +158,7 @@ describe('paint raster helpers', () => {
           raster: 'asset_a',
           pointCount: 2,
           size: 24,
+          spacing: 20,
           softness: 50,
           opacity: 100,
         },
@@ -167,6 +182,7 @@ describe('paint raster helpers', () => {
           raster: 'asset_a',
           pointCount: 2,
           size: 24,
+          spacing: 20,
           softness: 50,
           opacity: 100,
           lifetime: { mode: 'single', frame: 12 },
@@ -191,6 +207,7 @@ describe('paint raster helpers', () => {
           raster: 'asset_clone',
           pointCount: 2,
           size: 24,
+          spacing: 20,
           softness: 50,
           opacity: 100,
           path: {
@@ -227,6 +244,7 @@ describe('paint raster helpers', () => {
           raster: 'asset_clone',
           pointCount: 2,
           size: 24,
+          spacing: 20,
           softness: 50,
           opacity: 100,
           path: {
@@ -308,6 +326,7 @@ describe('paint raster helpers', () => {
           raster: 'asset_clone',
           pointCount: 2,
           size: 24,
+          spacing: 20,
           softness: 50,
           opacity: 100,
           path: {
@@ -379,23 +398,79 @@ describe('paint raster helpers', () => {
     expect(isStoredPaintAssetId('data:image/png;base64,abc')).toBe(false);
   });
 
-  it('uses destination-out when compositing erase rasters', () => {
-    const { canvas, drawCompositeOperations, ctx } = createMockCanvasContext();
+  it('uses straight-alpha destination-out for RGB erase rasters', () => {
+    const target = { width: 1, height: 1, rgba: new Float32Array([-0.5, 2, 4, 1]) };
+    const erase = { width: 1, height: 1, rgba: new Float32Array([1, 1, 1, 0.25]) };
 
-    expect(compositePaintRasterOntoCanvas(canvas, {} as CanvasImageSource, 'erase')).toBe(true);
+    compositePaintRaster(target, erase, 'erase', 'rgb');
 
-    expect(drawCompositeOperations).toEqual(['destination-out']);
-    expect(ctx.globalCompositeOperation).toBe('source-over');
+    expect(Array.from(target.rgba)).toEqual([-0.5, 2, 4, 0.75]);
   });
 
-  it('uses destination-out when compositing alpha-only erase rasters', () => {
-    const { canvas, drawCompositeOperations, ctx } = createMockCanvasContext();
+  it('composites negative and HDR RGB with straight-alpha source-over math', () => {
+    const target = { width: 1, height: 1, rgba: new Float32Array([-0.5, 2, 4, 0.5]) };
+    const source = { width: 1, height: 1, rgba: new Float32Array([1, -1, 8, 0.5]) };
 
-    expect(compositePaintRasterOntoCanvas(canvas, {} as CanvasImageSource, 'erase', 'a')).toBe(
-      true,
-    );
+    compositePaintRaster(target, source, 'brush', 'rgb');
 
-    expect(drawCompositeOperations).toEqual(['destination-out']);
-    expect(ctx.globalCompositeOperation).toBe('source-over');
+    expect(target.rgba[0]).toBeCloseTo(0.5);
+    expect(target.rgba[1]).toBeCloseTo(0);
+    expect(target.rgba[2]).toBeCloseTo(20 / 3);
+    expect(target.rgba[3]).toBeCloseTo(0.75);
+  });
+
+  it('applies live RGB erase directly without a full-frame intermediate raster', () => {
+    const target = { width: 1, height: 1, rgba: new Float32Array([-0.5, 2, 4, 1]) };
+
+    expect(
+      applyPaintStrokeToRaster(target, {
+        tool: 'erase',
+        points: [{ x: 0, y: 0 }],
+        width: 1,
+        height: 1,
+        size: 1,
+        softness: 0,
+        opacity: 50,
+        color: [1, 1, 1],
+        channels: 'rgb',
+      }),
+    ).toBe(true);
+    expect(Array.from(target.rgba)).toEqual([-0.5, 2, 4, 0.5]);
+  });
+
+  it('rejects mismatched paint raster dimensions', () => {
+    expect(() =>
+      compositePaintRaster(createPaintRaster(1, 1), createPaintRaster(2, 1), 'brush', 'rgb'),
+    ).toThrow('Paint rasters must have matching dimensions for compositing.');
+  });
+
+  it('keeps alpha-only erase target and coverage separate', () => {
+    const target = createPaintRaster(1, 1);
+    const erase = { width: 1, height: 1, rgba: new Float32Array([0, 0, 0, 0.25]) };
+
+    compositePaintRaster(target, erase, 'erase', 'a');
+
+    expect(Array.from(target.rgba)).toEqual([0, 0, 0, 0.25]);
+  });
+
+  it('clones negative and HDR RGB independently from source alpha', () => {
+    const stroke = buildPaintStrokeRaster({
+      tool: 'clone',
+      points: [{ x: 0, y: 0 }],
+      width: 1,
+      height: 1,
+      size: 1,
+      spacing: 20,
+      softness: 0,
+      opacity: 100,
+      color: [0, 0, 0],
+      cloneOffset: { x: 0, y: 0 },
+      cloneSource: {
+        rgb: { width: 1, height: 1, rgba: new Float32Array([-0.5, 2, 4, 1]) },
+        alpha: { width: 1, height: 1, rgba: new Float32Array([0, 0, 0, 1]) },
+      },
+    });
+
+    expect(Array.from(stroke?.rgba ?? [])).toEqual([-0.5, 2, 4, 1]);
   });
 });

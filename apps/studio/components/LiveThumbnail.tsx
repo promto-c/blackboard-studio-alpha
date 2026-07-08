@@ -1,5 +1,5 @@
 import { useState, useEffect, memo } from 'react';
-import { renderStackToDataURL } from '@/utils/thumbnailRenderer';
+import { renderStackToBlob } from '@/utils/thumbnailRenderer';
 import { AnyNode, SceneNode } from '@blackboard/types';
 import { useEditorSelector } from '@/state/editorContext';
 import { useDebouncedAsync } from '@/hooks/useDebouncedAsync';
@@ -14,8 +14,10 @@ interface Props {
 const THUMBNAIL_DEBOUNCE_MS = 200;
 
 export const LiveThumbnail = memo(function LiveThumbnail({ stack, sceneNode, staticFrame }: Props) {
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [hasError, setHasError] = useState(false);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
+  const projectColorManagement = useEditorSelector((s) => s.colorManagement);
   const isFrameScrubbing = useEditorSelector((s) => s.isFrameScrubbing);
   const [deferredFrame, setDeferredFrame] = useState(currentFrame);
   const effectiveFrame = staticFrame !== undefined ? staticFrame : deferredFrame;
@@ -31,25 +33,27 @@ export const LiveThumbnail = memo(function LiveThumbnail({ stack, sceneNode, sta
     }
   }, [currentFrame, isFrameScrubbing, staticFrame]);
 
-  const latestDataUrl = useDebouncedAsync(
-    () => renderStackToDataURL(stack, sceneNode, effectiveFrame),
-    [stack, sceneNode, effectiveFrame],
+  const latestBlob = useDebouncedAsync(
+    () => renderStackToBlob(stack, sceneNode, projectColorManagement, effectiveFrame),
+    [stack, sceneNode, projectColorManagement, effectiveFrame],
     {
       delay: THUMBNAIL_DEBOUNCE_MS,
       onError: (error) => {
         console.error('Thumbnail generation failed for node:', stack[0]?.name, error);
-        setDataUrl((prev) => prev ?? 'error');
+        setHasError(true);
       },
     },
   );
 
   useEffect(() => {
-    if (latestDataUrl !== undefined) {
-      setDataUrl(latestDataUrl);
-    }
-  }, [latestDataUrl]);
+    if (!latestBlob) return;
+    const objectUrl = URL.createObjectURL(latestBlob);
+    setHasError(false);
+    setPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [latestBlob]);
 
-  if (dataUrl === 'error') {
+  if (hasError) {
     return (
       <div
         className="w-full h-full flex items-center justify-center bg-red-900/50"
@@ -73,7 +77,7 @@ export const LiveThumbnail = memo(function LiveThumbnail({ stack, sceneNode, sta
     );
   }
 
-  if (!dataUrl) {
+  if (!previewUrl) {
     return (
       <div className="w-full h-full flex items-center justify-center">
         <Spinner className="h-5 w-5 text-gray-400" />
@@ -83,7 +87,7 @@ export const LiveThumbnail = memo(function LiveThumbnail({ stack, sceneNode, sta
 
   return (
     <img
-      src={dataUrl}
+      src={previewUrl}
       alt={`${stack[0].name} thumbnail`}
       className="w-full h-full object-contain"
     />

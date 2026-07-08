@@ -192,7 +192,7 @@ function Slider({
   }, []);
 
   return (
-    <div className="space-y-1">
+    <div className="bb-slider space-y-1">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {onToggleKeyframe && (
@@ -235,7 +235,7 @@ function Slider({
             onBlur={handleValueBlur}
             onChange={(event) => setDraftValue(event.currentTarget.value)}
             onKeyDown={handleValueKeyDown}
-            className={`h-5 w-12 rounded border border-transparent bg-transparent p-0 text-right font-mono text-xs outline-none transition ${
+            className={`bb-slider-value h-5 w-12 rounded border border-transparent bg-transparent p-0 text-right font-mono text-xs outline-none transition ${
               isOverflow
                 ? 'cursor-default text-primary-300'
                 : 'text-gray-300 hover:border-white/10 hover:bg-white/[0.04] hover:text-white focus:border-primary-400 focus:bg-gray-950 focus:text-white'

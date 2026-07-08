@@ -4,7 +4,7 @@ import SourceAlphaControl from '../../SourceAlphaControl';
 import SourceTransformControls from '../../SourceTransformControls';
 import SourceSlot from '../../SourceSlot';
 import { CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
-import { OcioColorSpaceDropdown, Slider } from '@/components';
+import { MediaColorManagementInspector, Slider } from '@/components';
 
 function ImageSequenceAdjustments({ node: anyNode }: { node: AnyNode }) {
   const node = anyNode as ImageSequenceNode;
@@ -12,10 +12,6 @@ function ImageSequenceAdjustments({ node: anyNode }: { node: AnyNode }) {
 
   const handleUpdate = (updates: Partial<ImageSequenceNode>, withHistory: boolean = false) => {
     updateNode(node.id, updates, withHistory);
-  };
-
-  const handleColorSpaceChange = (value: string) => {
-    handleUpdate({ colorSpace: value as ImageSequenceNode['colorSpace'] }, true);
   };
 
   return (
@@ -29,18 +25,11 @@ function ImageSequenceAdjustments({ node: anyNode }: { node: AnyNode }) {
         frameCount={node.frames.length}
       />
       <CollapsibleSection title="Color Management" defaultOpen>
-        <div className="space-y-2">
-          <div className="flex justify-between items-center">
-            <label className="text-xs font-medium text-gray-400">Input Color Space</label>
-          </div>
-          <OcioColorSpaceDropdown
-            value={node.colorSpace ?? 'sRGB Encoded Rec.709 (sRGB)'}
-            onChange={handleColorSpaceChange}
-            includeData
-          />
+        <div className="space-y-3">
+          <MediaColorManagementInspector node={node} />
+          <SourceAlphaControl node={node} />
         </div>
       </CollapsibleSection>
-      <SourceAlphaControl node={node} />
       <CollapsibleSection title="Playback" defaultOpen>
         <div className="space-y-4">
           <Slider

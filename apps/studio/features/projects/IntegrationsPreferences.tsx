@@ -1,7 +1,7 @@
 import React from 'react';
 import * as Icons from '@blackboard/icons';
 import { Slider } from '@/components';
-import { StyledDropdown, ToggleSwitch } from '@blackboard/ui';
+import { Badge, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
 import {
   AgentMaxSubagentSpawns,
   type IntegrationConnection,
@@ -14,15 +14,12 @@ import {
   testComfyConnection,
 } from '@/services/comfy/client';
 import {
-  DEFAULT_AI_TASK_ROUTES,
   DEFAULT_OPENAI_BASE_URL,
   normalizeOpenAiBaseUrl,
   type AiRouteTask,
   type AiTaskRoutes,
 } from '@/utils/aiRouting';
 import {
-  hasGeminiApiKey,
-  hasOpenAiApiKey,
   isOllamaAuthenticationRequiredError,
   listOllamaModels,
   testOpenAiConnection,
@@ -72,8 +69,8 @@ interface ConnectionModelRow {
 const baseFieldClassName =
   'block w-full min-w-0 rounded-lg border border-white/10 bg-black/20 px-2.5 py-2 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] outline-none transition placeholder:text-gray-500 focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20';
 
-const PROVIDER_ORDER: IntegrationConnectionProviderId[] = ['ollama', 'openai', 'gemini', 'comfy'];
-const AI_PROVIDERS: AiProvider[] = ['ollama', 'openai', 'gemini'];
+const PROVIDER_ORDER: IntegrationConnectionProviderId[] = ['ollama', 'openai', 'comfy'];
+const AI_PROVIDERS: AiProvider[] = ['ollama', 'openai'];
 const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
 
 const providerMeta: Record<IntegrationConnectionProviderId, ProviderMeta> = {
@@ -94,15 +91,6 @@ const providerMeta: Record<IntegrationConnectionProviderId, ProviderMeta> = {
     category: 'ai',
     icon: Icons.Sparkles,
     accentClassName: 'bg-sky-400/10 text-sky-100 ring-sky-300/15',
-  },
-  gemini: {
-    id: 'gemini',
-    title: 'Gemini',
-    shortTitle: 'Gemini',
-    description: 'Google Gemini text and prompt tooling.',
-    category: 'ai',
-    icon: Icons.LightBulb,
-    accentClassName: 'bg-amber-400/10 text-amber-100 ring-amber-300/15',
   },
   comfy: {
     id: 'comfy',
@@ -145,7 +133,6 @@ const aiRouteMeta: {
 const defaultModelsByProvider: Record<AiProvider, string[]> = {
   ollama: [],
   openai: ['gpt-5-mini', 'gpt-5'],
-  gemini: [DEFAULT_AI_TASK_ROUTES.assistantChat.model, 'gemini-2.5-pro'],
 };
 
 const agentDelegationTickLabels = [
@@ -155,35 +142,6 @@ const agentDelegationTickLabels = [
   { value: 6, label: '6' },
   { value: AgentMaxSubagentSpawns.MAX, label: String(AgentMaxSubagentSpawns.MAX) },
 ];
-
-function StatusBadge({
-  children,
-  tone = 'neutral',
-  className,
-}: {
-  children: React.ReactNode;
-  tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'accent';
-  className?: string;
-}) {
-  const toneClassName =
-    tone === 'success'
-      ? 'border-green-400/20 bg-green-500/10 text-green-100'
-      : tone === 'warning'
-        ? 'border-amber-400/20 bg-amber-500/10 text-amber-100'
-        : tone === 'danger'
-          ? 'border-red-400/20 bg-red-500/10 text-red-100'
-          : tone === 'accent'
-            ? 'border-primary-400/20 bg-primary-500/10 text-primary-100'
-            : 'border-white/10 bg-white/[0.05] text-gray-300';
-
-  return (
-    <span
-      className={`inline-flex min-w-0 max-w-full items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${toneClassName} ${className ?? ''}`}
-    >
-      <span className="min-w-0 truncate">{children}</span>
-    </span>
-  );
-}
 
 function IconButton({
   label,
@@ -244,7 +202,7 @@ function IntegrationTroubleshooting({ title, steps }: { title: string; steps: st
 }
 
 const isAiProvider = (provider: IntegrationConnectionProviderId): provider is AiProvider =>
-  provider === 'ollama' || provider === 'openai' || provider === 'gemini';
+  provider === 'ollama' || provider === 'openai';
 
 const isAiConnection = (connection: IntegrationConnection): connection is AiConnection =>
   isAiProvider(connection.provider);
@@ -371,9 +329,7 @@ function ModelToggleRow({
           >
             {row.model}
           </span>
-          <StatusBadge tone={row.source === 'discovered' ? 'success' : 'neutral'}>
-            {sourceLabel}
-          </StatusBadge>
+          <Badge variant={row.source === 'discovered' ? 'success' : 'neutral'}>{sourceLabel}</Badge>
         </div>
         {detailItems.length > 0 ? (
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-4 text-gray-500">
@@ -450,14 +406,12 @@ function ConnectionModelsEditor({
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className="text-xs font-medium text-gray-400">Models</span>
-          <StatusBadge tone={enabledCount > 0 ? 'accent' : 'neutral'}>
-            {enabledCount} on
-          </StatusBadge>
+          <Badge variant={enabledCount > 0 ? 'accent' : 'neutral'}>{enabledCount} on</Badge>
           {connection.provider === 'ollama' && ollamaState?.loading ? (
-            <StatusBadge tone="warning">Syncing</StatusBadge>
+            <Badge variant="warning">Syncing</Badge>
           ) : null}
           {connection.provider === 'ollama' && ollamaState?.loaded && !ollamaState.error ? (
-            <StatusBadge tone="neutral">{ollamaState.models.length} discovered</StatusBadge>
+            <Badge variant="neutral">{ollamaState.models.length} discovered</Badge>
           ) : null}
         </div>
       </div>
@@ -556,98 +510,15 @@ const getDefaultConnectionName = (
 const createConnection = ({
   provider,
   existingConnections,
-  legacy,
 }: {
   provider: IntegrationConnectionProviderId;
   existingConnections: IntegrationConnection[];
-  legacy: {
-    geminiApiKey: string;
-    openAiApiKey: string;
-    openAiBaseUrl: string;
-    ollamaEndpoint: string;
-    comfyEndpoint: string;
-  };
 }): IntegrationConnection => ({
   id: createConnectionId(provider, existingConnections),
   provider,
   name: getDefaultConnectionName(provider, existingConnections),
-  apiKey:
-    provider === 'gemini'
-      ? legacy.geminiApiKey
-      : provider === 'openai'
-        ? legacy.openAiApiKey
-        : undefined,
-  baseUrl: provider === 'openai' ? normalizeOpenAiBaseUrl(legacy.openAiBaseUrl) : undefined,
-  endpoint:
-    provider === 'ollama'
-      ? legacy.ollamaEndpoint || DEFAULT_OLLAMA_ENDPOINT
-      : provider === 'comfy'
-        ? normalizeComfyEndpoint(legacy.comfyEndpoint)
-        : undefined,
   models: isAiProvider(provider) ? defaultModelsByProvider[provider] : [],
 });
-
-const inferLegacyConnections = ({
-  geminiApiKey,
-  openAiApiKey,
-  openAiBaseUrl,
-  ollamaEndpoint,
-  comfyEndpoint,
-}: {
-  geminiApiKey: string;
-  openAiApiKey: string;
-  openAiBaseUrl: string;
-  ollamaEndpoint: string;
-  comfyEndpoint: string;
-}): IntegrationConnection[] => {
-  const inferred: IntegrationConnection[] = [];
-  const addInferred = (connection: IntegrationConnection) => {
-    inferred.push({ ...connection, id: `legacy-${connection.provider}` });
-  };
-
-  if (geminiApiKey.trim()) {
-    addInferred({
-      id: '',
-      provider: 'gemini',
-      name: 'Gemini',
-      apiKey: geminiApiKey.trim(),
-      models: defaultModelsByProvider.gemini,
-    });
-  }
-
-  if (openAiApiKey.trim() || normalizeOpenAiBaseUrl(openAiBaseUrl) !== DEFAULT_OPENAI_BASE_URL) {
-    addInferred({
-      id: '',
-      provider: 'openai',
-      name: 'OpenAI API',
-      apiKey: openAiApiKey.trim(),
-      baseUrl: normalizeOpenAiBaseUrl(openAiBaseUrl),
-      models: defaultModelsByProvider.openai,
-    });
-  }
-
-  if (ollamaEndpoint.trim() && ollamaEndpoint.trim() !== DEFAULT_OLLAMA_ENDPOINT) {
-    addInferred({
-      id: '',
-      provider: 'ollama',
-      name: 'Ollama',
-      endpoint: ollamaEndpoint.trim(),
-      models: [],
-    });
-  }
-
-  if (normalizeComfyEndpoint(comfyEndpoint) !== DEFAULT_COMFY_ENDPOINT) {
-    addInferred({
-      id: '',
-      provider: 'comfy',
-      name: 'ComfyUI',
-      endpoint: normalizeComfyEndpoint(comfyEndpoint),
-      models: [],
-    });
-  }
-
-  return inferred;
-};
 
 const getConnectionEndpoint = (connection: IntegrationConnection): string =>
   connection.provider === 'openai'
@@ -659,7 +530,7 @@ const getConnectionEndpoint = (connection: IntegrationConnection): string =>
         : '';
 
 const isOpenAiConnectionConfigured = (connection: IntegrationConnection): boolean =>
-  hasOpenAiApiKey(connection.apiKey) ||
+  Boolean(connection.apiKey?.trim()) ||
   normalizeOpenAiBaseUrl(connection.baseUrl || DEFAULT_OPENAI_BASE_URL) !== DEFAULT_OPENAI_BASE_URL;
 
 const getConnectionModelCount = (
@@ -758,17 +629,8 @@ const buildModelCatalog = ({
 };
 
 function IntegrationsPreferences() {
-  const {
-    geminiApiKey,
-    openAiApiKey,
-    openAiBaseUrl,
-    ollamaEndpoint,
-    aiTaskRoutes,
-    integrationConnections,
-    agentMaxSubagentSpawns,
-    comfyEndpoint,
-    setPreferences,
-  } = usePreferences();
+  const { aiTaskRoutes, integrationConnections, agentMaxSubagentSpawns, setPreferences } =
+    usePreferences();
   const [isAddOpen, setIsAddOpen] = React.useState(false);
   const [expandedConnectionId, setExpandedConnectionId] = React.useState<string | null>(null);
   const [ollamaStates, setOllamaStates] = React.useState<Record<string, OllamaConnectionStatus>>(
@@ -783,39 +645,13 @@ function IntegrationsPreferences() {
   >({});
   const [modelDrafts, setModelDrafts] = React.useState<Record<string, string>>({});
 
-  const legacyConnections = React.useMemo(
-    () =>
-      inferLegacyConnections({
-        geminiApiKey,
-        openAiApiKey,
-        openAiBaseUrl,
-        ollamaEndpoint,
-        comfyEndpoint,
-      }),
-    [comfyEndpoint, geminiApiKey, ollamaEndpoint, openAiApiKey, openAiBaseUrl],
-  );
-  const connections =
-    integrationConnections.length > 0 ? integrationConnections : legacyConnections;
+  const connections = integrationConnections;
   const aiConnections = connections.filter(isAiConnection);
 
   const saveConnections = React.useCallback(
     (nextConnections: IntegrationConnection[]) => {
-      const firstGemini = nextConnections.find((connection) => connection.provider === 'gemini');
-      const firstOpenAi = nextConnections.find((connection) => connection.provider === 'openai');
-      const firstOllama = nextConnections.find((connection) => connection.provider === 'ollama');
-      const firstComfy = nextConnections.find((connection) => connection.provider === 'comfy');
-
       setPreferences({
         integrationConnections: nextConnections,
-        ...(firstGemini ? { geminiApiKey: firstGemini.apiKey ?? '' } : {}),
-        ...(firstOpenAi
-          ? {
-              openAiApiKey: firstOpenAi.apiKey ?? '',
-              openAiBaseUrl: normalizeOpenAiBaseUrl(firstOpenAi.baseUrl || DEFAULT_OPENAI_BASE_URL),
-            }
-          : {}),
-        ...(firstOllama ? { ollamaEndpoint: getConnectionEndpoint(firstOllama) } : {}),
-        ...(firstComfy ? { comfyEndpoint: getConnectionEndpoint(firstComfy) } : {}),
       });
     },
     [setPreferences],
@@ -936,27 +772,12 @@ function IntegrationsPreferences() {
       const nextConnection = createConnection({
         provider,
         existingConnections: connections,
-        legacy: {
-          geminiApiKey,
-          openAiApiKey,
-          openAiBaseUrl,
-          ollamaEndpoint,
-          comfyEndpoint,
-        },
       });
       saveConnections([...connections, nextConnection]);
       setExpandedConnectionId(nextConnection.id);
       setIsAddOpen(false);
     },
-    [
-      comfyEndpoint,
-      connections,
-      geminiApiKey,
-      ollamaEndpoint,
-      openAiApiKey,
-      openAiBaseUrl,
-      saveConnections,
-    ],
+    [connections, saveConnections],
   );
 
   const updateOllamaState = React.useCallback(
@@ -1106,12 +927,6 @@ function IntegrationsPreferences() {
     (
       connection: IntegrationConnection,
     ): { label: string; tone: 'neutral' | 'success' | 'warning' | 'danger' | 'accent' } => {
-      if (connection.provider === 'gemini') {
-        return hasGeminiApiKey(connection.apiKey)
-          ? { label: 'Configured', tone: 'success' }
-          : { label: 'Needs key', tone: 'neutral' };
-      }
-
       if (connection.provider === 'openai') {
         const state = openAiConnectionStates[connection.id];
         if (state?.state === 'checking') return { label: 'Checking', tone: 'warning' };
@@ -1304,20 +1119,16 @@ function IntegrationsPreferences() {
                         <span className="truncate text-sm font-medium text-white">
                           {connection.name}
                         </span>
-                        <StatusBadge tone="neutral">{meta.shortTitle}</StatusBadge>
-                        <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+                        <Badge variant="neutral">{meta.shortTitle}</Badge>
+                        <Badge variant={status.tone}>{status.label}</Badge>
                         {isAiProvider(connection.provider) ? (
-                          <StatusBadge tone="accent">
+                          <Badge variant="accent">
                             {modelCount} model{modelCount === 1 ? '' : 's'}
-                          </StatusBadge>
+                          </Badge>
                         ) : null}
                       </span>
                       <span className="mt-0.5 block truncate text-xs text-gray-500">
-                        {connection.provider === 'gemini'
-                          ? connection.apiKey
-                            ? 'API key saved locally'
-                            : 'Uses build key when available'
-                          : getConnectionEndpoint(connection)}
+                        {getConnectionEndpoint(connection)}
                       </span>
                     </button>
                     <div className="flex items-center gap-1">
@@ -1369,24 +1180,6 @@ function IntegrationsPreferences() {
                             spellCheck={false}
                           />
                         </div>
-
-                        {connection.provider === 'gemini' ? (
-                          <div className="space-y-1.5">
-                            <FieldLabel htmlFor={`${connection.id}-api-key`}>API key</FieldLabel>
-                            <input
-                              id={`${connection.id}-api-key`}
-                              type="password"
-                              value={connection.apiKey ?? ''}
-                              onChange={(event) =>
-                                updateConnection(connection.id, { apiKey: event.target.value })
-                              }
-                              className={`${baseFieldClassName} font-mono`}
-                              placeholder="AIza..."
-                              autoComplete="off"
-                              spellCheck={false}
-                            />
-                          </div>
-                        ) : null}
 
                         {connection.provider === 'openai' ? (
                           <>
@@ -1515,9 +1308,9 @@ function IntegrationsPreferences() {
                 <div className="min-w-0">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <h3 className="text-sm font-medium text-white">{routeMeta.title}</h3>
-                    <StatusBadge tone={routeReady ? 'success' : 'warning'}>
+                    <Badge variant={routeReady ? 'success' : 'warning'}>
                       {routeReady ? 'Set' : 'Select model'}
-                    </StatusBadge>
+                    </Badge>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-gray-400">{routeMeta.description}</p>
                 </div>

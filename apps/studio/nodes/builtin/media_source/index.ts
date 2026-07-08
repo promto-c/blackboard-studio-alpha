@@ -5,12 +5,19 @@ import MediaSourceAdjustments from './MediaSourceAdjustments';
 import { Photo } from '@blackboard/icons';
 import MediaSourceImportToolButton from './MediaSourceImportToolButton';
 import { createSourceTransformUpdate, sourceMediaNodeFlags } from '../../sourceNodeBehavior';
+import {
+  ColorManagementDefaults,
+  createProjectDefaultMediaColorManagement,
+  getMediaSourceColorSpace,
+  isDataMediaColorManagement,
+} from '@/color-management';
 
 export const mediaSourceNode: NodeDefinition = {
   type: NodeType.MEDIA_SOURCE,
   name: 'Media Source',
   category: 'Image',
   renderMode: 'media',
+  processingDomain: 'scene_linear',
   IconComponent: Photo,
   ToolComponent: MediaSourceImportToolButton,
   AdjustmentComponent: MediaSourceAdjustments,
@@ -27,7 +34,8 @@ export const mediaSourceNode: NodeDefinition = {
     opacity: 100,
     operator: BlendMode.OVER,
     transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
-    colorSpace: 'sRGB Encoded Rec.709 (sRGB)',
+    colorSpace: ColorManagementDefaults.TEXTURE_SPACE,
+    mediaColorManagement: createProjectDefaultMediaColorManagement(),
     sourceAlphaMode: 'file',
     useOutputSizeAsScene: false,
     loop: true,
@@ -59,7 +67,11 @@ export const mediaSourceNode: NodeDefinition = {
       }
       return mediaNode.src;
     },
-    getColorSpace: (node) => (node as MediaSourceNode).colorSpace,
+    getColorSpace: (node) => {
+      const mediaNode = node as MediaSourceNode;
+      return getMediaSourceColorSpace(mediaNode.mediaColorManagement) ?? mediaNode.colorSpace;
+    },
+    isData: (node) => isDataMediaColorManagement((node as MediaSourceNode).mediaColorManagement),
     isVideoFile: (node) => (node as MediaSourceNode).mediaKind === 'video',
   },
   onNodeUpdate: (node, changes, context) => {

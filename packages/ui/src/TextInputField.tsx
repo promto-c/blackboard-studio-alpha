@@ -79,7 +79,7 @@ const TextInputField = React.forwardRef<HTMLInputElement, TextInputFieldProps>(
           aria-describedby={hasDescription ? descriptionId : undefined}
           onChange={(event) => onValueChange(event.currentTarget.value)}
           className={[
-            'w-full min-w-0 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/20',
+            'bb-control-input w-full min-w-0 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/20',
             inputClassName,
           ]
             .filter(Boolean)

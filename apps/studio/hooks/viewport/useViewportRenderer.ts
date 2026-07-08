@@ -27,7 +27,6 @@ export const useViewportRenderer = (
         antialias: false,
         depth: false,
         stencil: false,
-        premultipliedAlpha: false,
         pixelRatio: window.devicePixelRatio,
       });
     } catch (error) {

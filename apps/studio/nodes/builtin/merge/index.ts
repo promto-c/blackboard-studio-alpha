@@ -10,6 +10,7 @@ export const mergeNode: NodeDefinition = {
   name: 'Merge',
   category: 'Effect',
   renderMode: 'merge',
+  processingDomain: 'scene_linear',
   description: 'Blend a source input over an explicit main input.',
   IconComponent: Icons.Merge,
   ToolComponent: MergeTool,

@@ -41,18 +41,6 @@ export const getHierarchySelection = (
 export const selectHierarchySelection = (s: EditorStateSlice) =>
   getHierarchySelection(s.hierarchySelections, s.selectedNodeId);
 
-/** Select roto layer IDs for the current node. */
-export const selectRotoLayerIds = (s: EditorStateSlice) => selectHierarchySelection(s).layerIds;
-
-/** Select roto path IDs for the current node. */
-export const selectRotoPathIds = (s: EditorStateSlice) => selectHierarchySelection(s).itemIds;
-
-/** Select paint layer IDs for the current node. */
-export const selectPaintLayerIds = (s: EditorStateSlice) => selectHierarchySelection(s).layerIds;
-
-/** Select paint stroke IDs for the current node. */
-export const selectPaintStrokeIds = (s: EditorStateSlice) => selectHierarchySelection(s).itemIds;
-
 /**
  * Set the hierarchy selection for a specific node.
  * This is the canonical setter — all write paths should go through this.

@@ -7,6 +7,7 @@ interface PaintSoftnessLike {
 }
 
 const clampPercent = (value: number): number => Math.max(0, Math.min(100, value));
+const clampSpacing = (value: number): number => Math.max(1, Math.min(200, value));
 
 export const resolvePaintSoftness = (
   value: PaintSoftnessLike,
@@ -28,5 +29,6 @@ export const mergePaintBrushSettings = (
   return {
     ...merged,
     softness: resolvePaintSoftness(merged),
+    spacing: clampSpacing(merged.spacing),
   };
 };

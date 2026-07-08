@@ -7,6 +7,7 @@ import {
   type AnyNode,
   type Flow,
 } from '@blackboard/types';
+import { ColorManagementDefaults, createDefaultProjectColorManagement } from '@/color-management';
 
 const {
   getAssetMock,
@@ -43,7 +44,7 @@ const createProjectState = (assetId: string) => {
       width: 1920,
       height: 1080,
       bitDepth: 16,
-      colorSpace: 'Linear',
+      colorSpace: ColorManagementDefaults.WORKING_SPACE,
       maxFrames: 0,
       fps: 30,
     },
@@ -59,7 +60,7 @@ const createProjectState = (assetId: string) => {
       height: 1080,
       opacity: 100,
       operator: BlendMode.OVER,
-      colorSpace: 'sRGB',
+      colorSpace: ColorManagementDefaults.TEXTURE_SPACE,
       transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
     },
     {
@@ -81,6 +82,7 @@ const createProjectState = (assetId: string) => {
   };
 
   return {
+    colorManagement: createDefaultProjectColorManagement(),
     flows: {
       root: flow,
     },
@@ -210,5 +212,47 @@ describe('projectTransfer', () => {
     ]);
     expect(result.state.flows.root.nodes[1]).toMatchObject({ src: 'ref_new' });
     expect(deleteAssetsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects project bundles without the current color-management schema', async () => {
+    const state = createProjectState('ref_old');
+    const { colorManagement: _colorManagement, ...oldState } = state;
+    const file = new File(
+      [
+        JSON.stringify({
+          format: 'blackboard-studio-project',
+          version: 2,
+          exportedAt: '2026-04-03T00:00:00.000Z',
+          project: {
+            name: 'Old Project',
+            thumbnail: null,
+            state: oldState,
+          },
+          referenceGroups: [],
+          assets: [],
+        }),
+      ],
+      'old.blackboard-project.json',
+      { type: 'application/json' },
+    );
+
+    await expect(importProjectBundle(file)).rejects.toThrow('Project color management is missing');
+  });
+
+  it('rejects legacy color-space aliases in persisted project nodes', async () => {
+    const state = createProjectState('ref_old');
+    const mediaNode = state.flows.root.nodes.find((node) => node.id === 'img_1') as
+      | { colorSpace?: string }
+      | undefined;
+    if (mediaNode) {
+      mediaNode.colorSpace = 'sRGB';
+    }
+
+    await expect(
+      exportProjectBundle({
+        projectName: 'Legacy Alias Project',
+        state,
+      }),
+    ).rejects.toThrow('legacy source color space alias "sRGB"');
   });
 });

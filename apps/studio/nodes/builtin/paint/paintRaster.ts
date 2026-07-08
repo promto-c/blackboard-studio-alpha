@@ -18,13 +18,16 @@ import {
 import { resolvePaintSoftness } from './softness';
 import { simplifyPath } from '@/utils/bspline';
 import {
-  resolveCanvasStorageColorType,
-  type CanvasStorageColorType,
-} from '@/utils/canvasColorType';
+  destinationOutStraightAlphaPixel,
+  sourceOverStraightAlphaPixel,
+} from '@blackboard/renderer';
 import { getAsset, saveAsset } from '@/state/assetStorage';
+import { decodeExrImage } from '@/utils/exr';
+import { encodeOpenExr } from '@/utils/exrExport';
+import type { PaintCloneSource, PaintRaster } from './paintFloatReadback';
 
-const imageCache = new Map<string, Promise<CanvasImageSource>>();
-const runtimePaintRasterCache = new Map<string, HTMLCanvasElement>();
+const imageCache = new Map<string, Promise<PaintRaster>>();
+const runtimePaintRasterCache = new Map<string, PaintRaster>();
 const PAINT_ASSET_PREFIXES = ['asset_', 'ref_'] as const;
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -44,7 +47,7 @@ const getAlphaPaintColor = (alpha: number): [number, number, number] => {
   return [value, value, value];
 };
 
-const sceneToCanvasPoint = (
+const sceneToRasterPoint = (
   point: Point,
   width: number,
   height: number,
@@ -53,59 +56,17 @@ const sceneToCanvasPoint = (
   y: point.y + height / 2,
 });
 
-type CanvasRenderingContext2DWithColorType = CanvasRenderingContext2D & {
-  getContextAttributes?: () => (CanvasRenderingContext2DSettings & { colorType?: unknown }) | null;
-};
+export const createPaintRaster = (width: number, height: number): PaintRaster => ({
+  width,
+  height,
+  rgba: new Float32Array(width * height * 4),
+});
 
-const getPaintCanvasContext = (
-  canvas: HTMLCanvasElement,
-  requestedColorType: CanvasStorageColorType = 'unorm8',
-): { ctx: CanvasRenderingContext2D; actualColorType: CanvasStorageColorType } | null => {
-  const requestedOptions =
-    requestedColorType === 'float16'
-      ? ({ colorType: 'float16' } as unknown as CanvasRenderingContext2DSettings)
-      : undefined;
-  const ctx = requestedOptions
-    ? ((canvas.getContext('2d', requestedOptions) as CanvasRenderingContext2D | null) ??
-      canvas.getContext('2d'))
-    : canvas.getContext('2d');
-  if (!ctx) return null;
-
-  const ctxWithColorType = ctx as CanvasRenderingContext2DWithColorType;
-  const attributes =
-    typeof ctxWithColorType.getContextAttributes === 'function'
-      ? ctxWithColorType.getContextAttributes()
-      : null;
-
-  return {
-    ctx,
-    actualColorType: resolveCanvasStorageColorType(
-      attributes as ({ colorType?: unknown } & CanvasRenderingContext2DSettings) | null,
-    ),
-  };
-};
-
-const getPaintCanvasColorType = (
-  canvas: HTMLCanvasElement | null | undefined,
-): CanvasStorageColorType => {
-  if (!canvas) {
-    return 'unorm8';
-  }
-
-  return getPaintCanvasContext(canvas)?.actualColorType ?? 'unorm8';
-};
-
-export const createPaintCanvas = (
-  width: number,
-  height: number,
-  requestedColorType: CanvasStorageColorType = 'unorm8',
-): HTMLCanvasElement => {
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  getPaintCanvasContext(canvas, requestedColorType);
-  return canvas;
-};
+export const clonePaintRaster = (source: PaintRaster): PaintRaster => ({
+  width: source.width,
+  height: source.height,
+  rgba: source.rgba.slice(),
+});
 
 export const isStoredPaintAssetId = (value: string): boolean =>
   PAINT_ASSET_PREFIXES.some((prefix) => value.startsWith(prefix));
@@ -265,40 +226,7 @@ export const getPaintTextureCacheKey = (
   return `${width}x${height}:${frameKey}:${strokeCount}:${firstId}:${lastId}:${visibilityKey}:${layerKey}`;
 };
 
-const getStrokeColor = (color: [number, number, number], alpha: number): string =>
-  `rgba(${Math.round(color[0] * 255)}, ${Math.round(color[1] * 255)}, ${Math.round(color[2] * 255)}, ${alpha})`;
-
-const createBrushMask = (
-  diameter: number,
-  softness: number,
-  opacity: number,
-  canvasColorType: CanvasStorageColorType = 'unorm8',
-): HTMLCanvasElement => {
-  const canvas = createPaintCanvas(diameter, diameter, canvasColorType);
-  const context = getPaintCanvasContext(canvas, canvasColorType);
-  if (!context) return canvas;
-  const { ctx } = context;
-
-  const radius = diameter / 2;
-  const innerStop = clamp(1 - softness / 100, 0, 1);
-  const gradient = ctx.createRadialGradient(radius, radius, 0, radius, radius, radius);
-  gradient.addColorStop(0, `rgba(255, 255, 255, ${opacity / 100})`);
-  gradient.addColorStop(innerStop, `rgba(255, 255, 255, ${opacity / 100})`);
-  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-  ctx.fillStyle = gradient;
-  ctx.beginPath();
-  ctx.arc(radius, radius, radius, 0, Math.PI * 2);
-  ctx.fill();
-  return canvas;
-};
-
-export interface StampResult {
-  stamps: Point[];
-  remainder: number;
-}
-
-const collectStampPoints = (points: Point[], spacing: number): Point[] => {
+export const collectPaintStampPoints = (points: Point[], spacing: number): Point[] => {
   if (points.length <= 1) return [...points];
 
   const stamps: Point[] = [points[0]];
@@ -338,7 +266,7 @@ const collectStampPoints = (points: Point[], spacing: number): Point[] => {
   return stamps;
 };
 
-export const loadPaintRasterImage = (src: string): Promise<CanvasImageSource> => {
+export const loadPaintRaster = (src: string): Promise<PaintRaster> => {
   if (!src) {
     return Promise.reject(new Error('Missing paint raster source.'));
   }
@@ -352,280 +280,178 @@ export const loadPaintRasterImage = (src: string): Promise<CanvasImageSource> =>
   if (cached) return cached;
 
   const promise = (async () => {
-    const image = new Image();
-    image.onerror = () => {
-      imageCache.delete(src);
+    if (!isStoredPaintAssetId(src)) {
+      throw new Error('Paint strokes require stored floating-point raster assets.');
+    }
+    const blob = await getAsset(src);
+    if (!blob) {
+      throw new Error('Missing paint raster asset.');
+    }
+    const decoded = await decodeExrImage(blob, { cacheKey: `paint:${src}` });
+    return {
+      width: decoded.width,
+      height: decoded.height,
+      rgba: decoded.rgba,
     };
-
-    const imageSrc = isStoredPaintAssetId(src)
-      ? await (async () => {
-          const blob = await getAsset(src);
-          if (!blob) {
-            throw new Error('Missing paint raster asset.');
-          }
-          return URL.createObjectURL(blob);
-        })()
-      : src;
-
-    return await new Promise<HTMLImageElement>((resolve, reject) => {
-      image.onload = () => {
-        if (imageSrc !== src) {
-          URL.revokeObjectURL(imageSrc);
-        }
-        resolve(image);
-      };
-      image.onerror = () => {
-        imageCache.delete(src);
-        if (imageSrc !== src) {
-          URL.revokeObjectURL(imageSrc);
-        }
-        reject(new Error('Failed to load paint raster image.'));
-      };
-      image.src = imageSrc;
-    });
   })();
 
   imageCache.set(src, promise);
   return promise;
 };
 
-export const cloneCanvas = (
-  source: HTMLCanvasElement,
-  requestedColorType: CanvasStorageColorType = getPaintCanvasColorType(source),
-): HTMLCanvasElement => {
-  const canvas = createPaintCanvas(source.width, source.height, requestedColorType);
-  const context = getPaintCanvasContext(canvas, requestedColorType);
-  if (context) {
-    context.ctx.drawImage(source, 0, 0);
-  }
-  return canvas;
-};
-
-export const canvasToDataUrlAsync = async (
-  canvas: HTMLCanvasElement,
-  type = 'image/png',
-  quality?: number,
-): Promise<string> => {
-  if (typeof canvas.toBlob !== 'function' || typeof FileReader === 'undefined') {
-    return canvas.toDataURL(type, quality);
-  }
-
-  const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob((nextBlob) => resolve(nextBlob), type, quality);
-  });
-
-  if (!blob) {
-    return canvas.toDataURL(type, quality);
-  }
-
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Failed to read canvas blob as data URL.'));
-    reader.onloadend = () =>
-      typeof reader.result === 'string'
-        ? resolve(reader.result)
-        : reject(new Error('Unexpected FileReader result for canvas blob.'));
-    reader.readAsDataURL(blob);
-  });
-};
-
-export const canvasToBlobAsync = async (
-  canvas: HTMLCanvasElement,
-  type = 'image/png',
-  quality?: number,
-): Promise<Blob> => {
-  if (typeof canvas.toBlob !== 'function') {
-    const response = await fetch(canvas.toDataURL(type, quality));
-    return response.blob();
-  }
-
-  const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob((nextBlob) => resolve(nextBlob), type, quality);
-  });
-
-  if (!blob) {
-    const response = await fetch(canvas.toDataURL(type, quality));
-    return response.blob();
-  }
-
-  return blob;
-};
-
-export const savePaintStrokeCanvas = async (canvas: HTMLCanvasElement): Promise<string> => {
-  const raster = await saveAsset(await canvasToBlobAsync(canvas));
+export const savePaintStrokeRaster = async (source: PaintRaster): Promise<string> => {
+  const raster = await saveAsset(
+    await encodeOpenExr(
+      {
+        width: source.width,
+        height: source.height,
+        rgba: source.rgba,
+      },
+      {
+        precision: 'half',
+        includeAlpha: true,
+      },
+    ),
+  );
   if (raster) {
-    runtimePaintRasterCache.set(raster, cloneCanvas(canvas));
+    runtimePaintRasterCache.set(raster, clonePaintRaster(source));
   }
   return raster;
 };
 
-export const clearPaintCanvas = (canvas: HTMLCanvasElement): HTMLCanvasElement => {
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-  return canvas;
-};
-
-export const resizeOrClearPaintCanvas = (
-  canvas: HTMLCanvasElement | null | undefined,
-  width: number,
-  height: number,
-  requestedColorType: CanvasStorageColorType = canvas ? getPaintCanvasColorType(canvas) : 'unorm8',
-): HTMLCanvasElement => {
-  if (
-    !canvas ||
-    canvas.width !== width ||
-    canvas.height !== height ||
-    getPaintCanvasColorType(canvas) !== requestedColorType
-  ) {
-    return createPaintCanvas(width, height, requestedColorType);
-  }
-
-  return clearPaintCanvas(canvas);
-};
-
-const drawBrushStampsToContext = (
-  ctx: CanvasRenderingContext2D,
-  stamps: Point[],
-  width: number,
-  height: number,
-  color: [number, number, number],
-  size: number,
+const getBrushCoverage = (
+  distance: number,
+  radius: number,
   softness: number,
   opacity: number,
-) => {
-  const radius = Math.max(0.5, size / 2);
-  const innerStop = clamp(1 - softness / 100, 0, 1);
-  const colorFill = getStrokeColor(color, opacity / 100);
-  const colorEdge = getStrokeColor(color, 0);
+): number => {
+  if (distance > radius) return 0;
+  const innerRadius = radius * clamp(1 - softness / 100, 0, 1);
+  if (distance <= innerRadius || innerRadius === radius) {
+    return clampUnit(opacity / 100);
+  }
+  return (
+    clampUnit(opacity / 100) * clampUnit(1 - (distance - innerRadius) / (radius - innerRadius))
+  );
+};
 
-  for (let i = 0; i < stamps.length; i += 1) {
-    const point = sceneToCanvasPoint(stamps[i], width, height);
-    const gradient = ctx.createRadialGradient(point.x, point.y, 0, point.x, point.y, radius);
-    gradient.addColorStop(0, colorFill);
-    gradient.addColorStop(innerStop, colorFill);
-    gradient.addColorStop(1, colorEdge);
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-    ctx.fill();
+const forEachStampPixel = (
+  raster: PaintRaster,
+  center: { x: number; y: number },
+  radius: number,
+  callback: (x: number, y: number, offset: number, distance: number) => void,
+) => {
+  const minX = Math.max(0, Math.floor(center.x - radius));
+  const maxX = Math.min(raster.width - 1, Math.ceil(center.x + radius) - 1);
+  const minY = Math.max(0, Math.floor(center.y - radius));
+  const maxY = Math.min(raster.height - 1, Math.ceil(center.y + radius) - 1);
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const distance = Math.hypot(x + 0.5 - center.x, y + 0.5 - center.y);
+      if (distance <= radius) {
+        callback(x, y, (y * raster.width + x) * 4, distance);
+      }
+    }
   }
 };
 
 const drawBrushStroke = (
-  ctx: CanvasRenderingContext2D,
+  raster: PaintRaster,
   points: Point[],
-  width: number,
-  height: number,
   color: [number, number, number],
   size: number,
+  spacing: number,
   softness: number,
   opacity: number,
+  operation: 'source-over' | 'destination-out' = 'source-over',
 ) => {
   const radius = Math.max(0.5, size / 2);
-  const stamps = collectStampPoints(points, Math.max(1, radius * 0.35));
-  drawBrushStampsToContext(ctx, stamps, width, height, color, size, softness, opacity);
-};
+  const stamps = collectPaintStampPoints(points, Math.max(0.5, size * (spacing / 100)));
 
-const drawCloneStampsToContext = (
-  ctx: CanvasRenderingContext2D,
-  stamps: Point[],
-  width: number,
-  height: number,
-  size: number,
-  cloneOffset: Point,
-  sourceCanvas: HTMLCanvasElement,
-  maskCanvas: HTMLCanvasElement,
-  canvasColorType: CanvasStorageColorType,
-  alphaOnly = false,
-) => {
-  if (stamps.length === 0) return;
-
-  const radius = Math.max(0.5, size / 2);
-  const diameter = Math.max(1, Math.ceil(radius * 2));
-  const stampCanvas = createPaintCanvas(diameter, diameter, canvasColorType);
-  const stampContext = getPaintCanvasContext(stampCanvas, canvasColorType);
-  if (!stampContext) return;
-  const { ctx: stampCtx } = stampContext;
-  const maskCtx = alphaOnly ? maskCanvas.getContext('2d') : null;
-  const maskImageData =
-    alphaOnly && maskCtx ? maskCtx.getImageData(0, 0, diameter, diameter).data : null;
-
-  for (let i = 0; i < stamps.length; i += 1) {
-    const destinationPoint = sceneToCanvasPoint(stamps[i], width, height);
-    const sourcePoint = getCloneSourceFromOffset(stamps[i], cloneOffset);
-    if (!sourcePoint) continue;
-
-    const samplePoint = sceneToCanvasPoint(sourcePoint, width, height);
-    stampCtx.clearRect(0, 0, diameter, diameter);
-    stampCtx.globalCompositeOperation = 'source-over';
-    stampCtx.drawImage(
-      sourceCanvas,
-      samplePoint.x - radius,
-      samplePoint.y - radius,
-      diameter,
-      diameter,
-      0,
-      0,
-      diameter,
-      diameter,
-    );
-
-    if (alphaOnly && maskImageData) {
-      const sampledAlphaImage = stampCtx.getImageData(0, 0, diameter, diameter);
-      const { data } = sampledAlphaImage;
-      for (let offset = 0; offset < data.length; offset += 4) {
-        const sourceAlpha = data[offset + 3];
-        const maskAlpha = maskImageData[offset + 3];
-        data[offset] = sourceAlpha;
-        data[offset + 1] = sourceAlpha;
-        data[offset + 2] = sourceAlpha;
-        data[offset + 3] = maskAlpha;
+  for (const stamp of stamps) {
+    const center = sceneToRasterPoint(stamp, raster.width, raster.height);
+    forEachStampPixel(raster, center, radius, (_x, _y, offset, distance) => {
+      const coverage = getBrushCoverage(distance, radius, softness, opacity);
+      if (operation === 'destination-out') {
+        destinationOutStraightAlphaPixel(raster.rgba, offset, coverage);
+      } else {
+        sourceOverStraightAlphaPixel(raster.rgba, offset, color[0], color[1], color[2], coverage);
       }
-      stampCtx.clearRect(0, 0, diameter, diameter);
-      stampCtx.putImageData(sampledAlphaImage, 0, 0);
-    } else {
-      stampCtx.globalCompositeOperation = 'destination-in';
-      stampCtx.drawImage(maskCanvas, 0, 0);
-      stampCtx.globalCompositeOperation = 'source-over';
-    }
-
-    ctx.drawImage(stampCanvas, destinationPoint.x - radius, destinationPoint.y - radius);
+    });
   }
 };
 
+const samplePaintRasterBilinear = (
+  raster: PaintRaster,
+  x: number,
+  y: number,
+): [number, number, number, number] => {
+  const sampleX = x - 0.5;
+  const sampleY = y - 0.5;
+  const x0 = Math.floor(sampleX);
+  const y0 = Math.floor(sampleY);
+  const tx = sampleX - x0;
+  const ty = sampleY - y0;
+  const result: [number, number, number, number] = [0, 0, 0, 0];
+
+  for (let row = 0; row < 2; row += 1) {
+    const sourceY = y0 + row;
+    if (sourceY < 0 || sourceY >= raster.height) continue;
+    const weightY = row === 0 ? 1 - ty : ty;
+    for (let column = 0; column < 2; column += 1) {
+      const sourceX = x0 + column;
+      if (sourceX < 0 || sourceX >= raster.width) continue;
+      const weight = weightY * (column === 0 ? 1 - tx : tx);
+      const offset = (sourceY * raster.width + sourceX) * 4;
+      for (let channel = 0; channel < 4; channel += 1) {
+        result[channel] += raster.rgba[offset + channel] * weight;
+      }
+    }
+  }
+
+  return result;
+};
+
 const drawCloneStroke = (
-  ctx: CanvasRenderingContext2D,
+  raster: PaintRaster,
   points: Point[],
-  width: number,
-  height: number,
   size: number,
+  spacing: number,
   softness: number,
   opacity: number,
   cloneOffset: Point,
-  sourceCanvas: HTMLCanvasElement,
-  canvasColorType: CanvasStorageColorType,
+  cloneSource: PaintCloneSource,
   alphaOnly = false,
 ) => {
-  if (points.length === 0) return;
-
   const radius = Math.max(0.5, size / 2);
-  const diameter = Math.max(1, Math.ceil(radius * 2));
-  const maskCanvas = createBrushMask(diameter, softness, opacity, canvasColorType);
-  const stamps = collectStampPoints(points, Math.max(1, radius * 0.35));
-  drawCloneStampsToContext(
-    ctx,
-    stamps,
-    width,
-    height,
-    size,
-    cloneOffset,
-    sourceCanvas,
-    maskCanvas,
-    canvasColorType,
-    alphaOnly,
-  );
+  const stamps = collectPaintStampPoints(points, Math.max(0.5, size * (spacing / 100)));
+  const sourceRaster = alphaOnly ? cloneSource.alpha : cloneSource.rgb;
+
+  for (const stamp of stamps) {
+    const sourcePoint = getCloneSourceFromOffset(stamp, cloneOffset);
+    if (!sourcePoint) continue;
+    const destinationCenter = sceneToRasterPoint(stamp, raster.width, raster.height);
+    const sourceCenter = sceneToRasterPoint(sourcePoint, sourceRaster.width, sourceRaster.height);
+
+    forEachStampPixel(raster, destinationCenter, radius, (x, y, offset, distance) => {
+      const coverage = getBrushCoverage(distance, radius, softness, opacity);
+      if (coverage <= 0) return;
+      const sample = samplePaintRasterBilinear(
+        sourceRaster,
+        sourceCenter.x + (x + 0.5 - destinationCenter.x),
+        sourceCenter.y + (y + 0.5 - destinationCenter.y),
+      );
+      sourceOverStraightAlphaPixel(
+        raster.rgba,
+        offset,
+        sample[0],
+        sample[1],
+        sample[2],
+        coverage * sample[3],
+      );
+    });
+  }
 };
 
 export interface PaintStrokeRasterParams {
@@ -634,18 +460,18 @@ export interface PaintStrokeRasterParams {
   width: number;
   height: number;
   size: number;
+  spacing?: number;
   softness?: number;
   opacity: number;
   color: [number, number, number];
   alpha?: number;
   channels?: PaintStrokeChannels;
   cloneOffset?: Point | null;
-  sourceCanvas?: HTMLCanvasElement | null;
-  canvasColorType?: CanvasStorageColorType;
+  cloneSource?: PaintCloneSource | null;
 }
 
 interface PaintCompositeBuildOptions {
-  resolveCloneSourceCanvas?: (() => Promise<HTMLCanvasElement | null>) | null;
+  resolveCloneSource?: (() => Promise<PaintCloneSource | null>) | null;
 }
 
 export interface PaintLivePreview {
@@ -655,111 +481,106 @@ export interface PaintLivePreview {
   tool: PaintTool;
   points: Point[];
   size: number;
+  spacing: number;
   softness: number;
   opacity: number;
   color: [number, number, number];
   alpha: number;
   channels: PaintStrokeChannels;
   cloneOffset?: Point | null;
-  sourceCanvas?: HTMLCanvasElement | null;
-  canvasColorType?: CanvasStorageColorType;
+  cloneSource?: PaintCloneSource | null;
 }
 
-const drawIsolatedPaintStrokeToContext = (
-  ctx: CanvasRenderingContext2D,
+const rasterizePaintStroke = (
+  raster: PaintRaster,
   params: PaintStrokeRasterParams,
+  applyToExisting: boolean,
 ) => {
-  if (params.points.length === 0) return;
-
   const resolvedSoftness = resolvePaintSoftness({
     softness: params.softness,
   });
-  const previousCompositeOperation = ctx.globalCompositeOperation;
   const affectAlphaOnly = isAlphaOnlyPaintStroke(params.channels);
 
   if (params.tool === 'brush') {
-    ctx.globalCompositeOperation = 'source-over';
     drawBrushStroke(
-      ctx,
+      raster,
       params.points,
-      params.width,
-      params.height,
       affectAlphaOnly ? getAlphaPaintColor(params.alpha ?? 1) : params.color,
       params.size,
+      params.spacing ?? 20,
       resolvedSoftness,
       params.opacity,
     );
   } else if (params.tool === 'erase') {
-    // RGB erase strokes are applied with destination-out during compositing.
-    // Alpha erase strokes encode a target alpha of 0 with normal source-over blending.
-    ctx.globalCompositeOperation = 'source-over';
     drawBrushStroke(
-      ctx,
+      raster,
       params.points,
-      params.width,
-      params.height,
       affectAlphaOnly ? ALPHA_ERASE_COLOR : ERASE_MASK_COLOR,
       params.size,
+      params.spacing ?? 20,
       resolvedSoftness,
       params.opacity,
+      applyToExisting && !affectAlphaOnly ? 'destination-out' : 'source-over',
     );
-  } else if (params.tool === 'clone' && params.sourceCanvas && params.cloneOffset) {
-    ctx.globalCompositeOperation = 'source-over';
+  } else if (params.tool === 'clone' && params.cloneSource && params.cloneOffset) {
     drawCloneStroke(
-      ctx,
+      raster,
       params.points,
-      params.width,
-      params.height,
       params.size,
+      params.spacing ?? 20,
       resolvedSoftness,
       params.opacity,
       params.cloneOffset,
-      params.sourceCanvas,
-      params.canvasColorType ?? getPaintCanvasColorType(params.sourceCanvas),
+      params.cloneSource,
       affectAlphaOnly,
     );
   }
-
-  ctx.globalCompositeOperation = previousCompositeOperation;
 };
 
-const compositePaintRasterToContext = (
-  ctx: CanvasRenderingContext2D,
-  raster: CanvasImageSource,
-  tool: PaintTool,
-  width: number,
-  height: number,
-) => {
-  const previousCompositeOperation = ctx.globalCompositeOperation;
-  ctx.globalCompositeOperation = tool === 'erase' ? 'destination-out' : 'source-over';
-  ctx.drawImage(raster, 0, 0, width, height);
-  ctx.globalCompositeOperation = previousCompositeOperation;
+export const buildPaintStrokeRaster = (params: PaintStrokeRasterParams): PaintRaster | null => {
+  if (params.points.length === 0) return null;
+  const raster = createPaintRaster(params.width, params.height);
+  rasterizePaintStroke(raster, params, false);
+  return raster;
 };
 
-export const buildPaintStrokeCanvas = (
+export const applyPaintStrokeToRaster = (
+  raster: PaintRaster,
   params: PaintStrokeRasterParams,
-): HTMLCanvasElement | null => {
-  const canvasColorType =
-    params.canvasColorType ?? getPaintCanvasColorType(params.sourceCanvas) ?? 'unorm8';
-  const canvas = createPaintCanvas(params.width, params.height, canvasColorType);
-  const context = getPaintCanvasContext(canvas, canvasColorType);
-  if (!context || params.points.length === 0) return null;
-
-  drawIsolatedPaintStrokeToContext(context.ctx, params);
-  return canvas;
+): boolean => {
+  if (params.points.length === 0) return false;
+  if (raster.width !== params.width || raster.height !== params.height) {
+    throw new Error('Paint stroke dimensions must match the destination raster.');
+  }
+  rasterizePaintStroke(raster, params, true);
+  return true;
 };
 
-export const compositePaintRasterOntoCanvas = (
-  canvas: HTMLCanvasElement,
-  raster: CanvasImageSource,
+export const compositePaintRaster = (
+  target: PaintRaster,
+  source: PaintRaster,
   tool: PaintTool,
-  _channels?: PaintStrokeChannels,
-): boolean => {
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return false;
-
-  compositePaintRasterToContext(ctx, raster, tool, canvas.width, canvas.height);
-  return true;
+  channels?: PaintStrokeChannels,
+) => {
+  if (target.width !== source.width || target.height !== source.height) {
+    throw new Error('Paint rasters must have matching dimensions for compositing.');
+  }
+  const eraseRgb = tool === 'erase' && !isAlphaOnlyPaintStroke(channels);
+  for (let offset = 0; offset < target.rgba.length; offset += 4) {
+    const sourceAlpha = source.rgba[offset + 3];
+    if (eraseRgb) {
+      destinationOutStraightAlphaPixel(target.rgba, offset, sourceAlpha);
+      continue;
+    }
+    sourceOverStraightAlphaPixel(
+      target.rgba,
+      offset,
+      source.rgba[offset],
+      source.rgba[offset + 1],
+      source.rgba[offset + 2],
+      sourceAlpha,
+    );
+  }
 };
 
 const getPaintStrokePathEpsilon = (size: number): number => Math.max(0.5, size * 0.04);
@@ -776,50 +597,15 @@ export const createPaintStrokePath = (points: Point[], size: number): PaintStrok
   };
 };
 
-export const rasterizePaintStroke = ({
-  tool,
-  points,
-  width,
-  height,
-  size,
-  softness,
-  opacity,
-  color,
-  alpha,
-  channels,
-  cloneOffset,
-  sourceCanvas,
-  canvasColorType,
-}: PaintStrokeRasterParams): string => {
-  const canvas = buildPaintStrokeCanvas({
-    tool,
-    points,
-    width,
-    height,
-    size,
-    softness,
-    opacity,
-    color,
-    alpha,
-    channels,
-    cloneOffset,
-    sourceCanvas,
-    canvasColorType,
-  });
-  if (!canvas) return '';
-
-  return canvas.toDataURL('image/png');
-};
-
-export const buildPaintCompositeCanvas = async (
+const buildPaintCompositeRasterForChannels = async (
   strokes: PaintStroke[],
   width: number,
   height: number,
   layers?: PaintLayer[],
   frame?: number,
-  canvasColorType: CanvasStorageColorType = 'unorm8',
+  alphaOnly = false,
   options: PaintCompositeBuildOptions = {},
-): Promise<HTMLCanvasElement | null> => {
+): Promise<PaintRaster | null> => {
   const paintNode = { layers, strokes };
   const visibleStrokes = flattenPaintHierarchyStrokeItems(buildPaintHierarchy(paintNode, frame))
     .filter(
@@ -827,183 +613,81 @@ export const buildPaintCompositeCanvas = async (
         item.visible &&
         item.activeAtFrame &&
         item.stroke.raster &&
-        !isAlphaOnlyPaintStroke(item.stroke.channels),
+        isAlphaOnlyPaintStroke(item.stroke.channels) === alphaOnly,
     )
     .map((item) => item.stroke);
 
   if (visibleStrokes.length === 0) return null;
 
-  const canvas = createPaintCanvas(width, height, canvasColorType);
-  const context = getPaintCanvasContext(canvas, canvasColorType);
-  if (!context) return null;
-  const { ctx } = context;
-  let cloneSourceCanvasPromise: Promise<HTMLCanvasElement | null> | null = null;
+  const composite = createPaintRaster(width, height);
+  let cloneSourcePromise: Promise<PaintCloneSource | null> | null = null;
 
-  const getCloneSourceCanvas = async (): Promise<HTMLCanvasElement | null> => {
-    if (!options.resolveCloneSourceCanvas) {
+  const getCloneSource = async (): Promise<PaintCloneSource | null> => {
+    if (!options.resolveCloneSource) {
       return null;
     }
 
-    cloneSourceCanvasPromise ??= options.resolveCloneSourceCanvas();
-    return cloneSourceCanvasPromise;
+    cloneSourcePromise ??= options.resolveCloneSource();
+    return cloneSourcePromise;
   };
 
   for (const stroke of [...visibleStrokes].reverse()) {
-    let image: CanvasImageSource | null = null;
+    let strokeRaster: PaintRaster | null = null;
 
     if (stroke.tool === 'clone' && stroke.path?.points.length && stroke.cloneOffset) {
-      const cloneSourceCanvas = await getCloneSourceCanvas();
-      if (cloneSourceCanvas) {
-        image = buildPaintStrokeCanvas({
+      const cloneSource = await getCloneSource();
+      if (cloneSource) {
+        strokeRaster = buildPaintStrokeRaster({
           tool: stroke.tool,
           points: stroke.path.points,
           width,
           height,
           size: stroke.size,
+          spacing: stroke.spacing,
           softness: stroke.softness,
           opacity: stroke.opacity,
           color: stroke.color ?? [1, 1, 1],
           alpha: stroke.alpha,
           channels: stroke.channels,
           cloneOffset: stroke.cloneOffset,
-          sourceCanvas: cloneSourceCanvas,
-          canvasColorType,
+          cloneSource,
         });
       }
     }
 
-    if (!image && stroke.raster) {
-      image = await loadPaintRasterImage(stroke.raster);
+    if (!strokeRaster && stroke.raster) {
+      strokeRaster = await loadPaintRaster(stroke.raster);
     }
 
-    if (!image) {
+    if (!strokeRaster) {
       continue;
     }
 
-    compositePaintRasterToContext(ctx, image, stroke.tool, width, height);
+    compositePaintRaster(composite, strokeRaster, stroke.tool, stroke.channels);
   }
 
-  ctx.globalCompositeOperation = 'source-over';
-  return canvas;
+  return composite;
 };
 
-export const buildPaintAlphaCompositeCanvas = async (
+export const buildPaintCompositeRaster = (
   strokes: PaintStroke[],
   width: number,
   height: number,
   layers?: PaintLayer[],
   frame?: number,
-  canvasColorType: CanvasStorageColorType = 'unorm8',
   options: PaintCompositeBuildOptions = {},
-): Promise<HTMLCanvasElement | null> => {
-  const paintNode = { layers, strokes };
-  const visibleStrokes = flattenPaintHierarchyStrokeItems(buildPaintHierarchy(paintNode, frame))
-    .filter(
-      (item) =>
-        item.visible &&
-        item.activeAtFrame &&
-        item.stroke.raster &&
-        isAlphaOnlyPaintStroke(item.stroke.channels),
-    )
-    .map((item) => item.stroke);
+): Promise<PaintRaster | null> =>
+  buildPaintCompositeRasterForChannels(strokes, width, height, layers, frame, false, options);
 
-  if (visibleStrokes.length === 0) return null;
-
-  const canvas = createPaintCanvas(width, height, canvasColorType);
-  const context = getPaintCanvasContext(canvas, canvasColorType);
-  if (!context) return null;
-  const { ctx } = context;
-  let cloneSourceCanvasPromise: Promise<HTMLCanvasElement | null> | null = null;
-
-  const getCloneSourceCanvas = async (): Promise<HTMLCanvasElement | null> => {
-    if (!options.resolveCloneSourceCanvas) {
-      return null;
-    }
-
-    cloneSourceCanvasPromise ??= options.resolveCloneSourceCanvas();
-    return cloneSourceCanvasPromise;
-  };
-
-  for (const stroke of [...visibleStrokes].reverse()) {
-    let image: CanvasImageSource | null = null;
-
-    if (stroke.tool === 'clone' && stroke.path?.points.length && stroke.cloneOffset) {
-      const cloneSourceCanvas = await getCloneSourceCanvas();
-      if (cloneSourceCanvas) {
-        image = buildPaintStrokeCanvas({
-          tool: stroke.tool,
-          points: stroke.path.points,
-          width,
-          height,
-          size: stroke.size,
-          softness: stroke.softness,
-          opacity: stroke.opacity,
-          color: stroke.color ?? [1, 1, 1],
-          alpha: stroke.alpha,
-          channels: stroke.channels,
-          cloneOffset: stroke.cloneOffset,
-          sourceCanvas: cloneSourceCanvas,
-          canvasColorType,
-        });
-      }
-    }
-
-    if (!image && stroke.raster) {
-      image = await loadPaintRasterImage(stroke.raster);
-    }
-
-    if (!image) {
-      continue;
-    }
-
-    compositePaintRasterToContext(ctx, image, stroke.tool, width, height);
-  }
-
-  ctx.globalCompositeOperation = 'source-over';
-  return canvas;
-};
-
-export const buildPaintCompositeDataUrl = async (
+export const buildPaintAlphaCompositeRaster = (
   strokes: PaintStroke[],
   width: number,
   height: number,
   layers?: PaintLayer[],
   frame?: number,
-  canvasColorType: CanvasStorageColorType = 'unorm8',
   options: PaintCompositeBuildOptions = {},
-): Promise<string> => {
-  const canvas = await buildPaintCompositeCanvas(
-    strokes,
-    width,
-    height,
-    layers,
-    frame,
-    canvasColorType,
-    options,
-  );
-  return canvas ? canvasToDataUrlAsync(canvas) : '';
-};
-
-export const buildPaintAlphaCompositeDataUrl = async (
-  strokes: PaintStroke[],
-  width: number,
-  height: number,
-  layers?: PaintLayer[],
-  frame?: number,
-  canvasColorType: CanvasStorageColorType = 'unorm8',
-  options: PaintCompositeBuildOptions = {},
-): Promise<string> => {
-  const canvas = await buildPaintAlphaCompositeCanvas(
-    strokes,
-    width,
-    height,
-    layers,
-    frame,
-    canvasColorType,
-    options,
-  );
-  return canvas ? canvasToDataUrlAsync(canvas) : '';
-};
+): Promise<PaintRaster | null> =>
+  buildPaintCompositeRasterForChannels(strokes, width, height, layers, frame, true, options);
 
 export const getNextPaintStrokeName = (strokes: PaintStroke[], tool: PaintTool): string => {
   const displayName = tool === 'brush' ? 'Brush' : tool === 'erase' ? 'Erase' : 'Clone';

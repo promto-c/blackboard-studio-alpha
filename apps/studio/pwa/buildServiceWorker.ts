@@ -5,7 +5,6 @@ export interface StudioServiceWorkerAsset {
   group?: string;
   label?: string;
   description?: string;
-  source?: 'bundle' | 'marketplace';
   removable?: boolean;
 }
 
@@ -13,7 +12,6 @@ export interface StudioServiceWorkerAssetGroup {
   id: string;
   label: string;
   description: string;
-  source: 'bundle' | 'marketplace';
   removable: boolean;
   assetCount: number;
   size: number;
@@ -67,7 +65,6 @@ const summarizeAssetGroups = (
       id,
       label: asset.label ?? 'Feature assets',
       description: asset.description ?? 'Optional files cached when the related feature is used.',
-      source: asset.source ?? 'bundle',
       removable: asset.removable ?? true,
       assetCount: 1,
       size: asset.size,
@@ -216,7 +213,7 @@ const cacheRuntimeAssets = async (groupId) => {
     : RUNTIME_ASSETS;
 
   if (groupId && targetAssets.length === 0) {
-    throw new Error('Unknown offline asset group.');
+    throw new Error('Unknown on-demand asset group.');
   }
 
   const cache = await caches.open(RUNTIME_CACHE);
@@ -238,10 +235,10 @@ const cacheRuntimeAssets = async (groupId) => {
 const deleteRuntimeAssets = async (groupId) => {
   const group = groupId ? getRuntimeAssetGroup(groupId) : null;
   if (groupId && !group) {
-    throw new Error('Unknown offline asset group.');
+    throw new Error('Unknown on-demand asset group.');
   }
   if (group?.removable === false) {
-    throw new Error('This offline asset group cannot be removed.');
+    throw new Error('This on-demand asset group cannot be removed.');
   }
 
   const targetAssets = groupId ? getRuntimeAssetsForGroup(groupId) : getRemovableRuntimeAssets();

@@ -16,10 +16,16 @@ function ChannelIcon({ className }: { className?: string }) {
 }
 
 const channelPorts = [
-  { name: 'r', label: 'R', description: 'Red channel.' },
-  { name: 'g', label: 'G', description: 'Green channel.' },
-  { name: 'b', label: 'B', description: 'Blue channel.' },
-  { name: 'a', label: 'A', description: 'Alpha channel.' },
+  { name: 'r', label: 'R', processingDomain: 'data' as const, description: 'Red channel.' },
+  { name: 'g', label: 'G', processingDomain: 'data' as const, description: 'Green channel.' },
+  { name: 'b', label: 'B', processingDomain: 'data' as const, description: 'Blue channel.' },
+  {
+    name: 'a',
+    label: 'A',
+    dataSemantic: 'alpha' as const,
+    processingDomain: 'alpha' as const,
+    description: 'Alpha channel.',
+  },
 ];
 
 export const extractChannelsNode: NodeDefinition = {
@@ -27,6 +33,7 @@ export const extractChannelsNode: NodeDefinition = {
   name: 'Extract Channels',
   category: 'Utility',
   renderMode: 'utility',
+  processingDomain: 'data',
   description: 'Split one texture into isolated R, G, B, and A outputs.',
   IconComponent: ChannelIcon,
   ToolComponent: ExtractChannelsTool,
@@ -81,6 +88,7 @@ export const mergeChannelsNode: NodeDefinition = {
   name: 'Merge Channels',
   category: 'Utility',
   renderMode: 'utility',
+  processingDomain: 'scene_linear',
   description: 'Build one RGBA texture from channel inputs.',
   IconComponent: ChannelIcon,
   ToolComponent: MergeChannelsTool,

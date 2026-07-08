@@ -70,8 +70,13 @@ import {
   buildImageEntriesFromFiles,
   persistSequenceAssets,
 } from '@/state/editor/utils';
-import { getMediaFileKind } from '@/utils/mediaFiles';
-import { getImportedImageColorSpace } from '@/utils/mediaFiles';
+import { getImportedImageColorManagement, getMediaFileKind } from '@/utils/mediaFiles';
+import {
+  createBrowserDecodedVideoColorManagement,
+  getMediaSourceColorSpace,
+  resolveMediaColorManagementSourceChange,
+  type MediaColorManagement,
+} from '@/color-management';
 import { readVideoMetadata } from '@/utils/mediaUtils';
 import { calculateTransformForFitMode } from '@/state/editor/selectors';
 import { findSceneNode, createMediaSourceNode, createSequenceNode } from '@/utils/graphCommands';
@@ -113,6 +118,7 @@ export const loadImageService = async (
 
   if (mediaKind === 'image') {
     const { width, height } = await readImageDimensions(file);
+    const mediaColorManagement = await getImportedImageColorManagement(file);
     const { scaleX, scaleY } = calculateTransformForFitMode(
       { width, height },
       { width: sceneNode.width, height: sceneNode.height },
@@ -126,7 +132,8 @@ export const loadImageService = async (
       src: assetId,
       width,
       height,
-      colorSpace: getImportedImageColorSpace(file),
+      colorSpace: getMediaSourceColorSpace(mediaColorManagement),
+      mediaColorManagement,
       transform: { x: 0, y: 0, scaleX, scaleY, fitMode: ImageFitMode.FIT },
     });
     const inserted = insertSourceNode(newNode, get);
@@ -143,7 +150,8 @@ export const loadImageService = async (
       },
     });
   } else if (mediaKind === 'video') {
-    const { width, height, duration } = await readVideoMetadata(file);
+    const { width, height, duration, color } = await readVideoMetadata(file);
+    const mediaColorManagement = createBrowserDecodedVideoColorManagement();
     const totalFrames = Math.floor(duration * fps);
     const { scaleX, scaleY } = calculateTransformForFitMode(
       { width, height },
@@ -159,6 +167,9 @@ export const loadImageService = async (
       width,
       height,
       duration,
+      videoColorMetadata: color,
+      colorSpace: getMediaSourceColorSpace(mediaColorManagement),
+      mediaColorManagement,
       transform: { x: 0, y: 0, scaleX, scaleY, fitMode: ImageFitMode.FIT },
     });
 
@@ -193,6 +204,7 @@ export const loadImageSequenceService = async (
 
   const firstEntry = imageEntries[0];
   const { width, height } = await readImageDimensions(firstEntry.file);
+  const mediaColorManagement = await getImportedImageColorManagement(firstEntry.file);
   const assetIds = await persistSequenceAssets(imageEntries, 'copy');
   const sceneNode = findSceneNode(get().nodes);
   if (!sceneNode) return;
@@ -211,7 +223,8 @@ export const loadImageSequenceService = async (
     sourceFileName: firstEntry.file.name,
     width,
     height,
-    colorSpace: getImportedImageColorSpace(firstEntry.file),
+    colorSpace: getMediaSourceColorSpace(mediaColorManagement),
+    mediaColorManagement,
     scaleX,
     scaleY,
   });
@@ -257,6 +270,7 @@ export const loadImageSequenceFromDirectoryService = async (
 
   const firstEntry = imageEntries[0];
   const { width, height } = await readImageDimensions(firstEntry.file);
+  const mediaColorManagement = await getImportedImageColorManagement(firstEntry.file);
   const assetIds = await persistSequenceAssets(imageEntries, importMode, directoryHandle);
   const sceneNode = findSceneNode(get().nodes);
   if (!sceneNode) return;
@@ -273,7 +287,8 @@ export const loadImageSequenceFromDirectoryService = async (
     sourceFileName: firstEntry.file.name,
     width,
     height,
-    colorSpace: getImportedImageColorSpace(firstEntry.file),
+    colorSpace: getMediaSourceColorSpace(mediaColorManagement),
+    mediaColorManagement,
     scaleX,
     scaleY,
   });
@@ -315,9 +330,16 @@ export const replaceNodeSourceService = async (
 
   const assetId = await saveAsset(file);
   const fps = get().fps || 30;
+  const existingMediaColorManagement = (
+    targetNode as { mediaColorManagement?: MediaColorManagement }
+  ).mediaColorManagement;
 
   if (mediaKind === 'image') {
     const { width, height } = await readImageDimensions(file);
+    const colorManagementUpdate = resolveMediaColorManagementSourceChange(
+      existingMediaColorManagement,
+      await getImportedImageColorManagement(file),
+    );
     const { scaleX, scaleY } = calculateTransformForFitMode(
       { width, height },
       { width: sceneNode.width, height: sceneNode.height },
@@ -333,7 +355,8 @@ export const replaceNodeSourceService = async (
             mediaKind: 'image',
             width,
             height,
-            colorSpace: getImportedImageColorSpace(file),
+            ...colorManagementUpdate,
+            videoColorMetadata: undefined,
             duration: undefined,
             loop: undefined,
             transform: { x: 0, y: 0, scaleX, scaleY, fitMode: ImageFitMode.FIT },
@@ -349,7 +372,11 @@ export const replaceNodeSourceService = async (
       },
     });
   } else if (mediaKind === 'video') {
-    const { width, height, duration } = await readVideoMetadata(file);
+    const { width, height, duration, color } = await readVideoMetadata(file);
+    const colorManagementUpdate = resolveMediaColorManagementSourceChange(
+      existingMediaColorManagement,
+      createBrowserDecodedVideoColorManagement(),
+    );
     const totalFrames = Math.floor(duration * fps);
     const { scaleX, scaleY } = calculateTransformForFitMode(
       { width, height },
@@ -368,7 +395,8 @@ export const replaceNodeSourceService = async (
             height,
             duration,
             loop: true,
-            colorSpace: undefined,
+            videoColorMetadata: color,
+            ...colorManagementUpdate,
             transform: { x: 0, y: 0, scaleX, scaleY, fitMode: ImageFitMode.FIT },
           } as AnyNode)
         : n,
@@ -406,6 +434,10 @@ export const replaceNodeSourceSequenceService = async (
 
   const firstEntry = imageEntries[0];
   const { width, height } = await readImageDimensions(firstEntry.file);
+  const colorManagementUpdate = resolveMediaColorManagementSourceChange(
+    (targetNode as { mediaColorManagement?: MediaColorManagement }).mediaColorManagement,
+    await getImportedImageColorManagement(firstEntry.file),
+  );
   const assetIds = await persistSequenceAssets(imageEntries, 'copy');
   const sceneNode = findSceneNode(state.nodes);
   if (!sceneNode) return;
@@ -424,6 +456,7 @@ export const replaceNodeSourceSequenceService = async (
           sourceFileName: firstEntry.file.name,
           width,
           height,
+          ...colorManagementUpdate,
           transform: { x: 0, y: 0, scaleX, scaleY, fitMode: ImageFitMode.FIT },
         } as AnyNode)
       : n,

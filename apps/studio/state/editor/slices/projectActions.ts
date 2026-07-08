@@ -1,5 +1,11 @@
 import type { RefObject } from 'react';
-import { AnyNode, GeneratedOutput, RotoNode, TrackingConfig } from '@blackboard/types';
+import {
+  AnyNode,
+  GeneratedOutput,
+  RotoNode,
+  TrackingConfig,
+  type ProjectColorManagement,
+} from '@blackboard/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import {
   saveProject,
@@ -72,6 +78,7 @@ import {
   exportProjectFileService,
   loadProjectService,
   deleteProjectService,
+  type ProjectOpenTarget,
 } from '@/state/editor/services/projectManagement';
 
 export function createProjectActions(
@@ -79,6 +86,7 @@ export function createProjectActions(
   get: GetState,
   deps: {
     commitMutation: CommitEditorMutation;
+    getNewProjectColorManagement?: () => ProjectColorManagement;
     getReopenHistoryLimit?: () => number;
     getAutoCheckpointEnabled?: () => boolean;
     trackingAbortController: RefObject<AbortController | null>;
@@ -121,6 +129,10 @@ export function createProjectActions(
     updateBackgroundJob: deps.updateBackgroundJob,
     finishBackgroundJob: deps.finishBackgroundJob,
   };
+
+  const getNewProjectCreationOptions = () => ({
+    colorManagement: deps.getNewProjectColorManagement?.(),
+  });
 
   const applyRotoTrackingResult = async ({
     context,
@@ -273,22 +285,35 @@ export function createProjectActions(
     },
 
     createNewProject: async (file: File) => {
-      await createNewProjectService(set, get, file);
+      await createNewProjectService(set, get, file, getNewProjectCreationOptions());
     },
 
     createNewProjectFromFiles: async (files: File[]) => {
-      await createNewProjectFromFilesService(set, get, files);
+      await createNewProjectFromFilesService(set, get, files, getNewProjectCreationOptions());
     },
 
     createNewProjectFromDirectory: async (
       directoryHandle: FileSystemDirectoryHandle,
       importMode: SequenceImportMode = 'copy',
     ) => {
-      await createNewProjectFromDirectoryService(set, get, directoryHandle, importMode);
+      await createNewProjectFromDirectoryService(
+        set,
+        get,
+        directoryHandle,
+        importMode,
+        getNewProjectCreationOptions(),
+      );
     },
 
     createNewProjectFromDimensions: (name: string, width: number, height: number) => {
-      createNewProjectFromDimensionsService(set, get, name, width, height);
+      createNewProjectFromDimensionsService(
+        set,
+        get,
+        name,
+        width,
+        height,
+        getNewProjectCreationOptions(),
+      );
     },
 
     importProjectFile: async (
@@ -310,12 +335,13 @@ export function createProjectActions(
       );
     },
 
-    loadProject: async (projectId: string) => {
+    loadProject: async (projectId: string, target?: ProjectOpenTarget) => {
       await loadProjectService(
         get,
         projectId,
         saveOpenProjectBranchSnapshot,
         loadProjectStateIntoEditor,
+        target,
       );
     },
 

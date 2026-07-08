@@ -37,7 +37,7 @@ describe('float Roto mask compositor', () => {
   it('feathers and composites hard mask layers without an 8-bit intermediate', () => {
     const { context, materials, render, targets } = createContext();
     const layer: RendererMaskLayer = {
-      samples: [{ texture: new THREE.Texture(), weight: 1 }],
+      texture: new THREE.Texture(),
       feather: 12,
       opacity: 0.75,
       operation: 'subtract',
@@ -53,16 +53,12 @@ describe('float Roto mask compositor', () => {
     expect(render).toHaveBeenCalledTimes(3);
   });
 
-  it('accumulates weighted motion samples in the float target before feathering', () => {
+  it('uploads one precomposited temporal texture before feathering', () => {
     const { context, materials, render } = createContext();
-    const sharedTexture = new THREE.Texture();
-    const prepareFirst = vi.fn();
-    const prepareSecond = vi.fn();
+    const prepare = vi.fn();
     const layer: RendererMaskLayer = {
-      samples: [
-        { texture: sharedTexture, weight: 0.25, prepare: prepareFirst },
-        { texture: sharedTexture, weight: 0.75, prepare: prepareSecond },
-      ],
+      texture: new THREE.Texture(),
+      prepare,
       feather: 6,
       opacity: 1,
       operation: 'add',
@@ -70,11 +66,8 @@ describe('float Roto mask compositor', () => {
 
     renderFloatRotoMask('motion', [layer], context);
 
-    const accumulation = materials.get('motion:roto-motion-accumulate');
-    expect(accumulation?.blending).toBe(THREE.CustomBlending);
-    expect(accumulation?.uniforms.u_weight.value).toBe(0.75);
-    expect(prepareFirst).toHaveBeenCalledOnce();
-    expect(prepareSecond).toHaveBeenCalledOnce();
-    expect(render).toHaveBeenCalledTimes(5);
+    expect(materials.has('motion:roto-motion-accumulate')).toBe(false);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(render).toHaveBeenCalledTimes(3);
   });
 });

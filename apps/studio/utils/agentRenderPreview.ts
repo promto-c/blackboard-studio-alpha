@@ -96,7 +96,12 @@ async function captureAgentRenderPreview(
   }
 
   const frame = Math.max(0, Math.floor(options.frame ?? projectState.currentFrame ?? 0));
-  const dataUrl = await renderStackToDataURL(target.stack, target.sceneNode, frame);
+  const dataUrl = await renderStackToDataURL(
+    target.stack,
+    target.sceneNode,
+    projectState.colorManagement,
+    frame,
+  );
   const artifact: AiChatRenderPreviewArtifact = {
     type: 'render-preview',
     dataUrl,

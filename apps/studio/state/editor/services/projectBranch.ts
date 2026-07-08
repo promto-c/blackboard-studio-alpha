@@ -23,6 +23,7 @@ import {
   buildPersistedProjectState,
   type StoredProjectState,
 } from '@/state/editor/projectSnapshots';
+import { assertProjectColorManagement } from '@/color-management';
 import { getOrderedNodesFromFlow, getRootFlow } from '@/state/editor/flowModel';
 import { getDefaultViewportTool } from '@/nodes/helpers';
 import {
@@ -156,6 +157,7 @@ export const loadProjectStateIntoEditor = async ({
   branches: ProjectBranchRecord[];
   set: SetState;
 }) => {
+  const colorManagement = assertProjectColorManagement(projectState.colorManagement);
   const loadedFlows = projectState.flows || {};
   const rootFlowId = projectState.rootFlowId || null;
   const rootFlow = getRootFlow(loadedFlows, rootFlowId);
@@ -223,6 +225,8 @@ export const loadProjectStateIntoEditor = async ({
     selectedNodeIds: selectedNodeId ? [selectedNodeId] : [],
     activeViewportTool: getDefaultViewportTool(selectedNode?.type),
     activeTab: projectState.activeTab || initialState.activeTab,
+    colorManagement,
+    viewerColorManagement: initialState.viewerColorManagement,
     aiChats: nextAiChats,
     aiAgentRuns: nextAiAgentRuns,
     activeAiAgentRunId: nextActiveAiAgentRunId,
@@ -238,10 +242,7 @@ export const loadProjectStateIntoEditor = async ({
       ...initialState.renderSettings,
       ...(projectState.renderSettings || {}),
     },
-    viewerSettings: {
-      ...initialState.viewerSettings,
-      ...(projectState.viewerSettings || {}),
-    },
+    viewerSettings: initialState.viewerSettings,
     backgroundJobs: state.backgroundJobs,
     history,
     historyIndex,

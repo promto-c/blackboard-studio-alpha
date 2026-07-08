@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { NodeType, type AnyNode, type GroupExternalInput, type GroupNode } from '@blackboard/types';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
-import { nodeRegistry } from '@/nodes/registry';
+import { getInputPorts } from '@/nodes/helpers';
 import { getRootFlow } from '@/state/editor/flowModel';
 import { usesImplicitPipelineInput } from '@/utils/nodePredicates';
 import * as Icons from '@blackboard/icons';
@@ -14,12 +14,7 @@ type Candidate = {
 };
 
 const getInputPortsForNode = (node: AnyNode) => {
-  const inputPorts = nodeRegistry.get(node.type)?.inputPorts;
-  const explicitPorts = inputPorts
-    ? typeof inputPorts === 'function'
-      ? inputPorts(node)
-      : inputPorts
-    : [];
+  const explicitPorts = getInputPorts(node);
   if (!usesImplicitPipelineInput(node.type)) return explicitPorts;
 
   return [

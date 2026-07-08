@@ -18,6 +18,7 @@ export const paintNode: NodeDefinition = {
   name: 'Paint',
   category: 'Effect',
   renderMode: 'paint',
+  processingDomain: 'scene_linear',
   description: 'Brush, erase, and clone directly on the current composite.',
   IconComponent: PaintNodeIcon,
   ToolComponent: PaintTool,
@@ -66,14 +67,6 @@ export const paintNode: NodeDefinition = {
       u_tDiffuse: { value: inputTexture ?? context.getTransparentInputTexture() },
       u_tPaint: { value: paintTextures.color },
       u_tPaintAlpha: { value: paintTextures.alpha },
-      u_input_transform: {
-        value:
-          context.sceneNode.colorSpace === 'Linear'
-            ? 0
-            : context.sceneNode.colorSpace === 'sRGB'
-              ? 2
-              : 1,
-      },
     });
     context.applyNoBlending(material);
     context.clearRenderTargetTransparent(target);

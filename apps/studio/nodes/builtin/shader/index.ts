@@ -13,6 +13,7 @@ export const customShaderNode: NodeDefinition = {
   name: 'Shader',
   category: 'Effect',
   renderMode: 'shader',
+  processingDomain: 'scene_linear',
   description: 'Add a GLSL shader node.',
   IconComponent: Icons.CodeBracket,
   ToolComponent: CustomShaderTool,
@@ -74,8 +75,11 @@ export const customShaderNode: NodeDefinition = {
       } else if (!key.endsWith('_y')) {
         const uniformData = shaderNode.uniforms[key];
         if (uniformData.ui === UniformUIType.COLOR) {
+          const color = context.transformColorPickingToSceneLinear(
+            uniformData.value as [number, number, number],
+          );
           uniforms[key] = {
-            value: new THREE.Color(...(uniformData.value as [number, number, number])),
+            value: new THREE.Color(...color),
           };
         } else if (uniformData.ui === UniformUIType.SLIDER) {
           uniforms[key] = { value: getValueAtFrame(uniformData.value, context.frame) };

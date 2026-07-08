@@ -1,6 +1,5 @@
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as THREE from 'three';
 import type {
   AnyNode,
   PaintBrushSettings,
@@ -9,23 +8,23 @@ import type {
   PaintStrokePath,
   PaintTool,
   Point,
+  ProjectColorManagement,
   SceneNode,
   ViewerSettings,
 } from '@blackboard/types';
 import { NodeType } from '@blackboard/types';
 import { renderWithSharedPipeline } from '@/renderer/pipeline';
 import {
-  buildPaintStrokeCanvas,
-  cloneCanvas,
-  createPaintCanvas,
+  buildPaintStrokeRaster,
   createPaintStrokePath,
   getNextPaintStrokeName,
   isPaintTool,
   isPaintViewportTool,
-  savePaintStrokeCanvas,
+  savePaintStrokeRaster,
   type PaintLivePreview,
 } from './paintRaster';
 import { withSharedPaintSnapshotRenderer } from './paintSnapshotRenderer';
+import { renderTargetToPaintCloneSource, type PaintCloneSource } from './paintFloatReadback';
 import { createCloneOffset, getCloneSourceFromOffset } from './cloneMath';
 import { resolvePaintLifetimePreset } from './paintLifetime';
 import {
@@ -36,7 +35,7 @@ import {
 } from './paintLayers';
 import { mergePaintBrushSettings, resolvePaintSoftness } from './softness';
 import { resolvePaintBrushChannels } from './channels';
-import { getCanvasStorageColorTypeForBitDepth } from '@/utils/canvasColorType';
+import { colorManagementService, convertColorPickingToSceneLinear } from '@/color-management';
 
 type ViewportMouseEvent = MouseEvent | React.MouseEvent<HTMLDivElement>;
 
@@ -49,6 +48,7 @@ interface UsePaintInteractionParams {
   setHierarchySelection: (nodeId: string, layerIds: string[], itemIds: string[]) => void;
   activeViewportTool: string | null;
   sceneNode: SceneNode | undefined;
+  projectColorManagement: ProjectColorManagement;
   frame: number;
   zoom: number;
   paintBrush: PaintBrushSettings;
@@ -76,201 +76,8 @@ export interface PaintNudgePreviewPoint {
   weight: number;
 }
 
-type Float16ArrayConstructor = new (length: number) => {
-  [index: number]: number;
-} & ArrayLike<number>;
-
-type Float16ImageDataSettings = ImageDataSettings & {
-  pixelFormat: 'rgba-float16';
-};
-
 const getDistance = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
 const clampBrushSize = (size: number): number => Math.max(1, Math.min(256, size));
-const clampUnit = (value: number): number => Math.max(0, Math.min(1, value));
-
-const supportsFloat16CanvasReadback = (() => {
-  let cached: boolean | null = null;
-
-  return (): boolean => {
-    if (cached != null) {
-      return cached;
-    }
-
-    const Float16ArrayCtor = (
-      globalThis as typeof globalThis & {
-        Float16Array?: Float16ArrayConstructor;
-      }
-    ).Float16Array;
-
-    if (!Float16ArrayCtor || typeof ImageData === 'undefined') {
-      cached = false;
-      return cached;
-    }
-
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = 1;
-      canvas.height = 1;
-      const ctx =
-        (canvas.getContext('2d', {
-          colorType: 'float16',
-        } as unknown as CanvasRenderingContext2DSettings) as CanvasRenderingContext2D | null) ??
-        canvas.getContext('2d') ??
-        null;
-      if (!ctx) {
-        cached = false;
-        return cached;
-      }
-
-      const imageData = new ImageData(
-        new Float16ArrayCtor(4) as unknown as Uint8ClampedArray,
-        1,
-        1,
-        { pixelFormat: 'rgba-float16' } as unknown as Float16ImageDataSettings,
-      );
-      ctx.putImageData(imageData, 0, 0);
-      cached = true;
-    } catch {
-      cached = false;
-    }
-
-    return cached;
-  };
-})();
-
-const renderTargetToPaintCanvas = (
-  renderer: THREE.WebGLRenderer,
-  renderTarget: THREE.WebGLRenderTarget,
-  requestedColorType: 'unorm8' | 'float16',
-): HTMLCanvasElement | null => {
-  try {
-    const { width, height } = renderTarget;
-    const canvas = createPaintCanvas(width, height, requestedColorType);
-    const ctx =
-      (canvas.getContext(
-        '2d',
-        requestedColorType === 'float16'
-          ? ({ colorType: 'float16' } as unknown as CanvasRenderingContext2DSettings)
-          : undefined,
-      ) as CanvasRenderingContext2D | null) ??
-      canvas.getContext('2d') ??
-      null;
-    if (!ctx) {
-      return null;
-    }
-
-    const pixelCount = width * height * 4;
-    const textureType = renderTarget.texture.type;
-
-    if (textureType === THREE.FloatType) {
-      const source = new Float32Array(pixelCount);
-      renderer.readRenderTargetPixels(renderTarget, 0, 0, width, height, source);
-
-      if (requestedColorType === 'float16' && supportsFloat16CanvasReadback()) {
-        const Float16ArrayCtor = (
-          globalThis as typeof globalThis & {
-            Float16Array?: Float16ArrayConstructor;
-          }
-        ).Float16Array;
-
-        if (Float16ArrayCtor) {
-          const pixels = new Float16ArrayCtor(pixelCount);
-
-          for (let y = 0; y < height; y += 1) {
-            const srcRow = (height - 1 - y) * width * 4;
-            const dstRow = y * width * 4;
-            for (let x = 0; x < width * 4; x += 1) {
-              pixels[dstRow + x] = source[srcRow + x];
-            }
-          }
-
-          ctx.putImageData(
-            new ImageData(pixels as Uint8ClampedArray, width, height, {
-              pixelFormat: 'rgba-float16',
-            } as unknown as Float16ImageDataSettings),
-            0,
-            0,
-          );
-          return canvas;
-        }
-      }
-
-      const pixels = new Uint8ClampedArray(pixelCount);
-      for (let y = 0; y < height; y += 1) {
-        const srcRow = (height - 1 - y) * width * 4;
-        const dstRow = y * width * 4;
-        for (let x = 0; x < width * 4; x += 1) {
-          pixels[dstRow + x] = Math.round(clampUnit(source[srcRow + x]) * 255);
-        }
-      }
-
-      ctx.putImageData(new ImageData(pixels, width, height), 0, 0);
-      return canvas;
-    }
-
-    if (textureType === THREE.HalfFloatType) {
-      const source = new Uint16Array(pixelCount);
-      renderer.readRenderTargetPixels(renderTarget, 0, 0, width, height, source);
-
-      if (requestedColorType === 'float16' && supportsFloat16CanvasReadback()) {
-        const Float16ArrayCtor = (
-          globalThis as typeof globalThis & {
-            Float16Array?: Float16ArrayConstructor;
-          }
-        ).Float16Array;
-
-        if (Float16ArrayCtor) {
-          const pixels = new Float16ArrayCtor(pixelCount);
-
-          for (let y = 0; y < height; y += 1) {
-            const srcRow = (height - 1 - y) * width * 4;
-            const dstRow = y * width * 4;
-            for (let x = 0; x < width * 4; x += 1) {
-              pixels[dstRow + x] = THREE.DataUtils.fromHalfFloat(source[srcRow + x]);
-            }
-          }
-
-          ctx.putImageData(
-            new ImageData(pixels as Uint8ClampedArray, width, height, {
-              pixelFormat: 'rgba-float16',
-            } as unknown as Float16ImageDataSettings),
-            0,
-            0,
-          );
-          return canvas;
-        }
-      }
-
-      const pixels = new Uint8ClampedArray(pixelCount);
-      for (let y = 0; y < height; y += 1) {
-        const srcRow = (height - 1 - y) * width * 4;
-        const dstRow = y * width * 4;
-        for (let x = 0; x < width * 4; x += 1) {
-          pixels[dstRow + x] = Math.round(
-            clampUnit(THREE.DataUtils.fromHalfFloat(source[srcRow + x])) * 255,
-          );
-        }
-      }
-
-      ctx.putImageData(new ImageData(pixels, width, height), 0, 0);
-      return canvas;
-    }
-
-    const source = new Uint8Array(pixelCount);
-    renderer.readRenderTargetPixels(renderTarget, 0, 0, width, height, source);
-    const pixels = new Uint8ClampedArray(pixelCount);
-    for (let y = 0; y < height; y += 1) {
-      const srcRow = (height - 1 - y) * width * 4;
-      const dstRow = y * width * 4;
-      pixels.set(source.subarray(srcRow, srcRow + width * 4), dstRow);
-    }
-
-    ctx.putImageData(new ImageData(pixels, width, height), 0, 0);
-    return canvas;
-  } catch {
-    return null;
-  }
-};
 
 export function usePaintInteraction({
   nodes,
@@ -281,6 +88,7 @@ export function usePaintInteraction({
   setHierarchySelection,
   activeViewportTool,
   sceneNode,
+  projectColorManagement,
   frame,
   zoom,
   paintBrush,
@@ -291,8 +99,13 @@ export function usePaintInteraction({
   setPreferences,
 }: UsePaintInteractionParams) {
   const [cursorScenePos, setCursorScenePos] = useState<Point | null>(null);
+  const projectColorManagementRoles = useMemo(
+    () => colorManagementService.resolveProjectColorManagement(projectColorManagement),
+    [projectColorManagement],
+  );
   const [strokePoints, setStrokePoints] = useState<Point[] | null>(null);
   const strokeBufferRef = useRef<Point[] | null>(null);
+  const strokePreviewFrameRef = useRef<number | null>(null);
   const strokeNodeRef = useRef<PaintNode | null>(null);
   const strokeToolRef = useRef<PaintTool | null>(null);
   const strokeCloneOffsetRef = useRef<Point | null>(null);
@@ -302,9 +115,26 @@ export function usePaintInteraction({
     target: Point;
   } | null>(null);
   const [cloneOffsetByNodeId, setCloneOffsetByNodeId] = useState<Record<string, Point | null>>({});
-  const [activeSourceSnapshot, setActiveSourceSnapshot] = useState<HTMLCanvasElement | null>(null);
-  const sourceSnapshotPromiseRef = useRef<Promise<HTMLCanvasElement | null> | null>(null);
+  const [activeSourceSnapshot, setActiveSourceSnapshot] = useState<PaintCloneSource | null>(null);
+  const sourceSnapshotPromiseRef = useRef<Promise<PaintCloneSource | null> | null>(null);
   const previewSessionRef = useRef(0);
+
+  const cancelPendingStrokePreview = useCallback(() => {
+    if (strokePreviewFrameRef.current === null) return;
+    cancelAnimationFrame(strokePreviewFrameRef.current);
+    strokePreviewFrameRef.current = null;
+  }, []);
+
+  const scheduleStrokePreview = useCallback(() => {
+    if (strokePreviewFrameRef.current !== null) return;
+    strokePreviewFrameRef.current = requestAnimationFrame(() => {
+      strokePreviewFrameRef.current = null;
+      const points = strokeBufferRef.current;
+      if (points) setStrokePoints([...points]);
+    });
+  }, []);
+
+  useEffect(() => cancelPendingStrokePreview, [cancelPendingStrokePreview]);
   const brushAdjustStartRef = useRef<{
     startX: number;
     initialSize: number;
@@ -312,6 +142,17 @@ export function usePaintInteraction({
     center: Point;
     brushBase: PaintBrushSettings;
   } | null>(null);
+  const sceneLinearBrushColor = useMemo(
+    () =>
+      sceneNode
+        ? convertColorPickingToSceneLinear(paintBrush.color, {
+            colorPickingColorSpace: projectColorManagementRoles.colorPickingColorSpace,
+            workingColorSpace: projectColorManagementRoles.workingColorSpace,
+            context: projectColorManagementRoles.context,
+          })
+        : paintBrush.color,
+    [paintBrush.color, projectColorManagementRoles, sceneNode],
+  );
 
   // Nudge state
   const [nudgeDragState, setNudgeDragState] = useState<PaintNudgeDragState | null>(null);
@@ -333,9 +174,6 @@ export function usePaintInteraction({
   const paintNode = selectedNode?.type === NodeType.PAINT ? (selectedNode as PaintNode) : null;
   const activePaintTool = isPaintTool(activeViewportTool) ? activeViewportTool : null;
   const isActiveViewportPaintTool = isPaintViewportTool(activeViewportTool);
-  const paintCanvasColorType = sceneNode
-    ? getCanvasStorageColorTypeForBitDepth(sceneNode.bitDepth)
-    : 'unorm8';
   const isPainting = Boolean(strokePoints?.length);
   const isSettingCloneSource = clonePlacementDrag !== null;
   const activeCloneOffset = useMemo(
@@ -412,46 +250,39 @@ export function usePaintInteraction({
   }, [isAdjustingNudgeRadius, setPreferences]);
 
   const captureCloneSourceSnapshot = useCallback(
-    async (node: PaintNode): Promise<HTMLCanvasElement | null> => {
+    async (node: PaintNode): Promise<PaintCloneSource | null> => {
       if (!sceneNode) return null;
 
       const paintNodeIndex = nodes.findIndex((candidate) => candidate.id === node.id);
       if (paintNodeIndex < 0) return null;
 
       const upstreamNodes = nodes.slice(0, paintNodeIndex);
-      const finalColorSpace = sceneNode.colorSpace === 'Linear' ? 'srgb' : 'raw_texture';
-
       return withSharedPaintSnapshotRenderer(async (renderer) => {
-        const { canvas, finalOutputTarget, dispose } = await renderWithSharedPipeline({
+        const { finalOutputTarget, dispose } = await renderWithSharedPipeline({
           captureFinalOutput: true,
           nodes: upstreamNodes,
           sceneNode,
+          projectColorManagement,
           frame,
           width: sceneNode.width,
           height: sceneNode.height,
-          finalColorSpace,
+          finalColorSpace: 'scene_linear',
+          presentToCanvas: false,
           textureCacheMode: 'persistent',
           renderer,
         });
 
         try {
-          if (finalOutputTarget) {
-            const snapshot = renderTargetToPaintCanvas(
-              renderer,
-              finalOutputTarget,
-              paintCanvasColorType,
-            );
-            if (snapshot) {
-              return snapshot;
-            }
+          if (!finalOutputTarget) {
+            throw new Error('Clone sampling requires a floating-point renderer capture.');
           }
-          return cloneCanvas(canvas, paintCanvasColorType);
+          return renderTargetToPaintCloneSource(renderer, finalOutputTarget);
         } finally {
           dispose();
         }
       });
     },
-    [frame, nodes, paintCanvasColorType, sceneNode],
+    [frame, nodes, projectColorManagement, sceneNode],
   );
 
   const commitStroke = useCallback(
@@ -460,7 +291,7 @@ export function usePaintInteraction({
       tool: PaintTool,
       points: Point[],
       cloneOffset: Point | null,
-      sourceSnapshot: HTMLCanvasElement | null,
+      sourceSnapshot: PaintCloneSource | null,
     ) => {
       if (!sceneNode || points.length === 0) return;
       const latestNode =
@@ -469,22 +300,22 @@ export function usePaintInteraction({
         ) as PaintNode | undefined) ?? node;
       const softness = resolvePaintSoftness(paintBrush);
       const strokeChannels = resolvePaintBrushChannels(paintBrush.channels, viewerChannels);
-      const strokeCanvas = buildPaintStrokeCanvas({
+      const strokeRaster = buildPaintStrokeRaster({
         tool,
         points,
         width: sceneNode.width,
         height: sceneNode.height,
         size: paintBrush.size,
+        spacing: paintBrush.spacing,
         softness,
         opacity: paintBrush.opacity,
-        color: paintBrush.color,
+        color: sceneLinearBrushColor,
         alpha: paintBrush.alpha,
         channels: strokeChannels,
         cloneOffset,
-        sourceCanvas: sourceSnapshot,
-        canvasColorType: paintCanvasColorType,
+        cloneSource: sourceSnapshot,
       });
-      if (!strokeCanvas) return;
+      if (!strokeRaster) return;
       const parentLayerId = getPaintCreationParentLayerId(latestNode, selectedPaintLayerIds);
 
       const stroke: PaintStroke = {
@@ -496,6 +327,7 @@ export function usePaintInteraction({
         path: createPaintStrokePath(points, paintBrush.size),
         pointCount: points.length,
         size: paintBrush.size,
+        spacing: paintBrush.spacing,
         softness,
         opacity: paintBrush.opacity,
         color: tool === 'clone' ? undefined : paintBrush.color,
@@ -507,7 +339,7 @@ export function usePaintInteraction({
         lifetime: resolvePaintLifetimePreset(latestNode.defaultLifetime, frame),
       };
 
-      const raster = await savePaintStrokeCanvas(strokeCanvas).catch(() => '');
+      const raster = await savePaintStrokeRaster(strokeRaster).catch(() => '');
       if (!raster) return;
 
       const strokes = [{ ...stroke, raster }, ...latestNode.strokes];
@@ -521,8 +353,8 @@ export function usePaintInteraction({
     [
       frame,
       paintBrush,
-      paintCanvasColorType,
       sceneNode,
+      sceneLinearBrushColor,
       selectedPaintLayerIds,
       updateNode,
       viewerChannels,
@@ -699,7 +531,7 @@ export function usePaintInteraction({
             setActiveSourceSnapshot(null);
           });
       } else {
-        sourceSnapshotPromiseRef.current = Promise.resolve<HTMLCanvasElement | null>(null);
+        sourceSnapshotPromiseRef.current = Promise.resolve<PaintCloneSource | null>(null);
       }
       return true;
     },
@@ -834,14 +666,15 @@ export function usePaintInteraction({
       if (!buffer) return false;
 
       const lastPoint = buffer[buffer.length - 1];
-      const minDistance = Math.max(0.5, paintBrush.size * 0.05);
+      const stampSpacing = paintBrush.size * (paintBrush.spacing / 100);
+      const minDistance = Math.max(0.5, Math.min(stampSpacing * 0.5, paintBrush.size * 0.25));
       if (getDistance(lastPoint, scenePos) < minDistance) {
         return true;
       }
 
       const nextPoints = [...buffer, scenePos];
       strokeBufferRef.current = nextPoints;
-      setStrokePoints(nextPoints);
+      scheduleStrokePreview();
       return true;
     },
     [
@@ -855,8 +688,10 @@ export function usePaintInteraction({
       nudgeDragState,
       nudgeRadius,
       paintBrush.size,
+      paintBrush.spacing,
       paintNode,
       selectedPaintStrokeIds,
+      scheduleStrokePreview,
       updateNode,
       zoom,
     ],
@@ -867,6 +702,7 @@ export function usePaintInteraction({
     const strokeNode = strokeNodeRef.current;
     const strokeTool = strokeToolRef.current;
     if (!strokeNode || !strokeTool || !buffer || buffer.length === 0) {
+      cancelPendingStrokePreview();
       strokeBufferRef.current = null;
       strokeNodeRef.current = null;
       strokeToolRef.current = null;
@@ -877,6 +713,7 @@ export function usePaintInteraction({
     }
 
     const points = buffer;
+    cancelPendingStrokePreview();
     const snapshotPromise = sourceSnapshotPromiseRef.current;
     const strokeCloneOffset = strokeCloneOffsetRef.current;
     strokeBufferRef.current = null;
@@ -888,7 +725,7 @@ export function usePaintInteraction({
     const snapshot = snapshotPromise ? await snapshotPromise : null;
     await commitStroke(strokeNode, strokeTool, points, strokeCloneOffset, snapshot);
     return true;
-  }, [clearActiveStrokePreview, commitStroke]);
+  }, [cancelPendingStrokePreview, clearActiveStrokePreview, commitStroke]);
 
   const handleMouseUp = useCallback(
     (_event?: ViewportMouseEvent): boolean => {
@@ -953,6 +790,7 @@ export function usePaintInteraction({
   const cleanupOnToolChange = useCallback(
     (previousTool: string | null) => {
       if (!isActiveViewportPaintTool) {
+        cancelPendingStrokePreview();
         strokeBufferRef.current = null;
         strokeNodeRef.current = null;
         strokeToolRef.current = null;
@@ -987,6 +825,7 @@ export function usePaintInteraction({
     [
       activeViewportTool,
       clearActiveStrokePreview,
+      cancelPendingStrokePreview,
       clearNudgePreview,
       finishNudgeDrag,
       isActiveViewportPaintTool,
@@ -1043,6 +882,7 @@ export function usePaintInteraction({
       path: null,
       pointCount: strokePoints.length,
       size: paintBrush.size,
+      spacing: paintBrush.spacing,
       softness,
       opacity: paintBrush.opacity,
       color: activePaintTool === 'clone' ? undefined : paintBrush.color,
@@ -1062,19 +902,19 @@ export function usePaintInteraction({
 
     return {
       nodeId: paintNode.id,
-      cacheKey: `${activePaintTool}:${paintBrush.channels}:${resolvedPaintChannels}:${paintBrush.alpha}:${strokePoints.length}`,
+      cacheKey: `${activePaintTool}:${paintBrush.channels}:${resolvedPaintChannels}:${paintBrush.alpha}:${paintBrush.spacing}:${strokePoints.length}`,
       cursor: strokePoints.length,
       tool: activePaintTool,
       points: strokePoints,
       size: paintBrush.size,
+      spacing: paintBrush.spacing,
       softness,
       opacity: paintBrush.opacity,
-      color: paintBrush.color,
+      color: sceneLinearBrushColor,
       alpha: paintBrush.alpha,
       channels: resolvedPaintChannels,
       cloneOffset: activeCloneOffset,
-      sourceCanvas: activePaintTool === 'clone' ? activeSourceSnapshot : null,
-      canvasColorType: paintCanvasColorType,
+      cloneSource: activePaintTool === 'clone' ? activeSourceSnapshot : null,
     };
   }, [
     activeCloneOffset,
@@ -1082,9 +922,9 @@ export function usePaintInteraction({
     activeSourceSnapshot,
     frame,
     paintBrush,
-    paintCanvasColorType,
     paintNode,
     resolvedPaintChannels,
+    sceneLinearBrushColor,
     selectedPaintLayerIds,
     strokePoints,
   ]);

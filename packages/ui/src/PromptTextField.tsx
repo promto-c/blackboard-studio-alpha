@@ -13,6 +13,7 @@ export interface PromptTextFieldProps {
   placeholder?: string;
   disabled?: boolean;
   id?: string;
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   rows?: number;
   minHeight?: number;
   maxHeightClassName?: string;
@@ -51,6 +52,7 @@ function PromptTextField({
   placeholder,
   disabled,
   id,
+  inputRef,
   rows = 1,
   minHeight = 36,
   maxHeightClassName = 'max-h-44',
@@ -330,7 +332,12 @@ function PromptTextField({
           viewportStyle={{ maxHeight: resizeMaxHeight }}
         >
           <textarea
-            ref={textareaRef}
+            ref={(el) => {
+              (textareaRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = el;
+              if (inputRef) {
+                (inputRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = el;
+              }
+            }}
             id={inputId}
             value={value}
             rows={rows}

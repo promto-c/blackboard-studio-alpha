@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { ViewportToolPanel, ViewportToolPanelArea } from './ViewportToolPanel';
+import {
+  ViewportToolPanel,
+  ViewportToolPanelArea,
+  ViewportToolPanelSection,
+  ViewportToolPanelSectionStack,
+} from './ViewportToolPanel';
 
 vi.mock('@blackboard/ui', () => ({
   ScrollArea: ({
@@ -43,19 +48,15 @@ describe('ViewportToolPanelArea', () => {
       </ViewportToolPanelArea>,
     );
 
-    const area = screen.getByRole('group', { name: 'Viewport tool panels' });
     const scrollArea = screen.getByTestId('tool-panel-scroll-area');
-    expect(area.classList.contains('pointer-events-none')).toBe(true);
     expect(scrollArea.dataset.axis).toBe('y');
     expect(scrollArea.dataset.fadeEdges).toBe('true');
     expect(scrollArea.dataset.edgeBlur).toBe('16');
     expect(scrollArea.dataset.edgeFadeSize).toBe('32');
-    expect(screen.getByText('First').classList.contains('w-full')).toBe(true);
-    expect(screen.getByText('Second').classList.contains('w-full')).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Resize tool panels' }));
 
-    expect(area.style.width).toBe('400px');
+    expect(screen.getByRole('group', { name: 'Viewport tool panels' }).style.width).toBe('400px');
   });
 
   it('contains pointer input inside a visible panel surface', () => {

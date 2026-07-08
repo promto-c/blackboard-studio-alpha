@@ -24,7 +24,10 @@ function PropertyField({
 
   return (
     <div
-      className={['rounded-lg border border-white/10 bg-white/[0.03] p-3', className]
+      className={[
+        'bb-property-field rounded-lg border border-white/10 bg-white/[0.03] p-3',
+        className,
+      ]
         .filter(Boolean)
         .join(' ')}
     >

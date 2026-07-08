@@ -12,7 +12,7 @@ export function HotkeyBadge({ combo, className = '' }: HotkeyBadgeProps) {
 
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-lg border border-white/15 bg-gray-950/70 px-1.5 py-0.5 text-[10px] text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_2px_6px_rgba(0,0,0,0.4)] ${className}`}
+      className={`inline-flex items-center gap-1 rounded-md border border-white/15 bg-gray-950/70 px-1.5 py-0.5 text-[10px] text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_2px_6px_rgba(0,0,0,0.4)] ${className}`}
     >
       {keys.map((key, index) => (
         <React.Fragment key={`${key}-${index}`}>

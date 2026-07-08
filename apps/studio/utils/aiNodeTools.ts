@@ -1,6 +1,6 @@
 import { AiChatGradePreviewArtifact, AnyNode, GradeNode, NodeType } from '@blackboard/types';
 import { getValueAtFrame } from '@blackboard/renderer';
-import { canExecuteAiTool, type AiToolPermission } from './aiToolPermissions';
+import type { AiToolPermission } from './aiToolPermissions';
 import type { AiToolExecutionResult, AiToolHandler, AiToolSchema } from './agentToolRegistry';
 
 interface AiNodeToolContext {
@@ -9,7 +9,7 @@ interface AiNodeToolContext {
   setGradePreview: (
     preview: {
       values: {
-        brightness: number;
+        exposure: number;
         contrast: number;
         saturation: number;
       };
@@ -18,7 +18,7 @@ interface AiNodeToolContext {
   ) => void;
   getGradePreview: () => {
     values: {
-      brightness: number;
+      exposure: number;
       contrast: number;
       saturation: number;
     };
@@ -45,13 +45,13 @@ const toFiniteNumber = (value: unknown, fallback: number) => {
 };
 
 const getGradePreviewSummary = (
-  currentValues: { brightness: number; contrast: number; saturation: number },
-  nextValues: { brightness: number; contrast: number; saturation: number },
+  currentValues: { exposure: number; contrast: number; saturation: number },
+  nextValues: { exposure: number; contrast: number; saturation: number },
   reason?: string,
 ) =>
   [
     `Preview staged for Grade.`,
-    `Brightness ${currentValues.brightness} -> ${nextValues.brightness}.`,
+    `Exposure ${currentValues.exposure} -> ${nextValues.exposure} stops.`,
     `Contrast ${currentValues.contrast} -> ${nextValues.contrast}.`,
     `Saturation ${currentValues.saturation} -> ${nextValues.saturation}.`,
     reason?.trim() ? `Reason: ${reason.trim()}` : null,
@@ -67,22 +67,22 @@ const createGradeTools = (node: GradeNode): AiNodeToolDefinition[] => [
       function: {
         name: 'get_grade_state',
         description:
-          'Read the current Grade node values so the assistant can reason about brightness, contrast, and saturation.',
+          'Read the current Grade node values so the assistant can reason about exposure, contrast, and saturation.',
         parameters: {
           type: 'object',
           properties: {},
         },
       },
     },
-    execute: (_args, _context) => ({
+    execute: (_args, context) => ({
       content: JSON.stringify({
         nodeId: node.id,
         nodeName: node.name,
-        brightness: getValueAtFrame(node.grade.brightness, _context.currentFrame),
-        contrast: getValueAtFrame(node.grade.contrast, _context.currentFrame),
-        saturation: getValueAtFrame(node.grade.saturation, _context.currentFrame),
+        exposure: getValueAtFrame(node.grade.exposure, context.currentFrame),
+        contrast: getValueAtFrame(node.grade.contrast, context.currentFrame),
+        saturation: getValueAtFrame(node.grade.saturation, context.currentFrame),
         ranges: {
-          brightness: { min: -1, max: 1 },
+          exposure: { min: -10, max: 10 },
           contrast: { min: 0, max: 2 },
           saturation: { min: 0, max: 2 },
         },
@@ -100,9 +100,9 @@ const createGradeTools = (node: GradeNode): AiNodeToolDefinition[] => [
         parameters: {
           type: 'object',
           properties: {
-            brightness: {
+            exposure: {
               type: 'number',
-              description: 'Preview brightness value between -1 and 1.',
+              description: 'Preview exposure in stops between -10 and 10.',
             },
             contrast: {
               type: 'number',
@@ -122,12 +122,12 @@ const createGradeTools = (node: GradeNode): AiNodeToolDefinition[] => [
     },
     execute: (args, context) => {
       const currentValues = {
-        brightness: getValueAtFrame(node.grade.brightness, context.currentFrame),
+        exposure: getValueAtFrame(node.grade.exposure, context.currentFrame),
         contrast: getValueAtFrame(node.grade.contrast, context.currentFrame),
         saturation: getValueAtFrame(node.grade.saturation, context.currentFrame),
       };
       const nextValues = {
-        brightness: clamp(toFiniteNumber(args.brightness, currentValues.brightness), -1, 1),
+        exposure: clamp(toFiniteNumber(args.exposure, currentValues.exposure), -10, 10),
         contrast: clamp(toFiniteNumber(args.contrast, currentValues.contrast), 0, 2),
         saturation: clamp(toFiniteNumber(args.saturation, currentValues.saturation), 0, 2),
       };
@@ -223,7 +223,7 @@ export const createAiNodeToolHandlers = (
     schema: definition.schema,
     permission: definition.permission,
     run: (args) => {
-      if (!canExecuteAiTool(definition.permission)) {
+      if (definition.permission !== 'safe') {
         return {
           content: JSON.stringify({
             status: definition.permission === 'confirm' ? 'confirmation_required' : 'blocked',

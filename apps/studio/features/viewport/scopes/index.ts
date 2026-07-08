@@ -1,0 +1,16 @@
+export {
+  DEFAULT_SCOPE_RANGES,
+  computeScopeHistogram,
+  computeScopeWaveform,
+  getScopeRenderTarget,
+  requiresScopeDisplayCapture,
+  resolveScopeProcessingDomain,
+  type ScopeAnalysisOptions,
+  type ScopeChannel,
+  type ScopeChannelDistribution,
+  type ScopeHistogram,
+  type ScopeProcessingDomain,
+  type ScopeValueRange,
+  type ScopeWaveform,
+  type ScopeWaveformOptions,
+} from './scopeAnalysis';

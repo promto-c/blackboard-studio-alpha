@@ -14,6 +14,7 @@ import {
 } from './ai';
 import { createAiNodeToolHandlers } from './aiNodeTools';
 import { runOllamaToolAgent } from './ollamaAgentRunner';
+import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
 
 const createNdjsonStreamResponse = (lines: Array<Record<string, unknown>>) => {
   const encoder = new TextEncoder();
@@ -537,7 +538,7 @@ describe('generateAssistantChatTurn', () => {
       ollamaEndpoint: 'http://localhost:11434',
       ollamaModel: 'qwen2.5-coder:7b',
       contextSummary:
-        'Focused node: Grade.\nNode type: Grade.\nGrade controls: brightness 0, contrast 1, saturation 1.',
+        'Focused node: Grade.\nNode type: Grade.\nGrade domain: scene_linear. Exposure 0 stops, contrast 1, saturation 1.',
       mode: 'context',
     });
 
@@ -703,7 +704,7 @@ describe('runOllamaToolAgent', () => {
                   function: {
                     name: 'preview_grade_adjustment',
                     arguments: {
-                      brightness: 0.12,
+                      exposure: 0.12,
                       contrast: 1.08,
                       saturation: 0.96,
                       reason: 'Protect highlights while opening the mids a little.',
@@ -736,10 +737,10 @@ describe('runOllamaToolAgent', () => {
       type: NodeType.GRADE,
       name: 'Grade',
       enabled: true,
-      grade: { brightness: 0, contrast: 1, saturation: 1, gain: 1, gamma: 1 },
+      grade: createDefaultGrade(),
     };
     let stagedPreview: {
-      values: { brightness: number; contrast: number; saturation: number };
+      values: { exposure: number; contrast: number; saturation: number };
       summary?: string;
     } | null = null;
 
@@ -764,11 +765,11 @@ describe('runOllamaToolAgent', () => {
     );
     expect(result.artifact).toEqual({
       type: 'grade-preview',
-      values: { brightness: 0.12, contrast: 1.08, saturation: 0.96 },
+      values: { exposure: 0.12, contrast: 1.08, saturation: 0.96 },
       summary: expect.stringContaining('Preview staged for Grade.'),
     });
     expect(stagedPreview).toEqual({
-      values: { brightness: 0.12, contrast: 1.08, saturation: 0.96 },
+      values: { exposure: 0.12, contrast: 1.08, saturation: 0.96 },
       summary: expect.stringContaining('Protect highlights'),
     });
   });
@@ -824,7 +825,7 @@ describe('runOllamaToolAgent', () => {
       type: NodeType.GRADE,
       name: 'Grade',
       enabled: true,
-      grade: { brightness: 0, contrast: 1, saturation: 1, gain: 1, gamma: 1 },
+      grade: createDefaultGrade(),
     };
 
     const result = await runOllamaToolAgent({

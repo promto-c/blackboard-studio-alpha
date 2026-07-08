@@ -21,7 +21,6 @@ import {
   getDefaultMediaSourceId,
   getMediaSourceLabel,
   getMediaSourceOptions,
-  isUpstreamMediaSourceId,
 } from '@/utils/mediaSourceSelection';
 import { runMatchMoveTracking } from '@/utils/matchMoveTracking';
 
@@ -143,6 +142,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
   const maxFrames = useEditorSelector((state) => state.maxFrames);
   const fps = useEditorSelector((state) => state.fps);
   const projectId = useEditorSelector((state) => state.projectId);
+  const projectColorManagement = useEditorSelector((state) => state.colorManagement);
   const actions = useEditorActions();
   const abortRef = useRef<AbortController | null>(null);
   const [runState, setRunState] = useState<{
@@ -160,7 +160,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
   const sourceDropdownOptions = sourceOptions.map((option) => ({
     value: option.value,
     label: option.label,
-    secondaryLabel: isUpstreamMediaSourceId(option.value) ? 'Rendered pipe before this node' : null,
+    secondaryLabel: option.description,
   }));
 
   const commitTracking = useCallback(
@@ -234,7 +234,12 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
       return;
     }
 
-    const source = resolveSourcePixelSource(nodes, node.id, effectiveSourceId);
+    const source = resolveSourcePixelSource(
+      nodes,
+      node.id,
+      effectiveSourceId,
+      projectColorManagement,
+    );
     if (!source) {
       actions.updateNode(
         node.id,
@@ -370,6 +375,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
     node.solve,
     node.tracking,
     nodes,
+    projectColorManagement,
     projectId,
     runState.progress,
     runState.running,

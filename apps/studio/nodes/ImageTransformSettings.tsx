@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ImageFitMode } from '@blackboard/types';
 import { Link } from '@blackboard/icons';
-import { CollapsibleSection } from '@blackboard/ui';
+import { Badge, CollapsibleSection } from '@blackboard/ui';
 import { SegmentedControl, Slider } from '@/components';
 import { IMAGE_FIT_MODE_OPTIONS, isCustomImageFitMode } from './imageFitMode';
 
@@ -21,15 +21,25 @@ interface ImageTransformSettingsProps {
   useOutputSizeAsScene: boolean;
   scaleXKeyframed?: boolean;
   scaleYKeyframed?: boolean;
+  positionX?: number;
+  positionY?: number;
+  positionXKeyframed?: boolean;
+  positionYKeyframed?: boolean;
+  positionRange?: { x: number; y: number };
   onFitModeChange: (fitMode: ImageFitMode) => void;
   onUseOutputSizeAsSceneChange: (checked: boolean) => void;
   onScaleChange: (update: LinkedScaleUpdate) => void;
   onScaleReset: (update: LinkedScaleUpdate) => void;
   onToggleScaleXKeyframe: () => void;
   onToggleScaleYKeyframe: () => void;
+  onPositionChange?: (axis: 'x' | 'y', value: number) => void;
+  onPositionReset?: (axis: 'x' | 'y') => void;
+  onTogglePositionXKeyframe?: () => void;
+  onTogglePositionYKeyframe?: () => void;
 }
 
 const formatPercent = (value: number) => `${Math.round(value * 100)}%`;
+const formatPixels = (value: number) => `${Math.round(value)} px`;
 
 function SceneSizeModeControl({
   sceneSizeLabel,
@@ -45,44 +55,25 @@ function SceneSizeModeControl({
   return (
     <div className="space-y-2">
       <label className="text-xs font-medium text-gray-400">Scene Size</label>
-      <div
-        role="radiogroup"
-        aria-label="Scene size mode"
-        className="grid grid-cols-2 gap-1 rounded-lg bg-gray-900 p-1 text-left text-xs"
-      >
-        <button
-          type="button"
-          role="radio"
-          aria-checked={!useOutputSizeAsScene}
-          onClick={() => onChange(false)}
-          className={`min-w-0 rounded-md px-2 py-2 transition-colors duration-200 ease-in-out ${
-            !useOutputSizeAsScene
-              ? 'bg-gray-700 text-white shadow'
-              : 'text-gray-400 hover:text-white'
-          }`}
-        >
-          <span className="block truncate font-medium">Keep Scene</span>
-          <span className="mt-0.5 block truncate font-mono text-[11px] text-gray-500">
-            {sceneSizeLabel}
-          </span>
-        </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={useOutputSizeAsScene}
-          onClick={() => onChange(true)}
-          className={`min-w-0 rounded-md px-2 py-2 transition-colors duration-200 ease-in-out ${
-            useOutputSizeAsScene
-              ? 'bg-gray-700 text-white shadow'
-              : 'text-gray-400 hover:text-white'
-          }`}
-        >
-          <span className="block truncate font-medium">Match Output</span>
-          <span className="mt-0.5 block truncate font-mono text-[11px] text-gray-500">
-            {outputSizeLabel}
-          </span>
-        </button>
-      </div>
+      <SegmentedControl
+        ariaLabel="Scene size mode"
+        value={useOutputSizeAsScene ? 'output' : 'scene'}
+        options={[
+          {
+            value: 'scene',
+            label: 'Keep Scene',
+            description: sceneSizeLabel,
+            ariaLabel: `Keep Scene, ${sceneSizeLabel}`,
+          },
+          {
+            value: 'output',
+            label: 'Match Output',
+            description: outputSizeLabel,
+            ariaLabel: `Match Output, ${outputSizeLabel}`,
+          },
+        ]}
+        onChange={(value) => onChange(value === 'output')}
+      />
     </div>
   );
 }
@@ -96,12 +87,21 @@ export function ImageTransformSettings({
   useOutputSizeAsScene,
   scaleXKeyframed = false,
   scaleYKeyframed = false,
+  positionX,
+  positionY,
+  positionXKeyframed = false,
+  positionYKeyframed = false,
+  positionRange = { x: 4000, y: 4000 },
   onFitModeChange,
   onUseOutputSizeAsSceneChange,
   onScaleChange,
   onScaleReset,
   onToggleScaleXKeyframe,
   onToggleScaleYKeyframe,
+  onPositionChange,
+  onPositionReset,
+  onTogglePositionXKeyframe,
+  onTogglePositionYKeyframe,
 }: ImageTransformSettingsProps) {
   const [scaleLinked, setScaleLinked] = useState(() => fitMode !== ImageFitMode.STRETCH);
   const isCustomFitMode = isCustomImageFitMode(fitMode);
@@ -141,9 +141,9 @@ export function ImageTransformSettings({
           <div className="flex items-center justify-between gap-2">
             <label className="text-xs font-medium text-gray-400">Fit Mode</label>
             {isCustomFitMode ? (
-              <span className="rounded border border-primary-300/20 bg-primary-300/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-primary-100">
+              <Badge size="sm" variant="accent" uppercase>
                 Custom
-              </span>
+              </Badge>
             ) : null}
           </div>
           <div className={disabledInteractionClassName}>
@@ -198,6 +198,42 @@ export function ImageTransformSettings({
             />
           </div>
         </div>
+
+        {positionX !== undefined &&
+        positionY !== undefined &&
+        onPositionChange &&
+        onPositionReset ? (
+          <div className={`grid grid-cols-2 gap-3 ${disabledClassName}`}>
+            <div className={disabledInteractionClassName}>
+              <Slider
+                label="Offset X"
+                value={positionX}
+                min={-positionRange.x}
+                max={positionRange.x}
+                step={1}
+                onChange={(value) => onPositionChange('x', value)}
+                onReset={() => onPositionReset('x')}
+                displayFormatter={formatPixels}
+                isKeyframed={positionXKeyframed}
+                onToggleKeyframe={onTogglePositionXKeyframe}
+              />
+            </div>
+            <div className={disabledInteractionClassName}>
+              <Slider
+                label="Offset Y"
+                value={positionY}
+                min={-positionRange.y}
+                max={positionRange.y}
+                step={1}
+                onChange={(value) => onPositionChange('y', value)}
+                onReset={() => onPositionReset('y')}
+                displayFormatter={formatPixels}
+                isKeyframed={positionYKeyframed}
+                onToggleKeyframe={onTogglePositionYKeyframe}
+              />
+            </div>
+          </div>
+        ) : null}
       </div>
     </CollapsibleSection>
   );

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import type { AnyNode, Flow, SceneNode } from '@blackboard/types';
-import { createStudioRenderer } from '@blackboard/renderer';
+import type { AnyNode, Flow, ProjectColorManagement, SceneNode } from '@blackboard/types';
+import { createStudioRenderer, readRenderTargetRgbaFloat } from '@blackboard/renderer';
 import { renderWithSharedPipeline, type RenderPipelineResult } from '@/renderer/pipeline';
 import { expandGroupNodesForRender } from '@/utils/groupRenderProjection';
 import { getViewerRenderNodes } from '@/utils/viewerSlots';
@@ -12,6 +12,7 @@ interface RenderNodeInputOptions {
   flows: Record<string, Flow>;
   sourceNodeId: string;
   sceneNode: SceneNode;
+  projectColorManagement: ProjectColorManagement;
   frame: number;
   finalColorSpace: 'raw_texture' | 'scene_linear' | 'srgb' | 'match_viewport';
 }
@@ -39,7 +40,6 @@ function getSharedRenderer(): THREE.WebGLRenderer {
       antialias: false,
       depth: false,
       stencil: false,
-      premultipliedAlpha: false,
     });
   }
   return sharedRenderer;
@@ -86,44 +86,12 @@ const readRenderTargetToFloatInput = (
   result: RenderPipelineResult,
   target: NonNullable<RenderPipelineResult['finalOutputTarget']>,
 ): FloatInput => {
-  const { width, height } = target;
-  const pixelCount = width * height;
-  const output = new Float32Array(pixelCount * 4);
-  const textureType = target.texture.type;
-
-  if (textureType === THREE.FloatType) {
-    const buffer = new Float32Array(pixelCount * 4);
-    result.renderer.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-    for (let sourceY = 0; sourceY < height; sourceY += 1) {
-      const targetY = height - sourceY - 1;
-      output.set(
-        buffer.subarray(sourceY * width * 4, (sourceY + 1) * width * 4),
-        targetY * width * 4,
-      );
-    }
-  } else if (textureType === THREE.HalfFloatType) {
-    const buffer = new Uint16Array(pixelCount * 4);
-    result.renderer.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-    for (let sourceY = 0; sourceY < height; sourceY += 1) {
-      const targetY = height - sourceY - 1;
-      for (let x = 0; x < width * 4; x += 1) {
-        output[targetY * width * 4 + x] = THREE.DataUtils.fromHalfFloat(
-          buffer[sourceY * width * 4 + x],
-        );
-      }
-    }
-  } else {
-    const buffer = new Uint8Array(pixelCount * 4);
-    result.renderer.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-    for (let sourceY = 0; sourceY < height; sourceY += 1) {
-      const targetY = height - sourceY - 1;
-      for (let x = 0; x < width * 4; x += 1) {
-        output[targetY * width * 4 + x] = buffer[sourceY * width * 4 + x] / 255;
-      }
-    }
-  }
-
-  return { data: output, width, height, channels: 4 };
+  return {
+    data: readRenderTargetRgbaFloat(result.renderer, target),
+    width: target.width,
+    height: target.height,
+    channels: 4,
+  };
 };
 
 const floatInputToPngBlob = (input: FloatInput): Promise<Blob> => {
@@ -150,6 +118,7 @@ export const renderNodeInputFrameToFloat = async (
     preserveAlpha: true,
     nodes: renderNodes,
     sceneNode: options.sceneNode,
+    projectColorManagement: options.projectColorManagement,
     frame: options.frame,
     width: options.sceneNode.width,
     height: options.sceneNode.height,

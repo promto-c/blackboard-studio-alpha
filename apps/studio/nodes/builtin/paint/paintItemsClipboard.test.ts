@@ -21,6 +21,7 @@ const makeStroke = (id: string, name: string, parentLayerId: string | null = nul
   },
   pointCount: 2,
   size: 18,
+  spacing: 20,
   softness: 50,
   opacity: 100,
   color: [1, 1, 1] as [number, number, number],

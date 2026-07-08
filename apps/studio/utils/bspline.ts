@@ -1034,7 +1034,6 @@ function getPointAtNormalizedDist(
   arcLengths: number[],
   totalLength: number,
   t: number,
-  _closed: boolean,
 ): Point {
   if (totalLength === 0) return points[0];
   const targetDist = t * totalLength;
@@ -1083,7 +1082,7 @@ export function mapPointsToContour(
   if (!closed) {
     // Simple linear mapping for open paths
     return normalizedDists.map((t) =>
-      getPointAtNormalizedDist(contour, contourArc.lengths, contourArc.total, t, false),
+      getPointAtNormalizedDist(contour, contourArc.lengths, contourArc.total, t),
     );
   }
 
@@ -1101,13 +1100,7 @@ export function mapPointsToContour(
     for (let i = 0; i < existingPoints.length; i++) {
       // Apply shift to the normalized distance
       const t = (normalizedDists[i] + offsetT) % 1.0;
-      const projected = getPointAtNormalizedDist(
-        contour,
-        contourArc.lengths,
-        contourArc.total,
-        t,
-        true,
-      );
+      const projected = getPointAtNormalizedDist(contour, contourArc.lengths, contourArc.total, t);
       const dx = projected.x - existingPoints[i].x;
       const dy = projected.y - existingPoints[i].y;
       totalSqDist += dx * dx + dy * dy;
@@ -1121,13 +1114,7 @@ export function mapPointsToContour(
 
   // Final mapping with the best shift
   return normalizedDists.map((t) =>
-    getPointAtNormalizedDist(
-      contour,
-      contourArc.lengths,
-      contourArc.total,
-      (t + bestShift) % 1.0,
-      true,
-    ),
+    getPointAtNormalizedDist(contour, contourArc.lengths, contourArc.total, (t + bestShift) % 1.0),
   );
 }
 
