@@ -1,7 +1,6 @@
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { AnyNode, WarpNode } from '@blackboard/types';
-import { CollapsibleSection } from '@blackboard/ui';
-import { Slider } from '@/components';
+import { CollapsibleSection, Slider } from '@blackboard/ui';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
 import * as Icons from '@blackboard/icons';
 

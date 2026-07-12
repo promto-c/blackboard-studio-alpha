@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import * as Icons from '@blackboard/icons';
-import { NodeType, type MediaColorManagement, type Scene3DAssetReference } from '@blackboard/types';
+import type { MediaColorManagement, Scene3DAssetReference } from '@blackboard/types';
 import { usePlayback } from '@/hooks/usePlayback';
 import { ColorManagedImagePreview } from './ColorManagedImagePreview';
 import { ColorManagedVideoPreview } from './ColorManagedVideoPreview';
@@ -33,7 +33,6 @@ interface PlaybackState {
   fps: number;
   currentFrame: number;
   maxFrames: number;
-  nodes: { type: string; loop?: boolean }[];
 }
 
 interface AssetViewerProps {
@@ -80,7 +79,6 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
     fps,
     currentFrame: 0,
     maxFrames: Math.max(0, frameAssetIds.length - 1),
-    nodes: [{ type: NodeType.IMAGE_SEQUENCE, loop: true }],
   }));
   const playbackStateRef = useRef(playbackState);
   playbackStateRef.current = playbackState;
@@ -99,7 +97,13 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
     [],
   );
 
-  usePlayback(playbackStore, isSequence && playbackState.isPlaying, 'realtime', renderLockRef);
+  usePlayback(
+    playbackStore,
+    isSequence && playbackState.isPlaying,
+    'realtime',
+    renderLockRef,
+    'loop',
+  );
 
   useEffect(() => {
     const nextState: PlaybackState = {
@@ -108,7 +112,6 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
       fps,
       currentFrame: 0,
       maxFrames: Math.max(0, frameAssetIds.length - 1),
-      nodes: [{ type: NodeType.IMAGE_SEQUENCE, loop: true }],
     };
     playbackStateRef.current = nextState;
     setPlaybackState(nextState);

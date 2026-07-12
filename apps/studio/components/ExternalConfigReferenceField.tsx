@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ColorConfigReference, ExternalColorConfigReference } from '@blackboard/types';
-import { StyledDropdown } from '@blackboard/ui';
+import { StyledDropdown, TextInput } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 import {
   BUILTIN_ACES_CG_CONFIG_REFERENCE,
@@ -96,15 +96,15 @@ export const ExternalConfigReferenceField = forwardRef<
   return (
     <div className="space-y-2">
       <div className="flex min-w-0 gap-2">
-        <input
+        <TextInput
           ref={referenceInputRef}
           value={referenceText}
-          onChange={(event) => setReferenceText(event.currentTarget.value)}
+          onValueChange={setReferenceText}
           onKeyDown={(event) => {
             if (event.key === 'Enter') applyReference();
           }}
           aria-label="OCIO config reference"
-          className="min-w-0 flex-1 rounded bg-gray-700/50 px-2 py-2 font-mono text-xs text-gray-200 outline-none focus:ring-1 focus:ring-primary-700"
+          className="min-w-0 flex-1 bg-gray-700/50 px-2 py-2 font-mono focus:ring-1 focus:ring-primary-700"
         />
         <button
           type="button"

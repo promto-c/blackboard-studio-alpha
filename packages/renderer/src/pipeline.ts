@@ -327,6 +327,15 @@ const getMediaTextureKeyFromRegistry = (
   return def?.mediaDescriptor?.getMediaTextureKey?.(node, frame) || null;
 };
 
+const resolveMediaFrameFromRegistry = (
+  node: AnyNode,
+  frame: number,
+  reg: NodeRegistryLike,
+): number | null => {
+  const resolveFrame = reg.get(node.type)?.mediaDescriptor?.resolveFrame;
+  return resolveFrame ? resolveFrame(node, frame) : frame;
+};
+
 const getMediaCompositeLayersFromRegistry = (
   node: AnyNode,
   frame: number,
@@ -545,6 +554,7 @@ const createOcioUniforms = (
 const buildOcioTransformedTextureShader = (
   ocioTransform: RendererOcioShaderInfo | null | undefined,
   compositeOver: boolean,
+  useDifferenceMask = false,
 ): string => `
 precision highp float;
 precision highp int;
@@ -564,10 +574,86 @@ uniform bool u_flipY;
 uniform int u_source_alpha_mode;
 uniform bool u_use_generated_color;
 uniform vec3 u_generated_color;
+${
+  useDifferenceMask
+    ? `uniform sampler2D u_tDifferenceReference;
+uniform vec2 u_reference_res;
+uniform float u_reference_scaleX;
+uniform float u_reference_scaleY;
+uniform vec2 u_reference_offset;
+uniform float u_difference_low;
+uniform float u_difference_high;
+uniform float u_difference_edge;
+uniform float u_difference_remove_specks;
+uniform float u_difference_fill_holes;
+uniform bool u_difference_invert;
+uniform int u_difference_preview_mode;`
+    : ''
+}
 
 ${ocioTransform?.shaderText ?? ''}
 
 ${compositeOver ? STRAIGHT_ALPHA_OVER_GLSL : ''}
+
+${
+  useDifferenceMask
+    ? `float sampleDifference(vec2 sample_scene_px) {
+  vec2 output_px = sample_scene_px - u_offset;
+  output_px.x /= u_scaleX;
+  output_px.y /= u_scaleY;
+  vec2 output_uv = output_px / u_image_res + 0.5;
+  if (output_uv.x < 0.0 || output_uv.x > 1.0 || output_uv.y < 0.0 || output_uv.y > 1.0) {
+    return 0.0;
+  }
+
+  vec2 reference_px = sample_scene_px - u_reference_offset;
+  reference_px.x /= u_reference_scaleX;
+  reference_px.y /= u_reference_scaleY;
+  vec2 reference_uv = reference_px / u_reference_res + 0.5;
+  if (reference_uv.x < 0.0 || reference_uv.x > 1.0 || reference_uv.y < 0.0 || reference_uv.y > 1.0) {
+    return 1.0;
+  }
+
+  vec3 output_rgb = texture(u_tDiffuse, output_uv).rgb;
+  vec3 reference_rgb = texture(u_tDifferenceReference, reference_uv).rgb;
+  vec3 delta = abs(output_rgb - reference_rgb);
+  return max(delta.r, max(delta.g, delta.b));
+}
+
+float sampleMaskCoverage(vec2 sample_scene_px, float radius) {
+  vec2 diagonal = vec2(0.70710678) * radius;
+  float threshold_high = max(u_difference_high, u_difference_low + 0.0001);
+  float coverage = 0.0;
+  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(radius, 0.0)));
+  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(-radius, 0.0)));
+  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(0.0, radius)));
+  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(0.0, -radius)));
+  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + diagonal));
+  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(-diagonal.x, diagonal.y)));
+  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(diagonal.x, -diagonal.y)));
+  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px - diagonal));
+  return coverage / 8.0;
+}
+
+float sampleCleanedMask(vec2 sample_scene_px) {
+  float threshold_high = max(u_difference_high, u_difference_low + 0.0001);
+  float mask_alpha = smoothstep(
+    u_difference_low,
+    threshold_high,
+    sampleDifference(sample_scene_px)
+  );
+  if (u_difference_remove_specks > 0.01) {
+    float surrounding_coverage = sampleMaskCoverage(sample_scene_px, u_difference_remove_specks);
+    mask_alpha *= smoothstep(0.2, 0.58, surrounding_coverage);
+  }
+  if (u_difference_fill_holes > 0.01) {
+    float surrounding_coverage = sampleMaskCoverage(sample_scene_px, u_difference_fill_holes);
+    mask_alpha = max(mask_alpha, smoothstep(0.42, 0.78, surrounding_coverage));
+  }
+  return mask_alpha;
+}`
+    : ''
+}
 
 void main() {
   vec2 scene_px = v_uv * u_scene_res - (u_scene_res / 2.0);
@@ -594,6 +680,35 @@ void main() {
     src.rgb = src.a > 0.0 ? u_generated_color : vec3(0.0);
   }
 
+  float difference_alpha = 1.0;
+  ${
+    useDifferenceMask
+      ? `difference_alpha = sampleCleanedMask(scene_px);
+  float edge_radius = abs(u_difference_edge);
+  if (edge_radius > 0.01) {
+    float adjusted_alpha = difference_alpha;
+    vec2 diagonal = vec2(0.70710678) * edge_radius;
+    float samples[8] = float[8](
+      sampleCleanedMask(scene_px + vec2(edge_radius, 0.0)),
+      sampleCleanedMask(scene_px + vec2(-edge_radius, 0.0)),
+      sampleCleanedMask(scene_px + vec2(0.0, edge_radius)),
+      sampleCleanedMask(scene_px + vec2(0.0, -edge_radius)),
+      sampleCleanedMask(scene_px + vec2(diagonal.x, diagonal.y)),
+      sampleCleanedMask(scene_px + vec2(-diagonal.x, diagonal.y)),
+      sampleCleanedMask(scene_px + vec2(diagonal.x, -diagonal.y)),
+      sampleCleanedMask(scene_px - diagonal)
+    );
+    for (int index = 0; index < 8; index++) {
+      adjusted_alpha = u_difference_edge > 0.0
+        ? max(adjusted_alpha, samples[index])
+        : min(adjusted_alpha, samples[index]);
+    }
+    difference_alpha = adjusted_alpha;
+  }
+  if (u_difference_invert) difference_alpha = 1.0 - difference_alpha;`
+      : ''
+  }
+
   ${
     ocioTransform
       ? `float ocioSourceAlpha = src.a;
@@ -602,7 +717,19 @@ void main() {
       : ''
   }
 
-  src.a *= u_opacity;
+  ${
+    useDifferenceMask
+      ? `if (u_difference_preview_mode == 1) {
+    src.rgb = mix(src.rgb, vec3(0.08, 0.92, 0.72), difference_alpha * 0.58);
+    src.a *= u_opacity;
+  } else if (u_difference_preview_mode == 2) {
+    src.rgb = vec3(difference_alpha);
+    src.a = inside_image ? u_opacity : 0.0;
+  } else {
+    src.a *= u_opacity * difference_alpha;
+  }`
+      : 'src.a *= u_opacity;'
+  }
   ${
     compositeOver
       ? `vec4 dst = texture(u_tBackdrop, v_uv);
@@ -1343,6 +1470,30 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
   } = options;
   const renderMode = getRenderMode(node, nodeRegistry);
 
+  if (renderMode === 'ocio') {
+    const definition = nodeRegistry.get(node.type);
+    if (!definition?.getOcioTransforms) return false;
+    const workingColorSpace = colorManagement.resolveColorSpaceName(sceneColorSpace);
+    const transforms = definition.getOcioTransforms(node, {
+      workingColorSpace,
+      textureColorSpace: colorManagement.textureColorSpace,
+      logColorSpace: colorManagement.logColorSpace,
+    });
+    const ocioTransform = transforms.length > 0 ? colorManagement.getTransform(transforms) : null;
+    const material = createSceneLinearOutputMaterial({
+      materialKey: shaderId ?? `${node.id}_ocio_transform`,
+      inputTexture,
+      ocioTransform,
+      ocioTextures,
+      ownedTextures: ownedOcioTextures,
+      getMaterial,
+    });
+    quad.material = material;
+    renderer.setRenderTarget(outputTarget);
+    renderer.render(scene, camera);
+    return true;
+  }
+
   if (renderMode === 'shader' || renderMode === 'warp') {
     const shader = getEffectShader(node, nodeRegistry);
     if (!shader) return false;
@@ -1904,6 +2055,7 @@ function resolveNodeOutputTexture(
         if (
           genericRenderMode &&
           (genericRenderMode === 'shader' ||
+            genericRenderMode === 'ocio' ||
             genericRenderMode === 'multipass' ||
             genericRenderMode === 'mask' ||
             genericRenderMode === 'paint' ||
@@ -2226,6 +2378,8 @@ export const renderWithSharedPipeline = async (
       node: AnyNode,
       targetFrame = frame,
     ): Promise<THREE.Texture | null> => {
+      const sourceFrame = resolveMediaFrameFromRegistry(node, targetFrame, nodeRegistry);
+      if (sourceFrame === null) return null;
       const key = getMediaTextureKeyFromRegistry(node, targetFrame, nodeRegistry);
       if (!key) return null;
 
@@ -2243,7 +2397,7 @@ export const renderWithSharedPipeline = async (
         assetId,
         isVideoLike,
         node,
-        targetFrame,
+        targetFrame: sourceFrame,
       });
     };
 
@@ -2435,6 +2589,18 @@ export const renderWithSharedPipeline = async (
         const texture = await loadTextureForMediaLayer(node, layer, frame);
         if (!texture) continue;
 
+        const differenceMask = layer.differenceMask;
+        const differenceMaskTexture = differenceMask
+          ? await loadTextureForMediaAsset({
+              key: differenceMask.textureKey,
+              assetId: differenceMask.assetId ?? differenceMask.textureKey,
+              isVideoLike: false,
+              node,
+              targetFrame: frame,
+            })
+          : null;
+        const useDifferenceMask = Boolean(differenceMask && differenceMaskTexture);
+
         const transform = layer.transform;
         const ocioTransform = getMediaLayerOcioColorSpaceTransform(
           layer,
@@ -2442,8 +2608,8 @@ export const renderWithSharedPipeline = async (
           options.colorManagement,
         );
         const material = getMaterial(
-          `${node.id}:media-composite:${layer.id}`,
-          buildOcioTransformedTextureShader(ocioTransform, true),
+          `${node.id}:media-composite:${layer.id}:${useDifferenceMask ? 'difference-mask' : 'plain'}`,
+          buildOcioTransformedTextureShader(ocioTransform, true, useDifferenceMask),
           {
             u_tBackdrop: { value: readTarget.texture },
             u_tDiffuse: { value: texture },
@@ -2462,6 +2628,33 @@ export const renderWithSharedPipeline = async (
             u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
             u_source_alpha_mode: { value: getSourceAlphaModeUniform(layer) },
             u_flipY: { value: false },
+            ...(useDifferenceMask && differenceMask && differenceMaskTexture
+              ? {
+                  u_tDifferenceReference: { value: differenceMaskTexture },
+                  u_reference_res: {
+                    value: new THREE.Vector2(differenceMask.width, differenceMask.height),
+                  },
+                  u_reference_scaleX: {
+                    value: getValueAtFrame(differenceMask.transform?.scaleX ?? 1, frame),
+                  },
+                  u_reference_scaleY: {
+                    value: getValueAtFrame(differenceMask.transform?.scaleY ?? 1, frame),
+                  },
+                  u_reference_offset: {
+                    value: new THREE.Vector2(
+                      getValueAtFrame(differenceMask.transform?.x ?? 0, frame),
+                      getValueAtFrame(differenceMask.transform?.y ?? 0, frame),
+                    ),
+                  },
+                  u_difference_low: { value: differenceMask.thresholdLow },
+                  u_difference_high: { value: differenceMask.thresholdHigh },
+                  u_difference_edge: { value: differenceMask.edgeAdjustment },
+                  u_difference_remove_specks: { value: differenceMask.removeSpecks },
+                  u_difference_fill_holes: { value: differenceMask.fillHoles },
+                  u_difference_invert: { value: differenceMask.invert === true },
+                  u_difference_preview_mode: { value: 0 },
+                }
+              : {}),
             ...getGeneratedColorUniforms(node, renderContext, nodeRegistry),
             ...createOcioUniforms(ocioTransform, ocioTextures, ownedTextures),
           },
@@ -3072,6 +3265,11 @@ export interface ViewportPipelineOptions {
   getRotoAlphaMode?: (nodeId: string) => number;
   getPaintTextures?: (nodeId: string) => { color: THREE.Texture; alpha: THREE.Texture } | undefined;
   captureDisplayOutput?: boolean;
+  /**
+   * Whether to resize and present the viewer output to the renderer canvas.
+   * Disable this for offscreen passes whose captured output is composited later.
+   */
+  presentToCanvas?: boolean;
   nodeRegistry: NodeRegistryLike;
 }
 
@@ -3129,17 +3327,26 @@ export const renderViewportFrameWithSharedPipeline = (
   resources.ocioTextures ??= new Map<string, THREE.Texture>();
   assertWebGL2Renderer(renderer);
   assertFloatRenderTargetSupport(renderer);
-  renderer.setSize(sceneNode.width, sceneNode.height);
+  const presentToCanvas = options.presentToCanvas !== false;
+  if (presentToCanvas) {
+    const rendererSize =
+      typeof renderer.getSize === 'function' ? renderer.getSize(new THREE.Vector2()) : null;
+    if (
+      !rendererSize ||
+      rendererSize.x !== sceneNode.width ||
+      rendererSize.y !== sceneNode.height
+    ) {
+      renderer.setSize(sceneNode.width, sceneNode.height);
+    }
+  }
   renderer.autoClear = false;
 
   const renderTargetOptions = getRenderTargetOptionsForOutput(sceneNode, options.outputDomain);
 
   let renderTargets = resources.renderTargets;
   if (
-    renderTargets.length === 0 ||
-    renderTargets[0].width !== currentSceneSize.width ||
-    renderTargets[0].height !== currentSceneSize.height ||
-    !renderTargetMatchesOptions(renderTargets[0], renderTargetOptions)
+    renderTargets.length !== 3 ||
+    renderTargets.some((target) => !renderTargetMatchesOptions(target, renderTargetOptions))
   ) {
     renderTargets.forEach((target) => target.dispose());
     resources.utilityTargets?.forEach((target) => target.dispose());
@@ -3163,6 +3370,10 @@ export const renderViewportFrameWithSharedPipeline = (
       ),
     ];
   }
+  // The resources object owns the active pool. Keeping this assignment inside
+  // the pipeline prevents callers from accidentally retaining the old empty or
+  // wrong-sized array and leaking the newly allocated targets.
+  resources.renderTargets = renderTargets;
 
   let [readBuffer, writeBuffer] = renderTargets;
   const auxBuffer = renderTargets[2];
@@ -3288,6 +3499,12 @@ export const renderViewportFrameWithSharedPipeline = (
       );
       if (!texture) continue;
 
+      const differenceMask = layer.differenceMask;
+      const differenceMaskTexture = differenceMask
+        ? getMediaTextureByKey?.(differenceMask.textureKey, differenceMask.assetId, false)
+        : null;
+      const useDifferenceMask = Boolean(differenceMask && differenceMaskTexture);
+
       const transform = layer.transform;
       const ocioTransform = getMediaLayerOcioColorSpaceTransform(
         layer,
@@ -3295,8 +3512,8 @@ export const renderViewportFrameWithSharedPipeline = (
         colorManagement,
       );
       const material = getMaterial(
-        `${node.id}:media-composite:${layer.id}`,
-        buildOcioTransformedTextureShader(ocioTransform, true),
+        `${node.id}:media-composite:${layer.id}:${useDifferenceMask ? 'difference-mask' : 'plain'}`,
+        buildOcioTransformedTextureShader(ocioTransform, true, useDifferenceMask),
         {
           u_tBackdrop: { value: readTarget.texture },
           u_tDiffuse: { value: texture },
@@ -3315,6 +3532,40 @@ export const renderViewportFrameWithSharedPipeline = (
           u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
           u_source_alpha_mode: { value: getSourceAlphaModeUniform(layer) },
           u_flipY: { value: false },
+          ...(useDifferenceMask && differenceMask && differenceMaskTexture
+            ? {
+                u_tDifferenceReference: { value: differenceMaskTexture },
+                u_reference_res: {
+                  value: new THREE.Vector2(differenceMask.width, differenceMask.height),
+                },
+                u_reference_scaleX: {
+                  value: getValueAtFrame(differenceMask.transform?.scaleX ?? 1, frame),
+                },
+                u_reference_scaleY: {
+                  value: getValueAtFrame(differenceMask.transform?.scaleY ?? 1, frame),
+                },
+                u_reference_offset: {
+                  value: new THREE.Vector2(
+                    getValueAtFrame(differenceMask.transform?.x ?? 0, frame),
+                    getValueAtFrame(differenceMask.transform?.y ?? 0, frame),
+                  ),
+                },
+                u_difference_low: { value: differenceMask.thresholdLow },
+                u_difference_high: { value: differenceMask.thresholdHigh },
+                u_difference_edge: { value: differenceMask.edgeAdjustment },
+                u_difference_remove_specks: { value: differenceMask.removeSpecks },
+                u_difference_fill_holes: { value: differenceMask.fillHoles },
+                u_difference_invert: { value: differenceMask.invert === true },
+                u_difference_preview_mode: {
+                  value:
+                    differenceMask.previewMode === 'overlay'
+                      ? 1
+                      : differenceMask.previewMode === 'matte'
+                        ? 2
+                        : 0,
+                },
+              }
+            : {}),
           ...getGeneratedColorUniforms(node, renderContext, nodeRegistry),
           ...createOcioUniforms(ocioTransform, resources.ocioTextures!),
         },
@@ -3784,8 +4035,14 @@ export const renderViewportFrameWithSharedPipeline = (
     clearRenderTargetTransparent(renderer, displayOutputTarget);
     renderer.render(resources.scene, resources.camera);
   }
-  clearRenderTargetTransparent(renderer, null);
-  renderer.render(resources.scene, resources.camera);
+  if (presentToCanvas) {
+    clearRenderTargetTransparent(renderer, null);
+    renderer.render(resources.scene, resources.camera);
+  } else {
+    // Do not leave a captured offscreen target bound for the caller's next
+    // presentation pass.
+    renderer.setRenderTarget(null);
+  }
 
   return { renderTargets, finalCompositeTarget: readBuffer, displayOutputTarget };
 };

@@ -44,16 +44,22 @@ export class TextureCache {
     video?: HTMLVideoElement,
     objectUrl?: string,
     frameIndex?: number,
-  ) {
-    if (this.cache.has(id)) {
-      this.get(id); // Touch
-      return;
+  ): boolean {
+    const existing = this.cache.get(id);
+    if (existing) {
+      existing.lastAccess = performance.now();
+      // add() transfers ownership to the cache. A racing producer that loses
+      // deduplication must have its newly-created resources released.
+      if (existing.texture !== texture) this.disposeTexture(texture);
+      if (video && existing.video !== video) this.disposeVideo(video);
+      if (objectUrl && existing.objectUrl !== objectUrl) URL.revokeObjectURL(objectUrl);
+      return false;
     }
 
     const img = texture.image as { width?: number; height?: number } | null;
     const width = img?.width || video?.videoWidth || 1024;
     const height = img?.height || video?.videoHeight || 1024;
-    const sizeBytes = width * height * this.getBytesPerPixel(texture);
+    const sizeBytes = this.estimateResidentBytes(texture, width, height);
 
     // Ensure we have space
     this.ensureSpace(sizeBytes);
@@ -71,6 +77,7 @@ export class TextureCache {
     this.cache.set(id, entry);
     this.memoryUsage += sizeBytes;
     this.ensureFrameBudget();
+    return true;
   }
 
   private ensureSpace(requiredBytes: number) {
@@ -92,18 +99,22 @@ export class TextureCache {
     const entry = this.cache.get(id);
     if (!entry) return;
 
-    entry.texture.dispose();
-    if (entry.video) {
-      entry.video.pause();
-      entry.video.src = '';
-      entry.video.remove();
-    }
-    if (entry.objectUrl) {
-      URL.revokeObjectURL(entry.objectUrl);
-    }
-
     this.memoryUsage -= entry.sizeBytes;
     this.cache.delete(id);
+
+    this.disposeTexture(entry.texture);
+    if (
+      entry.video &&
+      !Array.from(this.cache.values()).some(({ video }) => video === entry.video)
+    ) {
+      this.disposeVideo(entry.video);
+    }
+    if (
+      entry.objectUrl &&
+      !Array.from(this.cache.values()).some(({ objectUrl }) => objectUrl === entry.objectUrl)
+    ) {
+      URL.revokeObjectURL(entry.objectUrl);
+    }
   }
 
   private ensureFrameBudget() {
@@ -160,5 +171,49 @@ export class TextureCache {
     if (texture.type === THREE.FloatType) return 16;
     if (texture.type === THREE.HalfFloatType) return 8;
     return 4;
+  }
+
+  private estimateResidentBytes(texture: THREE.Texture, width: number, height: number): number {
+    const gpuBytes = width * height * this.getBytesPerPixel(texture);
+    const image = texture.image as { data?: unknown } | null;
+    const data = image?.data;
+
+    if (ArrayBuffer.isView(data)) {
+      return gpuBytes + data.byteLength;
+    }
+
+    const ownsDecodedPixelSource =
+      (typeof HTMLCanvasElement !== 'undefined' && image instanceof HTMLCanvasElement) ||
+      (typeof HTMLImageElement !== 'undefined' && image instanceof HTMLImageElement) ||
+      (typeof HTMLVideoElement !== 'undefined' && image instanceof HTMLVideoElement) ||
+      (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap);
+
+    // Canvas/image/video-backed textures retain decoded CPU pixels as well as
+    // their GPU upload. Counting both keeps the user-visible cache budget close
+    // to actual process memory instead of under-reporting it by roughly 2x.
+    return gpuBytes + (ownsDecodedPixelSource ? width * height * 4 : 0);
+  }
+
+  private disposeTexture(texture: THREE.Texture) {
+    const image = texture.image as unknown;
+    const retainedEntries = Array.from(this.cache.values());
+    if (retainedEntries.some((entry) => entry.texture === texture)) return;
+
+    texture.dispose();
+    if (retainedEntries.some((entry) => entry.texture.image === image)) return;
+
+    if (typeof HTMLCanvasElement !== 'undefined' && image instanceof HTMLCanvasElement) {
+      image.width = 0;
+      image.height = 0;
+    } else if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) {
+      image.close();
+    }
+  }
+
+  private disposeVideo(video: HTMLVideoElement) {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    video.remove();
   }
 }

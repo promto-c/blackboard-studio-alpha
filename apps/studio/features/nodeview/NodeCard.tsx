@@ -195,6 +195,9 @@ function buildStackInputPorts(stack: AnyNode[]) {
   for (const node of stack) {
     const declaredPortNames = new Set<string>();
     for (const port of getInputPorts(node)) {
+      // `pipe` is the reserved primary input rendered above. Definitions use
+      // primaryInputDomain to customize it instead of declaring a second port.
+      if (port.name === 'pipe') continue;
       declaredPortNames.add(port.name);
       inputPorts.push({
         nodeId: node.id,

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, ScrollArea } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 import {
@@ -11,6 +11,7 @@ import {
 import { useEditorActions } from '@/state/editorContext';
 import { GalleryCard } from '@/features/editor/galleryShared';
 import type { GalleryEntry, GallerySelection } from '@/features/editor/galleryShared';
+import { getGallerySelectionAfterClick } from '@/features/editor/gallerySelection';
 import { AssetViewer, type AssetViewerMedia } from '@/components';
 import { beginAssetPreviewProfile, markAssetPreviewMilestone } from '@/services/assetPreview';
 import {
@@ -55,6 +56,7 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
   const [selection, setSelection] = useState<GallerySelection>(
     () => new Map<string, GalleryEntry>(),
   );
+  const selectionAnchorIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -126,10 +128,14 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
     [loadProject, switchProjectBranch],
   );
 
-  const clearSelection = useCallback(() => setSelection(new Map<string, GalleryEntry>()), []);
+  const clearSelection = useCallback(() => {
+    selectionAnchorIdRef.current = null;
+    setSelection(new Map<string, GalleryEntry>());
+  }, []);
 
   const selectVisibleEntries = useCallback(() => {
     setSelection(new Map<string, GalleryEntry>(selectableEntries.map((e) => [e.id, e])));
+    selectionAnchorIdRef.current = selectableEntries[0]?.id ?? null;
   }, [selectableEntries]);
 
   const selectedCount = selection.size;
@@ -192,18 +198,25 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
     setActiveEntryId(updated.find((e) => e.deletedAt)?.id ?? null);
   };
 
-  const handleCardClick = useCallback((entryId: string) => {
-    setActiveEntryId(entryId);
-  }, []);
-
-  const handleToggleSelected = useCallback((entry: GalleryEntry) => {
-    setSelection((prev) => {
-      const next = new Map(prev);
-      if (next.has(entry.id)) next.delete(entry.id);
-      else next.set(entry.id, entry);
-      return next;
-    });
-  }, []);
+  const handleCardClick = useCallback(
+    (entry: GalleryEntry, event: React.MouseEvent<HTMLButtonElement>) => {
+      if (!entry.assetId) return;
+      setActiveEntryId(entry.id);
+      setSelection((current) => {
+        const result = getGallerySelectionAfterClick({
+          entry,
+          visibleEntries,
+          currentSelection: current,
+          anchorId: selectionAnchorIdRef.current,
+          shiftKey: event.shiftKey,
+          additive: event.metaKey || event.ctrlKey,
+        });
+        selectionAnchorIdRef.current = result.anchorId;
+        return result.selection;
+      });
+    },
+    [visibleEntries],
+  );
 
   const isRecycle = scope === 'recycle';
   const hasEntries = visibleEntries.length > 0;
@@ -257,13 +270,13 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
       </div>
 
       {selectedCount > 0 ? (
-        <div className="mb-3 flex shrink-0 items-center gap-2 rounded-lg border border-rose-300/20 bg-rose-300/[0.06] px-3 py-2 text-xs">
-          <span className="font-medium text-rose-100">{selectedCount} selected</span>
-          <span className="text-rose-300/40">|</span>
+        <div className="mb-3 flex shrink-0 items-center gap-2 rounded-lg border border-primary-300/15 bg-primary-300/[0.06] px-3 py-2 text-xs">
+          <span className="font-medium text-primary-50">{selectedCount} selected</span>
+          <span className="text-primary-300/35">|</span>
           <button
             type="button"
             onClick={clearSelection}
-            className="text-rose-200/70 transition hover:text-rose-100"
+            className="text-primary-100/65 transition hover:text-primary-50"
           >
             Clear
           </button>
@@ -347,20 +360,12 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
           ) : hasEntries ? (
             <ScrollArea fill axis="y" contentClassName="grid grid-cols-2 gap-2 p-2">
               {visibleEntries.map((entry) => (
-                <div
-                  key={entry.id}
-                  className={
-                    entry.id === activeEntry?.id
-                      ? 'rounded-lg ring-1 ring-primary-300/40'
-                      : 'rounded-lg'
-                  }
-                >
+                <div key={entry.id} className="rounded-lg">
                   <GalleryCard
                     entry={entry}
                     selected={selection.has(entry.id)}
                     selectable={!!entry.assetId}
-                    onCardClick={() => handleCardClick(entry.id)}
-                    onToggleSelected={() => handleToggleSelected(entry)}
+                    onCardClick={(event) => handleCardClick(entry, event)}
                   />
                 </div>
               ))}

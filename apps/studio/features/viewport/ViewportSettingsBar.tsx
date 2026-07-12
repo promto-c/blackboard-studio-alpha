@@ -2,13 +2,14 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import type { ViewerSettings, ViewerSlot } from '@blackboard/types';
-import { Popover } from '@blackboard/ui';
-import { DisplayViewSelector, Slider, HotkeyBadge } from '@/components';
+import { Popover, Slider } from '@blackboard/ui';
+import { DisplayViewSelector, HotkeyBadge } from '@/components';
 import * as Icons from '@blackboard/icons';
 import { nodeFlags } from '@/nodes/helpers';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
 import { getViewerTargetLabel, VIEWER_SLOT_ORDER } from '@/utils/viewerSlots';
 import { hasViewerDisplayOverride, resolveCurrentViewerDisplayView } from '@/color-management';
+import { ViewportCompareBar } from './ViewportCompareBar';
 
 type SettingsBarLayout = 'full' | 'comfortable' | 'compact' | 'narrow';
 
@@ -29,6 +30,7 @@ function ViewportSettingsBar() {
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const viewerSlots = useEditorSelector((s) => s.viewerSlots);
   const activeViewerSlot = useEditorSelector((s) => s.activeViewerSlot);
+  const compareView = useEditorSelector((s) => s.compareView);
   const viewerSettings = useEditorSelector((s) => s.viewerSettings);
   const projectDisplayView = useEditorSelector((s) => s.colorManagement.viewer);
   const viewerColorManagement = useEditorSelector((s) => s.viewerColorManagement);
@@ -45,6 +47,7 @@ function ViewportSettingsBar() {
     assignViewerSlot,
     activateViewerSlot,
     clearViewerSlot,
+    exitCompareMode,
   } = useEditorActions();
   const barRef = useRef<HTMLDivElement>(null);
   const glowRef = useRef<HTMLDivElement>(null);
@@ -52,7 +55,6 @@ function ViewportSettingsBar() {
   const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
   const [availableWidth, setAvailableWidth] = useState(720);
   const [topRightControlsWidth, setTopRightControlsWidth] = useState(0);
-
   const selectedOcioDisplay = currentViewerDisplayView.display;
 
   useEffect(() => {
@@ -183,7 +185,16 @@ function ViewportSettingsBar() {
   const showMoreButton = !showOverlayInline || !showOcioInline || !showExposureInline;
   const barMaxWidth = Math.max(224, layoutWidth);
 
+  const isCompareActive = compareView.isActive;
+
   const handleViewerSlotClick = (slot: ViewerSlot, event: React.MouseEvent) => {
+    // During compare mode, clicking a slot exits compare and activates that slot
+    if (isCompareActive) {
+      exitCompareMode();
+      activateViewerSlot(slot);
+      return;
+    }
+
     if ((event.metaKey || event.ctrlKey) && selectedViewerTargetId) {
       assignViewerSlot(slot, selectedViewerTargetId);
       return;
@@ -308,6 +319,14 @@ function ViewportSettingsBar() {
             const assignedNodeId = viewerSlots?.[slot];
             const isAssigned = !!assignedNodeId;
             const isActive = activeViewerSlot === slot;
+            const isInCompare =
+              isCompareActive && (compareView.slotA === slot || compareView.slotB === slot);
+            const comparedWithLabel =
+              isInCompare && compareView.slotA === slot
+                ? ` vs slot ${compareView.slotB}`
+                : isInCompare && compareView.slotB === slot
+                  ? ` vs slot ${compareView.slotA}`
+                  : '';
             const assignedNodeName = assignedNodeId
               ? getViewerTargetLabel(assignedNodeId, nodes)
               : 'Unassigned';
@@ -317,13 +336,15 @@ function ViewportSettingsBar() {
                 key={`viewer-slot-${slot}`}
                 onClick={(event) => handleViewerSlotClick(slot, event)}
                 className={`w-6 h-6 rounded-full text-[11px] font-semibold transition-all ring-1 ring-inset ${
-                  isActive
-                    ? 'bg-primary-500/40 text-white ring-primary-300/80 shadow-[0_0_0_1px_rgba(99,102,241,0.35)]'
-                    : isAssigned
-                      ? 'bg-gray-700/90 text-gray-100 ring-gray-500/70 hover:bg-gray-600/90'
-                      : 'bg-gray-800/80 text-gray-500 ring-gray-700 hover:text-gray-300 hover:ring-gray-500'
+                  isInCompare
+                    ? 'bg-amber-500/40 text-white ring-amber-300/80 shadow-[0_0_0_1px_rgba(245,158,11,0.35)]'
+                    : isActive
+                      ? 'bg-primary-500/40 text-white ring-primary-300/80 shadow-[0_0_0_1px_rgba(99,102,241,0.35)]'
+                      : isAssigned
+                        ? 'bg-gray-700/90 text-gray-100 ring-gray-500/70 hover:bg-gray-600/90'
+                        : 'bg-gray-800/80 text-gray-500 ring-gray-700 hover:text-gray-300 hover:ring-gray-500'
                 }`}
-                title={`Slot ${slot}: ${assignedNodeName}${isActive ? ' (active, click to return to output)' : ''}. Hotkeys: ${slot} toggles slot; in Flow view it assigns selected target. Ctrl/Cmd+${slot} toggles only.`}
+                title={`Slot ${slot}: ${assignedNodeName}${isActive ? ' (active)' : ''}${isInCompare ? ' (comparing' + comparedWithLabel + ', click to exit compare)' : ''}. Hotkeys: ${slot} toggles slot; Ctrl/Cmd+${slot} assigns selected target.`}
               >
                 {slot}
               </button>
@@ -589,8 +610,13 @@ function ViewportSettingsBar() {
             )}
           </Popover>
         )}
-      </div>
-
+      </div>{' '}
+      {/* Compare mode controls — second row */}
+      {isCompareActive && isBarVisible && (
+        <div className="mt-2">
+          <ViewportCompareBar embedded />
+        </div>
+      )}
       <button
         onClick={handleToggleBar}
         className="group w-12 h-5 mt-2 bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-full flex items-center justify-center shadow-lg ring-1 ring-inset ring-white/20 hover:border-white/20 transition-all duration-300 glass-component"

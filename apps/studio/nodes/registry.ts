@@ -24,13 +24,19 @@ import { lensDistortionNode } from './spatial/lens_distortion';
 import { matchMoveNode } from './spatial/match_move';
 import { rotoNode } from './builtin/roto';
 import { paintNode } from './builtin/paint';
-import { chromaKeyNode } from './effects/chroma_key';
+import { keyerNode } from './effects/keyer';
 import { warpNode } from './spatial/warp';
 import { comfyNode } from './ai/comfy';
 import { onnxNode } from './ai/onnx';
 import { groupNode } from './builtin/group';
 import { inputNode } from './builtin/input';
 import { noteNode } from './builtin/note';
+import {
+  ocioColorSpaceTransformNode,
+  ocioFileTransformNode,
+  ocioLookTransformNode,
+  ocioNamedTransformNode,
+} from './effects/ocio';
 
 // A mutable map of all registered node definitions, keyed by node type string.
 // Plugins can register new node types via registerPlugin() from @blackboard/plugin-sdk.
@@ -60,10 +66,14 @@ nodeRegistry.set(NodeType.LENS_DISTORTION, lensDistortionNode);
 nodeRegistry.set(NodeType.MATCH_MOVE, matchMoveNode);
 nodeRegistry.set(NodeType.ROTO, rotoNode);
 nodeRegistry.set(NodeType.PAINT, paintNode);
-nodeRegistry.set(NodeType.CHROMA_KEY, chromaKeyNode);
+nodeRegistry.set(NodeType.KEYER, keyerNode);
 nodeRegistry.set(NodeType.WARP, warpNode);
 nodeRegistry.set(NodeType.COMFY, comfyNode);
 nodeRegistry.set(NodeType.ONNX_MODEL, onnxNode);
+nodeRegistry.set(NodeType.OCIO_COLOR_SPACE, ocioColorSpaceTransformNode);
+nodeRegistry.set(NodeType.OCIO_NAMED_TRANSFORM, ocioNamedTransformNode);
+nodeRegistry.set(NodeType.OCIO_FILE_TRANSFORM, ocioFileTransformNode);
+nodeRegistry.set(NodeType.OCIO_LOOK_TRANSFORM, ocioLookTransformNode);
 nodeRegistry.set(NodeType.NOTE, noteNode);
 
 // --- Categorized lists for UI generation ---

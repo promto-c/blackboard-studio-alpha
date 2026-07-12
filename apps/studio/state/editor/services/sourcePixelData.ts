@@ -34,6 +34,10 @@ export interface SourcePixelDataReader {
   dispose: () => void;
 }
 
+export interface SourcePixelDataReaderOptions {
+  finalColorSpace?: 'raw_texture' | 'scene_linear' | 'srgb' | 'match_viewport';
+}
+
 const clampUnit = (value: number): number => Math.max(0, Math.min(1, value));
 
 const readRenderTargetPixelData = (
@@ -95,8 +99,9 @@ export const getSourcePixelDataForFrame = async (
   source: SourcePixelSource,
   frame: number,
   fps: number,
+  options?: SourcePixelDataReaderOptions,
 ): Promise<PixelDataResult | null> => {
-  const reader = createSourcePixelDataReader(source, fps);
+  const reader = createSourcePixelDataReader(source, fps, options);
   try {
     return await reader.getFramePixelData(frame);
   } finally {
@@ -107,6 +112,7 @@ export const getSourcePixelDataForFrame = async (
 export const createSourcePixelDataReader = (
   source: SourcePixelSource,
   fps: number,
+  options: SourcePixelDataReaderOptions = {},
 ): SourcePixelDataReader => {
   if (source.kind === 'media-node') {
     const reader = createPixelDataReader(source.node, fps);
@@ -133,11 +139,13 @@ export const createSourcePixelDataReader = (
         frame,
         width: source.sceneNode.width,
         height: source.sceneNode.height,
-        finalColorSpace: getScenePreviewColorSpace(
-          source.sceneNode.colorSpace,
-          colorManagementService.resolveProjectColorManagement(source.projectColorManagement)
-            .workingColorSpace,
-        ),
+        finalColorSpace:
+          options.finalColorSpace ??
+          getScenePreviewColorSpace(
+            source.sceneNode.colorSpace,
+            colorManagementService.resolveProjectColorManagement(source.projectColorManagement)
+              .workingColorSpace,
+          ),
         textureCacheMode: 'persistent',
         presentToCanvas: false,
         keepRendererAlive: true,

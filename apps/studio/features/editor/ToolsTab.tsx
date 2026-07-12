@@ -9,7 +9,7 @@ import {
 import { ToolDefinition } from '@/nodes/NodeDefinition';
 import { usePreferences } from '@/state/preferencesContext';
 import * as Icons from '@blackboard/icons';
-import { ScrollArea } from '@blackboard/ui';
+import { ScrollArea, TextInput } from '@blackboard/ui';
 
 function ToolSection({
   title,
@@ -269,88 +269,81 @@ function ToolsTab() {
 
   return (
     <ScrollArea ref={scrollContainerRef} fill axis="y">
-      <div>
-        {/* Search Bar */}
-        <div className="sticky top-0 z-10 bg-gray-900/35 px-2 py-2 backdrop-blur-sm">
-          <div className="group relative">
-            <div className="pointer-events-none absolute inset-y-0 left-0 z-10 flex items-center pl-2.5 text-gray-500 transition-colors group-focus-within:text-primary-300">
-              <Icons.MagnifyingGlass className="h-3.5 w-3.5" />
-            </div>
-            <input
-              ref={inputRef}
-              type="text"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              onKeyDown={handleKeyDown}
-              onFocus={() => setIsFocused(true)}
-              onBlur={() => setIsFocused(false)}
-              placeholder="Search tools..."
-              aria-label="Search tools"
-              className="bb-control-input block h-8 !min-h-0 w-full rounded-lg border border-white/10 bg-gray-950/40 py-1.5 pl-8 pr-7 text-xs text-gray-200 outline-none backdrop-blur-md placeholder:text-gray-500 focus:border-primary-400/40 focus:ring-2 focus:ring-primary-400/20"
-            />
-            {filter && (
-              <button
-                type="button"
-                onClick={() => {
-                  setFilter('');
-                  inputRef.current?.focus();
-                }}
-                className="absolute inset-y-0 right-0 z-10 flex items-center rounded-r-lg px-2 text-gray-500 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-400/35"
-                title="Clear search"
-                aria-label="Clear search"
-              >
-                <Icons.XMark className="h-3.5 w-3.5" />
-              </button>
-            )}
+      {/* Search Bar */}
+      <div className="sticky top-0 z-10 bg-gray-900/35 px-2 py-2 backdrop-blur-sm">
+        <div className="group relative">
+          <div className="pointer-events-none absolute inset-y-0 left-0 z-10 flex items-center pl-2.5 text-gray-500 transition-colors group-focus-within:text-primary-300">
+            <Icons.MagnifyingGlass className="h-3.5 w-3.5" />
           </div>
-        </div>
-
-        {/* Tools List */}
-        <div className="rounded-lg px-2 pb-2 space-y-3 scroll-smooth">
-          {filter ? (
-            // Filtered View (Flat List)
-            filteredTools && filteredTools.length > 0 ? (
-              <ToolSection
-                title="Search Results"
-                tools={filteredTools}
-                selectedToolType={activeToolType}
-              />
-            ) : (
-              <div className="py-8 text-center text-xs text-gray-500">
-                No tools found matching "{filter}"
-              </div>
-            )
-          ) : (
-            // Default Categorized View
-            <>
-              <ToolSection
-                title="Media"
-                tools={sortedImageTools}
-                selectedToolType={activeToolType}
-              />
-              <ToolSection
-                title="Spatial"
-                tools={sortedSpatialTools}
-                selectedToolType={activeToolType}
-              />
-              <ToolSection
-                title="Adjustments"
-                tools={sortedAdjustmentTools}
-                selectedToolType={activeToolType}
-              />
-              <ToolSection
-                title="Effects"
-                tools={sortedEffectTools}
-                selectedToolType={activeToolType}
-              />
-              <ToolSection
-                title="Utility"
-                tools={sortedUtilityTools}
-                selectedToolType={activeToolType}
-              />
-            </>
+          <TextInput
+            ref={inputRef}
+            value={filter}
+            onValueChange={setFilter}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            placeholder="Search tools..."
+            aria-label="Search tools"
+            className="h-8 !min-h-0 pl-8 pr-7 backdrop-blur-md"
+          />
+          {filter && (
+            <button
+              type="button"
+              onClick={() => {
+                setFilter('');
+                inputRef.current?.focus();
+              }}
+              className="absolute inset-y-0 right-0 z-10 flex items-center rounded-r-lg px-2 text-gray-500 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-400/35"
+              title="Clear search"
+              aria-label="Clear search"
+            >
+              <Icons.XMark className="h-3.5 w-3.5" />
+            </button>
           )}
         </div>
+      </div>
+
+      {/* Tools List */}
+      <div className="rounded-lg px-2 pb-2 space-y-3 scroll-smooth">
+        {filter ? (
+          // Filtered View (Flat List)
+          filteredTools && filteredTools.length > 0 ? (
+            <ToolSection
+              title="Search Results"
+              tools={filteredTools}
+              selectedToolType={activeToolType}
+            />
+          ) : (
+            <div className="py-8 text-center text-xs text-gray-500">
+              No tools found matching "{filter}"
+            </div>
+          )
+        ) : (
+          // Default Categorized View
+          <>
+            <ToolSection title="Media" tools={sortedImageTools} selectedToolType={activeToolType} />
+            <ToolSection
+              title="Spatial"
+              tools={sortedSpatialTools}
+              selectedToolType={activeToolType}
+            />
+            <ToolSection
+              title="Adjustments"
+              tools={sortedAdjustmentTools}
+              selectedToolType={activeToolType}
+            />
+            <ToolSection
+              title="Effects"
+              tools={sortedEffectTools}
+              selectedToolType={activeToolType}
+            />
+            <ToolSection
+              title="Utility"
+              tools={sortedUtilityTools}
+              selectedToolType={activeToolType}
+            />
+          </>
+        )}
       </div>
     </ScrollArea>
   );

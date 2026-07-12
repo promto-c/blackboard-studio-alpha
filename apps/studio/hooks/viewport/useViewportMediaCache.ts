@@ -19,7 +19,13 @@ import { isNonEmptyString, getNonEmptyString } from '@/utils/guards';
 import { TextureCache } from '@/utils/textureCache';
 import { type BackgroundPrefetchMode, getRecommendedCacheSizeMB } from '@/state/preferences';
 import { usePreferences } from '@/state/preferencesContext';
-import { getInputPorts, getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
+import {
+  getInputPorts,
+  getMediaDescriptor,
+  getNodeAssetIds,
+  nodeFlags,
+  resolveMediaFrame,
+} from '@/nodes/helpers';
 
 export interface ViewportCacheNodeEntry {
   cachedFrames: boolean[];
@@ -92,9 +98,17 @@ const getFrameAssetIds = (node: AnyNode): string[] => {
 };
 
 const getFrameAssetIdAt = (node: AnyNode, frame: number): string | null => {
+  if (node.type === NodeType.IMAGE_SEQUENCE) {
+    const sequenceNode = node as ImageSequenceNode;
+    const sourceFrame = resolveMediaFrame(sequenceNode, frame);
+    return sourceFrame === null ? null : sequenceNode.frames[sourceFrame] || null;
+  }
+
   const frames = getFrameAssetIds(node);
   if (frames.length === 0) return null;
-  const index = Math.floor(frame);
+  const sourceFrame = resolveMediaFrame(node, frame);
+  if (sourceFrame === null) return null;
+  const index = Math.floor(sourceFrame);
   const safeIndex = ((index % frames.length) + frames.length) % frames.length;
   return frames[safeIndex] ?? null;
 };
@@ -104,24 +118,34 @@ const getNodeSrc = (node: AnyNode): string | null => {
   return getNonEmptyString(src) ?? null;
 };
 
-const getGeneratedOutputAssetIdsAt = (node: AnyNode, frame: number): string[] => {
+export const getGeneratedOutputAssetIdsAt = (node: AnyNode, frame: number): string[] => {
   const outputs = (node as { generatedOutputs?: unknown }).generatedOutputs;
   if (!Array.isArray(outputs)) return [];
 
   return outputs.flatMap((output): string[] => {
     if (!output || typeof output !== 'object') return [];
-    const candidate = output as { src?: unknown; frames?: unknown; deletedAt?: unknown };
+    const candidate = output as {
+      src?: unknown;
+      frames?: unknown;
+      deletedAt?: unknown;
+      differenceMask?: { enabled?: unknown; referenceAssetId?: unknown };
+    };
     if (candidate.deletedAt) return [];
+
+    const differenceReferenceAssetId =
+      candidate.differenceMask?.enabled === true
+        ? getNonEmptyString(candidate.differenceMask.referenceAssetId)
+        : null;
 
     const frames = Array.isArray(candidate.frames) ? candidate.frames.filter(isNonEmptyString) : [];
     if (frames.length > 0) {
       const index = Math.floor(frame);
       const safeIndex = ((index % frames.length) + frames.length) % frames.length;
-      return frames[safeIndex] ? [frames[safeIndex]] : [];
+      return [frames[safeIndex], differenceReferenceAssetId].filter(isNonEmptyString);
     }
 
     const src = getNonEmptyString(candidate.src);
-    return src ? [src] : [];
+    return [src, differenceReferenceAssetId].filter(isNonEmptyString);
   });
 };
 
@@ -314,34 +338,43 @@ export const useViewportMediaCache = ({
 
   const getSequenceFrameIndex = useCallback((node: ImageSequenceNode, frame: number) => {
     if (node.frames.length === 0) return null;
-    const idx = Math.floor(frame) % node.frames.length;
-    return (idx + node.frames.length) % node.frames.length;
+    return resolveMediaFrame(node, frame);
   }, []);
   const getVideoFrameKey = useCallback((src: string, frame: number) => {
     return getVideoFrameCacheKey(src, frame);
   }, []);
 
-  const buildTimelineStatus = useCallback(
-    (assetIds: string[], predicate: (assetId: string) => boolean) => {
-      if (assetIds.length === 0) return [];
-      let status = assetIds.map((assetId) => predicate(assetId));
-      if (maxFrames > assetIds.length) {
-        const baseStatus = status;
-        status = new Array(maxFrames + 1).fill(false);
-        for (let i = 0; i <= maxFrames; i += 1) {
-          status[i] = baseStatus[i % assetIds.length];
-        }
+  const buildSequenceTimelineStatus = useCallback(
+    (
+      node: ImageSequenceNode,
+      predicate: (assetId: string) => boolean,
+      blackFrameStatus: boolean,
+    ) => {
+      if (node.frames.length === 0) return [];
+      const status = new Array(maxFrames + 1).fill(false);
+      for (let frame = 0; frame <= maxFrames; frame += 1) {
+        const sourceFrame = resolveMediaFrame(node, frame);
+        status[frame] =
+          sourceFrame === null ? blackFrameStatus : predicate(node.frames[sourceFrame]);
       }
       return status;
     },
     [maxFrames],
   );
   const buildVideoTimelineStatus = useCallback(
-    (src: string, predicate: (frameKey: string) => boolean) => {
-      if (!src) return [];
+    (
+      node: MediaSourceNode,
+      predicate: (frameKey: string) => boolean,
+      blackFrameStatus: boolean,
+    ) => {
+      if (!node.src) return [];
       const status = new Array(maxFrames + 1).fill(false);
       for (let frame = 0; frame <= maxFrames; frame += 1) {
-        status[frame] = predicate(getVideoFrameKey(src, frame));
+        const sourceFrame = resolveMediaFrame(node, frame);
+        status[frame] =
+          sourceFrame === null
+            ? blackFrameStatus
+            : predicate(getVideoFrameKey(node.src, sourceFrame));
       }
       return status;
     },
@@ -505,7 +538,6 @@ export const useViewportMediaCache = ({
             video.src = createdUrl;
             video.muted = true;
             video.playsInline = true;
-            video.loop = true;
             video.style.display = 'none';
             document.body.appendChild(video);
 
@@ -795,17 +827,7 @@ export const useViewportMediaCache = ({
       const frameAssetId = getFrameAssetIdAt(node, currentFrame);
       if (frameAssetId) {
         loadAsset(frameAssetId);
-      } else if (flags.isMediaNode && !flags.isLooping) {
-        const src = getNodeSrc(node);
-        if (src) {
-          const prevSrc = prevSrcMapRef.current.get(node.id);
-          if (prevSrc !== src) {
-            anySrcChanged = true;
-            prevSrcMapRef.current.set(node.id, src);
-          }
-          loadAsset(src);
-        }
-      } else if (flags.isMediaNode && flags.isLooping) {
+      } else if (flags.isMediaNode) {
         const src = getNodeSrc(node);
         if (src) {
           const prevSrc = prevSrcMapRef.current.get(node.id);
@@ -840,11 +862,12 @@ export const useViewportMediaCache = ({
 
   useEffect(() => {
     if (activeVideoSrcs.size === 0) return;
-    const frame = Math.max(0, Math.round(currentFrame));
-    activeVideoSrcs.forEach((src) => {
-      void requestVideoFrame(src, frame, { priority: 'required' });
+    videoNodes.forEach((node) => {
+      const sourceFrame = resolveMediaFrame(node, currentFrame);
+      if (sourceFrame === null || !node.src) return;
+      void requestVideoFrame(node.src, sourceFrame, { priority: 'required' });
     });
-  }, [activeVideoSrcs, currentFrame, requestVideoFrame]);
+  }, [activeVideoSrcs, currentFrame, requestVideoFrame, videoNodes]);
 
   useEffect(() => {
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -875,7 +898,10 @@ export const useViewportMediaCache = ({
 
         if (isVideoFileNode(sourceNode)) {
           const [assetId] = getNodeAssetIds(sourceNode);
-          if (assetId) void requestVideoFrame(assetId, targetFrame, { priority: 'required' });
+          const sourceFrame = resolveMediaFrame(sourceNode, targetFrame);
+          if (assetId && sourceFrame !== null) {
+            void requestVideoFrame(assetId, sourceFrame, { priority: 'required' });
+          }
           return;
         }
 
@@ -1068,21 +1094,21 @@ export const useViewportMediaCache = ({
     let changed = false;
 
     pendingVideoFrameKeysBySrcRef.current.forEach((frameKeys, src) => {
-      if (retainedVideoSrcs.has(src)) return;
+      if (activeVideoSrcs.has(src)) return;
       pendingVideoFrameKeysBySrcRef.current.delete(src);
       frameKeys.forEach((frameKey) => pendingVideoFramesRef.current.delete(frameKey));
       changed = true;
     });
 
     videoDecodeSessionsRef.current.forEach((session, src) => {
-      if (retainedVideoSrcs.has(src)) return;
+      if (activeVideoSrcs.has(src)) return;
       disposeVideoDecodeSession(session);
       videoDecodeSessionsRef.current.delete(src);
       changed = true;
     });
 
     queuedVideoDecodeWindowsRef.current.forEach((queuedWindow, requestId) => {
-      if (retainedVideoSrcs.has(queuedWindow.src)) return;
+      if (activeVideoSrcs.has(queuedWindow.src)) return;
       cancelQueuedVideoWindow(requestId, queuedWindow);
       changed = true;
     });
@@ -1090,7 +1116,7 @@ export const useViewportMediaCache = ({
     if (changed) {
       bumpMediaUpdateTrigger();
     }
-  }, [bumpMediaUpdateTrigger, cancelQueuedVideoWindow, retainedVideoSrcs]);
+  }, [activeVideoSrcs, bumpMediaUpdateTrigger, cancelQueuedVideoWindow]);
 
   useEffect(() => {
     const sessions = videoDecodeSessionsRef.current;
@@ -1113,21 +1139,22 @@ export const useViewportMediaCache = ({
 
       for (const seqNode of sequenceNodes) {
         nodeEntries[seqNode.id] = {
-          cachedFrames: buildTimelineStatus(seqNode.frames, (assetId) => cache.has(assetId)),
-          cachingFrames: buildTimelineStatus(
-            seqNode.frames,
+          cachedFrames: buildSequenceTimelineStatus(seqNode, (assetId) => cache.has(assetId), true),
+          cachingFrames: buildSequenceTimelineStatus(
+            seqNode,
             (assetId) => pendingLoadsRef.current.has(assetId) && !cache.has(assetId),
+            false,
           ),
         };
       }
 
       for (const vidNode of videoNodes) {
-        const { src } = vidNode;
         nodeEntries[vidNode.id] = {
-          cachedFrames: buildVideoTimelineStatus(src, (frameKey) => cache.has(frameKey)),
+          cachedFrames: buildVideoTimelineStatus(vidNode, (frameKey) => cache.has(frameKey), true),
           cachingFrames: buildVideoTimelineStatus(
-            src,
+            vidNode,
             (frameKey) => pendingVideoFramesRef.current.has(frameKey) && !cache.has(frameKey),
+            false,
           ),
         };
       }
@@ -1141,7 +1168,7 @@ export const useViewportMediaCache = ({
 
     return () => clearTimeout(timer);
   }, [
-    buildTimelineStatus,
+    buildSequenceTimelineStatus,
     buildVideoTimelineStatus,
     mediaUpdateTrigger,
     sequenceNodes,

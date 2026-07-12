@@ -23,6 +23,7 @@ import {
   getMediaSourceColorSpace,
   isDataMediaColorManagement,
 } from '@/color-management';
+import { DEFAULT_COMFY_ALIGNMENT_OPTIONS } from './comfyAlignmentOptions';
 
 const getComfyNodeAssetIds = (node: ComfyNode): string[] =>
   Array.from(
@@ -31,6 +32,9 @@ const getComfyNodeAssetIds = (node: ComfyNode): string[] =>
       ...(node.frames ?? []),
       ...(node.generatedOutputs ?? []).map((output) => output.src),
       ...(node.generatedOutputs ?? []).flatMap((output) => output.frames ?? []),
+      ...(node.generatedOutputs ?? []).map(
+        (output) => output.differenceMask?.referenceAssetId ?? '',
+      ),
       ...Object.values(node.workflowInputImages ?? {}).map((inputImage) => inputImage.assetId),
     ]),
   ).filter((src): src is string => Boolean(src));
@@ -144,6 +148,8 @@ export const comfyNode: NodeDefinition = {
     mediaColorManagement: createProjectDefaultMediaColorManagement(),
     useOutputSizeAsScene: false,
     hiddenInputPortIds: [],
+    autoAlignOutputs: true,
+    alignmentOptions: { ...DEFAULT_COMFY_ALIGNMENT_OPTIONS },
     lastPromptId: undefined,
     lastRunAt: undefined,
     lastError: undefined,
@@ -206,6 +212,12 @@ export const comfyNode: NodeDefinition = {
       const visibleOutputs = getVisibleComfyGeneratedOutputs(comfyNode);
       if (visibleOutputs.length > 0) {
         return visibleOutputs.every((output) => {
+          if (
+            output.differenceMask?.enabled &&
+            !caches.imageCache.has(output.differenceMask.referenceAssetId)
+          ) {
+            return false;
+          }
           const texture = getComfyGeneratedOutputTextureKey(output, frame);
           if (!texture) return true;
           if (texture.isVideoFile) {

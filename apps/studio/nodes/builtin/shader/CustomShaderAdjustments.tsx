@@ -8,12 +8,14 @@ import {
   CodeBlock,
   CollapsibleSection,
   ColorPicker,
+  NumberInput,
   PromptTextField,
   PropertyField,
+  Slider,
   Spinner,
   ToggleSwitch,
 } from '@blackboard/ui';
-import { AttentionPulse, ExecuteButton, SegmentedControl, Slider } from '@/components';
+import { AttentionPulse, ExecuteButton, SegmentedControl } from '@/components';
 import { suggestShaderIdeas, enhanceShaderPrompt } from '@/utils/ai';
 import { getAiTaskRouteError, resolveAiTaskRoute } from '@/utils/aiRouting';
 import * as Icons from '@blackboard/icons';
@@ -370,19 +372,11 @@ const CustomShaderAdjustments = ({
     if (uniform.ui === UniformUIType.NUMBER) {
       return (
         <PropertyField key={name} label={uniform.label}>
-          <input
-            type="number"
+          <NumberInput
             aria-label={uniform.label}
             value={uniform.value}
             step={uniform.step}
-            onChange={(event) => {
-              if (event.target.value === '') return;
-              const numericValue = Number(event.target.value);
-              if (Number.isFinite(numericValue)) {
-                handleStaticUniformChange(name, numericValue);
-              }
-            }}
-            className="block w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-400/20"
+            onValueChange={(numericValue) => handleStaticUniformChange(name, numericValue)}
           />
         </PropertyField>
       );

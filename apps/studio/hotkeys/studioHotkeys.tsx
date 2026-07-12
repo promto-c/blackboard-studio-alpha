@@ -52,8 +52,15 @@ export const shouldPreventNativeDragOrSelection = (
   target: EventTarget | null,
   root: HTMLElement | null,
 ): boolean => {
+  const targetElement =
+    target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  const explicitlyDraggable = targetElement?.closest('[draggable="true"]');
+
   return (
-    isWithinRoot(target, root) && !isTextEntryTarget(target) && !isSelectableTextTarget(target)
+    isWithinRoot(target, root) &&
+    !explicitlyDraggable &&
+    !isTextEntryTarget(target) &&
+    !isSelectableTextTarget(target)
   );
 };
 

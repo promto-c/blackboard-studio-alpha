@@ -11,7 +11,7 @@ import { useNodeInspectorState } from '@/hooks/useNodeInspectorState';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
 import { ScrollArea } from '@blackboard/ui';
 import MergePropertiesPanel from '@/features/nodes/MergeAdjustments';
-import OutputPropertiesPanel from '@/features/viewport/OutputAdjustments';
+import { RenderSettingsPanel } from '@/features/viewport/RenderSettingsPanel';
 import SubPanelHeader from './SubPanelHeader';
 import RotoBatchAdjustments from '@/nodes/builtin/roto/RotoBatchAdjustments';
 import {
@@ -252,7 +252,7 @@ const PropertiesTab = ({
               selectedNodeId={selectedNodeId ?? null}
               nodes={displayStack}
               isOutputSelected={isOutputNodeSelected}
-              outputContent={<OutputPropertiesPanel />}
+              outputContent={<RenderSettingsPanel />}
               isMergeSelected={isMergeNodeSelected && Boolean(selectedNodeId)}
               mergeContent={
                 selectedNodeId ? <MergePropertiesPanel nodeId={selectedNodeId} /> : null

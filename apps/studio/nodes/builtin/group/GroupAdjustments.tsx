@@ -5,6 +5,7 @@ import { getInputPorts } from '@/nodes/helpers';
 import { getRootFlow } from '@/state/editor/flowModel';
 import { usesImplicitPipelineInput } from '@/utils/nodePredicates';
 import * as Icons from '@blackboard/icons';
+import { TextInput } from '@blackboard/ui';
 
 type Candidate = {
   key: string;
@@ -101,10 +102,10 @@ function GroupAdjustments({ node: anyNode }: { node: AnyNode }) {
               return (
                 <div key={input.id} className="rounded border border-white/10 bg-white/[0.03] p-2">
                   <div className="flex items-center gap-2">
-                    <input
+                    <TextInput
                       value={input.label}
-                      onChange={(event) => renameInput(input.id, event.currentTarget.value)}
-                      className="min-w-0 flex-1 rounded border border-white/10 bg-gray-950 px-2 py-1 text-xs text-gray-100 outline-none focus:border-primary-400"
+                      onValueChange={(value) => renameInput(input.id, value)}
+                      className="min-w-0 flex-1 bg-gray-950 px-2 py-1 !min-h-0 focus:border-primary-400"
                     />
                     <button
                       type="button"

@@ -11,9 +11,6 @@ export const isExportAdjustmentType = predicates.isExportAdjustmentType;
 export const isStackedAdjustmentNode = predicates.isStackedAdjustmentNode;
 export const isStackedExportAdjustmentNode = predicates.isStackedExportAdjustmentNode;
 
-/** Registry-aware: uses the `isLooping` flag from the node definition. */
-export const isLoopingTimelineNode = predicates.isLoopingTimelineNode;
-
 /**
  * Returns true if the node type belongs to the "Image" category (source/media).
  * These nodes produce their own pixel data and are composited via merge,

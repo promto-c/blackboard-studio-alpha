@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import * as Icons from '@blackboard/icons';
-import { Badge } from '@blackboard/ui';
+import { Badge, TextInput, ToggleButton } from '@blackboard/ui';
 import { useEditorSelector, useOptionalEditorActions } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import { useInstalledOnnxModels } from '@/state/installedOnnxModelsContext';
@@ -60,9 +60,6 @@ const formatBytes = (bytes?: number): string => {
   }
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 };
-
-const baseFieldClassName =
-  'block w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] outline-none transition placeholder:text-gray-500 focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20';
 
 function OnnxModelsPreferences() {
   const editorActions = useOptionalEditorActions() as {
@@ -422,73 +419,21 @@ function OnnxModelsPreferences() {
             </p>
           </div>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-3">
-          <button
-            type="button"
+        <div className="mt-3 grid grid-cols-2 gap-1">
+          <ToggleButton
+            label="WebGPU"
+            active={onnxRuntimeWebGpuEnabled}
             onClick={() => setPreferences({ onnxRuntimeWebGpuEnabled: !onnxRuntimeWebGpuEnabled })}
-            className={`relative rounded-xl border p-3 text-left transition ${
-              onnxRuntimeWebGpuEnabled
-                ? 'border-primary-400/40 bg-primary-500/10'
-                : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
-            }`}
-          >
-            <span
-              className={`absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border transition ${
-                onnxRuntimeWebGpuEnabled
-                  ? 'border-primary-500 bg-primary-500'
-                  : 'border-white/20 bg-transparent'
-              }`}
-            >
-              {onnxRuntimeWebGpuEnabled ? (
-                <svg
-                  className="h-3 w-3 text-white"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={3}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              ) : null}
-            </span>
-            <span className="text-xs font-medium text-gray-200">WebGPU</span>
-            <p className="mt-1.5 text-[11px] leading-4 text-gray-500">
-              Primary backend. Automatically used when available.
-            </p>
-          </button>
-          <button
-            type="button"
+            title="Primary backend. Automatically used when available."
+            icon={<Icons.CubeTransparent className="h-4 w-4" />}
+          />
+          <ToggleButton
+            label="WASM"
+            active={onnxRuntimeWasmEnabled}
             onClick={() => setPreferences({ onnxRuntimeWasmEnabled: !onnxRuntimeWasmEnabled })}
-            className={`relative rounded-xl border p-3 text-left transition ${
-              onnxRuntimeWasmEnabled
-                ? 'border-primary-400/40 bg-primary-500/10'
-                : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
-            }`}
-          >
-            <span
-              className={`absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border transition ${
-                onnxRuntimeWasmEnabled
-                  ? 'border-primary-500 bg-primary-500'
-                  : 'border-white/20 bg-transparent'
-              }`}
-            >
-              {onnxRuntimeWasmEnabled ? (
-                <svg
-                  className="h-3 w-3 text-white"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={3}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              ) : null}
-            </span>
-            <span className="text-xs font-medium text-gray-200">WASM</span>
-            <p className="mt-1.5 text-[11px] leading-4 text-gray-500">
-              Fallback backend. Used when WebGPU is unavailable.
-            </p>
-          </button>
+            title="Fallback backend. Used when WebGPU is unavailable."
+            icon={<Icons.CodeBracket className="h-4 w-4" />}
+          />
         </div>
         {!compatibility.webgpu && !compatibility.wasm ? (
           <p className="mt-3 text-xs leading-5 text-red-300">
@@ -511,12 +456,12 @@ function OnnxModelsPreferences() {
         </div>
 
         <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-          <input
+          <TextInput
             value={repoNameDraft}
-            onChange={(event) => setRepoNameDraft(event.target.value)}
-            className={`${baseFieldClassName} font-mono`}
+            onValueChange={setRepoNameDraft}
             placeholder={`e.g. ${DEFAULT_ONNX_REPO}`}
             spellCheck={false}
+            className="rounded-xl bg-black/20 px-3 py-2.5 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] font-mono focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20"
           />
           <button
             type="button"
@@ -530,11 +475,11 @@ function OnnxModelsPreferences() {
         </div>
 
         <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-          <input
+          <TextInput
             value={searchDraft}
-            onChange={(event) => setSearchDraft(event.target.value)}
-            className={baseFieldClassName}
+            onValueChange={setSearchDraft}
             placeholder="Search Hugging Face ONNX models"
+            className="rounded-xl bg-black/20 px-3 py-2.5 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20"
           />
           <button
             type="button"

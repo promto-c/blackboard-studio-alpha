@@ -52,6 +52,8 @@ import MediaSourceImportToolButton from '@/nodes/builtin/media_source/MediaSourc
 import ImageSequenceToolButton from '@/nodes/builtin/image_sequence/ImageSequenceToolButton';
 import { getActiveNodeJobMap } from '@/features/nodes/NodeProgressBackground';
 import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
+import { useInAppMediaDrop } from '@/hooks/useInAppMediaDrop';
+import { hasInAppMediaDrag, readInAppMediaDrag } from '@/utils/inAppMediaDrag';
 // --- Types ---
 
 interface Connection {
@@ -178,6 +180,55 @@ function NodeView({
     getCursorStyle,
     isPanning,
   } = useCanvasViewport();
+  const addInAppMediaToFlow = useInAppMediaDrop();
+  const [isInAppMediaDragOver, setIsInAppMediaDragOver] = useState(false);
+  const inAppMediaDragDepthRef = useRef(0);
+
+  const handleInAppMediaDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasInAppMediaDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    inAppMediaDragDepthRef.current += 1;
+    setIsInAppMediaDragOver(true);
+  }, []);
+
+  const handleInAppMediaDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasInAppMediaDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const handleInAppMediaDragLeave = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!isInAppMediaDragOver) return;
+      event.preventDefault();
+      event.stopPropagation();
+      inAppMediaDragDepthRef.current = Math.max(0, inAppMediaDragDepthRef.current - 1);
+      if (inAppMediaDragDepthRef.current === 0) setIsInAppMediaDragOver(false);
+    },
+    [isInAppMediaDragOver],
+  );
+
+  const handleInAppMediaDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const payload = readInAppMediaDrag(event.dataTransfer);
+      if (!payload) return;
+      event.preventDefault();
+      event.stopPropagation();
+      inAppMediaDragDepthRef.current = 0;
+      setIsInAppMediaDragOver(false);
+
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      addInAppMediaToFlow(payload, {
+        x: (event.clientX - rect.left - viewport.panX) / viewport.zoom,
+        y: (event.clientY - rect.top - viewport.panY) / viewport.zoom,
+      });
+    },
+    [addInAppMediaToFlow, containerRef, viewport.panX, viewport.panY, viewport.zoom],
+  );
   useHotkeyScope({ id: 'flow.graph', parentId: 'flow', ref: containerRef });
 
   // --- Port position tracking ---
@@ -1029,7 +1080,14 @@ function NodeView({
 
   if (!sceneNode && nodeStacks.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center p-4">
+      <div
+        ref={containerRef}
+        className="relative flex h-full items-center justify-center p-4"
+        onDragEnter={handleInAppMediaDragEnter}
+        onDragOver={handleInAppMediaDragOver}
+        onDragLeave={handleInAppMediaDragLeave}
+        onDrop={handleInAppMediaDrop}
+      >
         <div className="text-center text-xs text-gray-500">
           <p>Add nodes to see the node graph.</p>
           <div className="mt-4 flex justify-center">
@@ -1039,6 +1097,11 @@ function NodeView({
             </div>
           </div>
         </div>
+        {isInAppMediaDragOver ? (
+          <div className="pointer-events-none absolute inset-3 flex items-center justify-center rounded-xl border border-dashed border-primary-300/60 bg-primary-300/10 text-sm font-medium text-primary-100 backdrop-blur-sm">
+            Drop media into Flow
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -1059,6 +1122,10 @@ function NodeView({
         }
       }}
       onMouseMove={updateGraphPointerPosition}
+      onDragEnter={handleInAppMediaDragEnter}
+      onDragOver={handleInAppMediaDragOver}
+      onDragLeave={handleInAppMediaDragLeave}
+      onDrop={handleInAppMediaDrop}
       onDoubleClick={openAddNodesPanel}
       onClick={(event) => {
         if (suppressNextCanvasClickRef.current) {
@@ -1074,6 +1141,12 @@ function NodeView({
     >
       {/* Grid background */}
       <CanvasGrid zoom={viewport.zoom} />
+
+      {isInAppMediaDragOver ? (
+        <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border border-dashed border-primary-300/60 bg-primary-300/10 text-sm font-medium text-primary-100 backdrop-blur-sm">
+          Drop media into Flow
+        </div>
+      ) : null}
 
       {marqueeSelection?.hasDragged ? (
         <div

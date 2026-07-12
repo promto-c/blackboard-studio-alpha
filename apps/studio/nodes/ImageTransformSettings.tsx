@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { ImageFitMode } from '@blackboard/types';
 import { Link } from '@blackboard/icons';
-import { Badge, CollapsibleSection } from '@blackboard/ui';
-import { SegmentedControl, Slider } from '@/components';
+import { Badge, CollapsibleSection, Slider } from '@blackboard/ui';
+import { SegmentedControl, SettingRow } from '@/components';
 import { IMAGE_FIT_MODE_OPTIONS, isCustomImageFitMode } from './imageFitMode';
 
 export interface LinkedScaleUpdate {
@@ -13,6 +13,7 @@ export interface LinkedScaleUpdate {
 }
 
 interface ImageTransformSettingsProps {
+  leadingContent?: ReactNode;
   fitMode: ImageFitMode;
   scaleX: number;
   scaleY: number;
@@ -38,8 +39,10 @@ interface ImageTransformSettingsProps {
   onTogglePositionYKeyframe?: () => void;
 }
 
-const formatPercent = (value: number) => `${Math.round(value * 100)}%`;
-const formatPixels = (value: number) => `${Math.round(value)} px`;
+const trimFixed = (value: number, precision: number): string =>
+  Number(value.toFixed(precision)).toString();
+const formatPercent = (value: number) => `${trimFixed(value * 100, 4)}%`;
+const formatPixels = (value: number) => `${trimFixed(value, 3)} px`;
 
 function SceneSizeModeControl({
   sceneSizeLabel,
@@ -53,8 +56,7 @@ function SceneSizeModeControl({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="space-y-2">
-      <label className="text-xs font-medium text-gray-400">Scene Size</label>
+    <SettingRow label="Scene Size">
       <SegmentedControl
         ariaLabel="Scene size mode"
         value={useOutputSizeAsScene ? 'output' : 'scene'}
@@ -73,12 +75,14 @@ function SceneSizeModeControl({
           },
         ]}
         onChange={(value) => onChange(value === 'output')}
+        className="w-full"
       />
-    </div>
+    </SettingRow>
   );
 }
 
 export function ImageTransformSettings({
+  leadingContent,
   fitMode,
   scaleX,
   scaleY,
@@ -130,6 +134,8 @@ export function ImageTransformSettings({
   return (
     <CollapsibleSection title="Transform" defaultOpen>
       <div className="space-y-4">
+        {leadingContent}
+
         <SceneSizeModeControl
           sceneSizeLabel={sceneSizeLabel}
           outputSizeLabel={outputSizeLabel}
@@ -137,23 +143,26 @@ export function ImageTransformSettings({
           onChange={onUseOutputSizeAsSceneChange}
         />
 
-        <div className={`space-y-2 ${disabledClassName}`}>
-          <div className="flex items-center justify-between gap-2">
-            <label className="text-xs font-medium text-gray-400">Fit Mode</label>
-            {isCustomFitMode ? (
+        <SettingRow
+          label="Fit Mode"
+          className={disabledClassName}
+          labelAccessory={
+            isCustomFitMode ? (
               <Badge size="sm" variant="accent" uppercase>
                 Custom
               </Badge>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
           <div className={disabledInteractionClassName}>
             <SegmentedControl
               value={fitMode}
               options={IMAGE_FIT_MODE_OPTIONS}
               onChange={handleFitModeChange}
+              className="w-full"
             />
           </div>
-        </div>
+        </SettingRow>
 
         <div className={`flex items-center gap-3 ${disabledClassName}`}>
           <div className={`min-w-0 flex-1 ${disabledInteractionClassName ?? ''}`}>
@@ -162,7 +171,7 @@ export function ImageTransformSettings({
               value={scaleX}
               min={0.01}
               max={5}
-              step={0.01}
+              step={0.000001}
               onChange={(value) => onScaleChange(createScaleUpdate('x', value))}
               onReset={() => onScaleReset(createScaleUpdate('x', 1))}
               displayFormatter={formatPercent}
@@ -189,7 +198,7 @@ export function ImageTransformSettings({
               value={scaleY}
               min={0.01}
               max={5}
-              step={0.01}
+              step={0.000001}
               onChange={(value) => onScaleChange(createScaleUpdate('y', value))}
               onReset={() => onScaleReset(createScaleUpdate('y', 1))}
               displayFormatter={formatPercent}
@@ -210,7 +219,7 @@ export function ImageTransformSettings({
                 value={positionX}
                 min={-positionRange.x}
                 max={positionRange.x}
-                step={1}
+                step={0.001}
                 onChange={(value) => onPositionChange('x', value)}
                 onReset={() => onPositionReset('x')}
                 displayFormatter={formatPixels}
@@ -224,7 +233,7 @@ export function ImageTransformSettings({
                 value={positionY}
                 min={-positionRange.y}
                 max={positionRange.y}
-                step={1}
+                step={0.001}
                 onChange={(value) => onPositionChange('y', value)}
                 onReset={() => onPositionReset('y')}
                 displayFormatter={formatPixels}

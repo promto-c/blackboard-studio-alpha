@@ -46,6 +46,11 @@ export const resolveRendererNodeInputDomain = (
   node: AnyNode,
   inputPortName: string,
 ): ColorProcessingDomain | null => {
+  if (inputPortName === 'pipe' && definition.primaryInputDomain) {
+    return typeof definition.primaryInputDomain === 'function'
+      ? definition.primaryInputDomain(node)
+      : definition.primaryInputDomain;
+  }
   const inputPorts =
     typeof definition.inputPorts === 'function'
       ? definition.inputPorts(node)
@@ -83,7 +88,7 @@ export const assertRendererProcessingDomainsSupported = (
     const definition = getDefinition(node.type);
     if (!definition) return;
     const domain = resolveRendererNodeProcessingDomain(definition, node);
-    if (domain === 'display_referred') {
+    if (domain === 'display_referred' && definition.renderMode !== 'ocio') {
       throw new Error(
         `${node.name || node.type} declares unsupported "${domain}" processing. ` +
           'An explicit OCIO domain transform is required before rendering.',
@@ -101,7 +106,14 @@ export const assertRendererProcessingDomainsSupported = (
         sourcePortName,
       );
       const targetDomain = resolveRendererNodeInputDomain(definition, node, inputPortName);
-      if (!areProcessingDomainsCompatible(sourceDomain, targetDomain)) {
+      const canReinterpretColorDomain =
+        inputPortName === 'pipe' &&
+        definition.primaryInputDomainPolicy === 'reinterpret' &&
+        !isTechnicalProcessingDomain(sourceDomain);
+      if (
+        !canReinterpretColorDomain &&
+        !areProcessingDomainsCompatible(sourceDomain, targetDomain)
+      ) {
         throw new Error(
           `Cannot connect "${sourceDomain}" output from ${sourceNode.name || sourceNode.type} ` +
             `to "${targetDomain}" input ${node.name || node.type}.${inputPortName}.`,

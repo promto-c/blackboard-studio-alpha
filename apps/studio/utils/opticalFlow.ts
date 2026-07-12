@@ -1077,7 +1077,7 @@ export interface SolvedTransformModel {
   model: number[];
 }
 
-type TransformSolveConfig = {
+export type TransformSolveConfig = {
   translation: boolean;
   rotation: boolean;
   scale: boolean;
@@ -1086,6 +1086,43 @@ type TransformSolveConfig = {
   independentScale?: boolean;
   deform: boolean;
   ransacThreshold?: number;
+};
+
+export interface AxisAlignedTransform {
+  scaleX: number;
+  scaleY: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+/** Invert a tracked top-left-origin transform for center-origin node rendering. */
+export const invertAxisAlignedTransformAroundCenter = (
+  transform: AxisAlignedTransform,
+  size: { width: number; height: number },
+): AxisAlignedTransform | null => {
+  const { scaleX, scaleY, offsetX, offsetY } = transform;
+  if (
+    ![scaleX, scaleY, offsetX, offsetY, size.width, size.height].every(Number.isFinite) ||
+    Math.abs(scaleX) < 1e-9 ||
+    Math.abs(scaleY) < 1e-9 ||
+    size.width <= 0 ||
+    size.height <= 0
+  ) {
+    return null;
+  }
+
+  const inverseScaleX = 1 / scaleX;
+  const inverseScaleY = 1 / scaleY;
+  // Optical-flow coordinates address pixel centers (0..size-1), while the
+  // renderer's image origin is the center between the outer pixel edges.
+  const centerX = (size.width - 1) / 2;
+  const centerY = (size.height - 1) / 2;
+  return {
+    scaleX: inverseScaleX,
+    scaleY: inverseScaleY,
+    offsetX: centerX * (inverseScaleX - 1) - offsetX * inverseScaleX,
+    offsetY: centerY * (inverseScaleY - 1) - offsetY * inverseScaleY,
+  };
 };
 
 const getRequestedTransformType = (

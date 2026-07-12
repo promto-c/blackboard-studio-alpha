@@ -10,8 +10,8 @@ import {
   isBackgroundJobActive,
   registerBackgroundJobCancelHandler,
 } from '@/state/editor/services/backgroundJobs';
-import { Badge, CollapsibleSection, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
-import { SegmentedControl, Slider } from '@/components';
+import { Badge, CollapsibleSection, Slider, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
+import { SegmentedControl, SettingRow } from '@/components';
 import {
   AnyNode,
   Flow,
@@ -872,26 +872,25 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
       <CollapsibleSection title="ONNX Model" defaultOpen>
         <div className="space-y-4">
           <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <label className="text-xs font-medium text-gray-400">Installed Model</label>
-            </div>
-            <StyledDropdown
-              value={node.modelId ?? ''}
-              options={[
-                ...(node.modelId && !installedModels.some((model) => model.id === node.modelId)
-                  ? [
-                      {
-                        value: node.modelId,
-                        label: `${node.modelName ?? 'Missing model'} (missing)`,
-                      },
-                    ]
-                  : []),
-                ...modelOptions,
-              ]}
-              onChange={handleModelChange}
-              widthClass="w-full"
-              popoverWidthClass="w-[min(28rem,calc(100vw-2rem))]"
-            />
+            <SettingRow label="Installed Model">
+              <StyledDropdown
+                value={node.modelId ?? ''}
+                options={[
+                  ...(node.modelId && !installedModels.some((model) => model.id === node.modelId)
+                    ? [
+                        {
+                          value: node.modelId,
+                          label: `${node.modelName ?? 'Missing model'} (missing)`,
+                        },
+                      ]
+                    : []),
+                  ...modelOptions,
+                ]}
+                onChange={handleModelChange}
+                widthClass="w-full"
+                popoverWidthClass="w-[min(28rem,calc(100vw-2rem))]"
+              />
+            </SettingRow>
             {selectedModel ? (
               <p className="text-xs leading-5 text-gray-500">
                 {selectedModel.repoName} \u00b7 {selectedModel.variant.filePath}
@@ -904,12 +903,14 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-medium text-gray-400">Backend</label>
-            <SegmentedControl
-              value={node.backend}
-              options={backendOptions}
-              onChange={(value) => updateNode(node.id, { backend: value as OnnxBackend }, true)}
-            />
+            <SettingRow label="Backend">
+              <SegmentedControl
+                value={node.backend}
+                options={backendOptions}
+                onChange={(value) => updateNode(node.id, { backend: value as OnnxBackend }, true)}
+                className="w-full"
+              />
+            </SettingRow>
             {compatibility.warning ? (
               <p className="text-xs leading-5 text-amber-200">{compatibility.warning}</p>
             ) : null}
@@ -1173,13 +1174,13 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
                       <div key={`scalar-${i}`} className="flex items-center justify-between gap-2">
                         <span className="text-gray-100">{meta.name}</span>
                         <div className="flex items-center gap-2">
+                          <span className="font-mono text-gray-500">{meta.type}</span>
                           <ToggleSwitch
                             checked={Boolean(currentValue ?? false)}
                             onCheckedChange={(checked) =>
                               handleUpdateScalarInput(meta.name, checked)
                             }
                           />
-                          <span className="font-mono text-gray-500">{meta.type}</span>
                         </div>
                       </div>
                     );

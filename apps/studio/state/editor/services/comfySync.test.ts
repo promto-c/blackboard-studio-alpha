@@ -19,6 +19,7 @@ import {
 import { createHistoryActions } from '@/state/editor/slices/historyActions';
 import type { EditorState } from '@/state/editor/slices/types';
 import {
+  mergeGeneratedOutputs,
   syncComfyGalleryEntriesAfterHistoryRestore,
   syncComfyGeneratedOutputsWithGalleryEntriesService,
   type ComfyGallerySyncMode,
@@ -49,6 +50,29 @@ const makeOutput = (overrides: Partial<GeneratedOutput> = {}): GeneratedOutput =
   height: 64,
   createdAt: 100,
   ...overrides,
+});
+
+describe('mergeGeneratedOutputs', () => {
+  it('places each newly generated batch above existing Comfy outputs', () => {
+    const existing = [
+      makeOutput({ id: 'older-a', stackOrder: 0 }),
+      makeOutput({ id: 'older-b', stackOrder: 1 }),
+    ];
+
+    const firstMerge = mergeGeneratedOutputs(existing, [
+      makeOutput({ id: 'new-a' }),
+      makeOutput({ id: 'new-b' }),
+    ]);
+    expect(firstMerge?.map((output) => [output.id, output.stackOrder])).toEqual([
+      ['older-a', 0],
+      ['older-b', 1],
+      ['new-a', -2],
+      ['new-b', -1],
+    ]);
+
+    const secondMerge = mergeGeneratedOutputs(firstMerge, [makeOutput({ id: 'newest' })]);
+    expect(secondMerge?.find((output) => output.id === 'newest')?.stackOrder).toBe(-3);
+  });
 });
 
 const makeComfyNode = (outputs: GeneratedOutput[]): ComfyNode => ({

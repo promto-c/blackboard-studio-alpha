@@ -1,3 +1,4 @@
+import { TextInput } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 
 export interface OcioContextVariablesEditorProps {
@@ -45,29 +46,29 @@ export function OcioContextVariablesEditor({
       {Object.entries(context).length ? (
         Object.entries(context).map(([key, contextValue]) => (
           <div key={key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2rem] gap-2">
-            <input
+            <TextInput
               value={key}
               aria-label="OCIO context variable name"
-              onChange={(event) => {
-                const nextKey = event.currentTarget.value.trim();
+              onValueChange={(value) => {
+                const nextKey = value.trim();
                 if (!nextKey || nextKey === key || nextKey in context) return;
                 const nextContext = { ...context };
                 delete nextContext[key];
                 nextContext[nextKey] = contextValue;
                 setContext(nextContext);
               }}
-              className="min-w-0 rounded-lg bg-white/[0.08] px-2.5 py-2 font-mono text-xs text-gray-200 outline-none transition focus:ring-2 focus:ring-primary-400/30"
+              className="font-mono"
             />
-            <input
+            <TextInput
               value={contextValue}
               aria-label={`${key} value`}
-              onChange={(event) =>
+              onValueChange={(value) =>
                 setContext({
                   ...context,
-                  [key]: event.currentTarget.value,
+                  [key]: value,
                 })
               }
-              className="min-w-0 rounded-lg bg-white/[0.08] px-2.5 py-2 font-mono text-xs text-gray-200 outline-none transition focus:ring-2 focus:ring-primary-400/30"
+              className="font-mono"
             />
             <button
               type="button"

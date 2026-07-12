@@ -11,6 +11,7 @@ import {
   getMediaSourceColorSpace,
   isDataMediaColorManagement,
 } from '@/color-management';
+import { resolveTemporalSourceFrame } from '../../sourceFrameRange';
 
 export const mediaSourceNode: NodeDefinition = {
   type: NodeType.MEDIA_SOURCE,
@@ -21,10 +22,7 @@ export const mediaSourceNode: NodeDefinition = {
   IconComponent: Photo,
   ToolComponent: MediaSourceImportToolButton,
   AdjustmentComponent: MediaSourceAdjustments,
-  flags: {
-    ...sourceMediaNodeFlags,
-    isLooping: true,
-  },
+  flags: sourceMediaNodeFlags,
   animation: mediaTransformAnimation,
   getInitialNodeProps: () => ({
     src: '',
@@ -38,19 +36,29 @@ export const mediaSourceNode: NodeDefinition = {
     mediaColorManagement: createProjectDefaultMediaColorManagement(),
     sourceAlphaMode: 'file',
     useOutputSizeAsScene: false,
-    loop: true,
+    startFrame: 0,
+    beforeRangeBehavior: 'black',
+    afterRangeBehavior: 'black',
   }),
   mediaDescriptor: {
     getAssetIds: (node) => {
       const src = (node as MediaSourceNode).src;
       return src ? [src] : [];
     },
+    resolveFrame: (node, frame) => {
+      const mediaNode = node as MediaSourceNode;
+      return mediaNode.mediaKind === 'video'
+        ? resolveTemporalSourceFrame(mediaNode, frame)
+        : Math.round(frame);
+    },
     checkFrameReady: (node, frame, caches) => {
       const mediaNode = node as MediaSourceNode;
       const src = mediaNode.src;
       if (!src) return true;
       if (mediaNode.mediaKind === 'video') {
-        const frameKey = `${src}:${Math.round(frame)}`;
+        const sourceFrame = resolveTemporalSourceFrame(mediaNode, frame);
+        if (sourceFrame === null) return true;
+        const frameKey = `${src}:${sourceFrame}`;
         if (caches.imageCache.has(frameKey)) return true;
         const entry = caches.videoElements.get(src);
         if (!entry) return false;
@@ -63,7 +71,8 @@ export const mediaSourceNode: NodeDefinition = {
       const mediaNode = node as MediaSourceNode;
       if (!mediaNode.src) return '';
       if (mediaNode.mediaKind === 'video') {
-        return `${mediaNode.src}:${Math.round(frame!)}`;
+        const sourceFrame = resolveTemporalSourceFrame(mediaNode, frame);
+        return sourceFrame === null ? '' : `${mediaNode.src}:${sourceFrame}`;
       }
       return mediaNode.src;
     },

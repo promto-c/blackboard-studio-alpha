@@ -302,6 +302,7 @@ export function useViewportInteractions(
   ctx.selectedNodeId = selectedNodeId;
   ctx.nodes = nodes;
   ctx.sceneNode = sceneNode;
+  ctx.projectColorManagement = projectColorManagement;
   ctx.zoom = zoom;
   ctx.visualFrame = visualFrame;
   ctx.activeViewportTool = activeViewportTool;

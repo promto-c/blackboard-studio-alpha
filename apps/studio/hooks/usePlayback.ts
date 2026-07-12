@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react';
-import { isLoopingTimelineNode } from '@/utils/nodePredicates';
 
 type PlaybackMode = 'every_frame' | 'realtime';
+export type PlaybackBoundaryBehavior = 'stop' | 'loop';
 
 const wrapFrame = (frame: number, maxFrames: number) => {
   const frameCount = Math.max(1, maxFrames + 1);
@@ -14,7 +14,6 @@ interface PlaybackState {
   fps: number;
   currentFrame: number;
   maxFrames: number;
-  nodes: { type: string; loop?: boolean }[];
 }
 
 interface PlaybackStore<S extends PlaybackState = PlaybackState> {
@@ -30,12 +29,14 @@ interface PlaybackStore<S extends PlaybackState = PlaybackState> {
  * @param isPlaying    - Current playback state (from the store via useSyncExternalStore).
  * @param playbackMode - Either 'every_frame' (render-locked) or 'realtime'.
  * @param renderLockRef - Shared ref toggled by signalFrameRendered to gate every-frame mode.
+ * @param boundaryBehavior - Explicit caller policy at timeline boundaries.
  */
 export function usePlayback(
   store: PlaybackStore,
   isPlaying: boolean,
   playbackMode: PlaybackMode,
   renderLockRef: RefObject<boolean>,
+  boundaryBehavior: PlaybackBoundaryBehavior = 'stop',
 ): void {
   const animationFrameRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number>(0);
@@ -59,10 +60,9 @@ export function usePlayback(
           return;
         }
 
-        const hasLoopingVideo = current.nodes.some(isLoopingTimelineNode);
         let nextFrame = current.currentFrame + playbackDirection;
         if (nextFrame > current.maxFrames || nextFrame < 0) {
-          if (hasLoopingVideo) {
+          if (boundaryBehavior === 'loop') {
             nextFrame = wrapFrame(nextFrame, current.maxFrames);
           } else {
             renderLockRef.current = false;
@@ -89,9 +89,8 @@ export function usePlayback(
         store.setState((s) => {
           const direction = s.playbackDirection ?? 1;
           let nextFrame = s.currentFrame + framesToAdvance * direction;
-          const hasLoopingVideo = s.nodes.some(isLoopingTimelineNode);
           if (nextFrame > s.maxFrames || nextFrame < 0) {
-            if (hasLoopingVideo) {
+            if (boundaryBehavior === 'loop') {
               nextFrame = wrapFrame(nextFrame, s.maxFrames);
             } else {
               return { isPlaying: false, currentFrame: direction > 0 ? s.maxFrames : 0 };
@@ -103,7 +102,7 @@ export function usePlayback(
 
       animationFrameRef.current = requestAnimationFrame(runPlayback);
     },
-    [store, playbackMode, renderLockRef],
+    [boundaryBehavior, store, playbackMode, renderLockRef],
   );
 
   useEffect(() => {

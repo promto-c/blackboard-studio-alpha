@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { NodeType, type AnyNode } from '@blackboard/types';
+import {
+  NodeType,
+  OCIO_PROJECT_WORKING_SPACE,
+  OCIO_TEXTURE_COLOR_SPACE,
+  type AnyNode,
+} from '@blackboard/types';
 import { canConnectNodeProcessingDomains } from './nodeProcessingDomains';
 import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
 
@@ -10,6 +15,12 @@ const node = (id: string, type: AnyNode['type']): AnyNode =>
     name: id,
     enabled: true,
     ...(type === NodeType.GRADE ? { grade: createDefaultGrade() } : {}),
+    ...(type === NodeType.OCIO_COLOR_SPACE
+      ? {
+          sourceColorSpace: OCIO_TEXTURE_COLOR_SPACE,
+          destinationColorSpace: OCIO_PROJECT_WORKING_SPACE,
+        }
+      : {}),
   }) as AnyNode;
 
 describe('node processing-domain connections', () => {
@@ -50,6 +61,30 @@ describe('node processing-domain connections', () => {
         targetPortName: 'pipe',
       }),
     ).toBe(true);
+  });
+
+  it('allows Color Space Transform to reinterpret a color-domain input', () => {
+    const nodes = [node('media', NodeType.MEDIA_SOURCE), node('cst', NodeType.OCIO_COLOR_SPACE)];
+    expect(
+      canConnectNodeProcessingDomains({
+        nodes,
+        sourceNodeId: 'media',
+        sourcePortName: 'output',
+        targetNodeId: 'cst',
+        targetPortName: 'pipe',
+      }),
+    ).toBe(true);
+
+    nodes[0] = node('extract', NodeType.EXTRACT_CHANNELS);
+    expect(
+      canConnectNodeProcessingDomains({
+        nodes,
+        sourceNodeId: 'extract',
+        sourcePortName: 'r',
+        targetNodeId: 'cst',
+        targetPortName: 'pipe',
+      }),
+    ).toBe(false);
   });
 
   it('treats Roto as a scene-linear RGBA effect', () => {

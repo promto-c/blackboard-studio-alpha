@@ -2,6 +2,7 @@ import { ImageSequenceNode, MediaSourceNode, NodeType } from '@blackboard/types'
 import { getAsset } from '@/state/assetStorage';
 import { readExrPixelData } from '@/utils/exr';
 import { type MediaBlobLike, getBlobName, isExrFileLike } from '@/utils/mediaFiles';
+import { resolveTemporalSourceFrame } from '@/nodes/sourceFrameRange';
 
 export type PixelDataResult = { data: Uint8ClampedArray; width: number; height: number };
 
@@ -154,7 +155,9 @@ const createVideoPixelDataReader = (node: MediaSourceNode, fps: number): PixelDa
 
   return {
     getFramePixelData: async (frame) => {
-      const targetFrame = Math.max(0, Math.round(frame));
+      const resolvedFrame = resolveTemporalSourceFrame(node, frame);
+      if (resolvedFrame === null) return null;
+      const targetFrame = Math.max(0, resolvedFrame);
       const direction = lastRequestedFrame !== null && targetFrame < lastRequestedFrame ? -1 : 1;
       lastRequestedFrame = targetFrame;
 
@@ -220,9 +223,8 @@ export async function getPixelDataForFrame(
   if (node.type === NodeType.MEDIA_SOURCE && node.mediaKind === 'image') {
     assetId = node.src;
   } else if (node.type === NodeType.IMAGE_SEQUENCE) {
-    const index = Math.floor(frame) % node.frames.length;
-    const safeIndex = (index + node.frames.length) % node.frames.length;
-    assetId = node.frames[safeIndex];
+    const sourceFrame = resolveTemporalSourceFrame(node, frame);
+    assetId = sourceFrame === null ? '' : node.frames[sourceFrame];
   }
 
   if (!assetId) return null;

@@ -1,6 +1,10 @@
 import type React from 'react';
 import * as THREE from 'three';
-import type { ResolveOutputContext } from '@blackboard/renderer';
+import type {
+  RendererOcioTransformContext,
+  RendererOcioTransformDescriptor,
+  ResolveOutputContext,
+} from '@blackboard/renderer';
 import {
   AnimatableNumber,
   AnyNode,
@@ -25,6 +29,7 @@ export type ToolCategory = 'Image' | 'Spatial' | 'Adjustment' | 'Effect' | 'Util
 /** How the render pipeline should process this node. */
 export type RenderMode =
   | 'shader'
+  | 'ocio'
   | 'multipass'
   | 'mask'
   | 'paint'
@@ -109,7 +114,7 @@ export type OutputPortDescriptors =
 // chains in Viewport.tsx.
 // ---------------------------------------------------------------------------
 
-/** Scene-space point. */
+/** Scene-space point centered on the canvas; X increases right and Y increases down. */
 export interface ViewportScenePoint {
   x: number;
   y: number;
@@ -256,6 +261,22 @@ export interface MediaCompositeLayer {
   colorSpace?: string;
   isData?: boolean;
   sourceAlphaMode?: SourceAlphaMode;
+  differenceMask?: MediaDifferenceMaskLayer;
+}
+
+export interface MediaDifferenceMaskLayer {
+  textureKey: string;
+  assetId?: string;
+  width: number;
+  height: number;
+  transform?: Partial<Pick<ImageTransform, 'x' | 'y' | 'scaleX' | 'scaleY'>>;
+  thresholdLow: number;
+  thresholdHigh: number;
+  edgeAdjustment: number;
+  removeSpecks: number;
+  fillHoles: number;
+  invert?: boolean;
+  previewMode?: 'result' | 'overlay' | 'matte';
 }
 
 /**
@@ -266,6 +287,11 @@ export interface MediaCompositeLayer {
 export interface MediaDescriptor {
   /** Extract asset IDs that this node references (for preloading/caching). */
   getAssetIds: (node: AnyNode) => string[];
+  /**
+   * Resolve a timeline frame to the frame that should be decoded from the
+   * source. Returning null produces transparent black for this source.
+   */
+  resolveFrame?: (node: AnyNode, frame: number) => number | null;
   /** Check whether the frame is ready to render (all textures available). */
   checkFrameReady: (node: AnyNode, frame: number, caches: MediaCacheContext) => boolean;
   /**
@@ -306,8 +332,6 @@ export interface NodeFlags {
   isRenderable?: boolean;
   /** Node provides a media texture (image/video/sequence). */
   isMediaNode?: boolean;
-  /** Media node supports looping playback. */
-  isLooping?: boolean;
   /** Media node stores a single video file (decoded via HTMLVideoElement). */
   isVideoFile?: boolean;
   /** Node can be reordered via drag in the list view. */
@@ -335,7 +359,7 @@ export interface ViewportPointerEvent {
   /** Mouse position in viewport-relative pixels. */
   clientX: number;
   clientY: number;
-  /** Mouse position in scene-space (relative to scene center). */
+  /** Mouse position relative to scene center. X increases right and Y increases down. */
   sceneX: number;
   sceneY: number;
   /** Mouse button: 0 = left, 1 = middle, 2 = right. */
@@ -561,6 +585,10 @@ export interface NodeDefinition {
   renderOutputContract?: RenderOutputContract;
   /** Domain in which this node reads and produces its primary image pipe. */
   processingDomain: ColorProcessingDomain | ((node: AnyNode) => ColorProcessingDomain);
+  /** Domain accepted by the primary `pipe` input when it differs from the output domain. */
+  primaryInputDomain?: ColorProcessingDomain | ((node: AnyNode) => ColorProcessingDomain);
+  /** `reinterpret` permits color-domain mismatches at an explicit conversion boundary. */
+  primaryInputDomainPolicy?: 'strict' | 'reinterpret';
 
   // UI components
   IconComponent: React.ComponentType<{ className?: string }>;
@@ -636,11 +664,16 @@ export interface NodeDefinition {
   // For multi-pass effects, this returns an object with shaders for each pass.
   getShader?: (node: AnyNode) => string | { horizontal: string; vertical: string };
   getUniforms?: UniformsGetter;
+  /** Ordered OCIO transforms rendered as one optimized GPU processor. */
+  getOcioTransforms?: (
+    node: AnyNode,
+    context: RendererOcioTransformContext,
+  ) => readonly RendererOcioTransformDescriptor[];
 
   // Stabilization support
   getStabilizeTransform?: (node: AnyNode, frame: number, context?: unknown) => TransformData | null;
 
-  /** Optional secondary input ports this node declares. */
+  /** Optional secondary input ports. The primary `pipe` port is reserved and implicit. */
   inputPorts?: InputPortDescriptors;
 
   /** Optional output ports this node declares. Defaults to a single `output` port. */

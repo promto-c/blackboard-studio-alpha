@@ -29,6 +29,7 @@ import {
   getTagValue,
   hasTag,
 } from './galleryShared';
+import { getGallerySelectionAfterClick } from './gallerySelection';
 import {
   loadGalleryEntries,
   softDeleteGalleryEntries,
@@ -211,63 +212,6 @@ function GalleryTab() {
     });
   }, [selectableEntries]);
 
-  const toggleEntrySelection = (entry: GalleryEntry) => {
-    if (!entry.assetId) return;
-    selectionAnchorIdRef.current = entry.id;
-    setSelection((current) => {
-      const next = new Map(current);
-      if (next.has(entry.id)) next.delete(entry.id);
-      else next.set(entry.id, entry);
-      return next;
-    });
-  };
-
-  const selectEntryRange = (entry: GalleryEntry, preserveExisting: boolean) => {
-    if (!entry.assetId) return;
-
-    const anchorId = selectionAnchorIdRef.current;
-    const targetIndex = visibleEntries.findIndex((candidate) => candidate.id === entry.id);
-    const anchorIndex = anchorId
-      ? visibleEntries.findIndex((candidate) => candidate.id === anchorId)
-      : -1;
-
-    if (targetIndex < 0 || anchorIndex < 0) {
-      selectionAnchorIdRef.current = entry.id;
-      setSelection((current) => {
-        const next = preserveExisting ? new Map(current) : new Map<string, GalleryEntry>();
-        next.set(entry.id, entry);
-        return next;
-      });
-      return;
-    }
-
-    const [startIndex, endIndex] =
-      anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-    const rangeEntries = visibleEntries
-      .slice(startIndex, endIndex + 1)
-      .filter((candidate) => !!candidate.assetId);
-
-    setSelection((current) => {
-      const next = preserveExisting ? new Map(current) : new Map<string, GalleryEntry>();
-      rangeEntries.forEach((candidate) => next.set(candidate.id, candidate));
-      return next;
-    });
-  };
-
-  const handleEntrySelectionClick = (
-    entry: GalleryEntry,
-    event: React.MouseEvent<HTMLButtonElement>,
-  ) => {
-    if (!entry.assetId) return;
-
-    if (event.shiftKey) {
-      selectEntryRange(entry, event.metaKey || event.ctrlKey);
-      return;
-    }
-
-    toggleEntrySelection(entry);
-  };
-
   const selectVisibleEntries = () => {
     setSelection((current) => {
       const next = new Map(current);
@@ -414,27 +358,29 @@ function GalleryTab() {
   };
 
   const handleCardClick = (entry: GalleryEntry, event: React.MouseEvent<HTMLButtonElement>) => {
-    if (event.shiftKey || event.metaKey || event.ctrlKey) {
-      event.preventDefault();
-      handleEntrySelectionClick(entry, event);
-      return;
-    }
-
+    if (!entry.assetId) return;
+    const isAdditive = event.metaKey || event.ctrlKey;
+    setSelection((current) => {
+      const result = getGallerySelectionAfterClick({
+        entry,
+        visibleEntries,
+        currentSelection: current,
+        anchorId: selectionAnchorIdRef.current,
+        shiftKey: event.shiftKey,
+        additive: isAdditive,
+      });
+      selectionAnchorIdRef.current = result.anchorId;
+      return result.selection;
+    });
+    if (event.shiftKey || isAdditive) return;
     if (entry.deletedAt) return;
     void handleActivate(entry);
   };
 
   const handleLoadOutputParams = async (entry: GalleryEntry) => {
-    if (entry.source !== 'Comfy' || !entry.assetId) return;
+    if (entry.source !== 'Comfy' || !entry.assetId || !selectedComfyNode) return;
 
-    const nodeId = getTagValue(entry.tags, 'node:');
-    if (!nodeId) return;
-
-    const node = nodes.find(
-      (candidate): candidate is ComfyNode =>
-        candidate.id === nodeId && candidate.type === NodeType.COMFY,
-    );
-    if (!node) return;
+    const targetNode = selectedComfyNode;
 
     setParamsImportEntryId(entry.id);
     setGalleryNotice(null);
@@ -455,17 +401,19 @@ function GalleryTab() {
       });
       const nextWorkflowControls = createDefaultComfyWorkflowControls(workflow);
 
-      const workflows = node.workflows.some((candidate) => candidate.id === workflow.id)
-        ? node.workflows.map((candidate) => (candidate.id === workflow.id ? workflow : candidate))
-        : [...node.workflows, workflow];
+      const workflows = targetNode.workflows.some((candidate) => candidate.id === workflow.id)
+        ? targetNode.workflows.map((candidate) =>
+            candidate.id === workflow.id ? workflow : candidate,
+          )
+        : [...targetNode.workflows, workflow];
 
       updateNode(
-        node.id,
+        targetNode.id,
         {
           workflows,
           selectedWorkflowId: workflow.id,
           workflowControls: [
-            ...(node.workflowControls ?? []).filter(
+            ...(targetNode.workflowControls ?? []).filter(
               (control) => control.workflowId !== workflow.id,
             ),
             ...nextWorkflowControls,
@@ -474,7 +422,7 @@ function GalleryTab() {
         },
         true,
       );
-      selectNode(node.id);
+      selectNode(targetNode.id);
       setActiveTab(EditorTab.Props);
       setSubPanelVisible(true);
       setGalleryNotice({
@@ -509,17 +457,17 @@ function GalleryTab() {
       </div>
 
       {selectedCount > 0 && (
-        <div className="flex flex-shrink-0 items-center gap-2 border-b border-rose-300/20 bg-rose-300/[0.06] px-2 py-2">
+        <div className="flex flex-shrink-0 items-center gap-2 border-b border-primary-300/15 bg-primary-300/[0.06] px-2 py-2">
           <button
             type="button"
             onClick={clearSelection}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-rose-100/70 transition hover:bg-white/[0.06] hover:text-rose-50"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-primary-100/65 transition hover:bg-white/[0.06] hover:text-primary-50"
             title="Clear selection"
             aria-label="Clear selection"
           >
             <Icons.XMark className="h-3.5 w-3.5" />
           </button>
-          <span className="min-w-0 flex-1 truncate text-xs font-medium text-rose-100">
+          <span className="min-w-0 flex-1 truncate text-xs font-medium text-primary-50">
             {selectedCount} selected
           </span>
           <button
@@ -593,14 +541,14 @@ function GalleryTab() {
       {selectableEntries.length > 0 && (
         <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-white/10 px-2 py-1.5">
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-600">
-            Batch
+            Selection
           </span>
           <button
             type="button"
             onClick={selectVisibleEntries}
             className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-400 transition hover:bg-white/[0.05] hover:text-gray-100"
           >
-            Select visible
+            Select all
           </button>
         </div>
       )}
@@ -617,9 +565,11 @@ function GalleryTab() {
               entry={entry}
               selected={selection.has(entry.id)}
               selectable={!!entry.assetId}
-              onToggleSelected={(event) => handleEntrySelectionClick(entry, event)}
               onCardClick={(event) => handleCardClick(entry, event)}
-              onLoadParams={() => void handleLoadOutputParams(entry)}
+              onLoadParams={
+                selectedComfyNode ? () => void handleLoadOutputParams(entry) : undefined
+              }
+              paramsTargetName={selectedComfyNode?.name}
               loadingParams={paramsImportEntryId === entry.id}
             />
           ))}

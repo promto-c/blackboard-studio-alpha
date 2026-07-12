@@ -24,7 +24,7 @@ import { ScrollArea, SplitterHandle } from '@blackboard/ui';
 import NodeList from './NodeList';
 import NodeIcon from './NodeIcon';
 import MergePropertiesPanel from './MergeAdjustments';
-import OutputPropertiesPanel from '@/features/viewport/OutputAdjustments';
+import { RenderSettingsPanel } from '@/features/viewport/RenderSettingsPanel';
 import NodeView from '@/features/nodeview/NodeView';
 import ComfyWorkflowGraphView, {
   type ComfyGraphPathItem,
@@ -35,6 +35,8 @@ import {
   getRotoInspectorBreadcrumbItems,
   getScene3DInspectorBreadcrumbItems,
 } from '@/utils/inspectorBreadcrumbs';
+import { useInAppMediaDrop } from '@/hooks/useInAppMediaDrop';
+import { hasInAppMediaDrag, readInAppMediaDrag } from '@/utils/inAppMediaDrag';
 
 interface FlowTabProps {
   showPropertiesSection?: boolean;
@@ -307,6 +309,41 @@ const FlowTab = ({
   );
   const currentComfyGraphDepth = Math.max(-1, activeComfySubgraphDepth);
   const isComfyWorkflowGraphActive = activeComfyWorkflow && currentComfyGraphDepth >= 0;
+  const addInAppMediaToFlow = useInAppMediaDrop();
+  const [isInAppMediaDragOver, setIsInAppMediaDragOver] = useState(false);
+  const canDropInAppMediaInList =
+    !isComfyWorkflowGraphActive && (viewMode === 'list' || isMobilePortrait);
+  const handleInAppMediaDragOver = useCallback(
+    (event: React.DragEvent<HTMLElement>) => {
+      if (!canDropInAppMediaInList || !hasInAppMediaDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'copy';
+      setIsInAppMediaDragOver(true);
+    },
+    [canDropInAppMediaInList],
+  );
+  const handleInAppMediaDragLeave = useCallback(
+    (event: React.DragEvent<HTMLElement>) => {
+      if (!isInAppMediaDragOver) return;
+      const relatedTarget = event.relatedTarget;
+      if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+      setIsInAppMediaDragOver(false);
+    },
+    [isInAppMediaDragOver],
+  );
+  const handleInAppMediaDrop = useCallback(
+    (event: React.DragEvent<HTMLElement>) => {
+      if (!canDropInAppMediaInList) return;
+      const payload = readInAppMediaDrag(event.dataTransfer);
+      if (!payload) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setIsInAppMediaDragOver(false);
+      addInAppMediaToFlow(payload);
+    },
+    [addInAppMediaToFlow, canDropInAppMediaInList],
+  );
   const currentActiveComfySubgraphPath =
     currentComfyGraphDepth > 0 ? activeComfySubgraphPath.slice(0, currentComfyGraphDepth) : [];
   const rootFlowContextKey = selectedComfyWorkflow
@@ -361,7 +398,7 @@ const FlowTab = ({
         selectedNodeId={selectedNodeId ?? null}
         nodes={propertyStack}
         isOutputSelected={isOutputNodeSelected}
-        outputContent={<OutputPropertiesPanel />}
+        outputContent={<RenderSettingsPanel />}
         isMergeSelected={isMergeNodeSelected && Boolean(selectedNodeId)}
         mergeContent={selectedNodeId ? <MergePropertiesPanel nodeId={selectedNodeId} /> : null}
         emptyState={
@@ -559,7 +596,13 @@ const FlowTab = ({
   if (!isMobilePortrait) {
     const desktopFlowContent = (
       <>
-        <div className="relative flex-1 min-h-0" onClick={() => selectNode(null)}>
+        <div
+          className="relative min-h-0 flex-1"
+          onClick={() => selectNode(null)}
+          onDragOver={handleInAppMediaDragOver}
+          onDragLeave={handleInAppMediaDragLeave}
+          onDrop={handleInAppMediaDrop}
+        >
           {isComfyWorkflowGraphActive ? (
             <ComfyWorkflowGraphView
               workflow={activeComfyWorkflow.workflow}
@@ -588,6 +631,11 @@ const FlowTab = ({
               fitInsetRight={graphFitInsetRight}
             />
           )}
+          {isInAppMediaDragOver ? (
+            <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border border-dashed border-primary-300/60 bg-primary-300/10 text-sm font-medium text-primary-100 backdrop-blur-sm">
+              Drop media into Flow
+            </div>
+          ) : null}
         </div>
       </>
     );
@@ -665,10 +713,13 @@ const FlowTab = ({
   return (
     <ScrollArea
       ref={flowRootRef}
-      rootClassName="h-full"
+      rootClassName="relative h-full"
       className="p-3 space-y-4 h-full overflow-y-auto"
       data-hotkey-zone="flow-view"
       onClick={() => selectNode(null)}
+      onDragOver={handleInAppMediaDragOver}
+      onDragLeave={handleInAppMediaDragLeave}
+      onDrop={handleInAppMediaDrop}
     >
       <div ref={flowListRef} className="space-y-2">
         <h3 className="text-sm font-semibold text-white">Flow</h3>
@@ -679,6 +730,11 @@ const FlowTab = ({
           <p>Select a node to edit its properties.</p>
         </div>
       )}
+      {isInAppMediaDragOver ? (
+        <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border border-dashed border-primary-300/60 bg-primary-300/10 text-sm font-medium text-primary-100 backdrop-blur-sm">
+          Drop media into Flow
+        </div>
+      ) : null}
     </ScrollArea>
   );
 };

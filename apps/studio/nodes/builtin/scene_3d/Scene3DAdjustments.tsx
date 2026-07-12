@@ -6,8 +6,9 @@ import type {
   Scene3DSettings,
   Scene3DVector3,
 } from '@blackboard/types';
-import { CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
+import { CollapsibleSection, ColorInput, NumberInput, TextInput } from '@blackboard/ui';
 import { SettingRow } from '@/components/SettingRow';
+import { ToggleSettingRow } from '@/components/ToggleSettingRow';
 import { useSceneNode } from '@/hooks/useEditorNodes';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import {
@@ -18,14 +19,6 @@ import {
 } from './scene3d';
 import { Scene3DItemTypeIcon, scene3DItemTypeLabel } from './scene3dDisplay';
 
-const NUMBER_INPUT_CLASS =
-  'bg-gray-700/50 text-gray-200 text-xs rounded focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block px-2 py-1.5 font-mono w-full border-0 disabled:cursor-not-allowed disabled:opacity-55';
-
-const TEXT_INPUT_CLASS =
-  'bg-gray-700/50 text-gray-200 text-xs rounded focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block px-2 py-1.5 w-full border-0';
-
-const COLOR_INPUT_CLASS = 'h-8 w-12 cursor-pointer rounded border border-white/10 bg-gray-800 p-1';
-
 const MINI_LABEL_CLASS = 'text-[9px] font-semibold uppercase tracking-[0.12em] text-gray-500';
 
 const numberOrFallback = (value: number, fallback: number, min?: number): number => {
@@ -35,6 +28,8 @@ const numberOrFallback = (value: number, fallback: number, min?: number): number
 
 const formatSceneMetric = (value: number): number =>
   Number.isFinite(value) ? Number(value.toFixed(2)) : 0;
+
+const ignoreNumberInputChange = () => undefined;
 
 const cameraPatchChangesDistance = (camera: Partial<Scene3DSettings['camera']>): boolean =>
   Object.prototype.hasOwnProperty.call(camera, 'position') ||
@@ -96,16 +91,12 @@ function Vector3Inputs({
         {(['x', 'y', 'z'] as const).map((axis) => (
           <label key={axis} className="min-w-0 space-y-1">
             <span className="text-[9px] uppercase text-gray-600">{axis}</span>
-            <input
-              type="number"
+            <NumberInput
               value={Number.isFinite(value[axis]) ? value[axis] : 0}
               step="1"
               min={min}
               disabled={disabled}
-              className={NUMBER_INPUT_CLASS}
-              onChange={(event) =>
-                onChange(updateVectorAxis(value, axis, Number(event.target.value), min))
-              }
+              onValueChange={(nextValue) => onChange(updateVectorAxis(value, axis, nextValue, min))}
             />
           </label>
         ))}
@@ -123,11 +114,7 @@ function ToggleRow({
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
-  return (
-    <SettingRow label={label}>
-      <ToggleSwitch checked={checked} onCheckedChange={onChange} ariaLabel={label} size="sm" />
-    </SettingRow>
-  );
+  return <ToggleSettingRow label={label} checked={checked} onCheckedChange={onChange} />;
 }
 
 interface ItemInspectorProps {
@@ -181,14 +168,13 @@ function Scene3DItemInspector({ item, scene3d, onScene3DChange }: ItemInspectorP
       <CollapsibleSection title="Item" defaultOpen>
         <div className="space-y-3">
           <SettingRow label="Name">
-            <input
-              type="text"
+            <TextInput
+              aria-label="Item name"
               value={item.name}
-              className={TEXT_INPUT_CLASS}
-              onChange={(event) =>
+              onValueChange={(name) =>
                 updateItem((current) => ({
                   ...current,
-                  name: event.target.value,
+                  name,
                 }))
               }
             />
@@ -204,14 +190,13 @@ function Scene3DItemInspector({ item, scene3d, onScene3DChange }: ItemInspectorP
             }
           />
           <SettingRow label="Color">
-            <input
-              type="color"
+            <ColorInput
+              aria-label="Item color"
               value={color}
-              className={COLOR_INPUT_CLASS}
-              onChange={(event) =>
+              onValueChange={(color) =>
                 updateItem((current) => ({
                   ...current,
-                  color: event.target.value,
+                  color,
                 }))
               }
             />
@@ -242,16 +227,14 @@ function Scene3DItemInspector({ item, scene3d, onScene3DChange }: ItemInspectorP
                   ].map(([label, key, min]) => (
                     <label key={key as string} className="min-w-0 space-y-1">
                       <span className={MINI_LABEL_CLASS}>{label}</span>
-                      <input
-                        type="number"
+                      <NumberInput
                         value={scene3d.camera[key as keyof typeof scene3d.camera] as number}
                         min={min as number}
                         step={key === 'fov' ? 1 : 0.1}
-                        className={NUMBER_INPUT_CLASS}
-                        onChange={(event) =>
+                        onValueChange={(nextValue) =>
                           updateCameraSettings({
                             [key as string]: numberOrFallback(
-                              Number(event.target.value),
+                              nextValue,
                               scene3d.camera[key as keyof typeof scene3d.camera] as number,
                               min as number,
                             ),
@@ -333,20 +316,14 @@ function Scene3DItemInspector({ item, scene3d, onScene3DChange }: ItemInspectorP
       {item.type === 'light' ? (
         <CollapsibleSection title="Light" defaultOpen>
           <SettingRow label="Intensity">
-            <input
-              type="number"
+            <NumberInput
               value={item.intensity ?? 1}
               min={0}
               step="0.1"
-              className={NUMBER_INPUT_CLASS}
-              onChange={(event) =>
+              onValueChange={(nextValue) =>
                 updateItem((current) => ({
                   ...current,
-                  intensity: numberOrFallback(
-                    Number(event.target.value),
-                    current.intensity ?? 1,
-                    0,
-                  ),
+                  intensity: numberOrFallback(nextValue, current.intensity ?? 1, 0),
                 }))
               }
             />
@@ -409,34 +386,30 @@ function Scene3DAdjustments({ node: anyNode }: { node: AnyNode }) {
         <div className="grid grid-cols-3 gap-1.5">
           <label className="min-w-0 space-y-1">
             <span className={MINI_LABEL_CLASS}>Width</span>
-            <input
-              type="number"
+            <NumberInput
               value={formatSceneMetric(scene3d.bounds.x)}
               disabled
-              className={NUMBER_INPUT_CLASS}
+              onValueChange={ignoreNumberInputChange}
             />
           </label>
           <label className="min-w-0 space-y-1">
             <span className={MINI_LABEL_CLASS}>Height</span>
-            <input
-              type="number"
+            <NumberInput
               value={formatSceneMetric(scene3d.bounds.y)}
               disabled
-              className={NUMBER_INPUT_CLASS}
+              onValueChange={ignoreNumberInputChange}
             />
           </label>
           <label className="min-w-0 space-y-1">
             <span className={MINI_LABEL_CLASS}>Distance</span>
-            <input
-              type="number"
+            <NumberInput
               value={formatSceneMetric(scene3d.bounds.z)}
               min={1}
-              className={NUMBER_INPUT_CLASS}
-              onChange={(event) =>
+              onValueChange={(nextValue) =>
                 commitScene3d(
                   setScene3DBackdropDistance(
                     scene3d,
-                    numberOrFallback(Number(event.target.value), scene3d.bounds.z, 1),
+                    numberOrFallback(nextValue, scene3d.bounds.z, 1),
                   ),
                 )
               }
@@ -448,50 +421,40 @@ function Scene3DAdjustments({ node: anyNode }: { node: AnyNode }) {
       <CollapsibleSection title="World" defaultOpen>
         <div className="space-y-3">
           <SettingRow label="Pixel Scale">
-            <input
-              type="number"
+            <NumberInput
               value={scene3d.world.pixelScale}
               min={0.0001}
               step={0.001}
-              className={NUMBER_INPUT_CLASS}
-              onChange={(event) =>
+              onValueChange={(nextValue) =>
                 updateWorld({
-                  pixelScale: numberOrFallback(
-                    Number(event.target.value),
-                    scene3d.world.pixelScale,
-                    0.0001,
-                  ),
+                  pixelScale: numberOrFallback(nextValue, scene3d.world.pixelScale, 0.0001),
                 })
               }
             />
           </SettingRow>
           <SettingRow label="Environment">
-            <input
-              type="color"
+            <ColorInput
+              aria-label="Environment color"
               value={scene3d.world.environmentColor}
-              className={COLOR_INPUT_CLASS}
-              onChange={(event) => updateWorld({ environmentColor: event.target.value })}
+              onValueChange={(environmentColor) => updateWorld({ environmentColor })}
             />
           </SettingRow>
           <SettingRow label="Ground">
-            <input
-              type="color"
+            <ColorInput
+              aria-label="Environment ground color"
               value={scene3d.world.environmentGroundColor}
-              className={COLOR_INPUT_CLASS}
-              onChange={(event) => updateWorld({ environmentGroundColor: event.target.value })}
+              onValueChange={(environmentGroundColor) => updateWorld({ environmentGroundColor })}
             />
           </SettingRow>
           <SettingRow label="Environment Intensity">
-            <input
-              type="number"
+            <NumberInput
               value={scene3d.world.environmentIntensity}
               min={0}
               step={0.1}
-              className={NUMBER_INPUT_CLASS}
-              onChange={(event) =>
+              onValueChange={(nextValue) =>
                 updateWorld({
                   environmentIntensity: numberOrFallback(
-                    Number(event.target.value),
+                    nextValue,
                     scene3d.world.environmentIntensity,
                     0,
                   ),
@@ -520,29 +483,26 @@ function Scene3DAdjustments({ node: anyNode }: { node: AnyNode }) {
             onChange={(checked) => updateWorld({ gridEnabled: checked })}
           />
           <SettingRow label="Size">
-            <input
-              type="number"
+            <NumberInput
               value={scene3d.world.gridSize}
               min={1}
-              className={NUMBER_INPUT_CLASS}
-              onChange={(event) =>
+              onValueChange={(nextValue) =>
                 updateWorld({
-                  gridSize: numberOrFallback(Number(event.target.value), scene3d.world.gridSize, 1),
+                  gridSize: numberOrFallback(nextValue, scene3d.world.gridSize, 1),
                 })
               }
             />
           </SettingRow>
           <SettingRow label="Divisions">
-            <input
-              type="number"
+            <NumberInput
               value={scene3d.world.gridDivisions}
               min={1}
               step={1}
-              className={NUMBER_INPUT_CLASS}
-              onChange={(event) =>
+              normalizeValue={Math.round}
+              onValueChange={(nextValue) =>
                 updateWorld({
                   gridDivisions: Math.round(
-                    numberOrFallback(Number(event.target.value), scene3d.world.gridDivisions, 1),
+                    numberOrFallback(nextValue, scene3d.world.gridDivisions, 1),
                   ),
                 })
               }
@@ -571,16 +531,14 @@ function Scene3DAdjustments({ node: anyNode }: { node: AnyNode }) {
             ].map(([label, key, min]) => (
               <label key={key as string} className="min-w-0 space-y-1">
                 <span className={MINI_LABEL_CLASS}>{label}</span>
-                <input
-                  type="number"
+                <NumberInput
                   value={scene3d.camera[key as keyof typeof scene3d.camera] as number}
                   min={min as number}
                   step={key === 'fov' ? 1 : 0.1}
-                  className={NUMBER_INPUT_CLASS}
-                  onChange={(event) =>
+                  onValueChange={(nextValue) =>
                     updateCamera({
                       [key as string]: numberOrFallback(
-                        Number(event.target.value),
+                        nextValue,
                         scene3d.camera[key as keyof typeof scene3d.camera] as number,
                         min as number,
                       ),

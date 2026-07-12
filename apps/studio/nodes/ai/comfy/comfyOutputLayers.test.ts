@@ -212,6 +212,70 @@ describe('Comfy output layers', () => {
     });
   });
 
+  it('projects an enabled output difference mask into the media layer', () => {
+    const node = makeNode({
+      generatedOutputs: [
+        makeOutput({
+          differenceMask: {
+            enabled: true,
+            referenceAssetId: 'input_snapshot',
+            referenceWidth: 200,
+            referenceHeight: 120,
+            referenceTransform: { x: 10, y: -5, scaleX: 2, scaleY: 2 },
+            thresholdLow: 0.08,
+            thresholdHigh: 0.2,
+            edgeAdjustment: -3,
+            removeSpecks: 5,
+            fillHoles: 7,
+            invert: true,
+            previewMode: 'overlay',
+          },
+        }),
+      ],
+    });
+
+    expect(getComfyCompositeLayers(node, 0, { width: 1000, height: 1000 })[0]).toMatchObject({
+      differenceMask: {
+        textureKey: 'input_snapshot',
+        assetId: 'input_snapshot',
+        width: 200,
+        height: 120,
+        transform: { x: 10, y: -5, scaleX: 2, scaleY: 2 },
+        thresholdLow: 0.08,
+        thresholdHigh: 0.2,
+        edgeAdjustment: -3,
+        removeSpecks: 5,
+        fillHoles: 7,
+        invert: true,
+        previewMode: 'overlay',
+      },
+    });
+  });
+
+  it('omits a disabled output difference mask from the media layer', () => {
+    const node = makeNode({
+      generatedOutputs: [
+        makeOutput({
+          differenceMask: {
+            enabled: false,
+            referenceAssetId: 'input_snapshot',
+            referenceWidth: 200,
+            referenceHeight: 120,
+            thresholdLow: 0.06,
+            thresholdHigh: 0.18,
+            edgeAdjustment: 0,
+            removeSpecks: 0,
+            fillHoles: 0,
+          },
+        }),
+      ],
+    });
+
+    expect(
+      getComfyCompositeLayers(node, 0, { width: 1000, height: 1000 })[0]?.differenceMask,
+    ).toBeUndefined();
+  });
+
   it('marks generated data outputs as data composite layers', () => {
     const node = makeNode({
       generatedOutputs: [

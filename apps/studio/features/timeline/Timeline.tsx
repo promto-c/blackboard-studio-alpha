@@ -7,7 +7,7 @@ import {
   SlidingSegmentedControl,
   type SlidingSegmentedControlOption,
 } from '@/components/SlidingSegmentedControl';
-import { ScrollArea } from '@blackboard/ui';
+import { NumberInput, ScrollArea } from '@blackboard/ui';
 import { AnimatableNumber, Keyframe, SelectedKeyframeRef } from '@blackboard/types';
 import GraphEditor from './GraphEditor';
 import { useHotkeyScope } from '@/hotkeys';
@@ -1466,13 +1466,15 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
               setFrameScrubbing={setFrameScrubbing}
             />
           </div>
-          <div className="flex flex-shrink-0 items-center gap-1 rounded-md border border-white/10 bg-black/20 py-1.5 font-mono text-[11px] text-gray-400">
-            <input
-              type="number"
+          <div className="flex w-32 flex-shrink-0 items-center gap-1 font-mono text-[11px] text-gray-400">
+            <NumberInput
               value={currentFrame}
-              onChange={(e) => seekClamped(parseInt(e.target.value) || 0)}
-              className="w-10 bg-transparent text-right text-primary-400 focus:outline-none"
-              onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+              min={0}
+              max={maxFrames}
+              step={1}
+              normalizeValue={Math.round}
+              onValueChange={seekClamped}
+              aria-label="Current timeline frame"
             />
             <span className="text-gray-600">/</span>
             <span className="w-8">{maxFrames}</span>

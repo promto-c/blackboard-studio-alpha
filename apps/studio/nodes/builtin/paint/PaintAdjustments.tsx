@@ -1,5 +1,5 @@
 import { AnyNode, PaintNode, type PaintLifetimePresetMode } from '@blackboard/types';
-import { CollapsibleSection } from '@blackboard/ui';
+import { CollapsibleSection, NumberInput } from '@blackboard/ui';
 import { SegmentedControl } from '@/components';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import {
@@ -8,9 +8,6 @@ import {
   getPaintLifetimePresetLabel,
   normalizePaintLifetimePreset,
 } from './paintLifetime';
-
-const FRAME_INPUT_CLASS =
-  'bg-gray-700/50 text-gray-200 text-xs rounded focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block p-2 font-mono w-full border-0';
 
 const LIFETIME_MODE_OPTIONS = [
   { value: 'all', label: 'All' },
@@ -113,32 +110,26 @@ function PaintAdjustments({ node: anyNode }: { node: AnyNode }) {
                 <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">
                   Start
                 </span>
-                <input
-                  type="number"
+                <NumberInput
                   value={rangeLifetime.startFrame}
                   min={0}
                   max={maxFrames}
                   step={1}
-                  onChange={(event) =>
-                    updateDefaultLifetimeRange('startFrame', Number(event.target.value))
-                  }
-                  className={FRAME_INPUT_CLASS}
+                  normalizeValue={Math.round}
+                  onValueChange={(value) => updateDefaultLifetimeRange('startFrame', value)}
                 />
               </label>
               <label className="space-y-1">
                 <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">
                   End
                 </span>
-                <input
-                  type="number"
+                <NumberInput
                   value={rangeLifetime.endFrame}
                   min={0}
                   max={maxFrames}
                   step={1}
-                  onChange={(event) =>
-                    updateDefaultLifetimeRange('endFrame', Number(event.target.value))
-                  }
-                  className={FRAME_INPUT_CLASS}
+                  normalizeValue={Math.round}
+                  onValueChange={(value) => updateDefaultLifetimeRange('endFrame', value)}
                 />
               </label>
             </div>

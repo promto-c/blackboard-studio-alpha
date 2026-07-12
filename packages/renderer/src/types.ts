@@ -19,6 +19,7 @@ export type ShaderUniformMap = Record<string, { value: unknown }>;
 
 export type RenderMode =
   | 'shader'
+  | 'ocio'
   | 'multipass'
   | 'mask'
   | 'paint'
@@ -103,8 +104,6 @@ interface RendererNodeFlags {
   isSource?: boolean;
   /** Node acts as the scene/canvas root. */
   isSceneLike?: boolean;
-  /** Media node supports looping playback. */
-  isLooping?: boolean;
   /** Media node stores a single video file (decoded via HTMLVideoElement). */
   isVideoFile?: boolean;
 }
@@ -122,6 +121,8 @@ interface RendererNodeFlags {
 interface RendererMediaDescriptor {
   /** Extract asset IDs that this node references. */
   getAssetIds: (node: AnyNode) => string[];
+  /** Resolve a timeline frame to a source frame, or null for transparent black. */
+  resolveFrame?: (node: AnyNode, frame: number) => number | null;
   /**
    * Return the texture key used to look up/store this node's media texture
    * in the pipeline's texture cache.
@@ -160,6 +161,22 @@ export interface RendererMediaCompositeLayer {
   colorSpace?: string;
   isData?: boolean;
   sourceAlphaMode?: SourceAlphaMode;
+  differenceMask?: RendererDifferenceMaskLayer;
+}
+
+export interface RendererDifferenceMaskLayer {
+  textureKey: string;
+  assetId?: string;
+  width: number;
+  height: number;
+  transform?: Partial<Pick<ImageTransform, 'x' | 'y' | 'scaleX' | 'scaleY'>>;
+  thresholdLow: number;
+  thresholdHigh: number;
+  edgeAdjustment: number;
+  removeSpecks: number;
+  fillHoles: number;
+  invert?: boolean;
+  previewMode?: 'result' | 'overlay' | 'matte';
 }
 
 export interface RendererOcioGpuTexture {
@@ -182,7 +199,7 @@ export interface RendererOcioGpuUniform {
 }
 
 export interface RendererOcioShaderInfo {
-  kind: 'colorspace' | 'display';
+  kind: 'colorspace' | 'display' | 'transform';
   key: string;
   shaderText: string;
   functionName: string;
@@ -190,6 +207,53 @@ export interface RendererOcioShaderInfo {
   cacheId: string;
   textures: RendererOcioGpuTexture[];
   uniforms: RendererOcioGpuUniform[];
+}
+
+export type RendererOcioTransformDirection = 'forward' | 'inverse';
+
+export type RendererOcioTransformDescriptor =
+  | {
+      type: 'colorSpace';
+      source: string;
+      destination: string;
+      direction?: RendererOcioTransformDirection;
+      dataBypass?: boolean;
+    }
+  | {
+      type: 'file';
+      assetId: string;
+      direction?: RendererOcioTransformDirection;
+      interpolation?: 'default' | 'nearest' | 'linear' | 'tetrahedral' | 'best';
+      cccId?: string;
+      cdlStyle?: 'asc' | 'no-clamp';
+    }
+  | {
+      type: 'look';
+      source: string;
+      destination: string;
+      looks: string;
+      direction?: RendererOcioTransformDirection;
+      skipColorSpaceConversion?: boolean;
+    }
+  | {
+      type: 'displayView';
+      source: string;
+      display: string;
+      view: string;
+      direction?: RendererOcioTransformDirection;
+      looksBypass?: boolean;
+      dataBypass?: boolean;
+    }
+  | {
+      type: 'named';
+      name: string;
+      direction?: RendererOcioTransformDirection;
+    };
+
+export interface RendererOcioTransformContext {
+  workingColorSpace: string;
+  textureColorSpace: string;
+  logColorSpace?: string;
 }
 
 export interface RendererColorManagement {
@@ -202,6 +266,9 @@ export interface RendererColorManagement {
     display: string | undefined,
     view: string | undefined,
     look?: string,
+  ) => RendererOcioShaderInfo | null;
+  getTransform: (
+    transforms: readonly RendererOcioTransformDescriptor[],
   ) => RendererOcioShaderInfo | null;
   transformRgb: (
     source: string,
@@ -290,8 +357,16 @@ export interface RendererNodeEntry {
   renderMode: RenderMode;
   category: RendererToolCategory;
   processingDomain: ColorProcessingDomain | ((node: AnyNode) => ColorProcessingDomain);
+  /** Optional domain accepted by the primary `pipe` input when it differs from the output. */
+  primaryInputDomain?: ColorProcessingDomain | ((node: AnyNode) => ColorProcessingDomain);
+  /** `reinterpret` permits color-domain mismatches at an explicit conversion boundary. */
+  primaryInputDomainPolicy?: 'strict' | 'reinterpret';
   getShader?: (node: AnyNode) => string | { horizontal: string; vertical: string };
   getUniforms?: (node: AnyNode, context: RenderContext) => ShaderUniformMap;
+  getOcioTransforms?: (
+    node: AnyNode,
+    context: RendererOcioTransformContext,
+  ) => readonly RendererOcioTransformDescriptor[];
   inputPorts?: RendererInputPorts;
   outputPorts?: RendererOutputPorts;
 

@@ -3,9 +3,8 @@ import type { AnyNode, PaintStrokePathsMode } from '@blackboard/types';
 import { useEditorSelector } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import { DEFAULT_PAINT_BRUSH_SETTINGS } from '@/state/preferences';
-import { ColorPicker } from '@blackboard/ui';
+import { ColorPicker, Slider } from '@blackboard/ui';
 import {
-  Slider,
   SegmentedControl,
   ViewportToolPanel as Panel,
   ViewportToolPanelHeader as PanelHeader,

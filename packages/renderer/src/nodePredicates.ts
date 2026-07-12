@@ -3,6 +3,7 @@ import type { NodeRegistryLike } from './types';
 
 const isPipelineAdjustmentRenderMode = (renderMode?: string): boolean =>
   renderMode === 'shader' ||
+  renderMode === 'ocio' ||
   renderMode === 'multipass' ||
   renderMode === 'paint' ||
   renderMode === 'mask' ||
@@ -41,18 +42,6 @@ export const createNodePredicates = (nodeRegistry: NodeRegistryLike) => ({
     const def = nodeRegistry.get(node.type);
     const isExportAdj = !!def && isPipelineAdjustmentRenderMode(def.renderMode);
     return isExportAdj && 'stacked' in node && node.stacked === true;
-  },
-
-  /**
-   * Registry-aware check: the node type has `isLooping` flag AND the
-   * instance has `loop` set to true.
-   */
-  isLoopingTimelineNode: (node: AnyNode): boolean => {
-    const def = nodeRegistry.get(node.type);
-    if (def?.flags?.isLooping) {
-      return 'loop' in node && node.loop === true;
-    }
-    return false;
   },
 
   /**

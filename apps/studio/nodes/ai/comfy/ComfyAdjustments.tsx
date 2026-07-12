@@ -18,6 +18,7 @@ import {
   SceneNode,
   ViewportPromptRegion,
 } from '@blackboard/types';
+import { getValueAtFrame } from '@blackboard/renderer';
 import {
   fetchComfyWorkflowFile,
   DEFAULT_COMFY_ENDPOINT,
@@ -79,7 +80,6 @@ import {
   getWorkflowNameFromPath,
 } from './comfyWorkflowDisplay';
 import { createGeneratedOutputsFromComfyFiles } from './comfyGeneratedOutputs';
-import { createScene3DSettingsWithAsset } from '@/nodes/builtin/scene_3d/scene3d';
 import { getScenePreviewColorSpace, getMediaSourceColorSpace } from '@/color-management';
 import {
   renderNodeInputFrameToPngBlob,
@@ -106,17 +106,18 @@ import {
   shouldUseComfyWorkflowInputSource,
 } from './comfyViewportBindings';
 import { getComfyOutputTransform } from './comfyOutputTransform';
-import { alignComfyOutputToInput } from './comfyImageAlignment';
+import { alignComfyOutputToInput, type ComfyAlignmentReference } from './comfyImageAlignment';
+import { createComfyDifferenceMask } from './comfyDifferenceMask';
 import { isComfyRunShortcut } from './comfyRunShortcut';
 import { getActiveComfyOutputJobs, getPendingComfyOutputSlots } from './comfyOutputGallery';
 import { getComfyGeneratedOutputsForGalleryScope } from './comfyOutputLayers';
 import {
   getComfyGeneratedOutputsForGalleryActivation,
   getComfyMediaOutput,
-  getComfyOutputActivationRegionId,
   getComfyOutputActivationUpdates,
   isComfy3DGeneratedOutput,
 } from './comfyOutputActivation';
+import { useComfyOutputActivation } from './useComfyOutputActivation';
 import {
   getComfyOutputCandidateControlValues,
   getComfyOutputCandidateNodes,
@@ -149,6 +150,12 @@ interface RunProgress {
 interface ComfyResolvedInputUpload extends ComfyQueuedInputUpload {
   candidate: ComfyWorkflowInputCandidate;
   alignmentBlob: Blob;
+  alignmentReference?: ComfyAlignmentReference;
+}
+
+interface ComfyAlignmentInput {
+  blob: Blob;
+  reference?: ComfyAlignmentReference;
 }
 
 const copyTextToClipboard = async (value: string): Promise<boolean> => {
@@ -347,6 +354,67 @@ const readNativeWorkflowSourceImage = async (
   return { blob, sourceName };
 };
 
+const getNativeAlignmentReference = (
+  sourceNode: AnyNode,
+  frame: number,
+): ComfyAlignmentReference | undefined => {
+  if (
+    !('transform' in sourceNode) ||
+    !('width' in sourceNode) ||
+    !('height' in sourceNode) ||
+    typeof sourceNode.width !== 'number' ||
+    typeof sourceNode.height !== 'number' ||
+    sourceNode.width <= 0 ||
+    sourceNode.height <= 0
+  ) {
+    return undefined;
+  }
+  const transform = sourceNode.transform as Partial<ComfyNode['transform']> | undefined;
+  if (!transform || transform.x === undefined || transform.y === undefined) return undefined;
+
+  const x = getValueAtFrame(transform.x, frame);
+  const y = getValueAtFrame(transform.y, frame);
+  const scaleX = getValueAtFrame(transform.scaleX ?? 1, frame);
+  const scaleY = getValueAtFrame(transform.scaleY ?? 1, frame);
+  if (![x, y, scaleX, scaleY].every(Number.isFinite)) return undefined;
+
+  return {
+    width: sourceNode.width,
+    height: sourceNode.height,
+    transform: { x, y, scaleX, scaleY },
+  };
+};
+
+const getSceneFrameAlignmentReference = (
+  sceneNode: Pick<SceneNode, 'width' | 'height'>,
+): ComfyAlignmentReference => ({
+  width: sceneNode.width,
+  height: sceneNode.height,
+  transform: { x: 0, y: 0, scaleX: 1, scaleY: 1 },
+});
+
+const getSceneRegionAlignmentReference = (
+  rect: ViewportPromptRegion['rect'],
+  sceneNode: Pick<SceneNode, 'width' | 'height'>,
+): ComfyAlignmentReference => {
+  const left = Math.floor(Math.min(rect.x, rect.x + rect.width));
+  const top = Math.floor(Math.min(rect.y, rect.y + rect.height));
+  const right = Math.ceil(Math.max(rect.x, rect.x + rect.width));
+  const bottom = Math.ceil(Math.max(rect.y, rect.y + rect.height));
+  const width = Math.max(1, right - left);
+  const height = Math.max(1, bottom - top);
+  return {
+    width,
+    height,
+    transform: {
+      x: left + width / 2 - sceneNode.width / 2,
+      y: sceneNode.height / 2 - (top + height / 2),
+      scaleX: 1,
+      scaleY: 1,
+    },
+  };
+};
+
 const encodeCanvasToPngBlob = (canvas: HTMLCanvasElement): Promise<Blob> =>
   new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -439,7 +507,13 @@ const cropImageBlobToRegion = async ({
 const getRunInputContext = (context?: NodeExecutionContext): ComfyRunInputContext =>
   context?.source === 'viewportTool' ? 'viewportTool' : 'props';
 
-export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
+export function ComfyAdjustmentsPanel({
+  node,
+  headless = false,
+}: {
+  node: ComfyNode;
+  headless?: boolean;
+}) {
   const {
     startComfyPromptEnhancementChat,
     updateNode,
@@ -450,7 +524,6 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     finishBackgroundJob,
     requestBackgroundJobCancel,
     applyComfyNodeRunResult,
-    addNodeWithProps,
   } = useEditorActions();
   const { comfyMissingModelDetailsVisible, aiTaskRoutes, integrationConnections, setPreferences } =
     usePreferences();
@@ -493,8 +566,8 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
   const abortRef = useRef<AbortController | null>(null);
   const inputUploadCacheRef = useRef(new ComfyInputUploadCache());
   const generatedOutputsRef = useRef<GeneratedOutput[]>(node.generatedOutputs ?? []);
-  const lastAlignmentInputBlobRef = useRef<Blob | null>(null);
-  const alignmentInputBlobsByPromptIdRef = useRef(new Map<string, Blob>());
+  const lastAlignmentInputRef = useRef<ComfyAlignmentInput | null>(null);
+  const alignmentInputsByPromptIdRef = useRef(new Map<string, ComfyAlignmentInput>());
   const workflowsRef = useRef(node.workflows);
   const workflowControlsRef = useRef(node.workflowControls ?? []);
   const refreshedWorkflowMetadataKeysRef = useRef(new Set<string>());
@@ -937,37 +1010,12 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     updateNode(node.id, { lastError: message ?? undefined }, false);
   };
 
+  const activateGeneratedOutput = useComfyOutputActivation(node);
   const handleActivateGeneratedOutput = (output: GeneratedOutput) => {
-    if (isComfy3DGeneratedOutput(output) && output.scene3dAsset) {
-      addNodeWithProps(
-        NodeType.SCENE_3D,
-        {
-          viewportMode: 'scene3d',
-          scene3d: createScene3DSettingsWithAsset(
-            output.scene3dAsset,
-            sceneNode?.width,
-            sceneNode?.height,
-          ),
-        },
-        { name: output.label || output.scene3dAsset.fileName },
-      );
-      return;
+    if (!isComfy3DGeneratedOutput(output)) {
+      generatedOutputsRef.current = getComfyGeneratedOutputsForGalleryActivation(node, output);
     }
-
-    const transform = getComfyOutputTransform({ node, output, sceneNode });
-    const nextGeneratedOutputs = getComfyGeneratedOutputsForGalleryActivation(node, output);
-    generatedOutputsRef.current = nextGeneratedOutputs;
-
-    updateNode(
-      node.id,
-      {
-        ...getComfyOutputActivationUpdates(output),
-        transform,
-        generatedOutputs: nextGeneratedOutputs,
-        selectedViewportPromptRegionId: getComfyOutputActivationRegionId(node, output),
-      },
-      true,
-    );
+    activateGeneratedOutput(output);
   };
 
   const openGalleryView = () => {
@@ -1650,7 +1698,11 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     workflow: ComfyWorkflow;
     candidate: ComfyWorkflowInputCandidate;
     selectedRegion: ViewportPromptRegion | null;
-  }): Promise<{ blob: Blob; sourceName: string } | null> => {
+  }): Promise<{
+    blob: Blob;
+    sourceName: string;
+    alignmentReference?: ComfyAlignmentReference;
+  } | null> => {
     const portName = getWorkflowInputPortName(workflow, candidate);
     const sourceNodeId = node.inputs?.[portName];
     const inputImage = node.workflowInputImages?.[portName];
@@ -1697,6 +1749,11 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       return {
         blob,
         sourceName: nativeSourceImage?.sourceName ?? sourceNode.name ?? sourceNode.id,
+        alignmentReference: selectedRegion
+          ? getSceneRegionAlignmentReference(selectedRegion.rect, sceneNode)
+          : nativeSourceImage
+            ? getNativeAlignmentReference(sourceNode, currentFrame)
+            : getSceneFrameAlignmentReference(sceneNode),
       };
     }
 
@@ -1798,11 +1855,17 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         candidate,
         imageName,
         alignmentBlob: resolvedInput.blob,
+        alignmentReference: resolvedInput.alignmentReference,
         cacheHit: Boolean(shouldUseCachedUpload),
       });
     }
 
-    lastAlignmentInputBlobRef.current = uploads[0]?.alignmentBlob ?? null;
+    lastAlignmentInputRef.current = uploads[0]
+      ? {
+          blob: uploads[0].alignmentBlob,
+          reference: uploads[0].alignmentReference,
+        }
+      : null;
     return uploads;
   };
 
@@ -1881,41 +1944,74 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       createPromptId: createComfyPromptId,
     });
 
-  const alignGeneratedOutputs = async (
+  const postProcessGeneratedOutputs = async (
     outputs: GeneratedOutput[],
-    inputBlob: Blob | null | undefined,
+    input: ComfyAlignmentInput | null | undefined,
   ): Promise<GeneratedOutput[]> => {
-    if (!node.autoAlignOutputs || !inputBlob) return outputs;
-    return Promise.all(
-      outputs.map(async (output) => {
-        try {
-          return (
-            (await alignComfyOutputToInput({
-              node,
-              output,
-              sceneNode,
-              inputBlob,
-              options: node.alignmentOptions,
-            })) ?? output
+    if (!input) return outputs;
+
+    const alignedOutputs =
+      node.autoAlignOutputs === false
+        ? outputs
+        : await Promise.all(
+            outputs.map(async (output) => {
+              try {
+                return (
+                  (await alignComfyOutputToInput({
+                    node,
+                    output,
+                    sceneNode,
+                    inputBlob: input.blob,
+                    reference: input.reference,
+                    options: node.alignmentOptions,
+                  })) ?? output
+                );
+              } catch {
+                return output;
+              }
+            }),
           );
-        } catch {
-          return output;
-        }
-      }),
-    );
+
+    if (!alignedOutputs.some((output) => !isComfy3DGeneratedOutput(output))) {
+      return alignedOutputs;
+    }
+
+    try {
+      const bitmap = await createImageBitmap(input.blob);
+      const referenceWidth = bitmap.width;
+      const referenceHeight = bitmap.height;
+      bitmap.close();
+      const referenceAssetId = await saveAsset(input.blob);
+
+      return alignedOutputs.map((output) =>
+        isComfy3DGeneratedOutput(output)
+          ? output
+          : {
+              ...output,
+              differenceMask: createComfyDifferenceMask({
+                referenceAssetId,
+                referenceWidth,
+                referenceHeight,
+                referenceTransform: input.reference?.transform,
+              }),
+            },
+      );
+    } catch {
+      return alignedOutputs;
+    }
   };
 
   const handleAlignSelectedOutputToInput = async () => {
     if (!selectedOutputForProps) return null;
-    const inputBlob = selectedOutputForProps.promptId
-      ? alignmentInputBlobsByPromptIdRef.current.get(selectedOutputForProps.promptId)
+    const alignmentInput = selectedOutputForProps.promptId
+      ? alignmentInputsByPromptIdRef.current.get(selectedOutputForProps.promptId)
       : null;
-    let resolvedInputBlob =
-      inputBlob ??
+    let resolvedAlignmentInput =
+      alignmentInput ??
       (selectedOutputForProps.promptId === node.lastPromptId
-        ? lastAlignmentInputBlobRef.current
+        ? lastAlignmentInputRef.current
         : null);
-    if (!resolvedInputBlob) {
+    if (!resolvedAlignmentInput) {
       const outputWorkflow =
         node.workflows.find((workflow) => workflow.id === selectedOutputForProps.workflowId) ??
         selectedWorkflow;
@@ -1954,20 +2050,24 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
             selectedRegion,
           });
           if (resolvedInput) {
-            resolvedInputBlob = resolvedInput.blob;
+            resolvedAlignmentInput = {
+              blob: resolvedInput.blob,
+              reference: resolvedInput.alignmentReference,
+            };
             break;
           }
         }
       }
     }
-    if (!resolvedInputBlob) {
+    if (!resolvedAlignmentInput) {
       throw new Error('Connect or load an image-to-image input before aligning this output.');
     }
     const alignedOutput = await alignComfyOutputToInput({
       node,
       output: selectedOutputForProps,
       sceneNode,
-      inputBlob: resolvedInputBlob,
+      inputBlob: resolvedAlignmentInput.blob,
+      reference: resolvedAlignmentInput.reference,
       options: node.alignmentOptions,
     });
     return alignedOutput?.transform ?? null;
@@ -1977,17 +2077,30 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     runCount = 1,
     inputContext: ComfyRunInputContext = 'props',
     requestedRegionId?: string,
+    executionContext?: NodeExecutionContext,
   ) => {
-    if (!selectedWorkflow) {
+    const requestedWorkflow = executionContext?.workflowId
+      ? (node.workflows.find((workflow) => workflow.id === executionContext.workflowId) ?? null)
+      : selectedWorkflow;
+    if (!requestedWorkflow) {
       setRunState('error');
       setNodeError('Import and select a ComfyUI workflow before running.');
       return;
     }
 
+    const executionWorkflowControls = executionContext?.controlValueOverrides
+      ? workflowControls.map((control) => {
+          const override = executionContext.controlValueOverrides?.[control.id];
+          return override === undefined
+            ? control
+            : { ...control, value: override, runMode: 'fixed' as const };
+        })
+      : workflowControls;
+
     let workflowForRun: ComfyWorkflow;
     try {
-      workflowForRun = await refreshComfyWorkflowFromSource(endpoint, selectedWorkflow);
-      if (workflowForRun !== selectedWorkflow) {
+      workflowForRun = await refreshComfyWorkflowFromSource(endpoint, requestedWorkflow);
+      if (workflowForRun !== requestedWorkflow) {
         updateNode(
           node.id,
           {
@@ -2008,7 +2121,10 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       return;
     }
 
-    const missingOptions = getMissingWorkflowControlOptions(workflowControls, workflowForRun);
+    const missingOptions = getMissingWorkflowControlOptions(
+      executionWorkflowControls,
+      workflowForRun,
+    );
     if (missingOptions.length > 0) {
       const firstMissing = missingOptions[0];
       setRunState('error');
@@ -2069,6 +2185,9 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       ...(originBranchId ? { branchId: originBranchId } : {}),
       ...(originHistoryEntryId ? { historyId: originHistoryEntryId } : {}),
       ...(promptId ? { promptId } : {}),
+      ...(executionContext?.generationGroupId
+        ? { generationGroupId: executionContext.generationGroupId }
+        : {}),
       comfyEndpoint: endpoint,
       outputNodeIds: selectedOutputNodeIds,
       comfyInputContext: inputContext,
@@ -2147,7 +2266,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     });
 
     setNodeError(null);
-    let currentWorkflowControls = workflowControls;
+    let currentWorkflowControls = executionWorkflowControls;
 
     if (runCount > 1) {
       const queuedRuns: Array<{
@@ -2157,7 +2276,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
         clientId: string;
         promptSummary?: string;
         submittedPrompt: Record<string, unknown>;
-        alignmentInputBlob?: Blob;
+        alignmentInput?: ComfyAlignmentInput;
       }> = [];
       let completedRunCount = 0;
 
@@ -2219,9 +2338,14 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               inputContext,
               selectedRegion: selectedRunRegion,
             });
-            const alignmentInputBlob = inputImages[0]?.alignmentBlob;
-            if (alignmentInputBlob) {
-              alignmentInputBlobsByPromptIdRef.current.set(queued.promptId, alignmentInputBlob);
+            const alignmentInput = inputImages[0]
+              ? {
+                  blob: inputImages[0].alignmentBlob,
+                  reference: inputImages[0].alignmentReference,
+                }
+              : undefined;
+            if (alignmentInput) {
+              alignmentInputsByPromptIdRef.current.set(queued.promptId, alignmentInput);
             }
 
             queuedRuns.push({
@@ -2234,7 +2358,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
                 workflowForRun.id,
               ),
               submittedPrompt: promptWithViewportBindings,
-              alignmentInputBlob,
+              alignmentInput,
             });
 
             defaultComfyRunCoordinator.setLatestPrompt(endpoint, {
@@ -2315,7 +2439,7 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
             clientId,
             promptSummary,
             submittedPrompt,
-            alignmentInputBlob,
+            alignmentInput,
           } = queuedRun;
           const jobId = job.id;
           const abortController = new AbortController();
@@ -2568,15 +2692,16 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               workflow: workflowForRun,
               promptId,
               promptSummary,
+              generationGroupId: executionContext?.generationGroupId,
               submittedPrompt,
               signal: abortController.signal,
             });
             let generatedOutputsWithRegion = selectedRunRegionId
               ? generatedOutputs.map((o) => ({ ...o, regionId: selectedRunRegionId }))
               : generatedOutputs;
-            generatedOutputsWithRegion = await alignGeneratedOutputs(
+            generatedOutputsWithRegion = await postProcessGeneratedOutputs(
               generatedOutputsWithRegion,
-              alignmentInputBlob,
+              alignmentInput,
             );
             const activeGeneratedOutput =
               getComfyMediaOutput(generatedOutputsWithRegion) ?? generatedOutputsWithRegion[0];
@@ -2897,9 +3022,14 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               selectedRegion: selectedRunRegion,
             });
             queuedPromptId = queued.promptId;
-            const alignmentInputBlob = inputImages[0]?.alignmentBlob;
-            if (alignmentInputBlob) {
-              alignmentInputBlobsByPromptIdRef.current.set(queued.promptId, alignmentInputBlob);
+            const alignmentInput = inputImages[0]
+              ? {
+                  blob: inputImages[0].alignmentBlob,
+                  reference: inputImages[0].alignmentReference,
+                }
+              : undefined;
+            if (alignmentInput) {
+              alignmentInputsByPromptIdRef.current.set(queued.promptId, alignmentInput);
             }
             updateNode(node.id, { lastPromptId: queued.promptId }, false);
 
@@ -2990,15 +3120,16 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
               workflow: workflowForRun,
               promptId: queued.promptId,
               promptSummary: getOutputPromptSummary(currentWorkflowControls, workflowForRun.id),
+              generationGroupId: executionContext?.generationGroupId,
               submittedPrompt: promptWithViewportBindings,
               signal: abortController.signal,
             });
             let generatedOutputsWithRegion = selectedRunRegionId
               ? generatedOutputs.map((o) => ({ ...o, regionId: selectedRunRegionId }))
               : generatedOutputs;
-            generatedOutputsWithRegion = await alignGeneratedOutputs(
+            generatedOutputsWithRegion = await postProcessGeneratedOutputs(
               generatedOutputsWithRegion,
-              alignmentInputBlob,
+              alignmentInput,
             );
             const activeGeneratedOutput =
               getComfyMediaOutput(generatedOutputsWithRegion) ?? generatedOutputsWithRegion[0];
@@ -3138,12 +3269,17 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
     workflowOutputCandidates.length > 0 && selectedWorkflowOutputIds.length === 0;
   const isRunActionDisabled = !selectedWorkflow || hasNoSelectedWorkflowOutputs;
   useNodeExecutionHandler(node.id, (context) => {
-    if (isRunActionDisabled) return;
+    if (isRunActionDisabled && !context?.workflowId) return;
     const requestedRunCount =
       typeof context?.runCount === 'number' && Number.isFinite(context.runCount)
         ? Math.max(1, Math.floor(context.runCount))
         : 1;
-    void handleRunWorkflow(requestedRunCount, getRunInputContext(context), context?.regionId);
+    void handleRunWorkflow(
+      requestedRunCount,
+      getRunInputContext(context),
+      context?.regionId,
+      context,
+    );
   });
   const handleRunSingleWorkflow = () => {
     void handleRunWorkflow(1, inspectorInputContext);
@@ -3173,6 +3309,8 @@ export function ComfyAdjustmentsPanel({ node }: { node: ComfyNode }) {
       abortRef.current.abort();
     }
   };
+
+  if (headless) return null;
 
   return (
     <div className="flex min-h-full flex-1 flex-col">

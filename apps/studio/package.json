@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@bb-studio/exr": "^0.1.2",
-    "@bb-studio/ocio": "^0.0.6",
+    "@bb-studio/ocio": "^0.0.7",
     "@blackboard/icons": "workspace:*",
     "@blackboard/plugin-sdk": "workspace:*",
     "@blackboard/project-store": "workspace:*",

@@ -212,6 +212,19 @@ export const getComfyCompositeLayers = (
       if (!texture) return [];
 
       const transform = getComfyOutputTransform({ node, output, sceneNode });
+      const differenceMask = output.differenceMask?.enabled ? output.differenceMask : null;
+      const differenceMaskTransform = differenceMask
+        ? (differenceMask.referenceTransform ??
+          createAutoFitTransform({
+            node: node as unknown as SourceTransformNode,
+            imageSize: {
+              width: differenceMask.referenceWidth,
+              height: differenceMask.referenceHeight,
+            },
+            sceneNode,
+            fitMode: ImageFitMode.FIT,
+          }))
+        : null;
 
       return [
         {
@@ -226,6 +239,24 @@ export const getComfyCompositeLayers = (
           colorSpace: output.colorSpace ?? node.colorSpace,
           isData:
             isDataMediaColorManagement(output.mediaColorManagement) || isDataChannel(output.label),
+          ...(differenceMask && differenceMaskTransform
+            ? {
+                differenceMask: {
+                  textureKey: differenceMask.referenceAssetId,
+                  assetId: differenceMask.referenceAssetId,
+                  width: differenceMask.referenceWidth,
+                  height: differenceMask.referenceHeight,
+                  transform: differenceMaskTransform,
+                  thresholdLow: differenceMask.thresholdLow,
+                  thresholdHigh: differenceMask.thresholdHigh,
+                  edgeAdjustment: differenceMask.edgeAdjustment,
+                  removeSpecks: differenceMask.removeSpecks ?? 0,
+                  fillHoles: differenceMask.fillHoles ?? 0,
+                  invert: differenceMask.invert,
+                  previewMode: differenceMask.previewMode,
+                },
+              }
+            : {}),
         } satisfies MediaCompositeLayer,
       ];
     });

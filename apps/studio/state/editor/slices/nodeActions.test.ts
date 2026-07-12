@@ -312,6 +312,23 @@ describe('createNodeActions addNode', () => {
     });
   });
 
+  it('places a node created from a drop at the requested graph position', () => {
+    const nodes = [scene()];
+    const { actions, getState } = createHarness(nodes);
+
+    const nodeId = actions.addNodeWithProps(
+      NodeType.MEDIA_SOURCE,
+      { src: 'asset:image-1', mediaKind: 'image', width: 1280, height: 720 },
+      { name: 'Gallery image', graphPosition: { x: 240, y: 360 } },
+    );
+
+    expect(nodeId).toBeTruthy();
+    expect(getState().nodePositionsByFlow?.[ROOT_FLOW_ID]?.[nodeId!]).toEqual({
+      x: 240,
+      y: 360,
+    });
+  });
+
   it('does not stack a new adjustment when a stacked adjustment is selected', () => {
     const nodes = [scene(), image('image-1'), grade('grade-1', true)];
     const { actions, getState } = createHarness(nodes);

@@ -286,7 +286,6 @@ describe('paint raster helpers', () => {
         operator: BlendMode.OVER,
         transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.FIT },
         duration: 120,
-        loop: true,
       },
       paintNode,
     ];

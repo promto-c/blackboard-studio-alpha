@@ -4,7 +4,7 @@ import type {
   ProjectColorManagement,
   RequiredOcioRole,
 } from '@blackboard/types';
-import { StyledDropdown } from '@blackboard/ui';
+import { Badge, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
 import {
   getSceneLinearWorkingSpaceCandidates,
   type ColorConfigInfo,
@@ -35,6 +35,8 @@ export interface ColorManagementSettingsEditorProps {
   configError?: string | null;
   onChange: (value: ProjectColorManagement) => void;
   onConfigChange: (config: ColorConfigReference) => void;
+  autoDetectViewportView?: boolean;
+  onAutoDetectViewportViewChange?: (checked: boolean) => void;
 }
 
 const roleDisplayName = (role: RequiredOcioRole): string =>
@@ -76,6 +78,8 @@ export function ColorManagementSettingsEditor({
   configError,
   onChange,
   onConfigChange,
+  autoDetectViewportView,
+  onAutoDetectViewportViewChange,
 }: ColorManagementSettingsEditorProps) {
   const model = useMemo(
     () => (runtime ? getProjectColorManagementPanelModel(value, runtime) : null),
@@ -179,6 +183,21 @@ export function ColorManagementSettingsEditor({
             popoverWidthClass="w-80"
             variant="control-rows"
           />
+          {autoDetectViewportView !== undefined && onAutoDetectViewportViewChange ? (
+            <div className="flex items-center justify-between gap-3 rounded-md bg-white/[0.03] px-3 py-2">
+              <div className="text-xs text-gray-400">Initialize view from first input</div>
+              <div className="flex items-center gap-3">
+                <Badge variant={autoDetectViewportView ? 'accent' : 'neutral'}>
+                  {autoDetectViewportView ? 'Auto' : 'Manual'}
+                </Badge>
+                <ToggleSwitch
+                  checked={autoDetectViewportView}
+                  ariaLabel="Toggle auto-initialize view from first input"
+                  onCheckedChange={onAutoDetectViewportViewChange}
+                />
+              </div>
+            </div>
+          ) : null}
         </ColorManagementControlSection>
 
         <ColorManagementControlSection

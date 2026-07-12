@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as Icons from '@blackboard/icons';
-import { Badge } from '@blackboard/ui';
+import { Badge, NumberInput, TextInput } from '@blackboard/ui';
 import { ExecuteButton } from '@/components';
 import { SlidingSegmentedControl } from '@/components/SlidingSegmentedControl';
 
@@ -47,11 +47,6 @@ const PRESET_CATEGORIES: PresetCategoryOption[] = [
 ];
 
 const CUSTOM_PRESETS_KEY = 'blackboard-studio-custom-presets';
-
-const parseDimension = (value: string): number | null => {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-};
 
 const greatestCommonDivisor = (first: number, second: number): number => {
   let a = first;
@@ -206,8 +201,8 @@ function PresetCard({
 
 function NewProjectView({ onBack, onCreate }: NewProjectViewProps) {
   const [projectName, setProjectName] = useState('Untitled Project');
-  const [width, setWidth] = useState('1920');
-  const [height, setHeight] = useState('1080');
+  const [width, setWidth] = useState(1920);
+  const [height, setHeight] = useState(1080);
   const [customPresets, setCustomPresets] = useState<ProjectPreset[]>([]);
   const [activeCategory, setActiveCategory] = useState<PresetCategory>('all');
 
@@ -215,8 +210,8 @@ function NewProjectView({ onBack, onCreate }: NewProjectViewProps) {
     setCustomPresets(readCustomPresets());
   }, []);
 
-  const numericWidth = parseDimension(width);
-  const numericHeight = parseDimension(height);
+  const numericWidth = width;
+  const numericHeight = height;
 
   const selectedPreset = useMemo(() => {
     if (!numericWidth || !numericHeight) return null;
@@ -256,8 +251,8 @@ function NewProjectView({ onBack, onCreate }: NewProjectViewProps) {
   };
 
   const handlePresetClick = (preset: ProjectPreset) => {
-    setWidth(String(preset.width));
-    setHeight(String(preset.height));
+    setWidth(preset.width);
+    setHeight(preset.height);
   };
 
   const handleSavePreset = () => {
@@ -416,13 +411,11 @@ function NewProjectView({ onBack, onCreate }: NewProjectViewProps) {
               <label htmlFor="projectName" className="mb-2 block text-xs font-medium text-gray-300">
                 Project name
               </label>
-              <input
+              <TextInput
                 autoFocus
-                type="text"
                 id="projectName"
                 value={projectName}
-                onChange={(event) => setProjectName(event.target.value)}
-                className="block w-full rounded-lg border border-white/10 bg-gray-950/55 px-3 py-2.5 text-sm text-gray-100 outline-none transition placeholder:text-gray-600 hover:border-white/15 focus:border-primary-300/50 focus:ring-2 focus:ring-primary-400/10"
+                onValueChange={setProjectName}
                 placeholder="Name your project"
                 aria-invalid={projectName.trim().length === 0}
               />
@@ -445,41 +438,31 @@ function NewProjectView({ onBack, onCreate }: NewProjectViewProps) {
                 </button>
               </div>
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-                <div className="relative">
-                  <input
-                    type="number"
-                    id="projectWidth"
-                    value={width}
-                    onChange={(event) => setWidth(event.target.value)}
-                    className="block w-full rounded-lg border border-white/10 bg-gray-950/55 py-2.5 pl-3 pr-7 font-mono text-sm text-gray-100 outline-none transition hover:border-white/15 focus:border-primary-300/50 focus:ring-2 focus:ring-primary-400/10"
-                    placeholder="1920"
-                    min="1"
-                    step="1"
-                    aria-label="Canvas width"
-                    aria-invalid={!numericWidth}
-                  />
-                  <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-600">
-                    px
-                  </span>
-                </div>
+                <NumberInput
+                  id="projectWidth"
+                  value={width}
+                  onValueChange={setWidth}
+                  normalizeValue={Math.round}
+                  suffix="px"
+                  placeholder="1920"
+                  min="1"
+                  step="1"
+                  aria-label="Canvas width"
+                  aria-invalid={!numericWidth}
+                />
                 <span className="text-xs text-gray-600">×</span>
-                <div className="relative">
-                  <input
-                    type="number"
-                    id="projectHeight"
-                    value={height}
-                    onChange={(event) => setHeight(event.target.value)}
-                    className="block w-full rounded-lg border border-white/10 bg-gray-950/55 py-2.5 pl-3 pr-7 font-mono text-sm text-gray-100 outline-none transition hover:border-white/15 focus:border-primary-300/50 focus:ring-2 focus:ring-primary-400/10"
-                    placeholder="1080"
-                    min="1"
-                    step="1"
-                    aria-label="Canvas height"
-                    aria-invalid={!numericHeight}
-                  />
-                  <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-600">
-                    px
-                  </span>
-                </div>
+                <NumberInput
+                  id="projectHeight"
+                  value={height}
+                  onValueChange={setHeight}
+                  normalizeValue={Math.round}
+                  suffix="px"
+                  placeholder="1080"
+                  min="1"
+                  step="1"
+                  aria-label="Canvas height"
+                  aria-invalid={!numericHeight}
+                />
               </div>
               {!numericWidth || !numericHeight ? (
                 <p className="mt-1.5 text-[11px] text-rose-300">

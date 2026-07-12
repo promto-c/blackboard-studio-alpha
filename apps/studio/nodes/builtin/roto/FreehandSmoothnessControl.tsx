@@ -1,5 +1,5 @@
 import { forwardRef } from 'react';
-import { Slider } from '@/components';
+import { Slider } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 
 interface FreehandSmoothnessControlProps {

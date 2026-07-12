@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import NumberInput from './NumberInput';
 
 interface ColorPickerProps {
   label: string;
@@ -56,27 +57,27 @@ function ColorPicker({
           <input
             type="color"
             value={hexValue}
-            onChange={(e) => handleHexChange(e.target.value)}
+            onChange={(event) => handleHexChange(event.currentTarget.value)}
             className="absolute -top-1 -left-1 w-12 h-12 cursor-pointer"
           />
         </div>
         <span className="min-w-0 flex-1 truncate text-xs font-mono text-gray-300">{hexValue}</span>
         {showAlphaControl ? (
-          <label className="flex items-center gap-1 rounded-md border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-gray-300">
+          <div className="flex w-28 items-center gap-1.5 text-[11px] text-gray-300">
             <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-500">
               {alphaLabel}
             </span>
-            <input
-              type="number"
+            <NumberInput
+              aria-label={`${label} alpha`}
               min={0}
               max={100}
               step={1}
               value={alphaPercent}
-              onChange={(event) => onAlphaChange(clampUnit(Number(event.target.value) / 100))}
-              className="w-12 border-0 bg-transparent p-0 text-right font-mono text-[11px] text-gray-100 outline-none"
+              suffix="%"
+              normalizeValue={Math.round}
+              onValueChange={(nextValue) => onAlphaChange(clampUnit(nextValue / 100))}
             />
-            <span className="text-[10px] text-gray-500">%</span>
-          </label>
+          </div>
         ) : null}
       </div>
     </div>

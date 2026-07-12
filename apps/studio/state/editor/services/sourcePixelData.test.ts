@@ -216,6 +216,24 @@ describe('sourcePixelData', () => {
       height: 2,
     });
     expect(dispose).toHaveBeenCalledTimes(1);
+
+    await getSourcePixelDataForFrame(
+      {
+        kind: 'upstream',
+        nodes: [SCENE_NODE, IMAGE_NODE, GRADE_NODE],
+        sceneNode: SCENE_NODE as typeof SCENE_NODE & {
+          type: typeof NodeType.SCENE;
+        },
+        projectColorManagement: PROJECT_COLOR_MANAGEMENT,
+      },
+      5,
+      30,
+      { finalColorSpace: 'scene_linear' },
+    );
+    expect(renderWithSharedPipelineMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ finalColorSpace: 'scene_linear' }),
+    );
+    expect(dispose).toHaveBeenCalledTimes(2);
   });
 });
 

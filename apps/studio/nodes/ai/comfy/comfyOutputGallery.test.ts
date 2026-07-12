@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { BackgroundJob } from '@/state/editor/services/backgroundJobs';
-import { getActiveComfyOutputJobs, getPendingComfyOutputSlots } from './comfyOutputGallery';
+import {
+  getActiveComfyOutputJobs,
+  getComfyGenerationGroupOutputs,
+  getPendingComfyOutputSlots,
+} from './comfyOutputGallery';
 
 const createJob = (id: string, updates: Partial<BackgroundJob> = {}): BackgroundJob => ({
   id,
@@ -22,6 +26,35 @@ const createJob = (id: string, updates: Partial<BackgroundJob> = {}): Background
 });
 
 describe('Comfy output gallery jobs', () => {
+  it('keeps generated outputs isolated and newest-first within their generation group', () => {
+    const output = (
+      id: string,
+      generationGroupId: string,
+      createdAt: number,
+      deletedAt?: number,
+    ) => ({
+      id,
+      src: id,
+      width: 64,
+      height: 64,
+      createdAt,
+      generationGroupId,
+      deletedAt,
+    });
+
+    expect(
+      getComfyGenerationGroupOutputs(
+        [
+          output('older', 'option-1', 1),
+          output('other', 'option-2', 3),
+          output('newer', 'option-1', 4),
+          output('deleted', 'option-1', 5, 6),
+        ],
+        'option-1',
+      ).map((item) => item.id),
+    ).toEqual(['newer', 'older']);
+  });
+
   it('selects active Comfy jobs for the current node, project, and branch', () => {
     const jobs = [
       createJob('later', { startedAt: 20 }),

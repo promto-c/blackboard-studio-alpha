@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { ComfyWorkflowControl } from '@blackboard/types';
-import { Popover } from '@blackboard/ui';
+import { Popover, TextInput } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 import { getComfyWorkflowControlRunMode } from '../comfyControls';
 import {
@@ -113,7 +113,7 @@ export function WorkflowRunModeControl({
     }`;
 
   const inlineInputClass =
-    'h-6 w-full rounded-md border border-white/10 bg-black/30 px-2 text-right text-[11px] text-gray-100 outline-none transition placeholder:text-gray-500 focus:border-primary-300/60 focus:bg-gray-950';
+    'h-6 rounded-md bg-black/30 px-2 text-right text-[11px] text-gray-100 focus:border-primary-300/60 focus:bg-gray-950 focus-visible:ring-0 !min-h-0';
 
   return (
     <Popover
@@ -154,8 +154,7 @@ export function WorkflowRunModeControl({
 
               {candidate === 'randomize' && selectedMode === candidate && (
                 <div className="mt-1 grid grid-cols-2 gap-1.5 pl-0">
-                  <input
-                    type="text"
+                  <TextInput
                     inputMode="numeric"
                     value={randomMinDraft}
                     placeholder="Min"
@@ -166,8 +165,7 @@ export function WorkflowRunModeControl({
                       setMode('randomize');
                       event.currentTarget.select();
                     }}
-                    onChange={(event) => {
-                      const nextDraft = event.currentTarget.value;
+                    onValueChange={(nextDraft) => {
                       setRandomMinDraft(nextDraft);
                       if (nextDraft.trim() === '' || parseFiniteIntegerInput(nextDraft) !== null) {
                         commitRandomBound('randomMin', nextDraft);
@@ -188,8 +186,7 @@ export function WorkflowRunModeControl({
                     }
                     className={inlineInputClass}
                   />
-                  <input
-                    type="text"
+                  <TextInput
                     inputMode="numeric"
                     value={randomMaxDraft}
                     placeholder="Max"
@@ -200,8 +197,7 @@ export function WorkflowRunModeControl({
                       setMode('randomize');
                       event.currentTarget.select();
                     }}
-                    onChange={(event) => {
-                      const nextDraft = event.currentTarget.value;
+                    onValueChange={(nextDraft) => {
                       setRandomMaxDraft(nextDraft);
                       if (nextDraft.trim() === '' || parseFiniteIntegerInput(nextDraft) !== null) {
                         commitRandomBound('randomMax', nextDraft);
@@ -227,8 +223,7 @@ export function WorkflowRunModeControl({
 
               {candidate === 'increment' && selectedMode === candidate && (
                 <div className="mt-1">
-                  <input
-                    type="text"
+                  <TextInput
                     inputMode="numeric"
                     value={incrementDraft}
                     placeholder="Step"
@@ -238,8 +233,7 @@ export function WorkflowRunModeControl({
                       setMode('increment');
                       event.currentTarget.select();
                     }}
-                    onChange={(event) => {
-                      const nextDraft = event.currentTarget.value;
+                    onValueChange={(nextDraft) => {
                       setIncrementDraft(nextDraft);
                       if (nextDraft.trim() !== '' && parseFiniteIntegerInput(nextDraft) !== null) {
                         commitIncrementStep(nextDraft);

@@ -4,67 +4,22 @@ import {
   buildOpticalFlowPyramid,
   calculateHybridOpticalFlowFromPyramids,
   fitTrackedTransform,
+  invertAxisAlignedTransformAroundCenter,
   refineNccSubPixel,
 } from '@/utils/opticalFlow';
 import { isAutoImageFitMode } from '@/nodes/imageFitMode';
 import { getComfyOutputRegionOffset, getComfyOutputTransform } from './comfyOutputTransform';
+import { resolveComfyAlignmentOptions, type ComfyAlignmentOptions } from './comfyAlignmentOptions';
+
+export type { ComfyAlignmentOptions } from './comfyAlignmentOptions';
 
 const ANALYSIS_MAX_SIZE = 640;
 const HIGH_RES_SCALE = 3;
 const MIN_MATCH_COUNT = 6;
 const MAX_FLOW_ERROR = 12;
+const ALIGNMENT_RANSAC_THRESHOLD = 0.65;
 const MIN_SCALE = 0.8;
 const MAX_SCALE = 1.25;
-
-/**
- * Per-improvement toggles for the alignment pipeline.
- * All default to true (enabled). Pass options to explicitly disable a feature. */
-export interface ComfyAlignmentOptions {
-  /**
-   * Skip tracking points in regions where the source and output differ significantly.
-   * Helps prevent edited areas (img2img) from contaminating the alignment solve.
-   * Computes a coarse block-based difference map and filters out points in high-diff blocks.
-   */
-  skipEditedRegions?: boolean;
-
-  /**
-   * Iterative refinement: runs up to 2 additional passes with progressively
-   * smaller search radii. Each pass uses the previous estimate to warp the source
-   * toward the output, enabling sub-pixel corrections.
-   */
-  iterativeRefinement?: boolean;
-
-  /**
-   * Two-pass coarse-to-fine refinement. The first pass runs at standard resolution
-   * (max 480px). If successful, a second pass runs at 2× resolution using the
-   * coarse transform to pre-warp the source, yielding higher precision.
-   */
-  highResRefinement?: boolean;
-
-  /**
-   * Edge-aware sampling: after selecting tracking points, rank them by local
-   * gradient magnitude and keep only the top fraction. This gives more weight
-   * to strong edges and corners, which produce more reliable optical flow,
-   * and discards points in uniform/flat areas where tracking is noisy.
-   */
-  edgeAwareSampling?: boolean;
-
-  /**
-   * Sub-pixel NCC refinement: after RANSAC fitting, refine the inlier tracked
-   * positions to sub-pixel accuracy using parabolic interpolation of NCC
-   * scores around the integer match. This corrects residual integer-rounding
-   * bias from the optical flow tracker and produces more precise transforms.
-   */
-  subPixelRefinement?: boolean;
-}
-
-const DEFAULT_ALIGNMENT_OPTIONS: Required<ComfyAlignmentOptions> = {
-  skipEditedRegions: true,
-  iterativeRefinement: true,
-  highResRefinement: true,
-  edgeAwareSampling: true,
-  subPixelRefinement: true,
-};
 
 export interface ComfyImageAlignmentEstimate {
   /** Scale and offset mapping input-image coordinates to generated-output coordinates. */
@@ -74,7 +29,40 @@ export interface ComfyImageAlignmentEstimate {
   sourceToOutputOffsetY: number;
   confidence: number;
   matchedPointCount: number;
+  medianResidual: number;
 }
+
+export interface ComfyAlignmentReference {
+  width: number;
+  height: number;
+  transform: { x: number; y: number; scaleX: number; scaleY: number };
+}
+
+export const composeComfyAlignmentWithReference = ({
+  reference,
+  outputSize,
+  analysisSize,
+  correction,
+  regionOffset = { x: 0, y: 0 },
+}: {
+  reference: ComfyAlignmentReference;
+  outputSize: { width: number; height: number };
+  analysisSize: { width: number; height: number };
+  correction: { scaleX: number; scaleY: number; offsetX: number; offsetY: number };
+  regionOffset?: { x: number; y: number };
+}): ComfyNode['transform'] => ({
+  x:
+    reference.transform.x -
+    regionOffset.x +
+    correction.offsetX * ((reference.transform.scaleX * reference.width) / analysisSize.width),
+  y:
+    reference.transform.y -
+    regionOffset.y -
+    correction.offsetY * ((reference.transform.scaleY * reference.height) / analysisSize.height),
+  scaleX: reference.transform.scaleX * (reference.width / outputSize.width) * correction.scaleX,
+  scaleY: reference.transform.scaleY * (reference.height / outputSize.height) * correction.scaleY,
+  fitMode: ImageFitMode.CUSTOM,
+});
 
 type PixelImage = {
   data: Uint8ClampedArray;
@@ -83,61 +71,6 @@ type PixelImage = {
 };
 
 /**
- * Compute a coarse grid-based difference map between source and output.
- * Returns a flat Uint8Array where higher values = more difference.
- * Grid resolution is roughly image.width/16 × image.height/16 blocks.
- */
-const computeCoarseDifferenceMask = (
-  source: PixelImage,
-  output: PixelImage,
-): { mask: Uint8Array; blockWidth: number; blockHeight: number } => {
-  const blockSize = Math.max(8, Math.round(Math.min(source.width, source.height) / 16));
-  const cols = Math.ceil(source.width / blockSize);
-  const rows = Math.ceil(source.height / blockSize);
-  const mask = new Uint8Array(cols * rows);
-  const blockMeans: number[] = [];
-
-  for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < cols; col++) {
-      const startX = col * blockSize;
-      const startY = row * blockSize;
-      const endX = Math.min(startX + blockSize, source.width);
-      const endY = Math.min(startY + blockSize, source.height);
-      let sumDiff = 0;
-      let pixelCount = 0;
-
-      for (let y = startY; y < endY; y++) {
-        for (let x = startX; x < endX; x++) {
-          const index = (y * source.width + x) * 4;
-          const sr = source.data[index];
-          const sg = source.data[index + 1];
-          const sb = source.data[index + 2];
-          const dr = output.data[index];
-          const dg = output.data[index + 1];
-          const db = output.data[index + 2];
-          sumDiff += Math.abs(sr - dr) + Math.abs(sg - dg) + Math.abs(sb - db);
-          pixelCount++;
-        }
-      }
-
-      const meanDiff = pixelCount > 0 ? sumDiff / pixelCount : 0;
-      blockMeans.push(meanDiff);
-    }
-  }
-
-  // Threshold: blocks in the top 25% of difference are considered "edited"
-  const sorted = [...blockMeans].sort((a, b) => a - b);
-  const thresholdIndex = Math.floor(sorted.length * 0.75);
-  const threshold = sorted[thresholdIndex] ?? 0;
-
-  for (let index = 0; index < blockMeans.length; index++) {
-    mask[index] = blockMeans[index] >= threshold ? 1 : 0;
-  }
-
-  return { mask, blockWidth: blockSize, blockHeight: blockSize };
-};
-
-/*/**
  * Filter tracking points to keep only those with the strongest local edges.
  * Ranks each point by its gradient magnitude (Sobel-like) on the source image
  * and keeps the top 75% of points. This discards uniform/flat areas where
@@ -197,22 +130,106 @@ const filterPointsByEdgeScore = (
   return scored.slice(0, keepCount).map((s) => s.point);
 };
 
-/**
- * Filter tracking points to avoid heavily edited regions (img2img areas). */
-const filterPointsByDifferenceMask = (
-  points: Array<{ x: number; y: number }>,
+type TrackedPair = {
+  source: { x: number; y: number };
+  output: { x: number; y: number; error: number };
+  error: number;
+};
+
+const getLuminance = (image: PixelImage, x: number, y: number): number => {
+  const clampedX = Math.max(0, Math.min(image.width - 1, Math.round(x)));
+  const clampedY = Math.max(0, Math.min(image.height - 1, Math.round(y)));
+  const index = (clampedY * image.width + clampedX) * 4;
+  return (
+    image.data[index] * 0.2126 + image.data[index + 1] * 0.7152 + image.data[index + 2] * 0.0722
+  );
+};
+
+/** Normalized patch similarity after motion tracking; robust to brightness/color changes. */
+const getTrackedPatchSimilarity = (
   source: PixelImage,
   output: PixelImage,
-): Array<{ x: number; y: number }> => {
-  const { mask, blockWidth, blockHeight } = computeCoarseDifferenceMask(source, output);
-  const cols = Math.ceil(source.width / blockWidth);
+  sourcePoint: { x: number; y: number },
+  outputPoint: { x: number; y: number },
+  outputScale: { x: number; y: number } = { x: 1, y: 1 },
+  radius = 4,
+): number => {
+  const sourceValues: number[] = [];
+  const outputValues: number[] = [];
+  let sourceMean = 0;
+  let outputMean = 0;
 
-  return points.filter((point) => {
-    const col = Math.floor(point.x / blockWidth);
-    const row = Math.floor(point.y / blockHeight);
-    const maskIndex = row * cols + col;
-    return maskIndex < mask.length ? mask[maskIndex] === 0 : true;
-  });
+  for (let y = -radius; y <= radius; y += 2) {
+    for (let x = -radius; x <= radius; x += 2) {
+      const sourceValue = getLuminance(source, sourcePoint.x + x, sourcePoint.y + y);
+      const outputValue = getLuminance(
+        output,
+        outputPoint.x + x * outputScale.x,
+        outputPoint.y + y * outputScale.y,
+      );
+      sourceValues.push(sourceValue);
+      outputValues.push(outputValue);
+      sourceMean += sourceValue;
+      outputMean += outputValue;
+    }
+  }
+
+  sourceMean /= sourceValues.length;
+  outputMean /= outputValues.length;
+  let covariance = 0;
+  let sourceVariance = 0;
+  let outputVariance = 0;
+  for (let index = 0; index < sourceValues.length; index++) {
+    const sourceDelta = sourceValues[index] - sourceMean;
+    const outputDelta = outputValues[index] - outputMean;
+    covariance += sourceDelta * outputDelta;
+    sourceVariance += sourceDelta * sourceDelta;
+    outputVariance += outputDelta * outputDelta;
+  }
+
+  const denominator = Math.sqrt(sourceVariance * outputVariance);
+  return denominator > 1e-6 ? covariance / denominator : -1;
+};
+
+/**
+ * Hold out AI-edited areas after motion tracking. Comparing patches at their
+ * tracked locations avoids mistaking legitimate translation/scale for edits.
+ */
+const holdOutChangedTrackedPairs = (
+  source: PixelImage,
+  output: PixelImage,
+  pairs: TrackedPair[],
+  estimate?: Pick<
+    ComfyImageAlignmentEstimate,
+    | 'sourceToOutputScaleX'
+    | 'sourceToOutputScaleY'
+    | 'sourceToOutputOffsetX'
+    | 'sourceToOutputOffsetY'
+  >,
+): TrackedPair[] => {
+  if (pairs.length < MIN_MATCH_COUNT * 2) return pairs;
+  const scored = pairs
+    .map((pair) => {
+      const expectedOutput = estimate ? applyAlignmentToPoint(pair.source, estimate) : pair.output;
+      return {
+        pair,
+        similarity: getTrackedPatchSimilarity(source, output, pair.source, expectedOutput, {
+          x: estimate?.sourceToOutputScaleX ?? 1,
+          y: estimate?.sourceToOutputScaleY ?? 1,
+        }),
+      };
+    })
+    .filter(({ similarity }) => Number.isFinite(similarity))
+    .sort((a, b) => b.similarity - a.similarity);
+  if (scored.length < MIN_MATCH_COUNT) return pairs;
+
+  // Keep every plausible unchanged patch. Only fall back to a ranked 60% when
+  // edits are so extensive that the absolute similarity gate leaves too few points.
+  const targetCount = Math.max(MIN_MATCH_COUNT, Math.ceil(scored.length * 0.6));
+  const retained = scored.filter(({ similarity }) => similarity >= 0.45).map(({ pair }) => pair);
+  return retained.length >= targetCount
+    ? retained
+    : scored.slice(0, targetCount).map(({ pair }) => pair);
 };
 
 /**
@@ -221,7 +238,13 @@ const filterPointsByDifferenceMask = (
  */
 const applyAlignmentToPoint = (
   point: { x: number; y: number },
-  estimate: ComfyImageAlignmentEstimate,
+  estimate: Pick<
+    ComfyImageAlignmentEstimate,
+    | 'sourceToOutputScaleX'
+    | 'sourceToOutputScaleY'
+    | 'sourceToOutputOffsetX'
+    | 'sourceToOutputOffsetY'
+  >,
 ): { x: number; y: number } => ({
   x: estimate.sourceToOutputScaleX * point.x + estimate.sourceToOutputOffsetX,
   y: estimate.sourceToOutputScaleY * point.y + estimate.sourceToOutputOffsetY,
@@ -243,6 +266,7 @@ export const estimateAlignmentSinglePass = (
     outlierDistance: number;
     ransacThreshold?: number;
     enableSubPixelRefinement?: boolean;
+    holdOutChangedRegions?: boolean;
   },
 ): ComfyImageAlignmentEstimate | null => {
   if (points.length < MIN_MATCH_COUNT) return null;
@@ -274,12 +298,11 @@ export const estimateAlignmentSinglePass = (
     );
 
   if (reliablePairs.length < MIN_MATCH_COUNT) return null;
-
   let src = reliablePairs.map((p) => ({ x: p.source.x, y: p.source.y }));
   let dst = reliablePairs.map((p) => ({ x: p.output.x, y: p.output.y }));
 
   // --- RANSAC transform fitting ---
-  const solved = fitTrackedTransform(src, dst, {
+  let solved = fitTrackedTransform(src, dst, {
     translation: true,
     rotation: false,
     scale: false,
@@ -287,7 +310,7 @@ export const estimateAlignmentSinglePass = (
     perspective: false,
     independentScale: true,
     deform: false,
-    ransacThreshold: options.ransacThreshold ?? 1.5,
+    ransacThreshold: options.ransacThreshold ?? ALIGNMENT_RANSAC_THRESHOLD,
   });
 
   if (!solved || solved.type !== 'independent_scale') return null;
@@ -304,6 +327,40 @@ export const estimateAlignmentSinglePass = (
     sy > MAX_SCALE
   ) {
     return null;
+  }
+
+  if (options.holdOutChangedRegions) {
+    const retainedPairs = holdOutChangedTrackedPairs(source, output, reliablePairs, {
+      sourceToOutputScaleX: sx,
+      sourceToOutputScaleY: sy,
+      sourceToOutputOffsetX: tx,
+      sourceToOutputOffsetY: ty,
+    });
+    if (retainedPairs.length < reliablePairs.length) {
+      src = retainedPairs.map((pair) => pair.source);
+      dst = retainedPairs.map((pair) => pair.output);
+      solved = fitTrackedTransform(src, dst, {
+        translation: true,
+        rotation: false,
+        scale: false,
+        affine: false,
+        perspective: false,
+        independentScale: true,
+        deform: false,
+        ransacThreshold: options.ransacThreshold ?? ALIGNMENT_RANSAC_THRESHOLD,
+      });
+      if (!solved || solved.type !== 'independent_scale') return null;
+      [sx, tx, sy, ty] = solved.model;
+      if (
+        ![sx, tx, sy, ty].every(Number.isFinite) ||
+        sx < MIN_SCALE ||
+        sx > MAX_SCALE ||
+        sy < MIN_SCALE ||
+        sy > MAX_SCALE
+      ) {
+        return null;
+      }
+    }
   }
 
   // --- Optional: sub-pixel NCC refinement on inlier pairs ---
@@ -352,7 +409,7 @@ export const estimateAlignmentSinglePass = (
           perspective: false,
           independentScale: true,
           deform: false,
-          ransacThreshold: options.ransacThreshold ?? 1.5,
+          ransacThreshold: options.ransacThreshold ?? ALIGNMENT_RANSAC_THRESHOLD,
         });
 
         if (refitSolved && refitSolved.type === 'independent_scale') {
@@ -401,6 +458,7 @@ export const estimateAlignmentSinglePass = (
     sourceToOutputOffsetY: ty,
     confidence,
     matchedPointCount: residuals.length,
+    medianResidual,
   };
 };
 
@@ -416,6 +474,7 @@ const estimateWithIterativeRefinement = (
   output: PixelImage,
   points: Array<{ x: number; y: number }>,
   initialEstimate: ComfyImageAlignmentEstimate,
+  holdOutChangedRegions: boolean,
 ): ComfyImageAlignmentEstimate | null => {
   let best = initialEstimate;
   const radii = [6, 3]; // progressively smaller search radii
@@ -426,12 +485,17 @@ const estimateWithIterativeRefinement = (
       maxError: MAX_FLOW_ERROR,
       outlierDistance: Math.max(6, searchRadius * 2),
       enableSubPixelRefinement: false,
+      holdOutChangedRegions,
     });
 
     if (!refined) break;
 
-    // Keep the pass with the highest confidence
-    if (refined.confidence > best.confidence) {
+    // Prefer the geometrically tightest solve; confidence breaks near-ties.
+    if (
+      refined.medianResidual < best.medianResidual - 1e-4 ||
+      (Math.abs(refined.medianResidual - best.medianResidual) <= 1e-4 &&
+        refined.confidence > best.confidence)
+    ) {
       best = refined;
     }
   }
@@ -504,6 +568,8 @@ const estimateWithHighResRefinement = async (
   inputBlob: Blob,
   outputBlob: Blob,
   coarseEstimate: ComfyImageAlignmentEstimate,
+  coarseSize: { width: number; height: number },
+  holdOutChangedRegions: boolean,
 ): Promise<ComfyImageAlignmentEstimate | null> => {
   const hrSize = await getHighResAnalysisSize(inputBlob);
   if (!hrSize) return coarseEstimate;
@@ -512,6 +578,13 @@ const estimateWithHighResRefinement = async (
     readNormalizedPixels(inputBlob, hrSize.width, hrSize.height),
     readNormalizedPixels(outputBlob, hrSize.width, hrSize.height),
   ]);
+  const highResCoarseEstimate: ComfyImageAlignmentEstimate = {
+    ...coarseEstimate,
+    sourceToOutputOffsetX:
+      coarseEstimate.sourceToOutputOffsetX * (hrSource.width / coarseSize.width),
+    sourceToOutputOffsetY:
+      coarseEstimate.sourceToOutputOffsetY * (hrSource.height / coarseSize.height),
+  };
 
   // Select tracking points on the high-res source
   let points = selectTrackingPoints(hrSource);
@@ -519,7 +592,7 @@ const estimateWithHighResRefinement = async (
 
   // Filter out points predicted to be outside the output bounds
   points = points.filter((p) => {
-    const predicted = applyAlignmentToPoint(p, coarseEstimate);
+    const predicted = applyAlignmentToPoint(p, highResCoarseEstimate);
     const margin = 4;
     return (
       predicted.x >= margin &&
@@ -535,10 +608,19 @@ const estimateWithHighResRefinement = async (
     searchRadius: Math.max(4, Math.round(Math.min(hrSource.width, hrSource.height) * 0.03)),
     maxError: 6,
     outlierDistance: Math.max(8, Math.min(hrSource.width, hrSource.height) * 0.04),
-    ransacThreshold: 1.0,
+    ransacThreshold: 0.5,
+    holdOutChangedRegions,
   });
 
-  return hrEstimate ?? coarseEstimate;
+  return hrEstimate
+    ? {
+        ...hrEstimate,
+        sourceToOutputOffsetX:
+          hrEstimate.sourceToOutputOffsetX * (coarseSize.width / hrSource.width),
+        sourceToOutputOffsetY:
+          hrEstimate.sourceToOutputOffsetY * (coarseSize.height / hrSource.height),
+      }
+    : coarseEstimate;
 };
 
 export const estimateComfyImageAlignment = (
@@ -555,21 +637,11 @@ export const estimateComfyImageAlignment = (
     return null;
   }
 
-  const opts: Required<ComfyAlignmentOptions> = {
-    ...DEFAULT_ALIGNMENT_OPTIONS,
-    ...options,
-  };
+  const opts = resolveComfyAlignmentOptions(options);
 
   // --- Select tracking points ---
   let points = selectTrackingPoints(source);
   if (points.length < MIN_MATCH_COUNT) return null;
-
-  // Optionally filter out points in edited regions (before edge scoring,
-  // so we don't waste computation on points that will be removed anyway)
-  if (opts.skipEditedRegions) {
-    points = filterPointsByDifferenceMask(points, source, output);
-    if (points.length < MIN_MATCH_COUNT) return null;
-  }
 
   // Optionally keep only the strongest edge points
   if (opts.edgeAwareSampling) {
@@ -586,13 +658,14 @@ export const estimateComfyImageAlignment = (
     maxError: MAX_FLOW_ERROR,
     outlierDistance,
     enableSubPixelRefinement: opts.subPixelRefinement,
+    holdOutChangedRegions: opts.skipEditedRegions,
   });
 
   if (!estimate) return null;
 
   // --- Optional: iterative refinement ---
   const refinedEstimate = opts.iterativeRefinement
-    ? estimateWithIterativeRefinement(source, output, points, estimate)
+    ? estimateWithIterativeRefinement(source, output, points, estimate, opts.skipEditedRegions)
     : estimate;
 
   if (!refinedEstimate) return null;
@@ -637,22 +710,21 @@ export const alignComfyOutputToInput = async ({
   output,
   sceneNode,
   inputBlob,
+  reference,
   options,
 }: {
   node: ComfyNode;
   output: GeneratedOutput;
   sceneNode: { width: number; height: number } | null | undefined;
   inputBlob: Blob;
+  reference?: ComfyAlignmentReference;
   options?: ComfyAlignmentOptions;
 }): Promise<GeneratedOutput | null> => {
   if (output.mediaKind && output.mediaKind !== 'image') return null;
   const outputBlob = await getAsset(output.src);
   if (!outputBlob) return null;
 
-  const opts: Required<ComfyAlignmentOptions> = {
-    ...DEFAULT_ALIGNMENT_OPTIONS,
-    ...options,
-  };
+  const opts = resolveComfyAlignmentOptions(options);
 
   const analysisSize = await getAnalysisSize(inputBlob);
   const [sourcePixels, outputPixels] = await Promise.all([
@@ -664,7 +736,13 @@ export const alignComfyOutputToInput = async ({
 
   // --- Optional: high-resolution refinement pass ---
   const finalEstimate = opts.highResRefinement
-    ? await estimateWithHighResRefinement(inputBlob, outputBlob, estimate)
+    ? await estimateWithHighResRefinement(
+        inputBlob,
+        outputBlob,
+        estimate,
+        analysisSize,
+        opts.skipEditedRegions,
+      )
     : estimate;
 
   if (!finalEstimate) return null;
@@ -686,19 +764,44 @@ export const alignComfyOutputToInput = async ({
   // Correction = INVERSE of the estimate: source = correctionScale * output + correctionOffset
   //   correctionScale = 1/estimateScale
   //   correctionOffset = -estimateOffset / estimateScale
-  const correctionScaleX = 1 / finalEstimate.sourceToOutputScaleX;
-  const correctionScaleY = 1 / finalEstimate.sourceToOutputScaleY;
-  const correctionOffsetX = -finalEstimate.sourceToOutputOffsetX * correctionScaleX;
-  const correctionOffsetY = -finalEstimate.sourceToOutputOffsetY * correctionScaleY;
-
-  // Centering: when scaling around the top-left corner, the content center shifts from
-  // center to correctionScale * center. To keep the content center in place, we add an
-  // offset of (1 - correctionScale) * center in the canvas coordinate system.
-  // (Y is flipped in screen coords via the subtraction below.)
-  const centeredOffsetX = correctionOffsetX + ((correctionScaleX - 1) * analysisSize.width) / 2;
-  const centeredOffsetY = correctionOffsetY + ((correctionScaleY - 1) * analysisSize.height) / 2;
+  const correction = invertAxisAlignedTransformAroundCenter(
+    {
+      scaleX: finalEstimate.sourceToOutputScaleX,
+      scaleY: finalEstimate.sourceToOutputScaleY,
+      offsetX: finalEstimate.sourceToOutputOffsetX,
+      offsetY: finalEstimate.sourceToOutputOffsetY,
+    },
+    analysisSize,
+  );
+  if (!correction) return null;
 
   const regionOffset = getComfyOutputRegionOffset({ node, output, sceneNode });
+
+  if (
+    reference &&
+    reference.width > 0 &&
+    reference.height > 0 &&
+    [
+      reference.transform.x,
+      reference.transform.y,
+      reference.transform.scaleX,
+      reference.transform.scaleY,
+    ].every(Number.isFinite)
+  ) {
+    // The tracker solved native input pixels -> native output pixels. Compose
+    // its inverse with the input node's actual scene placement instead of
+    // assuming both images use the Comfy node's auto-fit transform.
+    return {
+      ...output,
+      transform: composeComfyAlignmentWithReference({
+        reference,
+        outputSize: output,
+        analysisSize,
+        correction,
+        regionOffset,
+      }),
+    };
+  }
 
   // Coordinate mapping from analysis-coords to screen-coords.
   // Pixel (px, py) at analysis resolution maps to pixel (px, py) at output resolution
@@ -710,13 +813,13 @@ export const alignComfyOutputToInput = async ({
       x:
         baseX -
         regionOffset.x +
-        centeredOffsetX * ((baseScaleX * output.width) / analysisSize.width),
+        correction.offsetX * ((baseScaleX * output.width) / analysisSize.width),
       y:
         baseY -
         regionOffset.y -
-        centeredOffsetY * ((baseScaleY * output.height) / analysisSize.height),
-      scaleX: baseScaleX * correctionScaleX,
-      scaleY: baseScaleY * correctionScaleY,
+        correction.offsetY * ((baseScaleY * output.height) / analysisSize.height),
+      scaleX: baseScaleX * correction.scaleX,
+      scaleY: baseScaleY * correction.scaleY,
       fitMode: ImageFitMode.CUSTOM,
     },
   };

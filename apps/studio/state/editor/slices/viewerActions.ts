@@ -7,6 +7,7 @@ import {
   type ViewerSlot,
   type ViewerSlotAssignments,
 } from '@blackboard/types';
+
 import { getInitialState } from '@/state/editor/initialState';
 import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
@@ -228,6 +229,93 @@ export function createViewerActions(
         viewerSlots: nextSlots,
         viewerNodeId: nextViewerNodeId,
         activeViewerSlot: nextActiveSlot,
+      }));
+    },
+
+    // ── Compare View Actions ─────────────────────────────────────
+
+    enterCompareMode: (slotA: ViewerSlot, slotB: ViewerSlot) => {
+      const state = get();
+      const nodeIdA = state.viewerSlots?.[slotA];
+      const nodeIdB = state.viewerSlots?.[slotB];
+      if (!nodeIdA || !nodeIdB) return false;
+
+      const validA = sanitizeViewerNodeId(nodeIdA, state.nodes);
+      const validB = sanitizeViewerNodeId(nodeIdB, state.nodes);
+      if (!validA || !validB) return false;
+
+      // Set the viewer to slot A so the render loop renders that slot
+      set(() => ({
+        compareView: {
+          ...state.compareView,
+          isActive: true,
+          slotA,
+          slotB,
+        },
+        viewerNodeId: validA,
+        activeViewerSlot: slotA,
+      }));
+      return true;
+    },
+
+    exitCompareMode: () => {
+      set((s) => ({
+        compareView: {
+          ...s.compareView,
+          isActive: false,
+          slotA: null,
+          slotB: null,
+          dividerPosition: 0.5,
+        },
+      }));
+    },
+
+    setCompareMode: (mode: 'wipe' | 'split') => {
+      set((s) => ({
+        compareView: { ...s.compareView, mode },
+      }));
+    },
+
+    setCompareWipeOrientation: (orientation: 'vertical' | 'horizontal') => {
+      set((s) => ({
+        compareView: {
+          ...s.compareView,
+          wipe: { ...s.compareView.wipe, orientation },
+        },
+      }));
+    },
+
+    setCompareWipeReference: (reference: 'canvas' | 'viewport' | 'cursor') => {
+      set((s) => ({
+        compareView: {
+          ...s.compareView,
+          wipe: { ...s.compareView.wipe, reference },
+        },
+      }));
+    },
+
+    setCompareDividerPosition: (position: number) => {
+      set((s) => ({
+        compareView: { ...s.compareView, dividerPosition: position },
+      }));
+    },
+
+    swapCompareSlots: () => {
+      const state = get();
+      const { slotA, slotB } = state.compareView;
+      if (!slotA || !slotB) return;
+
+      const nodeIdB = state.viewerSlots?.[slotB];
+      if (!nodeIdB) return;
+
+      set(() => ({
+        compareView: {
+          ...state.compareView,
+          slotA: slotB,
+          slotB: slotA,
+        },
+        viewerNodeId: sanitizeViewerNodeId(nodeIdB, state.nodes),
+        activeViewerSlot: slotB,
       }));
     },
   };

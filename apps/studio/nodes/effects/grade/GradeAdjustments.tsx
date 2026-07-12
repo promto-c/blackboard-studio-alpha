@@ -6,8 +6,8 @@ import type {
   GradeOutOfGamutMode,
   GradeProcessingDomain,
 } from '@blackboard/types';
-import { CollapsibleSection } from '@blackboard/ui';
-import { AttentionPulse, SegmentedControl, ShaderCodeButton, Slider } from '@/components';
+import { CollapsibleSection, Slider } from '@blackboard/ui';
+import { AttentionPulse, SegmentedControl, ShaderCodeButton } from '@/components';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
 import { GRADE_SHADER } from './gradeShader';
 import {

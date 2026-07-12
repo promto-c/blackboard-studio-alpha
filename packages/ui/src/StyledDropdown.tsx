@@ -3,6 +3,7 @@ import { Check } from '@blackboard/icons';
 import { Badge } from './Badge';
 import Popover from './Popover';
 import ScrollArea from './ScrollArea';
+import TextInput from './TextInput';
 
 function ChevronDown({ isOpen }: { isOpen: boolean }) {
   return (
@@ -41,6 +42,7 @@ interface StyledDropdownProps {
   popoverWidthClass?: string;
   searchable?: boolean;
   showSelectedBadges?: boolean;
+  disabled?: boolean;
 }
 
 const optionNodeToText = (node: React.ReactNode): string => {
@@ -76,6 +78,7 @@ function StyledDropdown({
   popoverWidthClass,
   searchable,
   showSelectedBadges = true,
+  disabled = false,
 }: StyledDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -108,16 +111,42 @@ function StyledDropdown({
   }, [isOpen, shouldShowSearch]);
 
   useEffect(() => {
-    setActiveIndex(0);
-  }, [normalizedQuery, isOpen]);
+    if (!isOpen) return;
+    const selectedIndex = visibleOptions.findIndex((option) => option.value === value);
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+  }, [isOpen, value, visibleOptions]);
 
   useEffect(() => {
     if (!isOpen || visibleOptions.length === 0) return;
     const container = optionsContainerRef.current;
     if (!container) return;
     const activeButton = container.children[activeIndex] as HTMLElement | undefined;
-    activeButton?.scrollIntoView({ block: 'nearest' });
+    activeButton?.scrollIntoView?.({ block: 'nearest' });
   }, [activeIndex, isOpen, visibleOptions.length]);
+
+  const applyOptionAtIndex = (index: number) => {
+    const option = visibleOptions[index];
+    if (!option) return;
+    setActiveIndex(index);
+    onChange(option.value);
+  };
+
+  const navigateAdjacentOption = (direction: 1 | -1) => {
+    if (visibleOptions.length === 0) return;
+    const selectedIndex = visibleOptions.findIndex((option) => option.value === value);
+    const currentIndex = isOpen && visibleOptions[activeIndex] ? activeIndex : selectedIndex;
+    const nextIndex =
+      currentIndex < 0
+        ? direction > 0
+          ? 0
+          : visibleOptions.length - 1
+        : (currentIndex + direction + visibleOptions.length) % visibleOptions.length;
+    if (isOpen) {
+      setActiveIndex(nextIndex);
+    } else {
+      applyOptionAtIndex(nextIndex);
+    }
+  };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (visibleOptions.length === 0) return;
@@ -125,16 +154,22 @@ function StyledDropdown({
     switch (event.key) {
       case 'ArrowDown':
         event.preventDefault();
-        setActiveIndex((prev) => (prev < visibleOptions.length - 1 ? prev + 1 : 0));
+        navigateAdjacentOption(1);
         break;
       case 'ArrowUp':
         event.preventDefault();
-        setActiveIndex((prev) => (prev > 0 ? prev - 1 : visibleOptions.length - 1));
+        navigateAdjacentOption(-1);
         break;
       case 'Enter':
-      case 'Tab':
+        if (!isOpen) return;
         event.preventDefault();
         if (visibleOptions[activeIndex]) {
+          onChange(visibleOptions[activeIndex].value);
+          setIsOpen(false);
+        }
+        break;
+      case 'Tab':
+        if (isOpen && visibleOptions[activeIndex]) {
           onChange(visibleOptions[activeIndex].value);
           setIsOpen(false);
         }
@@ -142,7 +177,7 @@ function StyledDropdown({
     }
   };
 
-  const triggerButtonClasses = `bb-dropdown-trigger bb-dropdown-surface grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-center overflow-hidden rounded-lg border-0 text-left transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30 ${
+  const triggerButtonClasses = `bb-dropdown-trigger bb-dropdown-surface grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-center overflow-hidden rounded-lg border-0 text-left transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30 disabled:cursor-not-allowed disabled:opacity-50 ${
     isCompactDensity
       ? 'min-h-9 gap-2 px-2 py-1.5 font-sans text-[11px]'
       : 'min-h-9 gap-3 px-2.5 py-2 font-mono text-xs'
@@ -205,8 +240,8 @@ function StyledDropdown({
   return (
     <div className={`${widthClass} min-w-0 max-w-full overflow-hidden`}>
       <Popover
-        isOpen={isOpen}
-        onOpenChange={setIsOpen}
+        isOpen={isOpen && !disabled}
+        onOpenChange={(nextOpen) => setIsOpen(disabled ? false : nextOpen)}
         triggerClassName="w-full"
         trigger={
           <button
@@ -214,6 +249,8 @@ function StyledDropdown({
             className={triggerButtonClasses}
             aria-haspopup="listbox"
             aria-expanded={isOpen}
+            disabled={disabled}
+            onKeyDown={handleKeyDown}
           >
             {selectedOption ? (
               renderOptionContent(selectedOption, true, showSelectedBadges)
@@ -231,11 +268,11 @@ function StyledDropdown({
         {(close) => (
           <div className="min-w-0 max-w-full space-y-2 overflow-hidden">
             {shouldShowSearch ? (
-              <input
+              <TextInput
                 ref={searchInputRef}
                 value={query}
-                onChange={(event) => {
-                  setQuery(event.currentTarget.value);
+                onValueChange={(value) => {
+                  setQuery(value);
                   setActiveIndex(0);
                 }}
                 onKeyDown={handleKeyDown}
@@ -246,7 +283,6 @@ function StyledDropdown({
                 aria-activedescendant={activeDescendantId}
                 aria-controls="dropdown-listbox"
                 placeholder="Search..."
-                className="w-full min-w-0 rounded-lg border border-white/10 bg-gray-950/70 px-2.5 py-2 text-xs text-gray-100 outline-none transition placeholder:text-gray-600 focus:border-primary-400/60 focus:ring-2 focus:ring-primary-400/20"
               />
             ) : null}
 

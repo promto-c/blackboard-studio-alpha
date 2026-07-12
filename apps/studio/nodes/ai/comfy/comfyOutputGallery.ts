@@ -1,3 +1,4 @@
+import type { GeneratedOutput } from '@blackboard/types';
 import { isBackgroundJobActive, type BackgroundJob } from '@/state/editor/services/backgroundJobs';
 
 export interface ComfyPendingOutputSlot {
@@ -7,6 +8,14 @@ export interface ComfyPendingOutputSlot {
   detail?: string;
   active: boolean;
 }
+
+export const getComfyGenerationGroupOutputs = (
+  outputs: readonly GeneratedOutput[],
+  generationGroupId: string,
+): GeneratedOutput[] =>
+  outputs
+    .filter((output) => !output.deletedAt && output.generationGroupId === generationGroupId)
+    .sort((left, right) => right.createdAt - left.createdAt);
 
 export const getActiveComfyOutputJobs = ({
   jobs,

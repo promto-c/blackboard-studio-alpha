@@ -1,5 +1,6 @@
 import React from 'react';
 import ScrollArea from './ScrollArea';
+import { CONTROL_INPUT_CONTAINER_CLASS } from './controlInputStyles';
 
 const joinClassNames = (...values: Array<string | undefined | false>) =>
   values.filter(Boolean).join(' ');
@@ -59,7 +60,9 @@ const ResizableScrollTextarea = React.forwardRef<HTMLTextAreaElement, ResizableS
       const textarea = textareaRef.current;
       if (!textarea) return;
 
+      textarea.style.height = 'auto';
       const nextHeight = Math.max(minHeight, textarea.scrollHeight);
+      textarea.style.height = `${nextHeight}px`;
       setContentHeight((current) => (Math.abs(current - nextHeight) < 1 ? current : nextHeight));
     }, [minHeight]);
 
@@ -125,13 +128,14 @@ const ResizableScrollTextarea = React.forwardRef<HTMLTextAreaElement, ResizableS
     return (
       <div
         className={joinClassNames(
-          'relative rounded-xl border border-white/[0.08] bg-black/15 transition focus-within:border-cyan-200/40 focus-within:bg-black/20',
+          'relative transition',
+          CONTROL_INPUT_CONTAINER_CLASS,
           rootClassName,
         )}
       >
         <ScrollArea
           axis="y"
-          viewportClassName={joinClassNames('rounded-xl', viewportClassName)}
+          viewportClassName={joinClassNames('rounded-lg', viewportClassName)}
           viewportStyle={{ maxHeight: visibleMaxHeight, minHeight }}
         >
           <textarea
@@ -142,7 +146,7 @@ const ResizableScrollTextarea = React.forwardRef<HTMLTextAreaElement, ResizableS
             onChange={handleChange}
             style={{ ...textareaStyle, height: contentHeight }}
             className={joinClassNames(
-              'block w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-6 pb-6 text-[13px] leading-5 text-white outline-none placeholder:text-gray-500',
+              'block min-h-9 w-full resize-none overflow-hidden bg-transparent px-2.5 py-2 pr-6 pb-6 text-xs leading-5 text-gray-200 outline-none placeholder:text-gray-500 disabled:cursor-not-allowed disabled:opacity-55',
               textareaClassName,
             )}
           />
@@ -160,7 +164,7 @@ const ResizableScrollTextarea = React.forwardRef<HTMLTextAreaElement, ResizableS
           onPointerUp={handleResizePointerEnd}
           onPointerCancel={handleResizePointerEnd}
           onKeyDown={handleResizeKeyDown}
-          className="absolute bottom-0 right-0 h-5 w-5 cursor-nwse-resize touch-none select-none rounded-br-xl opacity-55 transition hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-200/35"
+          className="absolute bottom-0 right-0 h-5 w-5 cursor-nwse-resize touch-none select-none rounded-br-lg opacity-55 transition hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary-400/20"
         >
           <span className="absolute bottom-1 right-1 h-2.5 w-2.5 rounded-br-md border-b border-r border-white/25" />
           <span className="absolute bottom-1.5 right-1.5 h-1.5 w-1.5 rounded-br border-b border-r border-white/20" />

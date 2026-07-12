@@ -56,4 +56,27 @@ describe('TextureCache', () => {
     expect(cache.has('frame-2')).toBe(false);
     expect(cache.has('frame-3')).toBe(true);
   });
+
+  it('disposes a duplicate texture whose ownership is rejected', () => {
+    const cache = new TextureCache();
+    const retained = createTexture();
+    const duplicate = createTexture();
+    const disposeDuplicate = vi.spyOn(duplicate, 'dispose');
+
+    expect(cache.add('frame', retained)).toBe(true);
+    expect(cache.add('frame', duplicate)).toBe(false);
+
+    expect(disposeDuplicate).toHaveBeenCalledOnce();
+    expect(cache.get('frame')?.texture).toBe(retained);
+  });
+
+  it('accounts for typed CPU pixels in addition to the GPU upload', () => {
+    const cache = new TextureCache();
+    const data = new Uint8Array(8 * 8 * 4);
+    const texture = new THREE.DataTexture(data, 8, 8, THREE.RGBAFormat, THREE.UnsignedByteType);
+
+    cache.add('data', texture);
+
+    expect(cache.getMemoryStatus().used).toBe(data.byteLength * 2);
+  });
 });

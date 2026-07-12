@@ -63,7 +63,12 @@ describe('backgroundJobs', () => {
           title: 'Workflow',
           status: 'running',
           progress: 35,
-          source: { promptId: 'prompt-1', nodeId: 'node-1' },
+          source: {
+            promptId: 'prompt-1',
+            nodeId: 'node-1',
+            comfyRegionId: 'region-1',
+            generationGroupId: 'prompt-option:message-1:0',
+          },
           startedAt: 10,
           updatedAt: 20,
         },
@@ -76,6 +81,8 @@ describe('backgroundJobs', () => {
     expect(job.status).toBe('running');
     expect(job.detail).toBe('Reconnecting to ComfyUI...');
     expect(job.source?.restoredFromStorage).toBe(true);
+    expect(job.source?.comfyRegionId).toBe('region-1');
+    expect(job.source?.generationGroupId).toBe('prompt-option:message-1:0');
     expect(job.cancellable).toBe(true);
   });
 

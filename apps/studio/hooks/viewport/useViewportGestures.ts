@@ -41,6 +41,20 @@ interface UseViewportGesturesParams {
     options?: { syncAnimationTarget?: boolean },
   ) => void;
   setAnimationTarget: (target: { zoom?: number; pan?: Pan }) => void;
+  gestureTransform?: ViewportGestureTransform | null;
+}
+
+interface ViewportGestureFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface ViewportGestureTransform {
+  panBase: Pan;
+  fitFrame: ViewportGestureFrame;
+  getFrameForPoint: (point: { x: number; y: number }) => ViewportGestureFrame;
 }
 
 interface UseViewportGesturesResult {
@@ -77,6 +91,7 @@ export function useViewportGestures({
   projectId,
   setViewportTransform,
   setAnimationTarget,
+  gestureTransform = null,
 }: UseViewportGesturesParams): UseViewportGesturesResult {
   // --- Middle mouse panning ---
   const [isMousePanning, setIsMousePanning] = useState(false);
@@ -220,33 +235,74 @@ export function useViewportGestures({
     (pivotClient: { x: number; y: number }, oldZoom: number, newZoom: number, oldPan: Pan): Pan => {
       if (!viewportRef.current || !sceneNode) return oldPan;
       const rect = viewportRef.current.getBoundingClientRect();
+      const pivot = { x: pivotClient.x - rect.left, y: pivotClient.y - rect.top };
+
+      if (gestureTransform) {
+        const frame = gestureTransform.getFrameForPoint(pivot);
+        if (frame.width > 0 && frame.height > 0) {
+          const oldLocalPan = {
+            x: oldPan.x - gestureTransform.panBase.x,
+            y: oldPan.y - gestureTransform.panBase.y,
+          };
+          const nextLocalPan = calculatePivotedViewportPan({
+            viewportSize: { width: frame.width, height: frame.height },
+            pivot: { x: pivot.x - frame.x, y: pivot.y - frame.y },
+            oldZoom,
+            newZoom,
+            oldPan: oldLocalPan,
+          });
+
+          return {
+            x: nextLocalPan.x + gestureTransform.panBase.x,
+            y: nextLocalPan.y + gestureTransform.panBase.y,
+          };
+        }
+      }
 
       return calculatePivotedViewportPan({
         viewportSize: { width: rect.width, height: rect.height },
-        pivot: { x: pivotClient.x - rect.left, y: pivotClient.y - rect.top },
+        pivot,
         oldZoom,
         newZoom,
         oldPan,
       });
     },
-    [sceneNode, viewportRef],
+    [gestureTransform, sceneNode, viewportRef],
   );
 
   // --- Fit to view ---
   const viewportInsets = useViewportLayoutInsets(viewportRef);
   const panelWidth = viewportInsets.left;
 
-  const fitTarget = useMemo(
-    () =>
-      calculateViewportFitTarget({
-        viewportSize,
+  const fitTarget = useMemo(() => {
+    if (gestureTransform) {
+      const target = calculateViewportFitTarget({
+        viewportSize: {
+          width: gestureTransform.fitFrame.width,
+          height: gestureTransform.fitFrame.height,
+        },
         sceneSize: sceneNode
           ? { width: sceneNode.width, height: sceneNode.height }
           : { width: 0, height: 0 },
-        insets: viewportInsets,
-      }),
-    [sceneNode, viewportInsets, viewportSize],
-  );
+      });
+
+      return {
+        zoom: target.zoom,
+        pan: {
+          x: target.pan.x + gestureTransform.panBase.x,
+          y: target.pan.y + gestureTransform.panBase.y,
+        },
+      };
+    }
+
+    return calculateViewportFitTarget({
+      viewportSize,
+      sceneSize: sceneNode
+        ? { width: sceneNode.width, height: sceneNode.height }
+        : { width: 0, height: 0 },
+      insets: viewportInsets,
+    });
+  }, [gestureTransform, sceneNode, viewportInsets, viewportSize]);
   const fitZoom = fitTarget.zoom;
 
   const isFit = useMemo(() => {

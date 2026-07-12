@@ -2,7 +2,36 @@ import { describe, expect, it } from 'vitest';
 import {
   buildOpticalFlowPyramid,
   calculateHybridOpticalFlowFromPyramids,
+  invertAxisAlignedTransformAroundCenter,
 } from '@/utils/opticalFlow';
+
+describe('invertAxisAlignedTransformAroundCenter', () => {
+  it('inverts independent scale and translation around the image center', () => {
+    const inverse = invertAxisAlignedTransformAroundCenter(
+      { scaleX: 1.1, scaleY: 0.9, offsetX: 8, offsetY: -6 },
+      { width: 200, height: 100 },
+    );
+
+    expect(inverse).not.toBeNull();
+    const center = { x: (200 - 1) / 2, y: (100 - 1) / 2 };
+    const source = { x: 35, y: -12 };
+    const output = {
+      x: 1.1 * (source.x + center.x) + 8 - center.x,
+      y: 0.9 * (source.y + center.y) - 6 - center.y,
+    };
+    expect(output.x * inverse!.scaleX + inverse!.offsetX).toBeCloseTo(source.x);
+    expect(output.y * inverse!.scaleY + inverse!.offsetY).toBeCloseTo(source.y);
+  });
+
+  it('rejects degenerate tracked scale', () => {
+    expect(
+      invertAxisAlignedTransformAroundCenter(
+        { scaleX: 0, scaleY: 1, offsetX: 0, offsetY: 0 },
+        { width: 200, height: 100 },
+      ),
+    ).toBeNull();
+  });
+});
 
 const createFrameWithPatch = (
   width: number,

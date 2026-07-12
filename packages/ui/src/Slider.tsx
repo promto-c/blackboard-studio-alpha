@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import KeyframeButton from './KeyframeButton';
 import ResetIconButton from './ResetIconButton';
+import { useUIInteractionSession } from './UIInteractionProvider';
 
 export interface SliderProps {
   label: string;
@@ -93,6 +94,11 @@ function Slider({
   const fillPercent = Math.min(100, ((value - min) / (effectiveMax - min)) * 100);
   const hasDescription = description !== undefined && description !== null;
   const descriptionTitle = typeof description === 'string' ? description : undefined;
+  const { startInteraction, endInteraction } = useUIInteractionSession({
+    idPrefix: 'slider',
+    onInteractionStart,
+    onInteractionEnd,
+  });
 
   useEffect(() => {
     if (!isEditingValue) {
@@ -108,14 +114,14 @@ function Slider({
   useEffect(() => releaseInteractionListeners, [releaseInteractionListeners]);
 
   const handleInteractionStart = useCallback(() => {
-    onInteractionStart?.();
+    startInteraction();
     releaseInteractionListeners();
 
     if (typeof window === 'undefined') return;
 
     const handleInteractionEnd = () => {
       releaseInteractionListeners();
-      onInteractionEnd?.();
+      endInteraction();
     };
 
     window.addEventListener('pointerup', handleInteractionEnd, true);
@@ -124,13 +130,13 @@ function Slider({
       window.removeEventListener('pointerup', handleInteractionEnd, true);
       window.removeEventListener('pointercancel', handleInteractionEnd, true);
     };
-  }, [onInteractionEnd, onInteractionStart, releaseInteractionListeners]);
+  }, [endInteraction, releaseInteractionListeners, startInteraction]);
 
   const handleBlur = useCallback(() => {
     if (!cleanupRef.current) return;
     releaseInteractionListeners();
-    onInteractionEnd?.();
-  }, [onInteractionEnd, releaseInteractionListeners]);
+    endInteraction();
+  }, [endInteraction, releaseInteractionListeners]);
 
   const commitManualValue = useCallback(() => {
     const parsed = parseEditableValue(draftValue);
@@ -145,10 +151,10 @@ function Slider({
       return;
     }
 
-    onInteractionStart?.();
+    startInteraction();
     onChange(nextValue);
-    onInteractionEnd?.();
-  }, [draftValue, max, min, onChange, onInteractionEnd, onInteractionStart, step, value]);
+    endInteraction();
+  }, [draftValue, endInteraction, max, min, onChange, startInteraction, step, value]);
 
   const handleValueFocus = useCallback(
     (event: React.FocusEvent<HTMLInputElement>) => {

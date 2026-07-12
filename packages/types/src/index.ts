@@ -33,10 +33,14 @@ export const NodeType = {
   MATCH_MOVE: 'match_move',
   ROTO: 'roto',
   PAINT: 'paint',
-  CHROMA_KEY: 'chroma_key',
+  KEYER: 'keyer',
   WARP: 'warp',
   COMFY: 'comfy',
   ONNX_MODEL: 'onnx_model',
+  OCIO_COLOR_SPACE: 'ocio_color_space',
+  OCIO_NAMED_TRANSFORM: 'ocio_named_transform',
+  OCIO_FILE_TRANSFORM: 'ocio_file_transform',
+  OCIO_LOOK_TRANSFORM: 'ocio_look_transform',
   NOTE: 'note',
 } as const;
 
@@ -541,6 +545,21 @@ export type NodeInputSourcePorts = Record<string, string>;
 export type SourceAlphaMode = 'file' | 'opaque' | 'transparent';
 export type OcioColorSpaceName = string;
 export type OcioSceneColorSpace = string;
+export const OCIO_PROJECT_WORKING_SPACE = '$project_working' as const;
+export const OCIO_TEXTURE_COLOR_SPACE = '$texture_paint' as const;
+export const OCIO_COMPOSITING_LOG_SPACE = '$compositing_log' as const;
+export type OcioTransformColorSpace =
+  | OcioColorSpaceName
+  | typeof OCIO_PROJECT_WORKING_SPACE
+  | typeof OCIO_TEXTURE_COLOR_SPACE
+  | typeof OCIO_COMPOSITING_LOG_SPACE;
+export type OcioTransformDirection = 'forward' | 'inverse';
+export type OcioFileTransformInterpolation =
+  | 'default'
+  | 'nearest'
+  | 'linear'
+  | 'tetrahedral'
+  | 'best';
 
 export const PROJECT_COLOR_MANAGEMENT_SCHEMA_VERSION = 1 as const;
 
@@ -714,7 +733,20 @@ export interface EffectNode extends BaseNode {
   kind?: typeof NodeKind.EFFECT;
 }
 
-export interface MediaSourceNode extends EffectNode {
+/** Behavior used when a temporal source is sampled outside its available range. */
+export type SourceRangeBehavior = 'hold' | 'loop' | 'bounce' | 'black';
+
+/** Shared timeline placement and range-extension settings for temporal media. */
+export interface TemporalSourceSettings {
+  /** Timeline frame on which the source's first frame is available. */
+  startFrame?: number;
+  /** Sampling behavior before the first available source frame. */
+  beforeRangeBehavior?: SourceRangeBehavior;
+  /** Sampling behavior after the last available source frame. */
+  afterRangeBehavior?: SourceRangeBehavior;
+}
+
+export interface MediaSourceNode extends EffectNode, TemporalSourceSettings {
   type: typeof NodeType.MEDIA_SOURCE;
   src: string;
   sourceFileName?: string;
@@ -730,10 +762,11 @@ export interface MediaSourceNode extends EffectNode {
   sourceAlphaMode?: SourceAlphaMode;
   useOutputSizeAsScene?: boolean;
   duration?: number;
-  loop?: boolean;
+  /** Number of decodable video frames at the project frame rate. */
+  frameCount?: number;
 }
 
-export interface ImageSequenceNode extends EffectNode {
+export interface ImageSequenceNode extends EffectNode, TemporalSourceSettings {
   type: typeof NodeType.IMAGE_SEQUENCE;
   frames: string[];
   sourceFileName?: string;
@@ -748,7 +781,6 @@ export interface ImageSequenceNode extends EffectNode {
   useOutputSizeAsScene?: boolean;
   fps: number;
   startFrame: number;
-  loop: boolean;
 }
 
 export interface TextNode extends EffectNode {
@@ -791,6 +823,37 @@ export interface GradeNode extends EffectNode {
 export interface BlurNode extends EffectNode {
   type: typeof NodeType.BLUR;
   blur: Blur;
+}
+
+export interface OcioColorSpaceTransformNode extends EffectNode {
+  type: typeof NodeType.OCIO_COLOR_SPACE;
+  sourceColorSpace: OcioTransformColorSpace;
+  destinationColorSpace: OcioTransformColorSpace;
+}
+
+export interface OcioNamedTransformNode extends EffectNode {
+  type: typeof NodeType.OCIO_NAMED_TRANSFORM;
+  namedTransform: string;
+  direction: OcioTransformDirection;
+  processColorSpace: OcioTransformColorSpace;
+}
+
+export interface OcioFileTransformNode extends EffectNode {
+  type: typeof NodeType.OCIO_FILE_TRANSFORM;
+  assetId: string | null;
+  fileName: string | null;
+  fileSize?: number;
+  direction: OcioTransformDirection;
+  interpolation: OcioFileTransformInterpolation;
+  inputColorSpace: OcioTransformColorSpace;
+  outputColorSpace: OcioTransformColorSpace;
+  cccId?: string;
+}
+
+export interface OcioLookTransformNode extends EffectNode {
+  type: typeof NodeType.OCIO_LOOK_TRANSFORM;
+  looks: string;
+  direction: OcioTransformDirection;
 }
 
 export type ReformatResizeMode = 'fill' | 'fit' | 'none' | 'stretch';
@@ -1119,9 +1182,10 @@ export interface PaintNode extends EffectNode {
   defaultLifetime?: PaintLifetimePreset | null;
 }
 
-export interface ChromaKeyNode extends EffectNode {
-  type: typeof NodeType.CHROMA_KEY;
+export interface KeyerNode extends EffectNode {
+  type: typeof NodeType.KEYER;
   uniforms: Record<string, AnyUniform>;
+  matteOverlayWhileAdjusting: boolean;
 }
 
 export interface WarpPin {
@@ -1354,6 +1418,7 @@ export interface GeneratedOutput {
   label?: string;
   prompt?: string;
   promptId?: string;
+  generationGroupId?: string;
   workflowId?: string;
   workflowName?: string;
   regionId?: string;
@@ -1361,6 +1426,29 @@ export interface GeneratedOutput {
   regionRect?: { x: number; y: number; width: number; height: number };
   transform?: ImageTransform;
   useOutputSizeAsScene?: boolean;
+  differenceMask?: GeneratedOutputDifferenceMask;
+}
+
+/** Input/output difference matte applied as non-destructive generated-output alpha. */
+export interface GeneratedOutputDifferenceMask {
+  enabled: boolean;
+  referenceAssetId: string;
+  referenceWidth: number;
+  referenceHeight: number;
+  referenceTransform?: Pick<ImageTransform, 'x' | 'y' | 'scaleX' | 'scaleY'>;
+  /** Difference below this normalized value is transparent. */
+  thresholdLow: number;
+  /** Difference at or above this normalized value is fully opaque. */
+  thresholdHigh: number;
+  /** Signed scene-pixel edge adjustment. Negative contracts; positive expands. */
+  edgeAdjustment: number;
+  /** Scene-pixel neighborhood used to reject isolated mask islands. */
+  removeSpecks: number;
+  /** Scene-pixel neighborhood used to close small holes in mask coverage. */
+  fillHoles: number;
+  invert?: boolean;
+  /** Viewport-only inspection mode. Export always uses the composited result. */
+  previewMode?: 'result' | 'overlay' | 'matte';
 }
 
 export interface ComfyWorkflowInputImage {
@@ -1628,11 +1716,15 @@ export type AnyEffectNode =
   | LensDistortionNode
   | RotoNode
   | PaintNode
-  | ChromaKeyNode
+  | KeyerNode
   | WarpNode
   | MatchMoveNode
   | ComfyNode
   | OnnxModelNode
+  | OcioColorSpaceTransformNode
+  | OcioNamedTransformNode
+  | OcioFileTransformNode
+  | OcioLookTransformNode
   | NoteNode;
 
 export type AnyNode = SceneNode | OutputNode | GroupNode | InputNode | AnyEffectNode;
@@ -1749,6 +1841,8 @@ export interface TrackingConfig {
   translation: boolean;
   rotation: boolean;
   scale: boolean;
+  /** Solve horizontal and vertical scale independently instead of uniform scale. */
+  independentScale?: boolean;
   affine: boolean;
   perspective: boolean;
   deform: boolean;

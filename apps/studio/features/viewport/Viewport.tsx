@@ -11,6 +11,7 @@ import ViewportCameraSelector, { type Scene3DViewportCameraMode } from './Viewpo
 import Minimap from './Minimap';
 import {
   NodeType,
+  type AnyNode,
   type ComfyNode,
   type PaintNode,
   type RotoNode,
@@ -41,6 +42,7 @@ import { useViewportScrubbing } from '@/hooks/viewport/useViewportScrubbing';
 import { useViewportMotionCues } from '@/hooks/viewport/useViewportMotionCues';
 import { useRotoTemporalPreview } from '@/hooks/viewport/useRotoTemporalPreview';
 import { useViewportStabilization } from '@/hooks/viewport/useViewportStabilization';
+import { useViewportLayoutInsets } from '@/hooks/viewport/useViewportLayoutInsets';
 import {
   useViewportPixelInspector,
   type ViewportPixelInfo,
@@ -67,9 +69,13 @@ import {
   createStandardClipboardHotkeyBindings,
   createStandardClipboardHotkeyCommands,
 } from '@/utils/standardClipboardHotkeys';
-import { stabilizePoint } from '@/utils/rotoTracking';
+import { ViewportSvgOverlays } from './ViewportSvgOverlays';
+import { ViewportCompareOverlays } from './ViewportCompareOverlays';
 import { getAllProjectNodes } from '@/state/editor/flowModel';
 import { resolveRenderOutputDomain } from '@/color-management';
+import { useViewportCompare } from './useViewportCompare';
+import { useViewportCompareRender } from './useViewportCompareRender';
+import { viewportUVToCanvasUV, canvasUVToViewportPixel } from './compareUtils';
 
 type ViewportMouseEvent = MouseEvent | React.MouseEvent<HTMLDivElement>;
 
@@ -113,6 +119,8 @@ function Viewport() {
     [projectDisplayView, viewerColorManagement],
   );
   const viewerNodeId = useEditorSelector((s) => s.viewerNodeId);
+  const compareView = useEditorSelector((s) => s.compareView);
+  const viewerSlots = useEditorSelector((s) => s.viewerSlots);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const hierarchySelections = useEditorSelector((s) => s.hierarchySelections);
   const selectedNodeIdHierSel = selectedNodeId ?? '';
@@ -174,6 +182,7 @@ function Viewport() {
     seekFrame,
     setFrameScrubbing,
     recaptureStabilizationReference,
+    setCompareDividerPosition,
   } = useEditorActions();
   const setSelectedRotoPointRefs = useEditorActions().setSelectedRotoPointRefs;
   const {
@@ -217,6 +226,27 @@ function Viewport() {
       flows,
     );
   }, [activeFlow, flows, nodes, viewerNodeId]);
+
+  // ── Compare view nodes ───────────────────────────────────────
+  const compareSlotANodeId =
+    compareView.isActive && compareView.slotA ? (viewerSlots?.[compareView.slotA] ?? null) : null;
+  const compareSlotBNodeId =
+    compareView.isActive && compareView.slotB ? (viewerSlots?.[compareView.slotB] ?? null) : null;
+  const isCompareActive = compareView.isActive && !!compareSlotANodeId && !!compareSlotBNodeId;
+  const viewportNodesA = useMemo(() => {
+    if (!compareSlotANodeId) return viewportNodes;
+    return expandGroupNodesForRender(
+      getViewportRenderNodes(nodes, compareSlotANodeId, activeFlow),
+      flows,
+    );
+  }, [activeFlow, compareSlotANodeId, flows, nodes, viewportNodes]);
+  const viewportNodesB = useMemo(() => {
+    if (!compareSlotBNodeId) return viewportNodes;
+    return expandGroupNodesForRender(
+      getViewportRenderNodes(nodes, compareSlotBNodeId, activeFlow),
+      flows,
+    );
+  }, [activeFlow, compareSlotBNodeId, flows, nodes, viewportNodes]);
   const sceneNode = useMemo(
     () =>
       viewportNodes.find((node): node is SceneNode => node.type === NodeType.SCENE) ??
@@ -267,6 +297,16 @@ function Viewport() {
   const renderNodes = isScene3DMode
     ? (scene3DBackdropNodes ?? viewportNodes)
     : (scene3DProjectionNodes ?? viewportNodes);
+  const activeRenderNodes = isCompareActive ? viewportNodesA : renderNodes;
+  const viewportResourceNodes = useMemo(() => {
+    if (!isCompareActive) return renderNodes;
+
+    const uniqueNodes = new Map<string, AnyNode>();
+    [...viewportNodesA, ...viewportNodesB].forEach((node) => {
+      if (!uniqueNodes.has(node.id)) uniqueNodes.set(node.id, node);
+    });
+    return Array.from(uniqueNodes.values());
+  }, [isCompareActive, renderNodes, viewportNodesA, viewportNodesB]);
   const cacheRetentionNodes = useMemo(() => getAllProjectNodes(flows), [flows]);
   const renderSceneNode = useMemo(
     () => renderNodes.find((node): node is SceneNode => node.type === NodeType.SCENE) ?? sceneNode,
@@ -278,7 +318,10 @@ function Viewport() {
   const selectedScene3DItemId = activeScene3DNode
     ? (hierarchySelections[activeScene3DNode.id]?.itemIds?.[0] ?? null)
     : null;
-  const hasRenderableOutput = useMemo(() => hasRenderableNodes(renderNodes), [renderNodes]);
+  const hasRenderableOutput = useMemo(
+    () => hasRenderableNodes(activeRenderNodes),
+    [activeRenderNodes],
+  );
   const hasScene3DBackdropOutput = Boolean(scene3DBackdropNodes && hasRenderableOutput);
   const shouldMountScene3DViewport = Boolean(
     renderSceneNode &&
@@ -380,7 +423,7 @@ function Viewport() {
     isRenderReady,
     isLoading,
   } = useViewportMediaResources({
-    activeNodes: renderNodes,
+    activeNodes: viewportResourceNodes,
     retentionNodes: cacheRetentionNodes,
     currentFrame,
     selectedNode,
@@ -413,13 +456,20 @@ function Viewport() {
       : null;
 
   const textTexturesRef = useViewportTextTextures({
-    nodes: renderNodes,
+    nodes: viewportResourceNodes,
     currentFrame: visualFrame,
     bumpMediaUpdate: bumpMediaUpdateTrigger,
   });
 
   // --- Video sync ---
-  useViewportVideoSync({ nodes, currentFrame, isPlaying, playbackDirection, fps, textureCacheRef });
+  useViewportVideoSync({
+    nodes: viewportResourceNodes,
+    currentFrame,
+    isPlaying,
+    playbackDirection,
+    fps,
+    textureCacheRef,
+  });
 
   // --- Scrubbing ---
   const { isScrubbing, startScrub } = useViewportScrubbing({
@@ -521,7 +571,7 @@ function Viewport() {
 
   const paintLivePreview = ctxRef.current.hooks.paint.livePreview;
   const paintTexturesRef = useViewportPaintTextures({
-    nodes: renderNodes,
+    nodes: viewportResourceNodes,
     currentFrame: visualFrame,
     sceneNode: renderSceneNode,
     projectColorManagement,
@@ -536,7 +586,7 @@ function Viewport() {
     !viewerSettings.alphaOverlay;
 
   const rotoMaskTexturesRef = useViewportRotoMasks({
-    nodes: renderNodes,
+    nodes: viewportResourceNodes,
     sceneNode: renderSceneNode,
     viewportSize,
     currentFrame: visualFrame,
@@ -595,17 +645,144 @@ function Viewport() {
 
   useViewportScene3DAssets({
     renderer: gl,
-    nodes: renderNodes,
+    nodes: viewportResourceNodes,
     sceneNode: renderSceneNode,
     projectColorManagement,
     onAssetsReady: bumpMediaUpdateTrigger,
   });
 
-  const { finalCompBufferRef } = useViewportRenderLoop({
+  // ── Compare View hook ────────────────────────────────────────
+  useViewportCompare();
+
+  const isCompareSplitActive = isCompareActive && compareView.mode === 'split';
+  const viewportInsets = useViewportLayoutInsets(viewportRef);
+  const compareInteractiveViewportRect = useMemo(() => {
+    const left = Math.min(Math.max(0, viewportInsets.left), Math.max(0, viewportSize.width - 1));
+    const top = Math.min(Math.max(0, viewportInsets.top), Math.max(0, viewportSize.height - 1));
+    const right = Math.min(
+      Math.max(0, viewportInsets.right),
+      Math.max(0, viewportSize.width - left),
+    );
+    const bottom = Math.min(
+      Math.max(0, viewportInsets.bottom),
+      Math.max(0, viewportSize.height - top),
+    );
+
+    return {
+      x: left,
+      y: top,
+      width: Math.max(1, viewportSize.width - left - right),
+      height: Math.max(1, viewportSize.height - top - bottom),
+    };
+  }, [viewportInsets, viewportSize]);
+  const compareSplitGestureTransform = useMemo(() => {
+    if (!isCompareSplitActive) return null;
+
+    const panBase = {
+      x:
+        compareInteractiveViewportRect.x +
+        compareInteractiveViewportRect.width / 2 -
+        viewportSize.width / 2,
+      y:
+        viewportSize.height / 2 -
+        (compareInteractiveViewportRect.y + compareInteractiveViewportRect.height / 2),
+    };
+
+    if (compareView.wipe.orientation === 'vertical') {
+      const leftWidth = Math.max(1, Math.floor(compareInteractiveViewportRect.width / 2));
+      const splitX = compareInteractiveViewportRect.x + leftWidth;
+      const leftFrame = {
+        x: compareInteractiveViewportRect.x,
+        y: compareInteractiveViewportRect.y,
+        width: leftWidth,
+        height: compareInteractiveViewportRect.height,
+      };
+      const rightFrame = {
+        x: splitX,
+        y: compareInteractiveViewportRect.y,
+        width: Math.max(1, compareInteractiveViewportRect.width - leftWidth),
+        height: compareInteractiveViewportRect.height,
+      };
+
+      return {
+        panBase,
+        fitFrame: leftFrame,
+        getFrameForPoint: (point: { x: number; y: number }) =>
+          point.x < splitX ? leftFrame : rightFrame,
+      };
+    }
+
+    const topHeight = Math.max(1, Math.floor(compareInteractiveViewportRect.height / 2));
+    const splitY = compareInteractiveViewportRect.y + topHeight;
+    const topFrame = {
+      x: compareInteractiveViewportRect.x,
+      y: compareInteractiveViewportRect.y,
+      width: compareInteractiveViewportRect.width,
+      height: topHeight,
+    };
+    const bottomFrame = {
+      x: compareInteractiveViewportRect.x,
+      y: splitY,
+      width: compareInteractiveViewportRect.width,
+      height: Math.max(1, compareInteractiveViewportRect.height - topHeight),
+    };
+
+    return {
+      panBase,
+      fitFrame: topFrame,
+      getFrameForPoint: (point: { x: number; y: number }) =>
+        point.y < splitY ? topFrame : bottomFrame,
+    };
+  }, [
+    compareInteractiveViewportRect,
+    compareView.wipe.orientation,
+    isCompareSplitActive,
+    viewportSize.height,
+    viewportSize.width,
+  ]);
+
+  // ── Normal render loop ──────────────────────────────────────
+  const { finalCompBufferRef, displayOutputBufferRef } = useViewportRenderLoop({
     gl,
     canvasRef,
     rendererSurfaceSize: rendererViewportSize,
-    nodes: renderNodes,
+    nodes: isCompareActive ? viewportNodesA : renderNodes,
+    sceneNode: renderSceneNode,
+    visualFrame,
+    viewerSettings,
+    displayView: currentViewerDisplayView,
+    projectColorManagement,
+    outputDomain: renderOutputDomain,
+    alphaOverlayStyle,
+    hasRenderableNodes: hasRenderableOutput,
+    isRenderReady,
+    captureDisplayOutput: isCompareActive,
+    mediaUpdateTrigger,
+    threeStuff,
+    textureCacheRef,
+    textTexturesRef,
+    paintTexturesRef,
+    rotoMaskTexturesRef,
+    freezeImageWhileEditing: freezeRotoMaskWhileEditing,
+    deferProjectThumbnailCapture:
+      isScene3DMode ||
+      isPlaying ||
+      isFrameScrubbing ||
+      isInteractiveRotoPreviewActive ||
+      isCompareActive,
+    signalFrameRendered: handleFrameRendered,
+    reportRenderDuration,
+    setProjectThumbnail,
+  });
+
+  // ── Compare Render (renders when compare mode is active) ────
+  const { finalCompBufferRef: compareCompBufferRef } = useViewportCompareRender({
+    gl,
+    viewportSize: rendererViewportSize,
+    interactiveViewportRect: compareInteractiveViewportRect,
+    compareView,
+    viewportNodesA,
+    viewportNodesB,
     sceneNode: renderSceneNode,
     visualFrame,
     viewerSettings,
@@ -616,18 +793,17 @@ function Viewport() {
     hasRenderableNodes: hasRenderableOutput,
     isRenderReady,
     mediaUpdateTrigger,
-    threeStuff,
+    slotADisplayOutputRef: displayOutputBufferRef,
     textureCacheRef,
     textTexturesRef,
     paintTexturesRef,
     rotoMaskTexturesRef,
-    freezeImageWhileEditing: freezeRotoMaskWhileEditing,
-    deferProjectThumbnailCapture:
-      isScene3DMode || isFrameScrubbing || isInteractiveRotoPreviewActive,
-    signalFrameRendered: handleFrameRendered,
-    reportRenderDuration,
-    setProjectThumbnail,
+    zoom,
+    pan,
   });
+
+  // When compare mode is active, use compare comp buffer instead
+  const activeCompBuffer = isCompareActive ? compareCompBufferRef : finalCompBufferRef;
 
   const {
     clearPixelInfo,
@@ -636,7 +812,7 @@ function Viewport() {
     refreshPixelInfoAfterRender,
   } = useViewportPixelInspector({
     gl,
-    finalCompBufferRef,
+    finalCompBufferRef: activeCompBuffer,
     sceneNode: renderSceneNode,
     hasRenderableOutput,
     isLoading,
@@ -671,7 +847,8 @@ function Viewport() {
   );
 
   const showInteractionOverlays = interaction.shouldForceOverlays();
-  const showOverlays = viewerSettings.showOverlays || showInteractionOverlays;
+  const showOverlays =
+    (isCompareActive ? false : viewerSettings.showOverlays) || showInteractionOverlays;
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -724,6 +901,7 @@ function Viewport() {
     projectId,
     setViewportTransform,
     setAnimationTarget,
+    gestureTransform: compareSplitGestureTransform,
   });
 
   const toggleScene3DViewportMode = useCallback(() => {
@@ -890,6 +1068,58 @@ function Viewport() {
     return startPan(e);
   };
 
+  /**
+   * Update the wipe divider position from a mouse event.
+   *
+   * - viewport / cursor mode: stores viewport UV directly
+   * - canvas mode: converts viewport UV → canvas UV so the divider
+   *   stays at the cursor position on the canvas content
+   */
+  const updateWipeDividerFromMouse = useCallback(
+    (clientX: number, clientY: number) => {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      const rect = viewport.getBoundingClientRect();
+      const ref = compareView.wipe.reference;
+      if (ref === 'canvas' && sceneNode) {
+        const vpUV =
+          compareView.wipe.orientation === 'vertical'
+            ? (clientX - rect.left) / rect.width
+            : (clientY - rect.top) / rect.height;
+        const clamped = Math.max(0, Math.min(1, vpUV));
+        const canvasUV = viewportUVToCanvasUV(
+          clamped,
+          compareView.wipe.orientation,
+          viewportSize,
+          sceneNode,
+          zoom,
+          pan,
+        );
+        setCompareDividerPosition(Math.max(0, Math.min(1, canvasUV)));
+      } else {
+        const viewportPoint = { x: clientX - rect.left, y: clientY - rect.top };
+        const interactiveUV =
+          compareView.wipe.orientation === 'vertical'
+            ? (viewportPoint.x - compareInteractiveViewportRect.x) /
+              compareInteractiveViewportRect.width
+            : (viewportPoint.y - compareInteractiveViewportRect.y) /
+              compareInteractiveViewportRect.height;
+        const clamped = Math.max(0, Math.min(1, interactiveUV));
+        setCompareDividerPosition(clamped);
+      }
+    },
+    [
+      compareInteractiveViewportRect,
+      compareView.wipe.orientation,
+      compareView.wipe.reference,
+      sceneNode,
+      zoom,
+      pan,
+      viewportSize,
+      setCompareDividerPosition,
+    ],
+  );
+
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isScene3DMode) {
       if (isScene3DProjectionViewActive) {
@@ -904,6 +1134,14 @@ function Viewport() {
     }
     if (isLoading) return;
     if (rotoRefinement) return;
+
+    // ── Compare mode: wipe divider dragging ────────────────────
+    if (isCompareActive && compareView.mode === 'wipe' && e.button === 0) {
+      isWipeDraggingRef.current = true;
+      e.preventDefault();
+      updateWipeDividerFromMouse(e.clientX, e.clientY);
+      return;
+    }
 
     const mousePos = getViewportMousePos(e.clientX, e.clientY);
     if (!mousePos) return;
@@ -932,6 +1170,7 @@ function Viewport() {
 
   const [isDragging, setIsDragging] = useState(false);
   const lastHandledMouseEventRef = useRef<MouseEvent | null>(null);
+  const isWipeDraggingRef = useRef(false);
 
   const getViewportMousePos = useCallback((clientX: number, clientY: number) => {
     const viewportElement = viewportRef.current;
@@ -949,6 +1188,20 @@ function Viewport() {
       const nativeEvent = getNativeMouseEvent(e);
       if (lastHandledMouseEventRef.current === nativeEvent) return;
       lastHandledMouseEventRef.current = nativeEvent;
+
+      // ── Compare mode: wipe divider dragging & cursor-follow ──
+      if (isCompareActive && compareView.mode === 'wipe' && !isScene3DMode) {
+        if (isWipeDraggingRef.current) {
+          e.preventDefault();
+          updateWipeDividerFromMouse(e.clientX, e.clientY);
+          return;
+        }
+        // Cursor-follow mode: always keep divider at cursor
+        if (compareView.wipe.reference === 'cursor') {
+          updateWipeDividerFromMouse(e.clientX, e.clientY);
+          return;
+        }
+      }
 
       if (isScene3DMode) return;
       if (isScrubbing) return;
@@ -995,6 +1248,10 @@ function Viewport() {
       updatePixelInfoAtScenePos,
       viewportToSceneCentered,
       setMouseScenePosRef,
+      isCompareActive,
+      compareView.mode,
+      compareView.wipe.reference,
+      updateWipeDividerFromMouse,
     ],
   );
 
@@ -1004,13 +1261,22 @@ function Viewport() {
       if (lastHandledMouseEventRef.current === nativeEvent) return;
       lastHandledMouseEventRef.current = nativeEvent;
 
+      // ── Compare mode: stop wipe divider dragging ────────────
+      if (isWipeDraggingRef.current) {
+        isWipeDraggingRef.current = false;
+        return;
+      }
+
       if (isScene3DMode) return;
       if (isLoading) return;
+      const mousePos = getViewportMousePos(e.clientX, e.clientY);
+      if (!mousePos) return;
+      const scenePos = viewportToSceneCentered(mousePos);
       interaction.handleMouseUp({
         clientX: e.clientX,
         clientY: e.clientY,
-        sceneX: 0,
-        sceneY: 0,
+        sceneX: scenePos.x,
+        sceneY: scenePos.y,
         button: e.button,
         ctrlKey: e.ctrlKey,
         shiftKey: e.shiftKey,
@@ -1019,7 +1285,14 @@ function Viewport() {
         nativeEvent,
       });
     },
-    [getNativeMouseEvent, isScene3DMode, isLoading, interaction],
+    [
+      getNativeMouseEvent,
+      getViewportMousePos,
+      interaction,
+      isLoading,
+      isScene3DMode,
+      viewportToSceneCentered,
+    ],
   );
 
   useEffect(() => {
@@ -1068,6 +1341,17 @@ function Viewport() {
 
   const canvasContainerStyle = useMemo<React.CSSProperties>(() => {
     if (!sceneNode) return { display: 'none' };
+
+    if (isCompareSplitActive) {
+      return {
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        transform: 'none',
+      };
+    }
+
     return {
       position: 'absolute',
       left: '50%',
@@ -1076,7 +1360,16 @@ function Viewport() {
       height: sceneNode.height,
       transform: `translate(calc(-50% + ${pan.x}px), calc(-50% - ${pan.y}px)) scale(${zoom})`,
     };
-  }, [sceneNode, zoom, pan]);
+  }, [isCompareSplitActive, sceneNode, zoom, pan]);
+
+  const sceneContentStyle = useMemo<React.CSSProperties>(() => {
+    if (!isCompareSplitActive) return stabilizedSceneStyle;
+    return {
+      position: 'absolute',
+      inset: 0,
+      imageRendering: viewportInterpolation === 'nearest' ? 'pixelated' : 'auto',
+    };
+  }, [isCompareSplitActive, stabilizedSceneStyle, viewportInterpolation]);
 
   const displayWindowRect = useMemo(() => {
     if (!sceneNode) return null;
@@ -1087,27 +1380,6 @@ function Viewport() {
       height: sceneNode.height,
     };
   }, [sceneNode]);
-
-  /** Transform absolute scene corners through the stabilization matrix. */
-  const stabilizeBboxCorners = useCallback(
-    (x: number, y: number, w: number, h: number) => {
-      if (!sceneNode) return null;
-      const cx = sceneNode.width / 2;
-      const cy = sceneNode.height / 2;
-      // Convert to scene-centered coords, stabilize, convert back
-      const tl = stabilizePoint({ x: x - cx, y: y - cy }, stabilizationMatrix);
-      const tr = stabilizePoint({ x: x + w - cx, y: y - cy }, stabilizationMatrix);
-      const br = stabilizePoint({ x: x + w - cx, y: y + h - cy }, stabilizationMatrix);
-      const bl = stabilizePoint({ x: x - cx, y: y + h - cy }, stabilizationMatrix);
-      return [
-        { x: tl.x + cx, y: tl.y + cy },
-        { x: tr.x + cx, y: tr.y + cy },
-        { x: br.x + cx, y: br.y + cy },
-        { x: bl.x + cx, y: bl.y + cy },
-      ];
-    },
-    [sceneNode, stabilizationMatrix],
-  );
 
   const cursorClass = isLoading
     ? 'cursor-wait'
@@ -1218,6 +1490,41 @@ function Viewport() {
     showOverlays,
   });
 
+  // ── Wipe divider full-viewport line ─────────────────────────
+  // Compute the divider position in viewport-space pixels for the overlay.
+  const wipeDividerViewportPos = useMemo<number | null>(() => {
+    if (!isCompareActive || compareView.mode !== 'wipe' || !sceneNode) return null;
+    const ref = compareView.wipe.reference;
+    const divPos = compareView.dividerPosition;
+
+    if (ref === 'viewport' || ref === 'cursor') {
+      return compareView.wipe.orientation === 'vertical'
+        ? compareInteractiveViewportRect.x + divPos * compareInteractiveViewportRect.width
+        : compareInteractiveViewportRect.y + divPos * compareInteractiveViewportRect.height;
+    }
+
+    // Canvas mode: convert canvas UV to viewport-pixel position
+    return canvasUVToViewportPixel(
+      divPos,
+      compareView.wipe.orientation,
+      viewportSize,
+      sceneNode,
+      zoom,
+      pan,
+    );
+  }, [
+    isCompareActive,
+    compareView.mode,
+    compareView.dividerPosition,
+    compareView.wipe.orientation,
+    compareView.wipe.reference,
+    compareInteractiveViewportRect,
+    sceneNode,
+    viewportSize,
+    zoom,
+    pan,
+  ]);
+
   // ── Resolve overlay visibility from registry ──
   // Each node type declares whether the SVG container should render even
   // when showOverlays is off (e.g., roto/paint show cursor overlays during
@@ -1297,7 +1604,7 @@ function Viewport() {
         />
         {sceneNode ? (
           <div style={canvasContainerStyle}>
-            <div style={stabilizedSceneStyle}>
+            <div style={sceneContentStyle}>
               <canvas
                 ref={canvasRef}
                 className="absolute top-0 left-0 w-full h-full"
@@ -1414,92 +1721,19 @@ function Viewport() {
               )}
             </div>
             {shouldRenderOverlaySvg && (
-              <svg
-                className={`absolute top-0 left-0 w-full h-full pointer-events-none`}
-                viewBox={`0 0 ${sceneNode.width} ${sceneNode.height}`}
-                style={{ overflow: 'visible' }}
-              >
-                {/* Display Window border (cyan) */}
-                {viewerSettings.showOverlays &&
-                  (() => {
-                    if (!displayWindowRect) return null;
-                    const corners = stabilizeBboxCorners(
-                      displayWindowRect.x,
-                      displayWindowRect.y,
-                      displayWindowRect.width,
-                      displayWindowRect.height,
-                    );
-                    if (!corners) return null;
-                    const pts = corners.map((p) => `${p.x},${p.y}`).join(' ');
-                    return (
-                      <>
-                        <polygon
-                          points={pts}
-                          fill="none"
-                          stroke="rgb(34 211 238 / 0.5)"
-                          strokeWidth={1 / zoom}
-                        />
-                      </>
-                    );
-                  })()}
-                {/* Data Window border (amber/dashed) */}
-                {viewerSettings.showOverlays &&
-                  dataWindowRect &&
-                  (() => {
-                    const corners = stabilizeBboxCorners(
-                      dataWindowRect.x,
-                      dataWindowRect.y,
-                      dataWindowRect.width,
-                      dataWindowRect.height,
-                    );
-                    if (!corners) return null;
-                    const pts = corners.map((p) => `${p.x},${p.y}`).join(' ');
-                    return (
-                      <>
-                        <polygon
-                          points={pts}
-                          fill="none"
-                          stroke="rgb(251 191 36 / 0.8)"
-                          strokeWidth={2 / zoom}
-                          strokeDasharray={`${6 / zoom} ${4 / zoom}`}
-                        />
-                      </>
-                    );
-                  })()}
-                {/* Direct SVG overlays (absolute scene coordinates, outside <g>) */}
-                {selectedNode && (
-                  <ViewportOverlayRenderer
-                    node={selectedNode}
-                    mode="svg-direct"
-                    overlayProps={{
-                      node: selectedNode,
-                      frame: visualFrame,
-                      zoom,
-                      pan,
-                      scene: { width: sceneNode.width, height: sceneNode.height },
-                      activeTool: activeViewportTool,
-                      context: overlayContext,
-                    }}
-                  />
-                )}
-                <g transform={`translate(${sceneNode.width / 2}, ${sceneNode.height / 2})`}>
-                  {selectedNode && (
-                    <ViewportOverlayRenderer
-                      node={selectedNode}
-                      mode="svg"
-                      overlayProps={{
-                        node: selectedNode,
-                        frame: visualFrame,
-                        zoom,
-                        pan,
-                        scene: { width: sceneNode.width, height: sceneNode.height },
-                        activeTool: activeViewportTool,
-                        context: overlayContext,
-                      }}
-                    />
-                  )}
-                </g>
-              </svg>
+              <ViewportSvgOverlays
+                sceneNode={sceneNode}
+                selectedNode={selectedNode}
+                viewerSettings={viewerSettings}
+                activeViewportTool={activeViewportTool}
+                overlayContext={overlayContext}
+                zoom={zoom}
+                pan={pan}
+                visualFrame={visualFrame}
+                displayWindowRect={displayWindowRect}
+                dataWindowRect={dataWindowRect}
+                stabilizationMatrix={stabilizationMatrix}
+              />
             )}
           </div>
         ) : (
@@ -1508,6 +1742,17 @@ function Viewport() {
           </div>
         )}
       </div>
+
+      {isCompareActive && (
+        <ViewportCompareOverlays
+          visible={viewerSettings.showOverlays}
+          mode={compareView.mode}
+          orientation={compareView.wipe.orientation}
+          wipeDividerViewportPos={wipeDividerViewportPos}
+          compareInteractiveViewportRect={compareInteractiveViewportRect}
+        />
+      )}
+
       {selectedNode && !isScene3DMode && (
         <ViewportOverlayRenderer
           node={selectedNode}

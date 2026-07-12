@@ -3,8 +3,14 @@ import {
   buildOpticalFlowPyramid,
   calculateHybridOpticalFlowFromPyramids,
   fitTrackedTransform,
+  invertAxisAlignedTransformAroundCenter,
 } from '@/utils/opticalFlow';
-import { estimateComfyImageAlignment, selectTrackingPoints } from './comfyImageAlignment';
+import {
+  composeComfyAlignmentWithReference,
+  estimateComfyImageAlignment,
+  selectTrackingPoints,
+} from './comfyImageAlignment';
+import { COMFY_ALIGNMENT_QUALITY_PRESETS } from './comfyAlignmentOptions';
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -343,8 +349,12 @@ describe('Comfy alignment diagnostic', () => {
     const source: PixelImage = { data: src, width: W, height: H };
     const outputImg: PixelImage = { data: output, width: W, height: H };
 
-    // Test with ALL refinements enabled (the default)
-    const estimate = estimateComfyImageAlignment(source, outputImg);
+    // Test with all refinements enabled (Precise quality)
+    const estimate = estimateComfyImageAlignment(
+      source,
+      outputImg,
+      COMFY_ALIGNMENT_QUALITY_PRESETS.precise,
+    );
     const error = computeTransformError(
       estimate
         ? {
@@ -375,6 +385,7 @@ describe('Comfy alignment diagnostic', () => {
 
     // Must at least get something
     expect(estimate).not.toBeNull();
+    expect(error?.perPixelError).toBeLessThan(0.25);
   });
 
   /**
@@ -579,7 +590,11 @@ describe('Comfy alignment diagnostic', () => {
       });
 
       // With all refinements enabled
-      const estimateFull = estimateComfyImageAlignment(source, outputImg);
+      const estimateFull = estimateComfyImageAlignment(
+        source,
+        outputImg,
+        COMFY_ALIGNMENT_QUALITY_PRESETS.precise,
+      );
 
       const errBasic = computeTransformError(
         estimateBasic
@@ -644,5 +659,90 @@ describe('Comfy alignment diagnostic', () => {
     // At 640px analysis: 0.5px → 1.5px output (better than 2.0px at 480)
     const old640Factor = 1920 / 640;
     expect(old640Factor).toBe(3);
+  });
+});
+
+describe('Comfy alignment scene transform composition', () => {
+  it('preserves the connected input node placement for an identity image match', () => {
+    const transform = composeComfyAlignmentWithReference({
+      reference: {
+        width: 1000,
+        height: 500,
+        transform: { x: 120.25, y: -40.5, scaleX: 0.75, scaleY: 1.2 },
+      },
+      outputSize: { width: 1000, height: 500 },
+      analysisSize: { width: 200, height: 100 },
+      correction: { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 },
+    });
+
+    expect(transform).toMatchObject({ x: 120.25, y: -40.5, scaleX: 0.75, scaleY: 1.2 });
+  });
+
+  it('composes tracked correction with input placement and output resolution', () => {
+    const transform = composeComfyAlignmentWithReference({
+      reference: {
+        width: 1000,
+        height: 500,
+        transform: { x: 120, y: -40, scaleX: 0.75, scaleY: 1.2 },
+      },
+      outputSize: { width: 500, height: 250 },
+      analysisSize: { width: 200, height: 100 },
+      correction: { scaleX: 0.9, scaleY: 1.1, offsetX: 10, offsetY: -5 },
+    });
+
+    expect(transform.x).toBeCloseTo(157.5);
+    expect(transform.y).toBeCloseTo(-10);
+    expect(transform.scaleX).toBeCloseTo(1.35);
+    expect(transform.scaleY).toBeCloseTo(2.64);
+  });
+
+  it('maps corresponding pixel centers to identical renderer scene coordinates', () => {
+    const analysisSize = { width: 200, height: 100 };
+    const reference = {
+      width: 1000,
+      height: 500,
+      transform: { x: 120, y: -40, scaleX: 0.75, scaleY: 1.2 },
+    };
+    const outputSize = { width: 500, height: 250 };
+    const tracked = { scaleX: 1.04, scaleY: 0.96, offsetX: 3, offsetY: -2 };
+    const correction = invertAxisAlignedTransformAroundCenter(tracked, analysisSize)!;
+    const transform = composeComfyAlignmentWithReference({
+      reference,
+      outputSize,
+      analysisSize,
+      correction,
+    });
+    const sourceAnalysis = { x: 73, y: 41 };
+    const outputAnalysis = {
+      x: tracked.scaleX * sourceAnalysis.x + tracked.offsetX,
+      y: tracked.scaleY * sourceAnalysis.y + tracked.offsetY,
+    };
+    const sourcePixel = {
+      x: ((sourceAnalysis.x + 0.5) * reference.width) / analysisSize.width - 0.5,
+      y: ((sourceAnalysis.y + 0.5) * reference.height) / analysisSize.height - 0.5,
+    };
+    const outputPixel = {
+      x: ((outputAnalysis.x + 0.5) * outputSize.width) / analysisSize.width - 0.5,
+      y: ((outputAnalysis.y + 0.5) * outputSize.height) / analysisSize.height - 0.5,
+    };
+    const sourceScene = {
+      x:
+        reference.transform.x +
+        reference.transform.scaleX * (sourcePixel.x - (reference.width - 1) / 2),
+      y:
+        reference.transform.y -
+        reference.transform.scaleY * (sourcePixel.y - (reference.height - 1) / 2),
+    };
+    const outputScene = {
+      x:
+        Number(transform.x) +
+        Number(transform.scaleX) * (outputPixel.x - (outputSize.width - 1) / 2),
+      y:
+        Number(transform.y) -
+        Number(transform.scaleY) * (outputPixel.y - (outputSize.height - 1) / 2),
+    };
+
+    expect(outputScene.x).toBeCloseTo(sourceScene.x, 8);
+    expect(outputScene.y).toBeCloseTo(sourceScene.y, 8);
   });
 });

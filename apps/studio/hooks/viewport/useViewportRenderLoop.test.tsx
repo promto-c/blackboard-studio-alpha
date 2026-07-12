@@ -56,9 +56,18 @@ describe('useViewportRenderLoop', () => {
       domElement: document.createElement('canvas'),
     } as unknown as THREE.WebGLRenderer;
     const finalTarget = {} as THREE.WebGLRenderTarget;
-    renderViewportFrameMock.mockReturnValue({
-      renderTargets: [],
-      finalCompositeTarget: finalTarget,
+    const displayTarget = {
+      dispose: vi.fn(),
+    } as unknown as THREE.WebGLRenderTarget;
+    renderViewportFrameMock.mockImplementation(({ captureDisplayOutput, resources }) => {
+      if (captureDisplayOutput) {
+        resources.utilityTargets.set('__viewer:display-output', displayTarget);
+      }
+      return {
+        renderTargets: [],
+        finalCompositeTarget: finalTarget,
+        displayOutputTarget: captureDisplayOutput ? displayTarget : null,
+      };
     });
 
     const canvasRef = createRef<HTMLCanvasElement>();
@@ -80,7 +89,7 @@ describe('useViewportRenderLoop', () => {
     const rotoMaskTexturesRef = { current: new Map() };
 
     const { result, rerender } = renderHook(
-      ({ ready }) =>
+      ({ ready, captureDisplayOutput }) =>
         useViewportRenderLoop({
           gl,
           canvasRef,
@@ -95,6 +104,7 @@ describe('useViewportRenderLoop', () => {
           alphaOverlayStyle: { color: [0, 0, 0], opacity: 0, bgDarken: 0 },
           hasRenderableNodes: true,
           isRenderReady: ready,
+          captureDisplayOutput,
           mediaUpdateTrigger: 0,
           threeStuff,
           textureCacheRef,
@@ -106,16 +116,29 @@ describe('useViewportRenderLoop', () => {
           signalFrameRendered: vi.fn(),
           setProjectThumbnail: vi.fn(),
         }),
-      { initialProps: { ready: false } },
+      { initialProps: { ready: false, captureDisplayOutput: true } },
     );
 
     expect(renderViewportFrameMock).not.toHaveBeenCalled();
     expect(gl.clear).not.toHaveBeenCalled();
     expect(result.current.finalCompBufferRef.current).toBeNull();
 
-    rerender({ ready: true });
+    rerender({ ready: true, captureDisplayOutput: true });
 
     expect(renderViewportFrameMock).toHaveBeenCalledOnce();
+    expect(renderViewportFrameMock).toHaveBeenCalledWith(
+      expect.objectContaining({ captureDisplayOutput: true, presentToCanvas: false }),
+    );
     expect(result.current.finalCompBufferRef.current).toBe(finalTarget);
+    expect(result.current.displayOutputBufferRef.current).toBe(displayTarget);
+
+    rerender({ ready: true, captureDisplayOutput: false });
+
+    expect(displayTarget.dispose).toHaveBeenCalledOnce();
+    expect(threeStuff.utilityTargets.has('__viewer:display-output')).toBe(false);
+    expect(renderViewportFrameMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ captureDisplayOutput: false, presentToCanvas: true }),
+    );
+    expect(result.current.displayOutputBufferRef.current).toBeNull();
   });
 });

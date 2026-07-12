@@ -1,6 +1,5 @@
 import React from 'react';
-import { ScrollArea } from '@blackboard/ui';
-import { CollapsibleSection, Popover } from '@blackboard/ui';
+import { CollapsibleSection, Popover, ScrollArea, TextInput } from '@blackboard/ui';
 import type { ComfyWorkflow } from '@blackboard/types';
 import type { ComfyWorkflowFile } from '@/services/comfy/client';
 import * as Icons from '@blackboard/icons';
@@ -148,15 +147,14 @@ export function ComfyWorkflowPicker({
                   >
                     {(closeBackendWorkflowPicker) => (
                       <div className="space-y-2">
-                        <input
+                        <TextInput
                           value={backendWorkflowSearch}
-                          onChange={(event) => {
-                            onBackendWorkflowSearchChange(event.currentTarget.value);
+                          onValueChange={(value) => {
+                            onBackendWorkflowSearchChange(value);
                             setActiveIndex(0);
                           }}
                           onKeyDown={handleKeyDown}
                           placeholder="Search workflows..."
-                          className="w-full rounded-lg border border-white/10 bg-gray-950/70 px-2.5 py-2 text-xs text-gray-100 outline-none transition placeholder:text-gray-600 focus:border-primary-300/60 focus:ring-2 focus:ring-primary-300/20"
                           autoFocus
                         />
 

@@ -1,6 +1,7 @@
 import type { AnyNode, ColorProcessingDomain } from '@blackboard/types';
 import {
   areProcessingDomainsCompatible,
+  isTechnicalProcessingDomain,
   resolveRendererNodeInputDomain,
   resolveRendererNodeProcessingDomain,
 } from '@blackboard/renderer';
@@ -53,8 +54,17 @@ export const canConnectNodeProcessingDomains = ({
   const sourceNode = nodes.find((node) => node.id === sourceNodeId);
   const targetNode = nodes.find((node) => node.id === targetNodeId);
   if (!sourceNode || !targetNode) return false;
+  const sourceDomain = getNodeOutputProcessingDomain(sourceNode, sourcePortName);
+  const targetDefinition = nodeRegistry.get(targetNode.type);
+  if (
+    targetPortName === 'pipe' &&
+    targetDefinition?.primaryInputDomainPolicy === 'reinterpret' &&
+    !isTechnicalProcessingDomain(sourceDomain)
+  ) {
+    return true;
+  }
   return areProcessingDomainsCompatible(
-    getNodeOutputProcessingDomain(sourceNode, sourcePortName),
+    sourceDomain,
     getNodeInputProcessingDomain(targetNode, targetPortName),
   );
 };

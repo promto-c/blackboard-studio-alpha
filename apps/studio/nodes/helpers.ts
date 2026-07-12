@@ -24,7 +24,6 @@ const DEFAULT_FLAGS: Required<NodeFlags> = {
   isSource: false,
   isRenderable: false,
   isMediaNode: false,
-  isLooping: false,
   isVideoFile: false,
   isDraggable: true,
   isSceneLike: false,
@@ -74,6 +73,12 @@ export function getMediaDescriptor(type: string): MediaDescriptor | undefined {
   return nodeRegistry.get(type)?.mediaDescriptor;
 }
 
+/** Resolve a timeline frame to the frame decoded by a media node. */
+export function resolveMediaFrame(node: AnyNode, frame: number): number | null {
+  const resolver = getMediaDescriptor(node.type)?.resolveFrame;
+  return resolver ? resolver(node, frame) : frame;
+}
+
 export function getInputPorts(node: AnyNode): InputPortDescriptor[] {
   const inputPorts = nodeRegistry.get(node.type)?.inputPorts;
   if (!inputPorts) return [];
@@ -96,7 +101,7 @@ export function getDefaultViewportTool(type: string | null | undefined): string 
 export function getNodeAssetIds(node: AnyNode): string[] {
   const def = nodeRegistry.get(node.type);
   if (!def) return [];
-  return def.mediaDescriptor?.getAssetIds?.(node) ?? [];
+  return def.mediaDescriptor?.getAssetIds?.(node) ?? def.getAssetIds?.(node) ?? [];
 }
 
 /**

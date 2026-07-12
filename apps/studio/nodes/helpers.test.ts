@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { NodeType } from '@blackboard/types';
-import { getRenderOutputContract } from './helpers';
+import { NodeType, type AnyNode } from '@blackboard/types';
+import { getNodeAssetIds, getRenderOutputContract } from './helpers';
 import { nodeRegistry } from './registry';
 
 describe('node render output contracts', () => {
@@ -21,5 +21,19 @@ describe('node render output contracts', () => {
         isRenderable: true,
       },
     });
+  });
+});
+
+describe('node asset descriptors', () => {
+  it('collects OCIO file-transform assets through the node definition shorthand', () => {
+    expect(
+      getNodeAssetIds({
+        id: 'ocio-file',
+        type: NodeType.OCIO_FILE_TRANSFORM,
+        name: 'OCIO File Transform',
+        enabled: true,
+        assetId: 'asset_lut',
+      } as AnyNode),
+    ).toEqual(['asset_lut']);
   });
 });

@@ -13,8 +13,8 @@ import {
   type RotoMotionBlurPhase,
   type RotoMotionBlurSettings,
 } from '@blackboard/types';
-import { Badge, CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
-import { Slider, SegmentedControl } from '@/components';
+import { Badge, CollapsibleSection, Slider } from '@blackboard/ui';
+import { SegmentedControl, SettingRow, ToggleSettingRow } from '@/components';
 import { getValueAtFrame, hasKeyframeAt, setKeyframeOnValue } from '@blackboard/renderer';
 import { DEFAULT_ROTO_MOTION_BLUR, resolveRotoMotionBlurSettings } from '@/utils/rotoMotionBlur';
 import {
@@ -493,8 +493,7 @@ function RotoAdjustments({
   return isShapeInspectorActive ? (
     <CollapsibleSection key={selectedPath.id} title="Shape Settings" defaultOpen>
       <div className="animate-[fadeIn_250ms_ease-out] space-y-3">
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-gray-400">Draw Mode</label>
+        <SettingRow label="Draw Mode">
           <SegmentedControl
             value={selectedPath.style.mode}
             options={drawModeOptions}
@@ -506,8 +505,9 @@ function RotoAdjustments({
                 },
               })
             }
+            className="w-full"
           />
-        </div>
+        </SettingRow>
         {(selectedPath.style.mode === RotoDrawMode.STROKE ||
           selectedPath.style.mode === RotoDrawMode.FILL_AND_STROKE) && (
           <Slider
@@ -553,8 +553,7 @@ function RotoAdjustments({
           isKeyframed={hasKeyframeAt(selectedPath.feather, currentFrame)}
           onToggleKeyframe={() => setKeyframe(node.id, `paths[${selectedPathIndex}].feather`)}
         />
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-gray-400">Blend Mode</label>
+        <SettingRow label="Blend Mode">
           <SegmentedControl
             value={selectedPath.blend}
             options={blendOptions}
@@ -563,8 +562,9 @@ function RotoAdjustments({
                 blend: value as RotoPathBlend,
               })
             }
+            className="w-full"
           />
-        </div>
+        </SettingRow>
         {!selectedPath.closed &&
           selectedPath.shapeType === RotoShapeType.BSPLINE &&
           selectedPath.points.length > 2 && (
@@ -601,8 +601,7 @@ function RotoAdjustments({
   ) : isLayerInspectorActive ? (
     <CollapsibleSection key={selectedLayerId ?? 'layer'} title="Layer Settings" defaultOpen>
       <div className="animate-[fadeIn_250ms_ease-out] space-y-3">
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-gray-400">Blend Mode</label>
+        <SettingRow label="Blend Mode">
           <SegmentedControl
             value={selectedLayer?.blend ?? RotoPathBlend.ADD}
             options={blendOptions}
@@ -612,8 +611,9 @@ function RotoAdjustments({
                 blend: value as RotoPathBlend,
               })
             }
+            className="w-full"
           />
-        </div>
+        </SettingRow>
         {selectedLayer?.trackingTransform && (
           <TrackingMatrixSection
             transform={selectedLayer.trackingTransform}
@@ -634,17 +634,19 @@ function RotoAdjustments({
       <div className="animate-[fadeIn_250ms_ease-out] space-y-3">
         {hasPathsSelected && (
           <>
-            <div className="flex items-center gap-1.5">
-              {isItemsMixed(selectedPaths, (p: RotoPath) => p.style.mode) && <MixedBadge />}
-              <div className="flex-1 space-y-1.5">
-                <label className="text-xs font-medium text-gray-400">Draw Mode</label>
-                <SegmentedControl
-                  value={selectedPaths[0]?.style.mode ?? RotoDrawMode.FILL}
-                  options={drawModeOptions}
-                  onChange={(value) => batchUpdatePathsStyle({ mode: value as RotoDrawMode })}
-                />
-              </div>
-            </div>
+            <SettingRow
+              label="Draw Mode"
+              labelAccessory={
+                isItemsMixed(selectedPaths, (p: RotoPath) => p.style.mode) ? <MixedBadge /> : null
+              }
+            >
+              <SegmentedControl
+                value={selectedPaths[0]?.style.mode ?? RotoDrawMode.FILL}
+                options={drawModeOptions}
+                onChange={(value) => batchUpdatePathsStyle({ mode: value as RotoDrawMode })}
+                className="w-full"
+              />
+            </SettingRow>
             <div className="flex items-center gap-1.5">
               {isItemsMixed(selectedPaths, (p: RotoPath) =>
                 getValueAtFrame(p.style.strokeWidth, currentFrame),
@@ -696,53 +698,57 @@ function RotoAdjustments({
                 />
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              {isItemsMixed(selectedPaths, (p: RotoPath) => p.blend) && <MixedBadge />}
-              <div className="flex-1 space-y-1.5">
-                <label className="text-xs font-medium text-gray-400">Blend Mode</label>
-                <SegmentedControl
-                  value={selectedPaths[0]?.blend ?? RotoPathBlend.ADD}
-                  options={blendOptions}
-                  onChange={(value) => batchUpdatePaths({ blend: value as RotoPathBlend })}
-                />
-              </div>
-            </div>
+            <SettingRow
+              label="Blend Mode"
+              labelAccessory={
+                isItemsMixed(selectedPaths, (p: RotoPath) => p.blend) ? <MixedBadge /> : null
+              }
+            >
+              <SegmentedControl
+                value={selectedPaths[0]?.blend ?? RotoPathBlend.ADD}
+                options={blendOptions}
+                onChange={(value) => batchUpdatePaths({ blend: value as RotoPathBlend })}
+                className="w-full"
+              />
+            </SettingRow>
           </>
         )}
         {hasLayersSelected && (
-          <div className="flex items-center gap-1.5">
-            {isItemsMixed(selectedLayers, (l: RotoLayer) => l.blend ?? RotoPathBlend.ADD) && (
-              <MixedBadge />
-            )}
-            <div className="flex-1 space-y-1.5">
-              <label className="text-xs font-medium text-gray-400">Layer Blend Mode</label>
-              <SegmentedControl
-                value={selectedLayers[0]?.blend ?? RotoPathBlend.ADD}
-                options={blendOptions}
-                onChange={(value) => batchUpdateLayers({ blend: value as RotoPathBlend })}
-              />
-            </div>
-          </div>
+          <SettingRow
+            label="Layer Blend Mode"
+            labelAccessory={
+              isItemsMixed(selectedLayers, (l: RotoLayer) => l.blend ?? RotoPathBlend.ADD) ? (
+                <MixedBadge />
+              ) : null
+            }
+          >
+            <SegmentedControl
+              value={selectedLayers[0]?.blend ?? RotoPathBlend.ADD}
+              options={blendOptions}
+              onChange={(value) => batchUpdateLayers({ blend: value as RotoPathBlend })}
+              className="w-full"
+            />
+          </SettingRow>
         )}
       </div>
     </CollapsibleSection>
   ) : (
     <CollapsibleSection title="Node Settings" defaultOpen>
       <div className="space-y-3">
-        <ToggleSwitch
+        <ToggleSettingRow
           label="Invert Matte"
           checked={node.invert}
           onCheckedChange={(checked) => updateNode(node.id, { invert: checked }, true)}
         />
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-gray-400">Input Alpha Mode</label>
+        <SettingRow label="Input Alpha Mode">
           <SegmentedControl
             value={node.alphaMode ?? RotoAlphaMode.ADD}
             options={alphaModeOptions}
             onChange={(value) => updateNode(node.id, { alphaMode: value as RotoAlphaMode }, true)}
+            className="w-full"
           />
-        </div>
-        <ToggleSwitch
+        </SettingRow>
+        <ToggleSettingRow
           label="Motion Blur"
           checked={motionBlur.enabled}
           onCheckedChange={(checked) => updateMotionBlur({ enabled: checked })}
@@ -758,14 +764,14 @@ function RotoAdjustments({
             onReset={() => updateMotionBlur({ shutter: DEFAULT_ROTO_MOTION_BLUR.shutter })}
             displayFormatter={(value) => `${value.toFixed(2)}f`}
           />
-          <div className="pt-1.5 space-y-1.5">
-            <label className="text-xs font-medium text-gray-400">Shutter Offset</label>
+          <SettingRow label="Shutter Offset" className="pt-1.5">
             <SegmentedControl
               value={motionBlur.phase}
               options={shutterPhaseOptions}
               onChange={(value) => updateMotionBlur({ phase: value as RotoMotionBlurPhase })}
+              className="w-full"
             />
-          </div>
+          </SettingRow>
           <div className="pt-1.5">
             <Slider
               label="Samples"

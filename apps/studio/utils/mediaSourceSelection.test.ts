@@ -58,7 +58,6 @@ const VIDEO_NODE: AnyNode = {
   opacity: 100,
   operator: BlendMode.OVER,
   duration: 10,
-  loop: true,
   transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
 };
 

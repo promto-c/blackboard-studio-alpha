@@ -26,6 +26,9 @@ const ocioMocks = vi.hoisted(() => {
   let createColorSpaceProcessorImplementation: () => unknown = () => {
     throw new Error('Processor unavailable');
   };
+  let createGroupTransformProcessorImplementation: () => unknown = () => {
+    throw new Error('Group processor unavailable');
+  };
   const createColorSpaceProcessor = vi.fn(
     (
       _source: string,
@@ -36,6 +39,7 @@ const ocioMocks = vi.hoisted(() => {
   const createDisplayViewProcessor = vi.fn(() => {
     throw new Error('Display processor unavailable');
   });
+  const createGroupTransformProcessor = vi.fn(() => createGroupTransformProcessorImplementation());
   const mkdirp = vi.fn();
   const writeFile = vi.fn();
   const createConfigFromFile = vi.fn();
@@ -141,11 +145,31 @@ const ocioMocks = vi.hoisted(() => {
       },
     ],
     listRoles: createRoles,
+    listLooks: () => ['Studio Look'],
+    getLook: (name: string) => ({
+      name,
+      processSpace: 'ACEScg',
+      description: 'Test look',
+      hasForwardTransform: true,
+      hasInverseTransform: false,
+    }),
+    listNamedTransforms: () => [],
+    getNamedTransform: (name: string) => ({
+      name,
+      family: '',
+      description: '',
+      encoding: '',
+      aliases: [],
+      categories: [],
+      hasForwardTransform: true,
+      hasInverseTransform: false,
+    }),
     listDisplays: () => ['sRGB - Display'],
     getDefaultDisplay: () => 'sRGB - Display',
     getDefaultView: () => 'ACES 2.0 - SDR 100 nits (Rec.709)',
     createColorSpaceProcessor,
     createDisplayViewProcessor,
+    createGroupTransformProcessor,
     matchFileRule: (filePath: string) =>
       filePath.endsWith('.exr')
         ? {
@@ -175,6 +199,7 @@ const ocioMocks = vi.hoisted(() => {
     version: '2.5.0',
     versionHex: 0x20500,
     listBuiltinConfigs: () => [{ name: 'cg-config-v4.0.0_aces-v2.0_ocio-v2.5' }],
+    listFileTransformFormats: () => [{ name: 'Resolve Cube', extension: 'cube' }],
     createBuiltinConfig: () => {
       if (createBuiltinConfigError) {
         throw createBuiltinConfigError;
@@ -210,8 +235,12 @@ const ocioMocks = vi.hoisted(() => {
     setCreateColorSpaceProcessorImplementation(implementation: () => unknown) {
       createColorSpaceProcessorImplementation = implementation;
     },
+    setCreateGroupTransformProcessorImplementation(implementation: () => unknown) {
+      createGroupTransformProcessorImplementation = implementation;
+    },
     createColorSpaceProcessor,
     createDisplayViewProcessor,
+    createGroupTransformProcessor,
     createConfigFromFile,
     mkdirp,
     writeFile,
@@ -279,6 +308,10 @@ describe('ocioContext', () => {
       throw new Error('Processor unavailable');
     });
     ocioMocks.createDisplayViewProcessor.mockClear();
+    ocioMocks.createGroupTransformProcessor.mockClear();
+    ocioMocks.setCreateGroupTransformProcessorImplementation(() => {
+      throw new Error('Group processor unavailable');
+    });
     ocioMocks.createConfigFromFile.mockClear();
     ocioMocks.mkdirp.mockClear();
     ocioMocks.writeFile.mockClear();
@@ -875,6 +908,63 @@ describe('ocioContext', () => {
     betaRenderer.getColorSpaceTransform('ACEScg', 'ACES2065-1');
     expect(ocioMocks.createColorSpaceProcessor).toHaveBeenCalledTimes(3);
     expect(getGpuShaderInfo).toHaveBeenCalledTimes(3);
+  });
+
+  it('loads project transform assets and caches grouped OCIO GPU processors', async () => {
+    const getGpuShaderInfo = vi.fn(
+      (options: { language: string; functionName: string; resourcePrefix: string }) => ({
+        cacheId: 'group-transform-shader',
+        language: options.language,
+        functionName: options.functionName,
+        shaderText: `vec4 ${options.functionName}(vec4 color) { return color; }`,
+        textures: [],
+        uniforms: [],
+      }),
+    );
+    ocioMocks.setCreateGroupTransformProcessorImplementation(() => ({
+      cacheId: 'group-transform',
+      isNoOp: false,
+      isIdentity: false,
+      dispose: vi.fn(),
+      getGpuShaderInfo,
+    }));
+    renderOcioProvider();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ocio-status').textContent).toBe('ready:ACEScg');
+    });
+
+    const data = new Uint8Array([1, 2, 3]);
+    const path = colorManagementService.registerFileTransformAsset(
+      'asset_lut',
+      'show look.cube',
+      data,
+    );
+    const rendererColorManagement = colorManagementService.getRendererColorManagement();
+    const transforms = [
+      {
+        type: 'file' as const,
+        assetId: 'asset_lut',
+        direction: 'forward' as const,
+        interpolation: 'best' as const,
+      },
+    ];
+
+    expect(rendererColorManagement.getTransform(transforms)).toMatchObject({
+      kind: 'transform',
+      cacheId: 'group-transform-shader',
+    });
+    rendererColorManagement.getTransform(transforms);
+
+    expect(path).toMatch(/^\/blackboard-transform-assets\/.+\/show_look\.cube$/);
+    expect(ocioMocks.mkdirp).toHaveBeenCalledWith(path.slice(0, path.lastIndexOf('/')));
+    expect(ocioMocks.writeFile).toHaveBeenCalledWith(path, data);
+    expect(ocioMocks.createGroupTransformProcessor).toHaveBeenCalledOnce();
+    expect(ocioMocks.createGroupTransformProcessor).toHaveBeenCalledWith(
+      [{ type: 'file', src: path, direction: 'forward', interpolation: 'best' }],
+      { optimization: 'lossless' },
+    );
+    expect(getGpuShaderInfo).toHaveBeenCalledOnce();
   });
 
   it('keeps Raw display behavior only when returned by the active config', async () => {

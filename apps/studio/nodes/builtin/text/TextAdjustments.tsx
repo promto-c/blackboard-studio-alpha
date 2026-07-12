@@ -1,8 +1,8 @@
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { AnyNode, TextNode } from '@blackboard/types';
-import { CollapsibleSection, ColorPicker, StyledDropdown } from '@blackboard/ui';
-import { Slider } from '@/components';
+import { CollapsibleSection, ColorPicker, Slider, StyledDropdown } from '@blackboard/ui';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
+import { SettingRow } from '@/components';
 
 const FONT_OPTIONS = [
   { value: 'Arial, sans-serif', label: 'Arial' },
@@ -50,16 +50,14 @@ function TextAdjustments({ node: anyNode }: { node: AnyNode }) {
               className="mt-1 w-full bg-gray-700 border border-gray-600 text-gray-200 text-sm rounded-md focus:ring-primary-500 focus:border-primary-500 block p-2 resize-y"
             />
           </div>
-          <div>
-            <label htmlFor={`font-family-${node.id}`} className="text-xs font-medium text-gray-400">
-              Font
-            </label>
+          <SettingRow label="Font">
             <StyledDropdown
               value={node.fontFamily}
               options={FONT_OPTIONS}
               onChange={(value) => handleUpdate({ fontFamily: value as string }, true)}
+              widthClass="w-full"
             />
-          </div>
+          </SettingRow>
           <ColorPicker
             label="Color"
             value={node.color}

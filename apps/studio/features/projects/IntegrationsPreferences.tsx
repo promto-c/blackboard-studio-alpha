@@ -1,7 +1,6 @@
 import React from 'react';
 import * as Icons from '@blackboard/icons';
-import { Slider } from '@/components';
-import { Badge, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
+import { Badge, ScrollArea, Slider, StyledDropdown, TextInput, ToggleSwitch } from '@blackboard/ui';
 import {
   AgentMaxSubagentSpawns,
   type IntegrationConnection,
@@ -65,9 +64,6 @@ interface ConnectionModelRow {
   detail?: string;
   tags?: string[];
 }
-
-const baseFieldClassName =
-  'block w-full min-w-0 rounded-lg border border-white/10 bg-black/20 px-2.5 py-2 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] outline-none transition placeholder:text-gray-500 focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20';
 
 const PROVIDER_ORDER: IntegrationConnectionProviderId[] = ['ollama', 'openai', 'comfy'];
 const AI_PROVIDERS: AiProvider[] = ['ollama', 'openai'];
@@ -296,19 +292,15 @@ const getEnabledConnectionModels = (
 
 function ModelToggleRow({
   row,
-  provider,
   enabled,
   onToggle,
   onRemove,
 }: {
   row: ConnectionModelRow;
-  provider: AiProvider;
   enabled: boolean;
   onToggle: (checked: boolean) => void;
   onRemove?: () => void;
 }) {
-  const sourceLabel =
-    row.source === 'discovered' ? 'Discovered' : provider === 'ollama' ? 'Pinned' : 'Configured';
   const detailItems = [row.detail, ...(row.tags ?? [])].filter(isNonEmptyString);
 
   return (
@@ -329,7 +321,6 @@ function ModelToggleRow({
           >
             {row.model}
           </span>
-          <Badge variant={row.source === 'discovered' ? 'success' : 'neutral'}>{sourceLabel}</Badge>
         </div>
         {detailItems.length > 0 ? (
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-4 text-gray-500">
@@ -416,7 +407,7 @@ function ConnectionModelsEditor({
         </div>
       </div>
 
-      <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
+      <ScrollArea axis="y" viewportClassName="max-h-56 pr-1" contentClassName="space-y-1.5">
         {modelRows.length > 0 ? (
           modelRows.map((row) => {
             const enabled = isConnectionModelEnabled(connection, row.model);
@@ -424,7 +415,6 @@ function ConnectionModelsEditor({
               <ModelToggleRow
                 key={getModelIdentity(row.model)}
                 row={row}
-                provider={connection.provider}
                 enabled={enabled}
                 onToggle={(checked) =>
                   onToggleModel(connection.id, row.model, checked, row.source !== 'discovered')
@@ -442,22 +432,22 @@ function ConnectionModelsEditor({
             No models discovered or pinned yet.
           </div>
         )}
-      </div>
+      </ScrollArea>
 
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-        <input
+        <TextInput
           id={draftInputId}
           value={draft}
-          onChange={(event) => onModelDraftChange(connection.id, event.target.value)}
+          onValueChange={(value) => onModelDraftChange(connection.id, value)}
           onKeyDown={(event) => {
             if (event.key !== 'Enter') return;
             event.preventDefault();
             if (canAddModel) onAddModel(connection.id);
           }}
-          className={`${baseFieldClassName} font-mono`}
           placeholder={connection.provider === 'ollama' ? 'Pin model name' : 'Add model name'}
           aria-label="Add model name"
           spellCheck={false}
+          className="bg-black/20 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] font-mono focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20"
         />
         <button
           type="button"
@@ -869,14 +859,7 @@ function IntegrationsPreferences() {
         secondaryLabel: `${item.connectionName} · ${getProviderLabel(item.provider)}${
           item.detail ? ` · ${item.detail}` : ''
         }`,
-        badges: [
-          getProviderLabel(item.provider),
-          item.source === 'discovered'
-            ? 'Discovered'
-            : item.source === 'current'
-              ? 'Current'
-              : 'Configured',
-        ],
+        badges: [getProviderLabel(item.provider)],
         searchText: `${item.model} ${item.connectionName} ${getProviderLabel(item.provider)} ${item.source} ${item.detail ?? ''}`,
       })),
     [modelCatalog],
@@ -1170,14 +1153,14 @@ function IntegrationsPreferences() {
                       <div className="grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]">
                         <div className="space-y-1.5">
                           <FieldLabel htmlFor={`${connection.id}-name`}>Name</FieldLabel>
-                          <input
+                          <TextInput
                             id={`${connection.id}-name`}
                             value={connection.name}
-                            onChange={(event) =>
-                              updateConnection(connection.id, { name: event.target.value })
+                            onValueChange={(value) =>
+                              updateConnection(connection.id, { name: value })
                             }
-                            className={baseFieldClassName}
                             spellCheck={false}
+                            className="bg-black/20 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20"
                           />
                         </div>
 
@@ -1187,31 +1170,31 @@ function IntegrationsPreferences() {
                               <FieldLabel htmlFor={`${connection.id}-base-url`}>
                                 Endpoint
                               </FieldLabel>
-                              <input
+                              <TextInput
                                 id={`${connection.id}-base-url`}
                                 value={connection.baseUrl ?? DEFAULT_OPENAI_BASE_URL}
-                                onChange={(event) =>
+                                onValueChange={(value) =>
                                   updateConnection(connection.id, {
-                                    baseUrl: event.target.value,
+                                    baseUrl: value,
                                   })
                                 }
-                                className={`${baseFieldClassName} font-mono`}
                                 spellCheck={false}
+                                className="bg-black/20 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] font-mono focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20"
                               />
                             </div>
                             <div className="space-y-1.5">
                               <FieldLabel htmlFor={`${connection.id}-api-key`}>API key</FieldLabel>
-                              <input
+                              <TextInput
                                 id={`${connection.id}-api-key`}
                                 type="password"
                                 value={connection.apiKey ?? ''}
-                                onChange={(event) =>
-                                  updateConnection(connection.id, { apiKey: event.target.value })
+                                onValueChange={(value) =>
+                                  updateConnection(connection.id, { apiKey: value })
                                 }
-                                className={`${baseFieldClassName} font-mono`}
                                 placeholder="sk-... (optional for compatible local servers)"
                                 autoComplete="off"
                                 spellCheck={false}
+                                className="bg-black/20 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] font-mono focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20"
                               />
                             </div>
                           </>
@@ -1220,14 +1203,14 @@ function IntegrationsPreferences() {
                         {connection.provider === 'ollama' || connection.provider === 'comfy' ? (
                           <div className="space-y-1.5 lg:col-span-1">
                             <FieldLabel htmlFor={`${connection.id}-endpoint`}>Endpoint</FieldLabel>
-                            <input
+                            <TextInput
                               id={`${connection.id}-endpoint`}
                               value={getConnectionEndpoint(connection)}
-                              onChange={(event) =>
-                                updateConnection(connection.id, { endpoint: event.target.value })
+                              onValueChange={(value) =>
+                                updateConnection(connection.id, { endpoint: value })
                               }
-                              className={`${baseFieldClassName} font-mono`}
                               spellCheck={false}
+                              className="bg-black/20 text-sm text-gray-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] font-mono focus:border-primary-400/40 focus:ring-2 focus:ring-primary-500/20"
                             />
                           </div>
                         ) : null}

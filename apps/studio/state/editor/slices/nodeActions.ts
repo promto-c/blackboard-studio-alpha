@@ -141,13 +141,13 @@ export function createNodeActions(
     addNodeWithProps: (
       nodeType: NodeType,
       props: Record<string, unknown>,
-      options?: { name?: string },
+      options?: { name?: string; graphPosition?: { x: number; y: number } },
     ) => {
       const createResult = createNodeCommand(
         { nodes: get().nodes, selectedNodeId: get().selectedNodeId },
         nodeType,
         props,
-        options,
+        options?.name ? { name: options.name } : undefined,
       );
       if (!createResult) return;
 
@@ -155,7 +155,20 @@ export function createNodeActions(
 
       const fullState = buildGraphCommandState(get());
       const insertResult = insertNodeCommand(fullState, finalNewNode, newNodes, name);
+      const positionFlowId = fullState.activeFlowId ?? fullState.rootFlowId;
+      if (options?.graphPosition && positionFlowId) {
+        const nextPositionsByFlow =
+          insertResult.layoutPatch.nodePositionsByFlow ?? fullState.nodePositionsByFlow;
+        insertResult.layoutPatch.nodePositionsByFlow = {
+          ...nextPositionsByFlow,
+          [positionFlowId]: {
+            ...(nextPositionsByFlow[positionFlowId] ?? {}),
+            [finalNewNode.id]: options.graphPosition,
+          },
+        };
+      }
       executeGraphCommand(deps.commitMutation, insertResult);
+      return finalNewNode.id;
     },
 
     groupSelectedNodes: () => {

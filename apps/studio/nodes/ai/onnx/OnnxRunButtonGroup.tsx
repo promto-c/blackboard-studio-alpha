@@ -1,5 +1,5 @@
 import React from 'react';
-import { Badge, Popover } from '@blackboard/ui';
+import { Badge, NumberInput, Popover } from '@blackboard/ui';
 import {
   ExecuteButton,
   ExecuteButtonAction,
@@ -117,25 +117,23 @@ export function OnnxRunButtonGroup({
               <div className="flex items-center gap-2">
                 <div className="flex-1">
                   <label className="block text-[9px] font-medium text-gray-500 mb-0.5">From</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={rangeStart}
                     min={0}
                     max={Math.max(rangeEnd - 1, 0)}
-                    onChange={(e) => handleRangeStartChange(Number(e.target.value))}
-                    className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] font-mono text-gray-100 transition [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none focus:border-primary-400/40 focus:outline-none"
+                    normalizeValue={Math.round}
+                    onValueChange={handleRangeStartChange}
                   />
                 </div>
                 <span className="mt-4 text-[10px] text-gray-500">&rarr;</span>
                 <div className="flex-1">
                   <label className="block text-[9px] font-medium text-gray-500 mb-0.5">To</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={rangeEnd}
                     min={rangeStart + 1}
                     max={totalFrames - 1}
-                    onChange={(e) => handleRangeEndChange(Number(e.target.value))}
-                    className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] font-mono text-gray-100 transition [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none focus:border-primary-400/40 focus:outline-none"
+                    normalizeValue={Math.round}
+                    onValueChange={handleRangeEndChange}
                   />
                 </div>
               </div>

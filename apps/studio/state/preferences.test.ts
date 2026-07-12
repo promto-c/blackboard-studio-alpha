@@ -73,6 +73,23 @@ describe('viewport background preferences', () => {
   });
 });
 
+describe('compare preferences', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('defaults and clamps the compare chord hold delay', () => {
+    expect(createDefaultPreferences().compareChordHoldMs).toBe(100);
+
+    localStorage.setItem(
+      'blackboard-studio-preferences',
+      JSON.stringify({ compareChordHoldMs: 9999 }),
+    );
+
+    expect(loadPreferences().compareChordHoldMs).toBe(500);
+  });
+});
+
 describe('Roto interactive preview preferences', () => {
   afterEach(() => {
     localStorage.clear();

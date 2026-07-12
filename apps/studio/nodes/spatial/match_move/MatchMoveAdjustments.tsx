@@ -7,8 +7,15 @@ import type {
   MatchMoveSolveResult,
   MatchMoveTrackingSettings,
 } from '@blackboard/types';
-import { CollapsibleSection, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
-import { SegmentedControl, Slider } from '@/components';
+import * as Icons from '@blackboard/icons';
+import {
+  CollapsibleSection,
+  IconButton,
+  NumberInput,
+  Slider,
+  StyledDropdown,
+} from '@blackboard/ui';
+import { ExecuteButton, SegmentedControl, ToggleSettingRow } from '@/components';
 import { SettingRow } from '@/components/SettingRow';
 import { useNodeExecutionHandler } from '@/hooks/useNodeExecutionHandler';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
@@ -24,17 +31,7 @@ import {
 } from '@/utils/mediaSourceSelection';
 import { runMatchMoveTracking } from '@/utils/matchMoveTracking';
 
-const NUMBER_INPUT_CLASS =
-  'bg-gray-700/50 text-gray-200 text-xs rounded focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block px-2 py-1.5 font-mono w-full border-0';
-
 const MINI_LABEL_CLASS = 'text-[9px] font-semibold uppercase tracking-[0.12em] text-gray-500';
-
-const BUTTON_CLASS =
-  'inline-flex min-h-8 items-center justify-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition focus:outline-none focus:ring-2 focus:ring-primary-500/50 disabled:cursor-not-allowed disabled:opacity-50';
-
-const PRIMARY_BUTTON_CLASS = `${BUTTON_CLASS} bg-primary-500 text-white hover:bg-primary-400`;
-const SECONDARY_BUTTON_CLASS = `${BUTTON_CLASS} border border-white/10 bg-white/[0.04] text-gray-200 hover:bg-white/[0.08]`;
-const DANGER_BUTTON_CLASS = `${BUTTON_CLASS} border border-red-400/30 bg-red-500/15 text-red-100 hover:bg-red-500/25`;
 
 const modeOptions = [
   { value: 'track_2d', label: '2D' },
@@ -79,7 +76,7 @@ const statusLabel = (result: MatchMoveSolveResult | undefined): string => {
   return 'Idle';
 };
 
-function NumberInput({
+function LabeledNumberInput({
   label,
   value,
   min,
@@ -97,14 +94,12 @@ function NumberInput({
   return (
     <label className="min-w-0 space-y-1">
       <span className={MINI_LABEL_CLASS}>{label}</span>
-      <input
-        type="number"
+      <NumberInput
         value={Number.isFinite(value) ? value : 0}
         min={min}
         max={max}
         step={step}
-        className={NUMBER_INPUT_CLASS}
-        onChange={(event) => onChange(Number(event.target.value))}
+        onValueChange={onChange}
       />
     </label>
   );
@@ -119,11 +114,7 @@ function ToggleRow({
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
-  return (
-    <SettingRow label={label}>
-      <ToggleSwitch checked={checked} onCheckedChange={onChange} ariaLabel={label} size="sm" />
-    </SettingRow>
-  );
+  return <ToggleSettingRow label={label} checked={checked} onCheckedChange={onChange} />;
 }
 
 function ResultMetric({ label, value }: { label: string; value: string | number }) {
@@ -421,14 +412,14 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
             onChange={(value) => commitTracking({ sourceId: String(value) })}
           />
           <div className="grid grid-cols-3 gap-1.5">
-            <NumberInput
+            <LabeledNumberInput
               label="Start"
               value={node.tracking.startFrame}
               min={0}
               max={maxFrames}
               onChange={(value) => commitTracking({ startFrame: clampFrame(value, maxFrames) })}
             />
-            <NumberInput
+            <LabeledNumberInput
               label="End"
               value={node.tracking.endFrame}
               min={0}
@@ -485,7 +476,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
             displayFormatter={(value) => value.toFixed(3)}
           />
           <div className="grid grid-cols-2 gap-1.5">
-            <NumberInput
+            <LabeledNumberInput
               label="Patch"
               value={node.tracking.patchSize}
               min={5}
@@ -493,7 +484,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
               step={2}
               onChange={(value) => commitTracking({ patchSize: Math.max(5, Math.round(value)) })}
             />
-            <NumberInput
+            <LabeledNumberInput
               label="Max Err"
               value={node.tracking.maxTrackError}
               min={0.5}
@@ -535,7 +526,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
             />
           </div>
           <div className="grid grid-cols-2 gap-1.5">
-            <NumberInput
+            <LabeledNumberInput
               label="RANSAC"
               value={node.solve.ransacThreshold}
               min={0.25}
@@ -543,7 +534,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
               step={0.25}
               onChange={(value) => commitSolve({ ransacThreshold: Math.max(0.25, value) })}
             />
-            <NumberInput
+            <LabeledNumberInput
               label="Min Frames"
               value={node.solve.minTrackFrames}
               min={1}
@@ -556,7 +547,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
           {node.solve.mode === 'camera_3d' ? (
             <div className="space-y-3 border-t border-white/10 pt-3">
               <div className="grid grid-cols-2 gap-1.5">
-                <NumberInput
+                <LabeledNumberInput
                   label="Focal mm"
                   value={node.camera.focalLengthMm}
                   min={1}
@@ -564,7 +555,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
                   step={0.5}
                   onChange={(value) => commitCamera({ focalLengthMm: Math.max(1, value) })}
                 />
-                <NumberInput
+                <LabeledNumberInput
                   label="Sensor mm"
                   value={node.camera.sensorWidthMm}
                   min={1}
@@ -643,17 +634,24 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
       ) : null}
 
       <div className="grid grid-cols-[1fr_auto] gap-2">
-        <button
-          type="button"
-          className={runState.running ? DANGER_BUTTON_CLASS : PRIMARY_BUTTON_CLASS}
+        <ExecuteButton
+          fullWidth
+          className="min-h-8"
           disabled={!runState.running && !canRun}
           onClick={runTracking}
+          title={runState.running ? 'Cancel tracking and solve' : 'Track features and solve motion'}
+          icon={
+            runState.running ? <Icons.XMark className="h-3.5 w-3.5 text-primary-200" /> : undefined
+          }
         >
           {runState.running ? 'Cancel' : 'Track and Solve'}
-        </button>
-        <button type="button" className={SECONDARY_BUTTON_CLASS} onClick={clearTracks}>
-          Clear
-        </button>
+        </ExecuteButton>
+        <IconButton
+          icon={Icons.Trash}
+          tooltip="Clear tracking data"
+          onClick={clearTracks}
+          className="h-8 w-8 border border-white/10 bg-white/[0.04] text-gray-400 hover:bg-white/[0.08] hover:text-gray-100"
+        />
       </div>
     </div>
   );

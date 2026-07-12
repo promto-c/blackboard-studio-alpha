@@ -32,6 +32,8 @@ import {
 } from '@/state/projectBranches';
 import { getOrderedNodesFromFlow } from '@/state/editor/flowModel';
 import { loadProjectState } from '@/state/persist';
+import { isComfyNode } from '@/nodes/helpers';
+import { ComfyAdjustmentsPanel } from '@/nodes/ai/comfy/ComfyAdjustments';
 import * as Icons from '@blackboard/icons';
 import { NodeType } from '@blackboard/types';
 import type {
@@ -48,7 +50,14 @@ import type {
   NodePositions,
   PersistedProjectState,
 } from '@blackboard/types';
-import { Badge, CodeBlock, ResizableScrollTextarea, ScrollArea, Spinner } from '@blackboard/ui';
+import {
+  Badge,
+  CodeBlock,
+  ResizableScrollTextarea,
+  ScrollArea,
+  Spinner,
+  TextInput,
+} from '@blackboard/ui';
 import { useDebugLog } from '@/utils/debugLogContext';
 import {
   SlidingSegmentedControl,
@@ -56,6 +65,7 @@ import {
 } from '@/components/SlidingSegmentedControl';
 import SubPanelHeader from './SubPanelHeader';
 import ChatMarkdown from './ChatMarkdown';
+import { ComfyPromptOptionGallery } from './ComfyPromptOptionGallery';
 import {
   ChatAttachmentLimits,
   createAttachmentId,
@@ -1077,16 +1087,16 @@ function AgentRunCard({
                               ) : null}
                               {!isAnswered && question.freeformAllowed ? (
                                 <div className="flex min-w-0 gap-1">
-                                  <input
+                                  <TextInput
                                     value={questionDrafts[question.id] ?? ''}
-                                    onChange={(event) =>
+                                    onValueChange={(value) =>
                                       setQuestionDrafts((current) => ({
                                         ...current,
-                                        [question.id]: event.currentTarget.value,
+                                        [question.id]: value,
                                       }))
                                     }
                                     placeholder="Answer"
-                                    className="min-w-0 flex-1 rounded border border-white/10 bg-black/20 px-1.5 py-1 text-[10px] text-primary-50 outline-none placeholder:text-primary-50/30 focus:border-primary-200/25"
+                                    className="min-w-0 flex-1 bg-black/20 px-1.5 py-1 text-[10px] text-primary-50 placeholder:text-primary-50/30 !min-h-0"
                                   />
                                   <button
                                     type="button"
@@ -3806,34 +3816,13 @@ function ChatsTab() {
               </p>
             </CompactDisclosure>
             {promptPreviewArtifact.options.length > 0 ? (
-              <div className="space-y-1.5">
-                {promptPreviewArtifact.options.map((option, index) => {
-                  const isSelected = promptPreviewArtifact.draft === option;
-                  return (
-                    <button
-                      key={`${message.id}-prompt-option-${index}`}
-                      type="button"
-                      onClick={() => setAiChatPromptArtifactDraft(chat.id, message.id, option)}
-                      className={`w-full rounded-xl border px-2.5 py-2 text-left text-xs transition ${
-                        isSelected
-                          ? 'border-cyan-200/30 bg-cyan-200/[0.12] text-cyan-50'
-                          : 'border-white/[0.07] bg-white/[0.035] text-gray-200 hover:bg-white/[0.065]'
-                      }`}
-                    >
-                      <span
-                        className={`block text-[10px] font-semibold uppercase tracking-[0.12em] ${
-                          isSelected ? 'text-cyan-100/70' : 'text-gray-400'
-                        }`}
-                      >
-                        Option {index + 1}
-                      </span>
-                      <span className="mt-1 block truncate text-[12px] normal-case tracking-normal text-inherit">
-                        {option}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+              <ComfyPromptOptionGallery
+                messageId={message.id}
+                artifact={promptPreviewArtifact}
+                onSelectOption={(option) =>
+                  setAiChatPromptArtifactDraft(chat.id, message.id, option)
+                }
+              />
             ) : null}
             <ResizableScrollTextarea
               value={promptPreviewArtifact.draft}
@@ -4074,6 +4063,9 @@ function ChatsTab() {
 
   return (
     <div data-text-selection-scope className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {isComfyNode(activeChatNode) ? (
+        <ComfyAdjustmentsPanel node={activeChatNode} headless />
+      ) : null}
       <SubPanelHeader title={title} meta={headerMeta} actions={headerActions} />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { ComfyNode, ComfyWorkflow, EditorTab, GroupNode, NodeType } from '@blackboard/types';
-import { Badge, ScrollArea, SplitterHandle } from '@blackboard/ui';
+import { Badge, ScrollArea, SplitterHandle, TextInput } from '@blackboard/ui';
 import { FlowViewModeControls } from '@/components/FlowViewModeControls';
 import { NodeItemsPanel, getNodeItemsComponent } from '@/components/NodeItemsPanel';
 import { SlidingSegmentedControl } from '@/components/SlidingSegmentedControl';
@@ -229,15 +229,15 @@ function ProjectBranchSwitcher({ compact = false }: { compact?: boolean }) {
         <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-white/10 bg-gray-950/95 p-1.5 shadow-2xl backdrop-blur-xl ring-1 ring-inset ring-white/5">
           <div className="flex h-8 items-center gap-1.5 rounded-md border border-white/10 bg-black/30 px-2">
             <Icons.MagnifyingGlass className="h-3.5 w-3.5 flex-shrink-0 text-gray-500" />
-            <input
+            <TextInput
               ref={inputRef}
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onValueChange={setQuery}
               onKeyDown={handleInputKeyDown}
               disabled={isBusy}
               placeholder="Find or create branch"
-              className="min-w-0 flex-1 bg-transparent text-xs text-gray-100 outline-none placeholder:text-gray-600 disabled:cursor-wait"
               aria-label="Find or create branch"
+              className="min-w-0 flex-1 border-0 bg-transparent p-0 text-gray-100 placeholder:text-gray-600 disabled:cursor-wait hover:border-0 focus-visible:border-0 focus-visible:ring-0 !min-h-0"
             />
           </div>
 
@@ -956,7 +956,7 @@ function Panel({ isMobilePortrait }: PanelProps) {
     <div
       className={`absolute inset-y-0 right-0 z-20 pointer-events-none ${toolsPopupWidthClass} p-2 pl-1`}
     >
-      <div ref={toolsPopupRef}>
+      <div ref={toolsPopupRef} className="h-full">
         {renderGlassPanelSurface(
           'pointer-events-auto max-h-full flex flex-col',
           <div

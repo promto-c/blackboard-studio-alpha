@@ -1,120 +1,114 @@
 import type { ComfyNode } from '@blackboard/types';
+import { CheckboxIndicator, SegmentedControl } from '@/components';
 import { useEditorActions } from '@/state/editorContext';
+import {
+  COMFY_ALIGNMENT_QUALITY_PRESETS,
+  getComfyAlignmentQuality,
+  resolveComfyAlignmentOptions,
+  type ComfyAlignmentOptions,
+  type ComfyAlignmentQuality,
+} from '../comfyAlignmentOptions';
 
 interface ComfyAlignmentOptionsSectionProps {
   node: ComfyNode;
 }
 
+interface AlignmentOptionProps {
+  checked: boolean;
+  description: string;
+  label: string;
+  onChange: (checked: boolean) => void;
+}
+
+function AlignmentOption({ checked, description, label, onChange }: AlignmentOptionProps) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2 text-xs text-gray-400">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="peer sr-only"
+      />
+      <CheckboxIndicator checked={checked} className="mt-0.5" />
+      <span className="min-w-0">
+        <span className="block text-gray-300">{label}</span>
+        <span className="mt-0.5 block text-[11px] leading-4 text-gray-500">{description}</span>
+      </span>
+    </label>
+  );
+}
+
 export function ComfyAlignmentOptionsSection({ node }: ComfyAlignmentOptionsSectionProps) {
   const { updateNode } = useEditorActions();
 
-  const currentOptions = node.alignmentOptions ?? {};
-  const skipEditedRegions = currentOptions.skipEditedRegions !== false;
-  const iterativeRefinement = currentOptions.iterativeRefinement !== false;
-  const highResRefinement = currentOptions.highResRefinement !== false;
-  const edgeAwareSampling = currentOptions.edgeAwareSampling !== false;
-  const subPixelRefinement = currentOptions.subPixelRefinement !== false;
+  const currentOptions = resolveComfyAlignmentOptions(node.alignmentOptions);
+  const currentQuality = getComfyAlignmentQuality(node.alignmentOptions);
 
-  const setOption = (
-    key:
-      | 'skipEditedRegions'
-      | 'iterativeRefinement'
-      | 'highResRefinement'
-      | 'edgeAwareSampling'
-      | 'subPixelRefinement',
-    value: boolean,
-  ) => {
-    updateNode(
-      node.id,
-      {
-        alignmentOptions: {
-          ...currentOptions,
-          [key]: value,
-        },
-      },
-      true,
-    );
+  const setOptions = (alignmentOptions: Required<ComfyAlignmentOptions>) => {
+    updateNode(node.id, { alignmentOptions }, true);
+  };
+
+  const setQuality = (quality: ComfyAlignmentQuality) => {
+    setOptions({ ...COMFY_ALIGNMENT_QUALITY_PRESETS[quality] });
+  };
+
+  const setOption = (key: keyof ComfyAlignmentOptions, value: boolean) => {
+    setOptions({ ...currentOptions, [key]: value });
   };
 
   return (
-    <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-3">
-      <div className="mb-2 text-xs font-medium text-gray-300">Alignment refinements</div>
+    <div className="max-h-[min(70vh,32rem)] overflow-y-auto p-1">
+      <div className="text-xs font-medium text-gray-200">Alignment quality</div>
+      <div className="mt-2">
+        <SegmentedControl
+          ariaLabel="Alignment quality"
+          options={[
+            { value: 'fast', label: 'Fast', title: 'Single-pass alignment' },
+            {
+              value: 'balanced',
+              label: 'Balanced',
+              title: 'Improved matching without the high-resolution pass',
+            },
+            { value: 'precise', label: 'Precise', title: 'Enable every refinement' },
+          ]}
+          value={currentQuality ?? ''}
+          onChange={(value) => setQuality(value as ComfyAlignmentQuality)}
+        />
+      </div>
+
+      <div className="my-3 h-px bg-white/10" />
+      <div className="mb-2 text-xs font-medium text-gray-200">Alignment Refinements</div>
       <div className="space-y-2">
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-400">
-          <input
-            type="checkbox"
-            checked={skipEditedRegions}
-            onChange={(event) => setOption('skipEditedRegions', event.target.checked)}
-            className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-primary-500"
-          />
-          <div className="min-w-0">
-            <div className="text-gray-300">Skip edited regions</div>
-            <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
-              Avoid tracking points in areas where the AI significantly changed the image (img2img).
-            </div>
-          </div>
-        </label>
-
-        <label className="flex cursor-pointer items-start gap-2 text-xs text-gray-400">
-          <input
-            type="checkbox"
-            checked={iterativeRefinement}
-            onChange={(event) => setOption('iterativeRefinement', event.target.checked)}
-            className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-primary-500"
-          />
-          <div className="min-w-0">
-            <div className="text-gray-300">Iterative refinement</div>
-            <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
-              Re-track selected points with progressively smaller search radii for higher precision.
-            </div>
-          </div>
-        </label>
-        <label className="flex cursor-pointer items-start gap-2 text-xs text-gray-400">
-          <input
-            type="checkbox"
-            checked={highResRefinement}
-            onChange={(event) => setOption('highResRefinement', event.target.checked)}
-            className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-primary-500"
-          />
-          <div className="min-w-0">
-            <div className="text-gray-300">High-resolution refinement</div>
-            <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
-              Run a second alignment pass at 2× resolution for sub-pixel accuracy.
-            </div>
-          </div>
-        </label>
-
-        <label className="flex cursor-pointer items-start gap-2 text-xs text-gray-400">
-          <input
-            type="checkbox"
-            checked={edgeAwareSampling}
-            onChange={(event) => setOption('edgeAwareSampling', event.target.checked)}
-            className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-primary-500"
-          />
-          <div className="min-w-0">
-            <div className="text-gray-300">Edge-aware sampling</div>
-            <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
-              Prioritize tracking points on strong edges and discard points in uniform areas where
-              optical flow is unreliable.
-            </div>
-          </div>
-        </label>
-
-        <label className="flex cursor-pointer items-start gap-2 text-xs text-gray-400">
-          <input
-            type="checkbox"
-            checked={subPixelRefinement}
-            onChange={(event) => setOption('subPixelRefinement', event.target.checked)}
-            className="mt-0.5 h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-primary-500"
-          />
-          <div className="min-w-0">
-            <div className="text-gray-300">Sub-pixel NCC refinement</div>
-            <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
-              After RANSAC fitting, refine tracked positions to sub-pixel accuracy via parabolic
-              interpolation of NCC scores.
-            </div>
-          </div>
-        </label>
+        <AlignmentOption
+          checked={currentOptions.skipEditedRegions}
+          label="Skip edited regions"
+          description="Avoid tracking points in areas where the AI significantly changed the image (img2img)."
+          onChange={(checked) => setOption('skipEditedRegions', checked)}
+        />
+        <AlignmentOption
+          checked={currentOptions.iterativeRefinement}
+          label="Iterative refinement"
+          description="Re-track selected points with progressively smaller search radii for higher precision."
+          onChange={(checked) => setOption('iterativeRefinement', checked)}
+        />
+        <AlignmentOption
+          checked={currentOptions.highResRefinement}
+          label="High-resolution refinement"
+          description="Run a second alignment pass at 2× resolution for sub-pixel accuracy."
+          onChange={(checked) => setOption('highResRefinement', checked)}
+        />
+        <AlignmentOption
+          checked={currentOptions.edgeAwareSampling}
+          label="Edge-aware sampling"
+          description="Prioritize strong edges and discard uniform areas where optical flow is unreliable."
+          onChange={(checked) => setOption('edgeAwareSampling', checked)}
+        />
+        <AlignmentOption
+          checked={currentOptions.subPixelRefinement}
+          label="Sub-pixel NCC refinement"
+          description="Refine tracked positions to sub-pixel accuracy using interpolation of NCC scores."
+          onChange={(checked) => setOption('subPixelRefinement', checked)}
+        />
       </div>
     </div>
   );

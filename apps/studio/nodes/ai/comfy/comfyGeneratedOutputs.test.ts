@@ -32,10 +32,14 @@ describe('Comfy generated outputs', () => {
     vi.restoreAllMocks();
   });
 
-  it('maps the submitted Comfy output color space through the active OCIO config', () => {
+  it.each([
+    ['sRGB', 'Linear Rec.709 (sRGB)'],
+    ['linear', 'Linear Rec.709 (sRGB)'],
+    ['HDR', 'Linear Rec.2020'],
+  ])('maps Comfy EXR %s input to the saved linear output space', (input, expected) => {
     vi.spyOn(colorManagementService, 'resolveConfiguredColorSpaceName').mockImplementation(
       (value) => {
-        if (value === 'sRGB') return 'sRGB Encoded Rec.709 (sRGB)';
+        if (value === expected) return expected;
         throw new Error(`Unknown color space: ${value}`);
       },
     );
@@ -58,6 +62,35 @@ describe('Comfy generated outputs', () => {
             class_type: 'SaveImageAdvanced',
             inputs: {
               format: 'exr',
+              'format.input_color_space': input,
+            },
+          },
+        },
+      }),
+    ).toBe(expected);
+  });
+
+  it('keeps encoded sRGB assignment for non-EXR Comfy outputs', () => {
+    vi.spyOn(colorManagementService, 'resolveConfiguredColorSpaceName').mockImplementation(
+      (value) => {
+        if (value === 'sRGB') return 'sRGB Encoded Rec.709 (sRGB)';
+        throw new Error(`Unknown color space: ${value}`);
+      },
+    );
+
+    expect(
+      getComfyOutputColorSpace({
+        outputFile: {
+          nodeId: 'save-1',
+          kind: 'image',
+          filename: 'render.png',
+        },
+        workflow: null,
+        submittedPrompt: {
+          'save-1': {
+            class_type: 'SaveImageAdvanced',
+            inputs: {
+              format: 'png',
               'format.input_color_space': 'sRGB',
             },
           },
@@ -83,12 +116,14 @@ describe('Comfy generated outputs', () => {
       ],
       workflow: null,
       promptId: 'prompt-3d',
+      generationGroupId: 'prompt-option:message-1:0',
     });
 
     expect(outputs).toHaveLength(1);
     expect(outputs[0]).toMatchObject({
       src: 'asset:model',
       mediaKind: 'model_3d',
+      generationGroupId: 'prompt-option:message-1:0',
       width: 0,
       height: 0,
       scene3dAsset: {

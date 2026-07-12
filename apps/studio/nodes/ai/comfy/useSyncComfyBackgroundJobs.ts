@@ -382,6 +382,7 @@ export const useSyncComfyBackgroundJobs = () => {
             files: outputFiles,
             workflow: context.workflow,
             promptId,
+            generationGroupId: source.generationGroupId,
             signal: controller.signal,
           });
           const generatedOutputsWithRegion = source.comfyRegionId

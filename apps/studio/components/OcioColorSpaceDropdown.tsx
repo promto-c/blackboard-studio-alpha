@@ -1,5 +1,10 @@
 import React from 'react';
 import { StyledDropdown } from '@blackboard/ui';
+import {
+  OCIO_COMPOSITING_LOG_SPACE,
+  OCIO_PROJECT_WORKING_SPACE,
+  OCIO_TEXTURE_COLOR_SPACE,
+} from '@blackboard/types';
 import { useOcio } from '@/state/ocioContext';
 
 interface OcioColorSpaceDropdownProps {
@@ -8,6 +13,8 @@ interface OcioColorSpaceDropdownProps {
   includeData?: boolean;
   widthClass?: string;
   popoverWidthClass?: string;
+  includeRoles?: boolean;
+  disabled?: boolean;
 }
 
 const formatDescription = (value: string): string => value.replace(/\s+/g, ' ').trim();
@@ -18,14 +25,53 @@ export function OcioColorSpaceDropdown({
   includeData = true,
   widthClass = 'w-full',
   popoverWidthClass = 'w-80',
+  includeRoles = false,
+  disabled = false,
 }: OcioColorSpaceDropdownProps) {
   const ocio = useOcio();
   const resolvedValue = value?.trim() ?? '';
-  const canonicalValue = resolvedValue ? ocio.resolveColorSpaceName(resolvedValue) : '';
+  const isRoleValue =
+    resolvedValue === OCIO_PROJECT_WORKING_SPACE ||
+    resolvedValue === OCIO_TEXTURE_COLOR_SPACE ||
+    resolvedValue === OCIO_COMPOSITING_LOG_SPACE;
+  const canonicalValue = resolvedValue
+    ? isRoleValue
+      ? resolvedValue
+      : ocio.resolveColorSpaceName(resolvedValue)
+    : '';
 
   const options = React.useMemo(
-    () =>
-      ocio.colorSpaces
+    () => [
+      ...(includeRoles
+        ? [
+            {
+              value: OCIO_PROJECT_WORKING_SPACE,
+              label: 'Project Working · ' + ocio.workingColorSpace,
+              secondaryLabel: 'Resolved from the project scene_linear role.',
+              badges: ['Role'],
+              searchText: 'project working scene linear ' + ocio.workingColorSpace,
+            },
+            {
+              value: OCIO_TEXTURE_COLOR_SPACE,
+              label: 'Texture / Paint · ' + ocio.textureColorSpace,
+              secondaryLabel: 'Resolved from the texture_paint role.',
+              badges: ['Role'],
+              searchText: 'texture paint ' + ocio.textureColorSpace,
+            },
+            ...(ocio.logColorSpace
+              ? [
+                  {
+                    value: OCIO_COMPOSITING_LOG_SPACE,
+                    label: 'Compositing Log · ' + ocio.logColorSpace,
+                    secondaryLabel: 'Resolved from the compositing_log role.',
+                    badges: ['Role'],
+                    searchText: 'compositing log ' + ocio.logColorSpace,
+                  },
+                ]
+              : []),
+          ]
+        : []),
+      ...ocio.colorSpaces
         .filter((colorSpace) => includeData || !colorSpace.isData)
         .map((colorSpace) => ({
           value: colorSpace.name,
@@ -48,7 +94,8 @@ export function OcioColorSpaceDropdown({
             ...colorSpace.categories,
           ].join(' '),
         })),
-    [includeData, ocio],
+    ],
+    [includeData, includeRoles, ocio],
   );
 
   const selectedValue = options.some((option) => option.value === canonicalValue)
@@ -71,6 +118,7 @@ export function OcioColorSpaceDropdown({
         widthClass={widthClass}
         popoverWidthClass={popoverWidthClass}
         searchable
+        disabled={disabled}
       />
     </div>
   );

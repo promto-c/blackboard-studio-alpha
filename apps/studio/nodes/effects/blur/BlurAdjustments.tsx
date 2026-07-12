@@ -1,7 +1,7 @@
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { AnyNode, BlurNode, BlurMethod } from '@blackboard/types';
-import { CollapsibleSection } from '@blackboard/ui';
-import { SegmentedControl, Slider, ShaderCodeButton } from '@/components';
+import { CollapsibleSection, Slider } from '@blackboard/ui';
+import { SegmentedControl, SettingRow, ShaderCodeButton } from '@/components';
 import { BlurShader } from './blurShader';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
 
@@ -47,14 +47,14 @@ function BlurAdjustments({ node: anyNode }: { node: AnyNode }) {
     <>
       <CollapsibleSection title="Parameters" defaultOpen>
         <div className="space-y-4">
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-gray-400">Method</label>
+          <SettingRow label="Method">
             <SegmentedControl
               options={blurMethodOptions}
               value={node.blur.method || BlurMethod.GAUSSIAN}
               onChange={(val) => handleMethodChange(val as BlurMethod)}
+              className="w-full"
             />
-          </div>
+          </SettingRow>
           <Slider
             label="Radius"
             value={radiusAtCurrentFrame}

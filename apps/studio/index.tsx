@@ -10,6 +10,7 @@ import { EditorProvider } from './state/editorContext';
 import { ProjectOcioProvider } from './state/ocioContext';
 import { InstalledOnnxModelsProvider } from './state/installedOnnxModelsContext';
 import { initComponentSurfaceLighting } from '@/utils/componentSurfaceLighting';
+import { EditorUIInteractionProvider } from '@/components/EditorUIInteractionProvider';
 
 // Initialize theme before React renders to avoid a flash of unstyled content
 initTheme();
@@ -27,11 +28,13 @@ root.render(
       <PreferencesProvider>
         <InstalledOnnxModelsProvider>
           <EditorProvider>
-            <ProjectOcioProvider>
-              <StudioHotkeysProvider>
-                <App />
-              </StudioHotkeysProvider>
-            </ProjectOcioProvider>
+            <EditorUIInteractionProvider>
+              <ProjectOcioProvider>
+                <StudioHotkeysProvider>
+                  <App />
+                </StudioHotkeysProvider>
+              </ProjectOcioProvider>
+            </EditorUIInteractionProvider>
           </EditorProvider>
         </InstalledOnnxModelsProvider>
       </PreferencesProvider>

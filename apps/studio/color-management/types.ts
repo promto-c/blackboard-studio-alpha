@@ -41,6 +41,30 @@ export interface DisplayViewInfo {
   looks: string;
 }
 
+export interface OcioLookInfo {
+  name: string;
+  processSpace: string;
+  description: string;
+  hasForwardTransform: boolean;
+  hasInverseTransform: boolean;
+}
+
+export interface OcioNamedTransformInfo {
+  name: string;
+  family: string;
+  description: string;
+  encoding: string;
+  aliases: string[];
+  categories: string[];
+  hasForwardTransform: boolean;
+  hasInverseTransform: boolean;
+}
+
+export interface OcioFileTransformFormatInfo {
+  name: string;
+  extension: string;
+}
+
 export interface ColorManagementRuntimeSnapshot {
   isInitialized: boolean;
   isLoading: boolean;
@@ -56,6 +80,9 @@ export interface ColorManagementRuntimeSnapshot {
   optionalRoleIssues: OptionalColorRoleIssue[];
   displays: string[];
   viewsByDisplay: Record<string, DisplayViewInfo[]>;
+  looks: OcioLookInfo[];
+  namedTransforms: OcioNamedTransformInfo[];
+  fileTransformFormats: OcioFileTransformFormatInfo[];
   defaultViewsByDisplay: Record<string, string>;
   defaultDisplay: string;
   defaultView: string;
@@ -118,4 +145,6 @@ export interface ColorManagementService {
   getViews(display: string | undefined | null): DisplayViewInfo[];
   getDiagnostics(): ColorManagementServiceDiagnostics;
   clearCaches(): void;
+  registerFileTransformAsset(assetId: string, fileName: string, data: Uint8Array): string;
+  isFileTransformAssetRegistered(assetId: string): boolean;
 }

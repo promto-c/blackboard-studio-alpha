@@ -56,8 +56,8 @@ importers:
         specifier: ^0.1.2
         version: 0.1.2
       '@bb-studio/ocio':
-        specifier: ^0.0.6
-        version: 0.0.6
+        specifier: ^0.0.7
+        version: 0.0.7
       '@blackboard/icons':
         specifier: workspace:*
         version: link:../../packages/icons
@@ -395,10 +395,10 @@ packages:
         integrity: sha512-+6g6XvDyhUcaZHbAt9ZOizvW8zZXqctVK9pYeRoFGZhU8Pf5O2EOG7+oxzBD9yup0EUPWh0alDirm6hVf0PcEg==,
       }
 
-  '@bb-studio/ocio@0.0.6':
+  '@bb-studio/ocio@0.0.7':
     resolution:
       {
-        integrity: sha512-fqixyvIBT4VmiSizLRFMLm/oaEfdfLPzzZzU6GTj+On8iiuAO3yAvUBqzePqENcsjXGzwvEZgZWQMv2q1gTfCA==,
+        integrity: sha512-yRZD3HXmER14sa2XBZDwmxnJRVWsqTS6jHad7331Zz+WpUb23ymgwUd9TuEcLy7kpBd0lT/ePjL14I0FGX7uuA==,
       }
     engines: { node: '>=20' }
 
@@ -5452,7 +5452,7 @@ snapshots:
     dependencies:
       fflate: 0.8.2
 
-  '@bb-studio/ocio@0.0.6': {}
+  '@bb-studio/ocio@0.0.7': {}
 
   '@csstools/color-helpers@6.0.2': {}
 

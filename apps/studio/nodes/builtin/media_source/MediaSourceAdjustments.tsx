@@ -1,19 +1,14 @@
-import { useEditorActions } from '@/state/editorContext';
 import { MediaSourceNode, AnyNode } from '@blackboard/types';
 import SourceAlphaControl from '../../SourceAlphaControl';
 import SourceTransformControls from '../../SourceTransformControls';
 import SourceSlot from '../../SourceSlot';
-import { CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
+import SourceTimingControls from '../../SourceTimingControls';
+import { CollapsibleSection } from '@blackboard/ui';
 import { MediaColorManagementInspector } from '@/components';
 
 function MediaSourceAdjustments({ node: anyNode }: { node: AnyNode }) {
   const node = anyNode as MediaSourceNode;
-  const { updateNode } = useEditorActions();
   const isVideo = node.mediaKind === 'video';
-
-  const handleUpdate = (updates: Partial<MediaSourceNode>, withHistory: boolean = false) => {
-    updateNode(node.id, updates, withHistory);
-  };
 
   return (
     <div>
@@ -32,15 +27,7 @@ function MediaSourceAdjustments({ node: anyNode }: { node: AnyNode }) {
         </div>
       </CollapsibleSection>
 
-      {isVideo && (
-        <CollapsibleSection title="Playback" defaultOpen>
-          <ToggleSwitch
-            label="Loop"
-            checked={node.loop ?? true}
-            onCheckedChange={(checked) => handleUpdate({ loop: checked }, true)}
-          />
-        </CollapsibleSection>
-      )}
+      {isVideo && <SourceTimingControls node={node} />}
 
       <SourceTransformControls node={node} />
     </div>

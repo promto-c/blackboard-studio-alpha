@@ -10,8 +10,8 @@ import {
   TransformNode,
 } from '@blackboard/types';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
-import { CollapsibleSection } from '@blackboard/ui';
-import { SegmentedControl, ShaderCodeButton, Slider } from '@/components';
+import { CollapsibleSection, Slider } from '@blackboard/ui';
+import { SegmentedControl, SettingRow, ShaderCodeButton } from '@/components';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { Link } from '@blackboard/icons';
 import { SpatialShader } from './spatialShaders';
@@ -50,14 +50,14 @@ function ResamplingControl({
   onChange: (value: SpatialResamplingFilter) => void;
 }) {
   return (
-    <div className="space-y-2">
-      <label className="text-xs font-medium text-gray-400">Resampling Filter</label>
+    <SettingRow label="Resampling Filter">
       <SegmentedControl
         options={RESAMPLING_OPTIONS}
         value={value}
         onChange={(nextValue) => onChange(nextValue as SpatialResamplingFilter)}
+        className="w-full"
       />
-    </div>
+    </SettingRow>
   );
 }
 
@@ -331,14 +331,14 @@ function SizeControls({
           />
         </div>
       </div>
-      <div className="space-y-2">
-        <label className="text-xs font-medium text-gray-400">Fit Mode</label>
+      <SettingRow label="Fit Mode">
         <SegmentedControl
           options={REFORMAT_MODE_OPTIONS}
           value={mode}
           onChange={(value) => onModeChange(value as ReformatResizeMode)}
+          className="w-full"
         />
-      </div>
+      </SettingRow>
     </div>
   );
 }

@@ -1,8 +1,8 @@
 import { useCallback, useMemo } from 'react';
 import { RotoNode, type RotoMotionBlurPhase, type RotoMotionBlurSettings } from '@blackboard/types';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { Badge, CollapsibleSection, ToggleSwitch } from '@blackboard/ui';
-import { Slider, SegmentedControl } from '@/components';
+import { Badge, CollapsibleSection, Slider } from '@blackboard/ui';
+import { SegmentedControl, SettingRow, ToggleSettingRow } from '@/components';
 import { DEFAULT_ROTO_MOTION_BLUR, resolveRotoMotionBlurSettings } from '@/utils/rotoMotionBlur';
 
 interface RotoBatchAdjustmentsProps {
@@ -105,28 +105,20 @@ function RotoBatchAdjustments({ nodeIds }: RotoBatchAdjustmentsProps) {
       </div>
       <CollapsibleSection title="Node Settings" defaultOpen>
         <div className="space-y-3">
-          <div className="flex items-center gap-1.5">
-            {invertMixed && <MixedBadge />}
-            <div className="flex-1">
-              <ToggleSwitch
-                label="Invert Matte"
-                checked={invertValue}
-                onCheckedChange={(checked) =>
-                  batchUpdateNodes(nodeIds, { invert: checked } as Partial<RotoNode>, true)
-                }
-              />
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            {mbEnabledMixed && <MixedBadge />}
-            <div className="flex-1">
-              <ToggleSwitch
-                label="Motion Blur"
-                checked={mbEnabledValue}
-                onCheckedChange={(checked) => batchUpdateMotionBlur({ enabled: checked })}
-              />
-            </div>
-          </div>
+          <ToggleSettingRow
+            label="Invert Matte"
+            labelAccessory={invertMixed ? <MixedBadge /> : null}
+            checked={invertValue}
+            onCheckedChange={(checked) =>
+              batchUpdateNodes(nodeIds, { invert: checked } as Partial<RotoNode>, true)
+            }
+          />
+          <ToggleSettingRow
+            label="Motion Blur"
+            labelAccessory={mbEnabledMixed ? <MixedBadge /> : null}
+            checked={mbEnabledValue}
+            onCheckedChange={(checked) => batchUpdateMotionBlur({ enabled: checked })}
+          />
           <div
             className={
               effectiveMbEnabled ? 'space-y-3' : 'opacity-60 pointer-events-none space-y-3'
@@ -149,17 +141,14 @@ function RotoBatchAdjustments({ nodeIds }: RotoBatchAdjustmentsProps) {
                 />
               </div>
             </div>
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-1.5">
-                {phaseMixed && <MixedBadge />}
-                <label className="text-xs font-medium text-gray-400">Shutter Offset</label>
-              </div>
+            <SettingRow label="Shutter Offset" labelAccessory={phaseMixed ? <MixedBadge /> : null}>
               <SegmentedControl
                 value={phaseValue}
                 options={shutterPhaseOptions}
                 onChange={(value) => batchUpdateMotionBlur({ phase: value as RotoMotionBlurPhase })}
+                className="w-full"
               />
-            </div>
+            </SettingRow>
             <div className="flex items-center gap-1.5">
               {samplesMixed && <MixedBadge />}
               <div className="flex-1">

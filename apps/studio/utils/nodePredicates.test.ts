@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { NodeType, type AnyNode } from '@blackboard/types';
 
 import {
@@ -7,7 +7,6 @@ import {
   isStackedExportAdjustmentNode,
   hasStackedFlag,
   isNodeStacked,
-  isLoopingTimelineNode,
   participatesInImplicitPipeline,
   usesImplicitPipelineInput,
 } from '@/utils/nodePredicates';
@@ -53,7 +52,7 @@ describe('isExportAdjustmentType', () => {
   it('returns true for export adjustment types', () => {
     expect(isExportAdjustmentType(NodeType.GRADE)).toBe(true);
     expect(isExportAdjustmentType(NodeType.BLUR)).toBe(true);
-    expect(isExportAdjustmentType(NodeType.CHROMA_KEY)).toBe(true);
+    expect(isExportAdjustmentType(NodeType.KEYER)).toBe(true);
     expect(isExportAdjustmentType(NodeType.PAINT)).toBe(true);
     expect(isExportAdjustmentType(NodeType.ROTO)).toBe(true);
   });
@@ -133,45 +132,5 @@ describe('isNodeStacked', () => {
 
     expect(isNodeStacked(stackedNode)).toBe(true);
     expect(isNodeStacked(unstackedNode)).toBe(false);
-  });
-});
-
-describe('isLoopingTimelineNode', () => {
-  it('returns true for video with loop', () => {
-    const node = {
-      id: '1',
-      type: NodeType.MEDIA_SOURCE,
-      name: 'v',
-      enabled: true,
-      mediaKind: 'video',
-      src: '',
-      loop: true,
-    };
-    expect(isLoopingTimelineNode(node as AnyNode)).toBe(true);
-  });
-
-  it('returns false for video without loop', () => {
-    const node = {
-      id: '1',
-      type: NodeType.MEDIA_SOURCE,
-      name: 'v',
-      enabled: true,
-      mediaKind: 'video',
-      src: '',
-      loop: false,
-    };
-    expect(isLoopingTimelineNode(node as AnyNode)).toBe(false);
-  });
-
-  it('returns false for non-video/sequence types', () => {
-    const node = {
-      id: '1',
-      type: NodeType.MEDIA_SOURCE,
-      name: 'i',
-      enabled: true,
-      mediaKind: 'image',
-      src: '',
-    };
-    expect(isLoopingTimelineNode(node as AnyNode)).toBe(false);
   });
 });

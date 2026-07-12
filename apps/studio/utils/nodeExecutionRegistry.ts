@@ -1,9 +1,12 @@
-type NodeExecutionSource = 'nodeAction' | 'properties' | 'viewportTool';
+type NodeExecutionSource = 'nodeAction' | 'properties' | 'viewportTool' | 'chat';
 
 export interface NodeExecutionContext {
   source?: NodeExecutionSource;
   runCount?: number;
   regionId?: string;
+  workflowId?: string;
+  controlValueOverrides?: Record<string, string | number | boolean>;
+  generationGroupId?: string;
 }
 
 export type NodeExecutionHandler = (context?: NodeExecutionContext) => void | Promise<void>;

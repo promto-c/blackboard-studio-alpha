@@ -27,7 +27,10 @@ export const useViewportRenderer = (
         antialias: false,
         depth: false,
         stencil: false,
-        pixelRatio: window.devicePixelRatio,
+        // The viewport pipeline renders at an explicit scene or viewport
+        // resolution. Applying devicePixelRatio again can turn a 4K compare
+        // surface into an 8K drawing buffer and multiply preserved-buffer RAM.
+        pixelRatio: 1,
       });
     } catch (error) {
       const message =

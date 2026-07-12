@@ -4,10 +4,11 @@ import { Badge } from '@blackboard/ui';
 import { GALLERY_THUMBNAIL_MAX_DIMENSION, useAssetPreview } from '@/hooks/useAssetPreviewUrl';
 import { useViewportProximity } from '@/hooks/useNearViewport';
 import { markAssetPreviewMilestone } from '@/services/assetPreview';
+import { createInAppMediaDragPayload, writeInAppMediaDrag } from '@/utils/inAppMediaDrag';
 import * as Icons from '@blackboard/icons';
 
 export type { GalleryEntry };
-export type GallerySelection = Map<string, GalleryEntry>;
+export type { GallerySelection } from './gallerySelection';
 
 export {
   makeProjectTag,
@@ -30,18 +31,18 @@ export const formatGalleryTime = (timestamp: number): string =>
 export function GalleryCard({
   entry,
   onLoadParams,
+  paramsTargetName,
   selected,
   selectable,
   onCardClick,
-  onToggleSelected,
   loadingParams = false,
 }: {
   entry: GalleryEntry;
   onLoadParams?: () => void;
+  paramsTargetName?: string;
   selected: boolean;
   selectable: boolean;
   onCardClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
-  onToggleSelected: (event: React.MouseEvent<HTMLButtonElement>) => void;
   loadingParams?: boolean;
 }) {
   const cardRef = React.useRef<HTMLDivElement>(null);
@@ -93,24 +94,59 @@ export function GalleryCard({
   const dimensions = entry.width && entry.height ? `${entry.width} x ${entry.height}` : null;
   const canLoadParams =
     entry.source === 'Comfy' && !!entry.assetId && !entry.deletedAt && !isModel3D;
+  const dragPayload = React.useMemo(
+    () =>
+      entry.deletedAt
+        ? null
+        : createInAppMediaDragPayload({
+            assetId: entry.assetId,
+            mediaKind: entry.mediaKind ?? 'image',
+            label: entry.label || entry.nodeName,
+            width: entry.width,
+            height: entry.height,
+            duration: entry.duration,
+            fps: entry.fps,
+            frames: entry.frames,
+            colorSpace: entry.colorSpace,
+            mediaColorManagement: entry.mediaColorManagement,
+            videoColorMetadata: entry.videoColorMetadata,
+            scene3dAsset: entry.scene3dAsset,
+          }),
+    [entry],
+  );
 
   return (
     <div
       ref={cardRef}
+      draggable={!!dragPayload}
+      onDragStart={(event) => {
+        if (!dragPayload) {
+          event.preventDefault();
+          return;
+        }
+        writeInAppMediaDrag(event.dataTransfer, dragPayload);
+      }}
       className={`group overflow-hidden rounded-lg border bg-gray-950/60 text-left transition ${
         selected
-          ? 'border-rose-300/70 ring-1 ring-rose-300/40'
+          ? 'border-primary-300/70 bg-primary-300/[0.06] ring-1 ring-primary-300/35'
           : entry.deletedAt
             ? 'border-rose-300/20 opacity-60'
             : 'border-white/10 hover:border-white/25 hover:bg-white/[0.04]'
-      }`}
+      } ${dragPayload ? 'cursor-grab active:cursor-grabbing' : ''}`}
       title={
         isModel3D
           ? `Open ${entry.label || entry.scene3dAsset?.fileName || '3D output'} in Scene 3D`
           : entry.detail || entry.prompt || entry.label || entry.nodeName
       }
     >
-      <button type="button" onClick={onCardClick} className="block w-full text-left">
+      <button
+        type="button"
+        onClick={onCardClick}
+        aria-pressed={selected}
+        className={`block w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-300/45 ${
+          dragPayload ? 'cursor-grab active:cursor-grabbing' : ''
+        }`}
+      >
         <div className="relative aspect-square bg-gray-800">
           {isModel3D ? (
             <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-cyan-950/70 via-gray-900 to-gray-950 text-cyan-200">
@@ -189,8 +225,8 @@ export function GalleryCard({
             <span
               className={`absolute bottom-1.5 right-1.5 flex h-5 w-5 items-center justify-center rounded border ${
                 selected
-                  ? 'border-rose-200 bg-rose-300 text-gray-950'
-                  : 'border-white/20 bg-black/60 text-transparent group-hover:text-gray-300'
+                  ? 'border-primary-100 bg-primary-300 text-gray-950 shadow-sm shadow-black/30'
+                  : 'border-white/20 bg-black/60 text-transparent opacity-0 transition-opacity group-hover:opacity-100 group-hover:text-gray-300'
               }`}
             >
               <Icons.Check className="h-3 w-3" />
@@ -212,31 +248,22 @@ export function GalleryCard({
           {dimensions ? <p className="font-mono text-[10px] text-gray-600">{dimensions}</p> : null}
         </div>
       </button>
-      {selectable || canLoadParams ? (
+      {canLoadParams ? (
         <div className="flex border-t border-white/10">
-          {canLoadParams ? (
-            <button
-              type="button"
-              onClick={onLoadParams}
-              disabled={loadingParams}
-              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 px-2 py-1 text-[11px] font-medium text-primary-100/70 transition hover:bg-primary-300/10 hover:text-primary-50 disabled:cursor-wait disabled:opacity-60"
-              title="Load workflow params from image metadata"
-            >
-              <Icons.Cog className={`h-3.5 w-3.5 ${loadingParams ? 'animate-spin' : ''}`} />
-              <span className="truncate">{loadingParams ? 'Loading' : 'Params'}</span>
-            </button>
-          ) : null}
-          {selectable ? (
-            <button
-              type="button"
-              onClick={onToggleSelected}
-              className={`min-w-0 flex-1 px-2 py-1 text-[11px] font-medium text-gray-400 transition hover:bg-white/[0.04] hover:text-gray-100 ${
-                canLoadParams ? 'border-l border-white/10' : ''
-              }`}
-            >
-              {selected ? 'Selected' : 'Select'}
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={onLoadParams}
+            disabled={loadingParams || !onLoadParams}
+            className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 px-2 py-1 text-[11px] font-medium text-primary-100/70 transition hover:bg-primary-300/10 hover:text-primary-50 disabled:cursor-wait disabled:opacity-60"
+            title={
+              paramsTargetName
+                ? `Load workflow params into ${paramsTargetName}`
+                : 'Select a Comfy node to load these workflow params'
+            }
+          >
+            <Icons.Cog className={`h-3.5 w-3.5 ${loadingParams ? 'animate-spin' : ''}`} />
+            <span className="truncate">{loadingParams ? 'Loading' : 'Params'}</span>
+          </button>
         </div>
       ) : null}
     </div>

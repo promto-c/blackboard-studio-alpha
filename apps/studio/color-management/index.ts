@@ -140,6 +140,9 @@ export type {
   ColorRoleInfo,
   ColorSpaceInfo,
   DisplayViewInfo,
+  OcioFileTransformFormatInfo,
+  OcioLookInfo,
+  OcioNamedTransformInfo,
   ResolvedOcioFileRule,
   ResolvedProjectColorManagement,
 } from './types';

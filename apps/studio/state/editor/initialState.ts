@@ -138,6 +138,17 @@ export const getInitialState = () => ({
     label: string;
     createdAt: number;
   },
+  compareView: {
+    isActive: false,
+    slotA: null as ViewerSlot | null,
+    slotB: null as ViewerSlot | null,
+    mode: 'wipe' as 'wipe' | 'split',
+    dividerPosition: 0.5,
+    wipe: {
+      orientation: 'vertical' as 'vertical' | 'horizontal',
+      reference: 'canvas' as 'canvas' | 'viewport' | 'cursor',
+    },
+  },
   nodes: [] as AnyNode[],
   backgroundJobs: loadPersistedBackgroundJobs() as BackgroundJob[],
   galleryUpdatedAt: 0 as number,

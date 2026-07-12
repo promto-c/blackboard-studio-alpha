@@ -223,6 +223,7 @@ export const createNewProjectService = async (
       width,
       height,
       duration,
+      frameCount: Math.max(1, Math.ceil(duration * fps)),
       videoColorMetadata: color,
       colorSpace: getMediaSourceColorSpace(mediaColorManagement),
       mediaColorManagement,

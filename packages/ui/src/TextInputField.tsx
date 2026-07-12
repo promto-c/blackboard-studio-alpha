@@ -1,5 +1,6 @@
 import React from 'react';
 import ResetIconButton from './ResetIconButton';
+import TextInput from './TextInput';
 
 export interface TextInputFieldProps extends Omit<
   React.InputHTMLAttributes<HTMLInputElement>,
@@ -13,7 +14,6 @@ export interface TextInputFieldProps extends Omit<
   resetLabel?: string;
   resetTooltip?: string;
   containerClassName?: string;
-  inputClassName?: string;
 }
 
 const TextInputField = React.forwardRef<HTMLInputElement, TextInputFieldProps>(
@@ -27,7 +27,6 @@ const TextInputField = React.forwardRef<HTMLInputElement, TextInputFieldProps>(
       resetLabel = 'Reset',
       resetTooltip,
       containerClassName,
-      inputClassName,
       id,
       type = 'text',
       ...props
@@ -70,20 +69,14 @@ const TextInputField = React.forwardRef<HTMLInputElement, TextInputFieldProps>(
             />
           )}
         </div>
-        <input
+        <TextInput
           {...props}
           ref={ref}
           id={inputId}
           type={type}
           value={value}
           aria-describedby={hasDescription ? descriptionId : undefined}
-          onChange={(event) => onValueChange(event.currentTarget.value)}
-          className={[
-            'bb-control-input w-full min-w-0 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-100 outline-none transition focus:border-primary-400/70 focus:ring-2 focus:ring-primary-400/20',
-            inputClassName,
-          ]
-            .filter(Boolean)
-            .join(' ')}
+          onValueChange={onValueChange}
         />
       </div>
     );

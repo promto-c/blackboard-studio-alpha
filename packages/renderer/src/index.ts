@@ -18,6 +18,9 @@ export type {
   RendererOcioGpuTexture,
   RendererOcioGpuUniform,
   RendererOcioShaderInfo,
+  RendererOcioTransformContext,
+  RendererOcioTransformDescriptor,
+  RendererOcioTransformDirection,
 } from './types';
 
 // GLSL shaders and utilities

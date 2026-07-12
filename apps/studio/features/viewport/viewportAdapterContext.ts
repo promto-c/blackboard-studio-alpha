@@ -2,6 +2,7 @@ import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import type {
   AnyNode,
   PaintBrushSettings,
+  ProjectColorManagement,
   RotoPointRef,
   RotoPath,
   RotoRefinement,
@@ -28,6 +29,7 @@ export interface ViewportAdapterContext {
   selectedNodeId: string | null;
   nodes: AnyNode[];
   sceneNode: SceneNode | undefined;
+  projectColorManagement: ProjectColorManagement;
   zoom: number;
   visualFrame: number;
   activeViewportTool: string | null;
@@ -52,6 +54,7 @@ export interface ViewportAdapterContext {
     nativeHeight: number;
   } | null;
   viewportRef: React.RefObject<HTMLDivElement | null>;
+  /** Converts viewport pixels to centered scene coordinates with Y increasing downward. */
   viewportToSceneCentered: (pos: { x: number; y: number }) => { x: number; y: number };
 
   // ── Actions ──────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { type AnyUniform, UniformUIType } from '@blackboard/types';
-import { CollapsibleSection, ColorPicker, ToggleSwitch } from '@blackboard/ui';
-import { Slider, SegmentedControl } from '@/components';
+import { CollapsibleSection, ColorPicker, NumberInput, Slider, ToggleSwitch } from '@blackboard/ui';
+import { SegmentedControl } from '@/components';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
 
 const getStepPrecision = (step: number): number => {
@@ -175,19 +175,11 @@ export function UniformRenderer({
         return (
           <div key={name} className="space-y-1">
             <label className="text-xs font-medium text-gray-400">{uniform.label}</label>
-            <input
-              type="number"
+            <NumberInput
               aria-label={uniform.label}
               value={uniform.value as number}
               step={uniform.step}
-              onChange={(event) => {
-                if (event.target.value === '') return;
-                const numericValue = Number(event.target.value);
-                if (Number.isFinite(numericValue)) {
-                  handleStaticChange(name, numericValue);
-                }
-              }}
-              className="block w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-100 outline-none transition focus:border-cyan-400/70 focus:ring-2 focus:ring-cyan-400/20"
+              onValueChange={(numericValue) => handleStaticChange(name, numericValue)}
             />
           </div>
         );

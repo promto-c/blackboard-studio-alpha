@@ -23,6 +23,7 @@ export type ShaderUniformMap = Record<string, { value: unknown }>;
 
 export type RenderMode =
   | 'shader'
+  | 'ocio'
   | 'multipass'
   | 'mask'
   | 'warp'
@@ -175,6 +176,8 @@ export interface MediaCacheContext {
  */
 export interface MediaDescriptor {
   getAssetIds: (node: unknown) => string[];
+  /** Resolve a timeline frame to a source frame, or null for transparent black. */
+  resolveFrame?: (node: unknown, frame: number) => number | null;
   checkFrameReady: (node: unknown, frame: number, caches: MediaCacheContext) => boolean;
   getMediaTextureKey?: (node: unknown, frame: number) => string;
   getColorSpace?: (node: unknown) => string | undefined;
@@ -191,7 +194,6 @@ export interface NodeFlags {
   isSource?: boolean;
   isRenderable?: boolean;
   isMediaNode?: boolean;
-  isLooping?: boolean;
   isVideoFile?: boolean;
   isDraggable?: boolean;
   isSceneLike?: boolean;
@@ -257,6 +259,10 @@ export interface NodeDefinition {
   category: 'Image' | 'Spatial' | 'Adjustment' | 'Effect' | 'Utility';
   renderMode: RenderMode;
   processingDomain: ColorProcessingDomain | ((node: unknown) => ColorProcessingDomain);
+  /** Domain accepted by the implicit primary `pipe` input when it differs from the output. */
+  primaryInputDomain?: ColorProcessingDomain | ((node: unknown) => ColorProcessingDomain);
+  /** `reinterpret` permits color-domain mismatches at an explicit conversion boundary. */
+  primaryInputDomainPolicy?: 'strict' | 'reinterpret';
 
   IconComponent: React.ComponentType<{ className?: string }>;
   ToolComponent?: React.ComponentType;
@@ -278,7 +284,7 @@ export interface NodeDefinition {
   sceneSize?: RendererSceneSizeBehavior;
   getGeneratedColor?: GeneratedColorResolver<unknown, RenderContext>;
 
-  /** Optional secondary input ports this node declares. */
+  /** Optional secondary input ports. The primary `pipe` port is reserved and implicit. */
   inputPorts?: InputPortDescriptors;
 
   /** Viewport interaction handler for mouse events. */

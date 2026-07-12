@@ -53,6 +53,8 @@ interface UseViewportRenderLoopParams {
   alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
   hasRenderableNodes: boolean;
   isRenderReady: boolean;
+  /** Capture the display-referred output for a later presentation pass. */
+  captureDisplayOutput?: boolean;
   mediaUpdateTrigger: number;
   threeStuff: ThreeStuff;
   textureCacheRef: RefObject<Pick<TextureCache, 'get'>>;
@@ -78,6 +80,8 @@ interface UseViewportRenderLoopParams {
 interface UseViewportRenderLoopResult {
   /** A ref to the final composite render target (for pixel reading). */
   finalCompBufferRef: RefObject<THREE.WebGLRenderTarget | null>;
+  /** Display-referred output captured for compare-mode compositing. */
+  displayOutputBufferRef: RefObject<THREE.WebGLRenderTarget | null>;
 }
 
 const arePaintTexturesReadyForFrame = (
@@ -140,6 +144,7 @@ export function useViewportRenderLoop({
   alphaOverlayStyle,
   hasRenderableNodes,
   isRenderReady,
+  captureDisplayOutput = false,
   mediaUpdateTrigger,
   threeStuff,
   textureCacheRef,
@@ -153,6 +158,7 @@ export function useViewportRenderLoop({
   setProjectThumbnail,
 }: UseViewportRenderLoopParams): UseViewportRenderLoopResult {
   const finalCompBufferRef = useRef<THREE.WebGLRenderTarget | null>(null);
+  const displayOutputBufferRef = useRef<THREE.WebGLRenderTarget | null>(null);
   const thumbnailCaptureIdRef = useRef(0);
 
   // Track previous render inputs so the GPU pipeline can be skipped when the
@@ -168,12 +174,29 @@ export function useViewportRenderLoop({
     sceneNode: typeof sceneNode;
     mediaUpdateTrigger: number;
     hasRenderableNodes: boolean;
+    captureDisplayOutput: boolean;
     rendererSurfaceWidth: number;
     rendererSurfaceHeight: number;
   } | null>(null);
 
   // --- Main GPU render ---
   useLayoutEffect(() => {
+    const releaseCapturedDisplayOutput = () => {
+      if (!displayOutputBufferRef.current) return;
+      const capturedTarget = displayOutputBufferRef.current;
+      for (const [key, target] of threeStuff.utilityTargets) {
+        if (target !== capturedTarget) continue;
+        threeStuff.utilityTargets.delete(key);
+        target.dispose();
+        break;
+      }
+      displayOutputBufferRef.current = null;
+    };
+
+    if (!captureDisplayOutput) {
+      releaseCapturedDisplayOutput();
+    }
+
     // Keep the last completed drawing buffer visible while the next viewer
     // route or timeline frame is still preparing its resources.
     if (!isRenderReady) {
@@ -183,6 +206,7 @@ export function useViewportRenderLoop({
     if (!gl || !sceneNode || !threeStuff.quad || !hasRenderableNodes) {
       finalCompBufferRef.current = null;
       prevRenderInputsRef.current = null;
+      releaseCapturedDisplayOutput();
       if (gl && canvasRef.current) {
         gl.setRenderTarget(null);
         gl.clear();
@@ -204,6 +228,7 @@ export function useViewportRenderLoop({
       prev.sceneNode === sceneNode &&
       prev.mediaUpdateTrigger === mediaUpdateTrigger &&
       prev.hasRenderableNodes === hasRenderableNodes &&
+      prev.captureDisplayOutput === captureDisplayOutput &&
       prev.rendererSurfaceWidth === rendererSurfaceSize.width &&
       prev.rendererSurfaceHeight === rendererSurfaceSize.height &&
       (prev.nodes === nodes || freezeImageWhileEditing)
@@ -236,6 +261,8 @@ export function useViewportRenderLoop({
       projectColorManagement,
       outputDomain,
       alphaOverlayStyle,
+      captureDisplayOutput,
+      presentToCanvas: !captureDisplayOutput,
       getMediaTexture: (node, frame) => {
         const desc = getMediaDescriptor(node.type);
         const key = desc?.getMediaTextureKey?.(node as AnyNode, frame);
@@ -284,6 +311,7 @@ export function useViewportRenderLoop({
 
     threeStuff.renderTargets = result.renderTargets;
     finalCompBufferRef.current = result.finalCompositeTarget;
+    displayOutputBufferRef.current = result.displayOutputTarget;
     prevRenderInputsRef.current = {
       nodes,
       visualFrame,
@@ -295,6 +323,7 @@ export function useViewportRenderLoop({
       sceneNode,
       mediaUpdateTrigger,
       hasRenderableNodes,
+      captureDisplayOutput,
       rendererSurfaceWidth: rendererSurfaceSize.width,
       rendererSurfaceHeight: rendererSurfaceSize.height,
     };
@@ -315,6 +344,7 @@ export function useViewportRenderLoop({
     alphaOverlayStyle,
     hasRenderableNodes,
     isRenderReady,
+    captureDisplayOutput,
     visualFrame,
     freezeImageWhileEditing,
     signalFrameRendered,
@@ -375,5 +405,5 @@ export function useViewportRenderLoop({
     isRenderReady,
   ]);
 
-  return { finalCompBufferRef };
+  return { finalCompBufferRef, displayOutputBufferRef };
 }

@@ -566,6 +566,18 @@ describe('studio hotkey effect bindings', () => {
     expect(shouldPreventNativeDragOrSelection(button, root)).toBe(true);
   });
 
+  it('allows native drag from explicitly draggable controls and their children', () => {
+    const root = document.createElement('div');
+    const card = document.createElement('div');
+    const thumbnail = document.createElement('img');
+    card.draggable = true;
+    card.appendChild(thumbnail);
+    root.appendChild(card);
+
+    expect(shouldPreventNativeDragOrSelection(card, root)).toBe(false);
+    expect(shouldPreventNativeDragOrSelection(thumbnail, root)).toBe(false);
+  });
+
   it('prevents native drag and selection outside text entry and scoped text targets', () => {
     const root = document.createElement('div');
     const target = document.createElement('div');

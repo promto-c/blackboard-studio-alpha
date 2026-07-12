@@ -1,8 +1,4 @@
-// central barrel for app components
-// re-export UI helpers and local components so code can import from '@/components'
-
-// app-specific re-exports
-export { Slider, type SliderProps } from './Slider';
+// Studio-specific components. Shared primitives are imported from their packages directly.
 export {
   PreferenceBentoCard,
   PreferenceBentoControl,
@@ -112,8 +108,11 @@ export {
   type SegmentedControlProps,
   type SegmentOption,
 } from './SegmentedControl';
+export { SplitButton, type SplitButtonProps } from './SplitButton';
+export { CheckboxIndicator, type CheckboxIndicatorProps } from './CheckboxIndicator';
 export { ShaderCodeButton } from './ShaderCodeButton';
 export { SettingRow } from './SettingRow';
+export { ToggleSettingRow, type ToggleSettingRowProps } from './ToggleSettingRow';
 export { UniformRenderer, type UniformRendererProps } from './UniformRenderer';
 export { ToolButton } from './ToolButton';
 export { ViewerSlotBadges } from './ViewerSlotBadges';

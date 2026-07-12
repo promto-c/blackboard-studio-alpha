@@ -35,6 +35,11 @@ const COMFY_COLOR_SPACE_ROLE_ALIASES: Record<string, string> = {
   data: 'data',
   raw: 'data',
 };
+const COMFY_EXR_OUTPUT_COLOR_SPACES: Record<string, string> = {
+  srgb: 'Linear Rec.709 (sRGB)',
+  linear: 'Linear Rec.709 (sRGB)',
+  hdr: 'Linear Rec.2020',
+};
 
 const getPromptNodeInputs = (
   prompt: Record<string, unknown> | undefined,
@@ -68,19 +73,34 @@ const getComfyDeclaredColorSpace = (inputs: Record<string, unknown> | null): str
   return undefined;
 };
 
-const resolveComfyColorSpace = (value: string | undefined): string | undefined => {
-  if (!value) return undefined;
+const isOpenExrOutput = (outputFile: ComfyOutputFile): boolean =>
+  outputFile.filename.trim().toLowerCase().endsWith('.exr');
+
+const resolveConfiguredColorSpace = (value: string): string | undefined => {
   try {
     return colorManagementService.resolveConfiguredColorSpaceName(value);
   } catch {
-    const alias = COMFY_COLOR_SPACE_ROLE_ALIASES[value.trim().toLowerCase()];
-    if (!alias) return undefined;
-    try {
-      return colorManagementService.resolveConfiguredColorSpaceName(alias);
-    } catch {
-      return undefined;
-    }
+    return undefined;
   }
+};
+
+const resolveComfyColorSpace = (
+  value: string | undefined,
+  outputFile: ComfyOutputFile,
+): string | undefined => {
+  if (!value) return undefined;
+
+  const normalizedValue = value.trim().toLowerCase();
+  if (isOpenExrOutput(outputFile)) {
+    const exrOutputColorSpace = COMFY_EXR_OUTPUT_COLOR_SPACES[normalizedValue];
+    if (exrOutputColorSpace) return resolveConfiguredColorSpace(exrOutputColorSpace);
+  }
+
+  const configuredColorSpace = resolveConfiguredColorSpace(value);
+  if (configuredColorSpace) return configuredColorSpace;
+
+  const alias = COMFY_COLOR_SPACE_ROLE_ALIASES[normalizedValue];
+  return alias ? resolveConfiguredColorSpace(alias) : undefined;
 };
 
 export const getComfyOutputColorSpace = ({
@@ -96,6 +116,7 @@ export const getComfyOutputColorSpace = ({
   const workflowInputs = getPromptNodeInputs(workflow?.prompt, outputFile.nodeId);
   return resolveComfyColorSpace(
     getComfyDeclaredColorSpace(submittedInputs) ?? getComfyDeclaredColorSpace(workflowInputs),
+    outputFile,
   );
 };
 
@@ -132,6 +153,7 @@ export const createGeneratedOutputsFromComfyFiles = async ({
   workflow,
   promptId,
   promptSummary,
+  generationGroupId,
   submittedPrompt,
   signal,
 }: {
@@ -140,6 +162,7 @@ export const createGeneratedOutputsFromComfyFiles = async ({
   workflow: ComfyWorkflow | null;
   promptId: string;
   promptSummary?: string;
+  generationGroupId?: string;
   submittedPrompt?: Record<string, unknown>;
   signal?: AbortSignal;
 }): Promise<GeneratedOutput[]> => {
@@ -190,6 +213,7 @@ export const createGeneratedOutputsFromComfyFiles = async ({
             label,
             prompt: promptSummary,
             promptId,
+            generationGroupId,
             workflowId: workflow?.id,
             workflowName: workflow?.name,
           } satisfies GeneratedOutput,
@@ -242,6 +266,7 @@ export const createGeneratedOutputsFromComfyFiles = async ({
             label,
             prompt: promptSummary,
             promptId,
+            generationGroupId,
             workflowId: workflow?.id,
             workflowName: workflow?.name,
           } satisfies GeneratedOutput,
@@ -264,6 +289,7 @@ export const createGeneratedOutputsFromComfyFiles = async ({
           label,
           prompt: promptSummary,
           promptId,
+          generationGroupId,
           workflowId: workflow?.id,
           workflowName: workflow?.name,
         } satisfies GeneratedOutput,

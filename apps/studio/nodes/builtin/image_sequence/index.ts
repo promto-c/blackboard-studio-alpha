@@ -11,6 +11,7 @@ import {
   getMediaSourceColorSpace,
   isDataMediaColorManagement,
 } from '@/color-management';
+import { resolveTemporalSourceFrame } from '../../sourceFrameRange';
 
 export const imageSequenceNode: NodeDefinition = {
   type: NodeType.IMAGE_SEQUENCE,
@@ -21,10 +22,7 @@ export const imageSequenceNode: NodeDefinition = {
   IconComponent: Icons.FolderOpen,
   ToolComponent: ImageSequenceToolButton,
   AdjustmentComponent: ImageSequenceAdjustments,
-  flags: {
-    ...sourceMediaNodeFlags,
-    isLooping: true,
-  },
+  flags: sourceMediaNodeFlags,
   animation: mediaTransformAnimation,
   getInitialNodeProps: (): Omit<ImageSequenceNode, 'id' | 'name' | 'enabled' | 'type'> => ({
     frames: [],
@@ -39,27 +37,28 @@ export const imageSequenceNode: NodeDefinition = {
     useOutputSizeAsScene: false,
     fps: 30,
     startFrame: 0,
-    loop: true,
+    beforeRangeBehavior: 'black',
+    afterRangeBehavior: 'black',
   }),
   mediaDescriptor: {
     getAssetIds: (node) => {
       const imageSeq = node as ImageSequenceNode;
       return imageSeq.frames ? imageSeq.frames.filter(Boolean) : [];
     },
+    resolveFrame: (node, frame) => resolveTemporalSourceFrame(node as ImageSequenceNode, frame),
     checkFrameReady: (node, frame, caches) => {
       const seq = node as ImageSequenceNode;
       if (!seq.frames || seq.frames.length === 0) return true;
-      const idx = Math.floor(frame) % seq.frames.length;
-      const safeIdx = (idx + seq.frames.length) % seq.frames.length;
-      const assetId = seq.frames[safeIdx];
+      const index = resolveTemporalSourceFrame(seq, frame);
+      if (index === null) return true;
+      const assetId = seq.frames[index];
       return !assetId || caches.imageCache.has(assetId);
     },
     getMediaTextureKey: (node, frame) => {
       const seq = node as ImageSequenceNode;
       if (!seq.frames || seq.frames.length === 0) return '';
-      const idx = Math.floor(frame!) % seq.frames.length;
-      const safeIdx = (idx + seq.frames.length) % seq.frames.length;
-      return seq.frames[safeIdx] || '';
+      const index = resolveTemporalSourceFrame(seq, frame);
+      return index === null ? '' : seq.frames[index] || '';
     },
     getColorSpace: (node) => {
       const sequenceNode = node as ImageSequenceNode;

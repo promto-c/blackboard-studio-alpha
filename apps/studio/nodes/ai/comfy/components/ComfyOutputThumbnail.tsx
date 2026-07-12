@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type { GeneratedOutput } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
 import { useAssetPreview } from '@/hooks/useAssetPreviewUrl';
+import { createInAppMediaDragPayload, writeInAppMediaDrag } from '@/utils/inAppMediaDrag';
 
 export function ComfyOutputThumbnail({
   output,
@@ -36,16 +37,43 @@ export function ComfyOutputThumbnail({
     maxDimension: 320,
     priority: 'visible-thumbnail',
   });
+  const dragPayload = useMemo(
+    () =>
+      createInAppMediaDragPayload({
+        assetId: output.src,
+        mediaKind: output.mediaKind ?? 'image',
+        label: output.label,
+        width: output.width,
+        height: output.height,
+        duration: output.duration,
+        fps: output.fps,
+        frames: output.frames,
+        colorSpace: output.colorSpace,
+        mediaColorManagement: output.mediaColorManagement,
+        videoColorMetadata: output.videoColorMetadata,
+        scene3dAsset: output.scene3dAsset,
+        useOutputSizeAsScene: output.useOutputSizeAsScene,
+      }),
+    [output],
+  );
 
   return (
     <button
       type="button"
+      draggable={!!dragPayload}
+      onDragStart={(event) => {
+        if (!dragPayload) {
+          event.preventDefault();
+          return;
+        }
+        writeInAppMediaDrag(event.dataTransfer, dragPayload);
+      }}
       onClick={onClick}
       className={`relative h-14 w-14 shrink-0 overflow-hidden rounded-md border bg-gray-800 transition ${
         active
           ? 'border-primary-300 ring-1 ring-primary-300/50'
           : 'border-white/10 hover:border-white/30'
-      }`}
+      } ${dragPayload ? 'cursor-grab active:cursor-grabbing' : ''}`}
       title={
         isModel3D
           ? `Open ${output.label || output.scene3dAsset?.fileName || '3D output'} in Scene 3D`

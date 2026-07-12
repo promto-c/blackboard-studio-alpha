@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  CompareChordHoldMs,
   RotoInteractivePreviewSize,
   RotoPreviewRefineDelay,
   RotoTrackingDriftTolerance,
@@ -26,7 +27,7 @@ import { colors } from '@/utils/colors';
 import { useDebugLog } from '@/utils/debugLogContext';
 import { getComfyEndpoint } from '@/utils/aiRouting';
 import { DEFAULT_COMFY_ENDPOINT } from '@/services/comfy/client';
-import { Badge, ColorPicker, ToggleSwitch } from '@blackboard/ui';
+import { Badge, ColorPicker, Slider, ToggleSwitch } from '@blackboard/ui';
 import {
   ColorManagementSettingsEditor,
   PreferenceBentoCard,
@@ -35,7 +36,6 @@ import {
   PreferenceBentoResetButton,
   SegmentedControl,
   SettingsPanelFrame,
-  Slider,
 } from '@/components';
 import ViewportBackground from '@/components/ViewportBackground';
 import { normalizeComfyEndpoint } from '@/services/comfy/client';
@@ -305,6 +305,7 @@ function PreferencesView({
     thumbnailMode,
     uiStyle,
     codeEditorWordWrap,
+    compareChordHoldMs,
     playbackMode,
     undoHistoryLimit,
     reopenHistoryLimit,
@@ -909,22 +910,11 @@ function PreferencesView({
               onConfigChange={(config) =>
                 void setColorConfig(isProjectColorScope ? 'project' : 'application', config)
               }
+              autoDetectViewportView={autoDetectViewportView}
+              onAutoDetectViewportViewChange={(checked) =>
+                setPreferences({ autoDetectViewportView: checked })
+              }
             />
-
-            <div className="rounded-lg border border-white/10 bg-black/20 p-3">
-              <SettingsRow
-                title="Auto-detect viewport view from input"
-                description="When enabled, the viewport view is automatically selected based on the first input source's color space. Rec.709 / sRGB sources use the Video (colorimetric) view. Other sources fall back to the manual preference."
-              >
-                <ToggleField
-                  checked={autoDetectViewportView}
-                  ariaLabel="Toggle auto-detect viewport view"
-                  activeLabel="Auto"
-                  inactiveLabel="Manual"
-                  onCheckedChange={(checked) => setPreferences({ autoDetectViewportView: checked })}
-                />
-              </SettingsRow>
-            </div>
           </SettingsGroup>
         );
       case 'editing':
@@ -1003,6 +993,23 @@ function PreferencesView({
                 activeLabel="Wrapped"
                 inactiveLabel="Single line"
                 onCheckedChange={(checked) => setPreferences({ codeEditorWordWrap: checked })}
+              />
+            </SettingsRow>
+
+            <SettingsRow
+              title="Compare chord hold"
+              description="How long two viewer slot keys must overlap before compare mode activates."
+              stacked
+            >
+              <Slider
+                label="Compare Chord Hold"
+                value={compareChordHoldMs}
+                min={CompareChordHoldMs.MIN}
+                max={CompareChordHoldMs.MAX}
+                step={10}
+                onChange={(value) => setPreferences({ compareChordHoldMs: value })}
+                onReset={() => setPreferences({ compareChordHoldMs: CompareChordHoldMs.DEFAULT })}
+                displayFormatter={(value) => `${Math.round(value)} ms`}
               />
             </SettingsRow>
           </SettingsGroup>

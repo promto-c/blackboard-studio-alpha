@@ -9,8 +9,8 @@ import {
   AnimatableNumber,
   NodeType,
 } from '@blackboard/types';
-import { CollapsibleSection, StyledDropdown } from '@blackboard/ui';
-import { Slider, ShaderCodeButton } from '@/components';
+import { CollapsibleSection, Slider, StyledDropdown } from '@blackboard/ui';
+import { SettingRow, ShaderCodeButton, ToggleSettingRow } from '@/components';
 import { parseUniformsFromGLSL } from '@blackboard/renderer';
 import { BOKEH_BLUR_SHADER } from '@/nodes/effects/bokeh/bokehShader';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
@@ -136,58 +136,39 @@ function BokehAdjustments({ node: anyNode }: { node: AnyNode }) {
       <div>
         <CollapsibleSection title="Depth Map Control" defaultOpen>
           <div className="space-y-4">
-            <div className="flex items-center justify-between p-2 bg-primary-900/10 border border-primary-500/30 rounded-md">
-              <div className="flex flex-col">
-                <span className="text-xs font-medium text-primary-200">Depth Preview</span>
-                <span className="text-[10px] text-gray-500">Visualize current depth settings</span>
-              </div>
-              <button
-                onClick={handleToggleDepthPreview}
-                className={`w-10 h-5 rounded-full relative transition-colors ${node.previewDepth ? 'bg-primary-600' : 'bg-gray-700'}`}
-              >
-                <div
-                  className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${node.previewDepth ? 'left-6' : 'left-1'}`}
-                />
-              </button>
-            </div>
+            <ToggleSettingRow
+              label="Depth Preview"
+              checked={node.previewDepth}
+              onCheckedChange={handleToggleDepthPreview}
+              description="Visualize current depth settings"
+            />
 
-            <div className="space-y-2">
-              <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Source
-              </label>
+            <SettingRow label="Source">
               <StyledDropdown
                 value={node.depthSource}
                 options={depthSourceOptions}
                 onChange={(val) => handleDepthSourceChange(val as DepthSource)}
+                widthClass="w-full"
               />
-            </div>
+            </SettingRow>
 
             {node.depthSource === 'node' && (
-              <div className="space-y-2 animate-[fadeIn_150ms_ease-out]">
-                <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                  Select Node
-                </label>
+              <SettingRow label="Select Node" className="animate-[fadeIn_150ms_ease-out]">
                 <StyledDropdown
                   value={depthNodeId || ''}
                   options={availableNodes}
                   onChange={handleDepthNodeChange}
+                  widthClass="w-full"
                 />
-              </div>
+              </SettingRow>
             )}
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Invert</span>
-                <button
-                  onClick={handleToggleDepthInvert}
-                  className={`w-8 h-4 rounded-full relative transition-colors ${node.depthInvert ? 'bg-primary-600' : 'bg-gray-700'}`}
-                >
-                  <div
-                    className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${node.depthInvert ? 'left-4.5' : 'left-0.5'}`}
-                  />
-                </button>
-              </div>
-            </div>
+            <ToggleSettingRow
+              label="Invert"
+              checked={node.depthInvert}
+              onCheckedChange={handleToggleDepthInvert}
+              ariaLabel="Invert depth"
+            />
 
             {u.u_depthContrast &&
               renderUniformControl('u_depthContrast', u.u_depthContrast as AnyUniform)}
@@ -222,8 +203,7 @@ function BokehAdjustments({ node: anyNode }: { node: AnyNode }) {
 
         <CollapsibleSection title="Aperture Shape">
           <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-400">Shape Type</label>
+            <SettingRow label="Shape Type">
               <StyledDropdown
                 value={
                   u.u_shapeType
@@ -232,8 +212,9 @@ function BokehAdjustments({ node: anyNode }: { node: AnyNode }) {
                 }
                 options={shapeOptions}
                 onChange={(val) => handleUniformChange('u_shapeType', val)}
+                widthClass="w-full"
               />
-            </div>
+            </SettingRow>
             {u.u_roundness && renderUniformControl('u_roundness', u.u_roundness as AnyUniform)}
             {u.u_anamorphic && renderUniformControl('u_anamorphic', u.u_anamorphic as AnyUniform)}
             {u.u_shapeType &&

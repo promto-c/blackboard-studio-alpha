@@ -1,4 +1,8 @@
-import type { RendererColorManagement, RendererOcioShaderInfo } from '@blackboard/renderer';
+import type {
+  RendererColorManagement,
+  RendererOcioShaderInfo,
+  RendererOcioTransformDescriptor,
+} from '@blackboard/renderer';
 import type {
   ColorConfigReference,
   ProjectColorManagement,
@@ -10,6 +14,7 @@ import type {
   GpuShaderInfo,
   OCIO,
   Processor,
+  TransformDescriptor,
   ViewInfo,
 } from '@bb-studio/ocio';
 import type {
@@ -59,7 +64,7 @@ const createOcioModuleOptions = (): Record<string, unknown> => ({
   printErr: createFilteredOcioLogSink((message) => console.error(message)),
 });
 
-type ShaderKind = 'display' | 'colorspace';
+type ShaderKind = 'display' | 'colorspace' | 'transform';
 const MAX_RGB_TRANSFORM_CACHE_ENTRIES = 2048;
 type OcioContextVariables = Readonly<Record<string, string>>;
 
@@ -87,6 +92,9 @@ const emptySnapshot = (): ColorManagementRuntimeSnapshot => ({
   optionalRoleIssues: [],
   displays: [],
   viewsByDisplay: {},
+  looks: [],
+  namedTransforms: [],
+  fileTransformFormats: [],
   defaultViewsByDisplay: {},
   defaultDisplay: ColorManagementDefaults.DISPLAY,
   defaultView: ColorManagementDefaults.VIEW,
@@ -100,6 +108,15 @@ const hashKey = (value: string): string => {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const hashBytes = (value: Uint8Array): string => {
+  let hash = 2166136261;
+  for (const byte of value) {
+    hash ^= byte;
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
@@ -151,6 +168,7 @@ class OcioColorManagementService implements ColorManagementService {
   private shaderCache = new Map<string, RendererOcioShaderInfo | null>();
   private rgbTransformCache = new Map<string, [number, number, number]>();
   private latestFailure: string | null = null;
+  private fileTransformAssets = new Map<string, string>();
 
   public async initialize(
     configName: string = ColorManagementDefaults.CONFIG,
@@ -271,6 +289,7 @@ class OcioColorManagementService implements ColorManagementService {
     this.initializingConfigName = null;
     this.snapshot = emptySnapshot();
     this.latestFailure = null;
+    this.fileTransformAssets.clear();
   }
 
   public getRendererColorManagement(context: OcioContextVariables = {}): RendererColorManagement {
@@ -280,6 +299,7 @@ class OcioColorManagementService implements ColorManagementService {
         this.getColorSpaceShader(source, destination, contextSnapshot),
       getDisplayViewTransform: (source, display, view, look) =>
         this.getDisplayViewShader(source, display, view, look, contextSnapshot),
+      getTransform: (transforms) => this.getTransformShader(transforms, contextSnapshot),
       transformRgb: (source, destination, color) =>
         this.transformRgb(source, destination, color, contextSnapshot),
       resolveColorSpaceName: (value) => this.resolveColorSpaceName(value),
@@ -303,6 +323,7 @@ class OcioColorManagementService implements ColorManagementService {
         this.getColorSpaceShader(source, destination, contextSnapshot),
       getDisplayViewTransform: (source, display, view, look) =>
         this.getDisplayViewShader(source, display, view, look, contextSnapshot),
+      getTransform: (transforms) => this.getTransformShader(transforms, contextSnapshot),
       transformRgb: (source, destination, color) =>
         this.transformRgb(source, destination, color, contextSnapshot),
       resolveColorSpaceName: (value) => this.resolveColorSpaceName(value),
@@ -433,6 +454,34 @@ class OcioColorManagementService implements ColorManagementService {
       isData: colorSpace?.isData ?? false,
       detail: `OCIO file rule: ${match.ruleName}`,
     };
+  }
+
+  public registerFileTransformAsset(assetId: string, fileName: string, data: Uint8Array): string {
+    if (!this.ocio || !this.config) {
+      throw new Error('OpenColorIO must be initialized before registering a transform file.');
+    }
+    const resolvedAssetId = assetId.trim();
+    if (!resolvedAssetId) {
+      throw new Error('OCIO transform files require a non-empty asset ID.');
+    }
+    const existing = this.fileTransformAssets.get(resolvedAssetId);
+    if (existing) return existing;
+
+    const safeName =
+      fileName
+        .trim()
+        .replace(/[^A-Za-z0-9._-]+/g, '_')
+        .replace(/^\.+/, '') || 'transform.cube';
+    const directory = `/blackboard-transform-assets/${hashKey(resolvedAssetId)}-${hashBytes(data)}`;
+    const path = `${directory}/${safeName}`;
+    this.ocio.mkdirp(directory);
+    this.ocio.writeFile(path, data);
+    this.fileTransformAssets.set(resolvedAssetId, path);
+    return path;
+  }
+
+  public isFileTransformAssetRegistered(assetId: string): boolean {
+    return this.fileTransformAssets.has(assetId.trim());
   }
 
   public transformRgb(
@@ -593,6 +642,42 @@ class OcioColorManagementService implements ColorManagementService {
     });
   }
 
+  public getTransformShader(
+    transforms: readonly RendererOcioTransformDescriptor[],
+    context: OcioContextVariables = {},
+  ): RendererOcioShaderInfo | null {
+    if (transforms.length === 0) return null;
+
+    const resolvedTransforms: TransformDescriptor[] = transforms.map((transform) => {
+      if (transform.type !== 'file') return { ...transform } as TransformDescriptor;
+      const path = this.fileTransformAssets.get(transform.assetId);
+      if (!path) {
+        throw new Error(
+          `OCIO transform asset "${transform.assetId}" is not ready. ` +
+            'Wait for the project asset to finish loading or replace the missing file.',
+        );
+      }
+      const { assetId: _assetId, ...fileOptions } = transform;
+      return { ...fileOptions, type: 'file', src: path };
+    });
+    const contextSnapshot = normalizeContext(context);
+    const transformKey = JSON.stringify(resolvedTransforms);
+    const key = `${this.getCacheScope(contextSnapshot)}|transform:${transformKey}`;
+
+    return this.getCachedShader({
+      kind: 'transform',
+      key,
+      functionPrefix: 'OCIOTransform',
+      resourcePrefix: 'ocio_transform',
+      createProcessor: () =>
+        this.config!.createGroupTransformProcessor(resolvedTransforms, {
+          optimization: 'lossless',
+          ...(Object.keys(contextSnapshot).length > 0 ? { context: contextSnapshot } : {}),
+        }),
+      describeFailure: () => 'Failed to create OCIO transform processor',
+    });
+  }
+
   private async createExternalConfig(
     reference: Extract<ColorConfigReference, { kind: 'external' }>,
   ): Promise<Config> {
@@ -677,6 +762,11 @@ class OcioColorManagementService implements ColorManagementService {
     const viewsByDisplay = Object.fromEntries(
       displays.map((display) => [display, config.listViews(display)]),
     );
+    const looks = config.listLooks().map((look) => config.getLook(look));
+    const namedTransforms = config
+      .listNamedTransforms()
+      .map((namedTransform) => config.getNamedTransform(namedTransform));
+    const fileTransformFormats = this.ocio.listFileTransformFormats();
     const resolvedRoles = resolveRequiredColorRoles(roles, colorSpaces);
     const defaultViewsByDisplay = Object.fromEntries(
       displays.map((display) => {
@@ -714,6 +804,9 @@ class OcioColorManagementService implements ColorManagementService {
       optionalRoleIssues,
       displays,
       viewsByDisplay,
+      looks,
+      namedTransforms,
+      fileTransformFormats,
       defaultViewsByDisplay,
       defaultDisplay,
       defaultView,

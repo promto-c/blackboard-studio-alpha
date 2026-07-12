@@ -51,6 +51,7 @@ export interface BackgroundJobSource {
   batchId?: string;
   historyId?: string;
   promptId?: string;
+  generationGroupId?: string;
   comfyEndpoint?: string;
   comfyInputContext?: 'props' | 'viewportTool';
   comfyViewportRect?: { x: number; y: number; width: number; height: number };

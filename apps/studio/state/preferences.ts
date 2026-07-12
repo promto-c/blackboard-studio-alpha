@@ -135,6 +135,7 @@ export interface Preferences {
   editorSubPanelHeight: number;
   editorItemsPanelPercent: number;
   codeEditorWordWrap: boolean;
+  compareChordHoldMs: number;
   flowListDirection: 'bottom-up' | 'top-down';
   playbackMode: 'realtime' | 'every_frame';
   undoHistoryLimit: UndoHistoryLimitPreference;
@@ -344,6 +345,20 @@ const clampPrefetchWindowFrames = (value: unknown): number =>
 const clampMaxCachedFrames = (value: unknown): number =>
   clampPositiveInteger(value, MaxCachedFrames.DEFAULT, MaxCachedFrames.MIN, MaxCachedFrames.MAX);
 
+export const CompareChordHoldMs = {
+  MIN: 0,
+  MAX: 500,
+  DEFAULT: 100,
+} as const;
+
+const clampCompareChordHoldMs = (value: unknown): number =>
+  clampPositiveInteger(
+    value,
+    CompareChordHoldMs.DEFAULT,
+    CompareChordHoldMs.MIN,
+    CompareChordHoldMs.MAX,
+  );
+
 const clampAgentMaxSubagentSpawns = (value: unknown): number =>
   clampPositiveInteger(
     value,
@@ -453,6 +468,7 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
     clampEditor(v, EditorItemsPanelPercent),
   ),
   codeEditorWordWrap: boolField(false),
+  compareChordHoldMs: customField(CompareChordHoldMs.DEFAULT, clampCompareChordHoldMs),
   flowListDirection: enumField(
     'top-down' as 'bottom-up' | 'top-down',
     ['bottom-up', 'top-down'] as const,

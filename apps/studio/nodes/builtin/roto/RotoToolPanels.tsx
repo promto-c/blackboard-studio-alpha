@@ -16,10 +16,9 @@ import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useMediaSourceSelection } from '@/hooks/useMediaSourceSelection';
 import { usePreferences } from '@/state/preferencesContext';
 import { RotoTrackingDriftTolerance } from '@/state/preferences';
-import { Badge, ToggleButton } from '@blackboard/ui';
+import { Badge, Slider, ToggleButton } from '@blackboard/ui';
 import {
   MediaSourceSelect,
-  Slider,
   SegmentedControl,
   ViewportToolPanel as Panel,
   ViewportToolPanelHeader as PanelHeader,
@@ -271,6 +270,7 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
     translation: true,
     rotation: true,
     scale: true,
+    independentScale: false,
     affine: false,
     perspective: false,
   });
@@ -290,7 +290,21 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
   const handleMotionToggle = (
     field: 'translation' | 'rotation' | 'scale' | 'affine' | 'perspective',
   ) => {
-    setMotionModel((prev) => ({ ...prev, ...toggleTransformWithHierarchy(prev, field) }));
+    setMotionModel((prev) => ({
+      ...prev,
+      ...toggleTransformWithHierarchy(prev, field),
+      ...(field === 'translation' ? {} : { independentScale: false }),
+    }));
+  };
+  const toggleIndependentScale = () => {
+    setMotionModel((previous) => ({
+      ...previous,
+      independentScale: !previous.independentScale,
+      scale: true,
+      rotation: !previous.independentScale ? false : previous.rotation,
+      affine: !previous.independentScale ? false : previous.affine,
+      perspective: !previous.independentScale ? false : previous.perspective,
+    }));
   };
   const updateHybridTracking = (patch: Partial<HybridTrackingConfig>) => {
     setHybridTracking((prev) => ({ ...prev, ...patch }));
@@ -349,6 +363,7 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
     translation: motionModel.translation,
     rotation: motionModel.rotation,
     scale: motionModel.scale,
+    independentScale: motionModel.independentScale,
     affine: motionModel.affine,
     perspective: motionModel.perspective,
     deform: trackDeform,
@@ -485,7 +500,7 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
           }
         >
           <div className="space-y-1.5">
-            <div className={`grid grid-cols-3 gap-1 ${trackDeform ? 'opacity-50' : ''}`}>
+            <div className={`grid grid-cols-4 gap-1 ${trackDeform ? 'opacity-50' : ''}`}>
               <ToggleButton
                 label="Trans"
                 active={motionModel.translation}
@@ -500,6 +515,14 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
                 onClick={() => handleMotionToggle('scale')}
                 disabled={trackDeform}
                 title="Scale"
+                icon={<Icons.ArrowsPointingOut className="h-4 w-4" />}
+              />
+              <ToggleButton
+                label="X/Y"
+                active={motionModel.independentScale}
+                onClick={toggleIndependentScale}
+                disabled={trackDeform}
+                title="Independent horizontal and vertical scale"
                 icon={<Icons.ArrowsPointingOut className="h-4 w-4" />}
               />
               <ToggleButton

@@ -12,7 +12,7 @@ import type {
   RenderSettings,
   SceneNode,
 } from '@blackboard/types';
-import { CollapsibleSection, StyledDropdown, ToggleSwitch } from '@blackboard/ui';
+import { CollapsibleSection, NumberInput, Slider, StyledDropdown, TextInput } from '@blackboard/ui';
 import * as Icons from '@blackboard/icons';
 import {
   DisplayViewSelector,
@@ -20,7 +20,7 @@ import {
   InspectorLogFooter,
   SegmentedControl,
   SettingRow,
-  Slider,
+  ToggleSettingRow,
 } from '@/components';
 import { OcioColorSpaceDropdown } from '@/components/OcioColorSpaceDropdown';
 import { renderWithSharedPipeline, type RenderPipelineResult } from '@/renderer/pipeline';
@@ -425,7 +425,7 @@ const encodeFinalOutputTargetPng = async (
   return encodePngRgba(image);
 };
 
-function RenderSettingsPanel() {
+export function RenderSettingsPanel() {
   const renderSettings = useEditorSelector((s) => s.renderSettings);
   const nodes = useEditorSelector((s) => s.nodes);
   const flows = useEditorSelector((s) => s.flows);
@@ -543,10 +543,6 @@ function RenderSettingsPanel() {
     setRenderSettings({ [key]: value } as Partial<RenderSettings>);
   };
 
-  const handleFilenameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setRenderSettings({ filename: e.target.value, sequenceFilenamePattern: undefined });
-  };
-
   const updateOutputTechnicalChannel = (
     channelId: string,
     updates: Partial<OutputTechnicalChannel>,
@@ -582,10 +578,9 @@ function RenderSettingsPanel() {
 
   const handleSequenceNumberChange = (
     key: 'sequenceStartFrame' | 'sequenceEndFrame' | 'sequencePadding',
-    value: string,
+    value: number,
   ) => {
-    const parsed = Number.parseInt(value, 10);
-    if (!Number.isFinite(parsed)) return;
+    const parsed = Math.round(value);
     if (key === 'sequencePadding') {
       handleSettingChange(key, Math.max(1, Math.min(8, parsed)));
       return;
@@ -1014,12 +1009,13 @@ function RenderSettingsPanel() {
             />
 
             <SettingRow label="Filename">
-              <input
-                type="text"
+              <TextInput
                 name="filename"
                 value={renderSettings.filename}
-                onChange={handleFilenameChange}
-                className="bb-control-input block w-44 rounded-md border-0 bg-gray-700/50 px-2.5 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-700 focus:ring-offset-0 focus:ring-offset-gray-900"
+                onValueChange={(value) =>
+                  setRenderSettings({ filename: value, sequenceFilenamePattern: undefined })
+                }
+                className="font-mono"
               />
             </SettingRow>
 
@@ -1030,7 +1026,7 @@ function RenderSettingsPanel() {
                     type="button"
                     onClick={() => void chooseDirectory()}
                     disabled={!directoryPickerSupport.canUseDirectoryPicker}
-                    className="bb-control-button inline-flex w-44 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-gray-700/50 px-2.5 py-1.5 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="bb-control-button inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-white/10 bg-gray-700/50 px-2.5 py-1.5 text-xs font-medium text-gray-200 transition hover:border-white/20 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
                     title={directoryName || directoryPickerSupport.reason || 'Bind output folder'}
                   >
                     <Icons.FolderOpen className="h-3.5 w-3.5 shrink-0" />
@@ -1039,42 +1035,41 @@ function RenderSettingsPanel() {
                 </SettingRow>
 
                 <SettingRow label="Frame Range">
-                  <div className="flex w-44 items-center gap-1.5">
-                    <input
-                      type="number"
+                  <div className="flex w-full items-center gap-1.5">
+                    <NumberInput
                       value={renderSettings.sequenceStartFrame ?? 0}
-                      onChange={(event) =>
-                        handleSequenceNumberChange('sequenceStartFrame', event.target.value)
+                      onValueChange={(value) =>
+                        handleSequenceNumberChange('sequenceStartFrame', value)
                       }
+                      normalizeValue={Math.round}
                       min={0}
                       max={maxFrames}
-                      className="bb-control-input block min-w-0 flex-1 rounded-md border-0 bg-gray-700/50 px-2 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-700 focus:ring-offset-0 focus:ring-offset-gray-900"
                     />
                     <span className="shrink-0 text-gray-500">-</span>
-                    <input
-                      type="number"
+                    <NumberInput
                       value={renderSettings.sequenceEndFrame ?? maxFrames}
-                      onChange={(event) =>
-                        handleSequenceNumberChange('sequenceEndFrame', event.target.value)
+                      onValueChange={(value) =>
+                        handleSequenceNumberChange('sequenceEndFrame', value)
                       }
+                      normalizeValue={Math.round}
                       min={0}
                       max={maxFrames}
-                      className="bb-control-input block min-w-0 flex-1 rounded-md border-0 bg-gray-700/50 px-2 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-700 focus:ring-offset-0 focus:ring-offset-gray-900"
                     />
                   </div>
                 </SettingRow>
 
                 <SettingRow label="Padding">
-                  <input
-                    type="number"
-                    value={renderSettings.sequencePadding ?? DEFAULT_SEQUENCE_PADDING}
-                    onChange={(event) =>
-                      handleSequenceNumberChange('sequencePadding', event.target.value)
-                    }
-                    min={1}
-                    max={8}
-                    className="bb-control-input block w-44 rounded-md border-0 bg-gray-700/50 px-2.5 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-700 focus:ring-offset-0 focus:ring-offset-gray-900"
-                  />
+                  <div className="w-full">
+                    <NumberInput
+                      value={renderSettings.sequencePadding ?? DEFAULT_SEQUENCE_PADDING}
+                      onValueChange={(value) =>
+                        handleSequenceNumberChange('sequencePadding', value)
+                      }
+                      normalizeValue={Math.round}
+                      min={1}
+                      max={8}
+                    />
+                  </div>
                 </SettingRow>
               </>
             )}
@@ -1086,7 +1081,7 @@ function RenderSettingsPanel() {
                 onChange={(value) =>
                   handleSettingChange('format', value as RenderSettings['format'])
                 }
-                widthClass="w-44"
+                widthClass="w-full"
               />
             </SettingRow>
 
@@ -1105,7 +1100,7 @@ function RenderSettingsPanel() {
                       }),
                     );
                   }}
-                  widthClass="w-44"
+                  widthClass="w-full"
                   popoverWidthClass="w-80"
                 />
               </SettingRow>
@@ -1125,14 +1120,14 @@ function RenderSettingsPanel() {
                       String(value) as OpenExrOutputPresetId,
                     )
                   }
-                  widthClass="w-44"
+                  widthClass="w-full"
                 />
               </SettingRow>
             )}
 
             {renderSettings.format === 'image/x-exr' && renderOutputDomain.kind === 'data' && (
               <SettingRow label="EXR Channel">
-                <span className="w-44 truncate text-right font-mono text-xs text-gray-300">
+                <span className="block w-full truncate text-right font-mono text-xs text-gray-300">
                   {getTechnicalOutputChannelName(renderOutputDomain)}
                 </span>
               </SettingRow>
@@ -1156,19 +1151,13 @@ function RenderSettingsPanel() {
                     key={channel.id}
                     className="grid grid-cols-[minmax(0,1fr)_7rem_1.75rem] items-center gap-1.5"
                   >
-                    <input
+                    <TextInput
                       value={channel.name}
-                      onChange={(event) =>
-                        updateOutputTechnicalChannel(
-                          channel.id,
-                          {
-                            name: event.currentTarget.value,
-                          },
-                          false,
-                        )
+                      onValueChange={(value) =>
+                        updateOutputTechnicalChannel(channel.id, { name: value }, false)
                       }
                       aria-label="EXR channel name"
-                      className="bb-control-input min-w-0 rounded bg-gray-700/50 px-2 py-2 font-mono text-xs text-gray-200 outline-none focus:ring-1 focus:ring-primary-700"
+                      className="font-mono"
                     />
                     <StyledDropdown
                       value={channel.semantic ?? 'material_property'}
@@ -1197,25 +1186,26 @@ function RenderSettingsPanel() {
             {renderSettings.format !== 'image/x-exr' &&
               renderSettings.displayOutput.kind === 'display_view' && (
                 <div className="border-t border-white/10 pt-3">
-                  <div className="mb-2 text-xs font-medium text-gray-400">Export View</div>
-                  <DisplayViewSelector
-                    value={selectedDisplayView}
-                    onChange={(displayView) =>
-                      handleSettingChange('displayOutput', {
-                        kind: 'display_view',
-                        displayView,
-                      })
-                    }
-                    controlWidthClass="w-full"
-                    popoverWidthClass="w-80"
-                  />
+                  <SettingRow label="Export View">
+                    <DisplayViewSelector
+                      value={selectedDisplayView}
+                      onChange={(displayView) =>
+                        handleSettingChange('displayOutput', {
+                          kind: 'display_view',
+                          displayView,
+                        })
+                      }
+                      controlWidthClass="w-full"
+                      popoverWidthClass="w-80"
+                    />
+                  </SettingRow>
                 </div>
               )}
 
             {renderSettings.format !== 'image/x-exr' &&
               renderSettings.displayOutput.kind === 'direct_encoding' && (
                 <SettingRow label="Encoding">
-                  <div className="w-44">
+                  <div className="w-full">
                     <OcioColorSpaceDropdown
                       value={renderSettings.displayOutput.colorSpace}
                       onChange={(colorSpace) =>
@@ -1247,17 +1237,15 @@ function RenderSettingsPanel() {
               (renderSettings.format === 'image/png' ||
                 renderSettings.format === 'image/webp' ||
                 renderSettings.format === 'image/x-exr') && (
-                <div className="py-1">
-                  <ToggleSwitch
-                    checked={renderSettings.includeAlpha}
-                    onCheckedChange={(checked) => handleSettingChange('includeAlpha', checked)}
-                    label="Alpha Channel"
-                    description={
-                      renderSettings.includeAlpha ? 'Transparent background' : 'Solid background'
-                    }
-                    size="sm"
-                  />
-                </div>
+                <ToggleSettingRow
+                  label="Alpha Channel"
+                  checked={renderSettings.includeAlpha}
+                  onCheckedChange={(checked) => handleSettingChange('includeAlpha', checked)}
+                  description={
+                    renderSettings.includeAlpha ? 'Transparent background' : 'Solid background'
+                  }
+                  rowClassName="py-1"
+                />
               )}
           </div>
         </CollapsibleSection>
@@ -1335,9 +1323,3 @@ function RenderSettingsPanel() {
     </div>
   );
 }
-
-function OutputAdjustments() {
-  return <RenderSettingsPanel />;
-}
-
-export default OutputAdjustments;

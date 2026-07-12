@@ -1,15 +1,16 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Badge, Popover } from '@blackboard/ui';
+import { Badge, Popover, ScrollArea } from '@blackboard/ui';
 import type { ComfyWorkflow, ComfyWorkflowControl } from '@blackboard/types';
 import {
   CollapsibleSection,
   PromptTextField,
   PropertyField,
   ResetIconButton,
+  Slider,
   StyledDropdown,
-  ToggleSwitch,
+  TextInput,
 } from '@blackboard/ui';
-import { AttentionPulse, Slider } from '@/components';
+import { AttentionPulse, CheckboxIndicator, ToggleSettingRow } from '@/components';
 import { getPromptSuggestions } from '@/utils/ai';
 import type { ResolvedAiTextRoute } from '@/utils/aiRouting';
 import * as Icons from '@blackboard/icons';
@@ -424,13 +425,12 @@ export function ComfyWorkflowControlsSection({
                 {/* Search input */}
                 <div className="relative px-1">
                   <Icons.MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
-                  <input
-                    type="text"
+                  <TextInput
                     value={fieldSearchQuery}
-                    onChange={(e) => setFieldSearchQuery(e.target.value)}
+                    onValueChange={setFieldSearchQuery}
                     placeholder="Search fields..."
                     autoFocus
-                    className="w-full rounded-md border border-gray-700 bg-gray-900 py-1.5 pl-7 pr-3 text-[11px] text-gray-100 placeholder:text-gray-600 focus:border-primary-300/40 focus:outline-none focus:ring-1 focus:ring-primary-300/20"
+                    className="pl-7 pr-3"
                     onPointerDown={(e) => e.stopPropagation()}
                   />
                 </div>
@@ -445,7 +445,11 @@ export function ComfyWorkflowControlsSection({
                 </div>
 
                 {controlCandidates.length > 0 ? (
-                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                  <ScrollArea
+                    axis="y"
+                    viewportClassName="max-h-64"
+                    contentClassName="space-y-2 pr-1"
+                  >
                     {/* Available (unshown) fields */}
                     {Object.entries(groupedFilteredCandidates).length > 0 &&
                     filteredAvailableCandidates.length > 0 ? (
@@ -464,9 +468,10 @@ export function ComfyWorkflowControlsSection({
                               }}
                               className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-gray-400 transition hover:bg-primary-300/10 hover:text-gray-100"
                             >
-                              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-gray-700">
-                                <Icons.Plus className="h-2.5 w-2.5" />
-                              </span>
+                              <CheckboxIndicator
+                                checked={false}
+                                uncheckedIcon={<Icons.Plus className="h-2.5 w-2.5" />}
+                              />
                               <span className="min-w-0 flex-1 truncate">{candidate.label}</span>
                               <span className="shrink-0 font-mono text-[10px] text-gray-600">
                                 #{candidate.nodeId}
@@ -508,9 +513,7 @@ export function ComfyWorkflowControlsSection({
                                 }}
                                 className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-gray-100 transition hover:bg-red-500/10 hover:text-red-200"
                               >
-                                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-primary-300/30 bg-primary-300/10 text-primary-100">
-                                  <Icons.Check className="h-2.5 w-2.5" />
-                                </span>
+                                <CheckboxIndicator checked />
                                 <span className="min-w-0 flex-1 truncate">{control.label}</span>
                                 <Icons.EyeSlash className="h-3 w-3 shrink-0 text-gray-500" />
                               </button>
@@ -519,7 +522,7 @@ export function ComfyWorkflowControlsSection({
                         </div>
                       </>
                     )}
-                  </div>
+                  </ScrollArea>
                 ) : (
                   <div className="rounded-lg border border-dashed border-primary-300/15 bg-gray-950/60 p-3 text-xs leading-5 text-primary-100/60">
                     This workflow does not expose editable primitive fields.
@@ -697,30 +700,26 @@ export function ComfyWorkflowControlsSection({
                             }
                           />
                         ) : typeof control.defaultValue === 'boolean' ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0 flex-1">
-                              <ToggleSwitch
-                                label={control.label}
-                                description={description}
-                                checked={booleanValue}
-                                onCheckedChange={(checked) =>
-                                  onUpdateWorkflowControl(control.id, {
-                                    value: checked,
-                                  })
-                                }
-                                ariaLabel={control.label}
-                                title={booleanValue ? 'Enabled' : 'Disabled'}
-                                size="sm"
-                              />
-                            </div>
-                            <div className="flex shrink-0 items-center gap-1">
-                              {recommendedBindBadge}
-                              <ResetIconButton
-                                onClick={() => onResetWorkflowControl(control.id)}
-                                tooltip={getControlResetTooltip(control)}
-                              />
-                            </div>
-                          </div>
+                          <ToggleSettingRow
+                            label={control.label}
+                            description={description}
+                            checked={booleanValue}
+                            onCheckedChange={(checked) =>
+                              onUpdateWorkflowControl(control.id, {
+                                value: checked,
+                              })
+                            }
+                            title={booleanValue ? 'Enabled' : 'Disabled'}
+                            labelAccessory={
+                              <span className="flex shrink-0 items-center gap-1">
+                                {recommendedBindBadge}
+                                <ResetIconButton
+                                  onClick={() => onResetWorkflowControl(control.id)}
+                                  tooltip={getControlResetTooltip(control)}
+                                />
+                              </span>
+                            }
+                          />
                         ) : (
                           <ExpandableWorkflowTextControl
                             control={control}

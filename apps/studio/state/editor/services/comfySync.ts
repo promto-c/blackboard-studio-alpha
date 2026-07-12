@@ -68,12 +68,28 @@ export const mergeGeneratedOutputs = (
 
   const mergedOutputs = [...(existingOutputs ?? [])];
   const outputIndexById = new Map(mergedOutputs.map((output, index) => [output.id, index]));
+  const newOutputIds = new Set(
+    incomingOutputs
+      .filter((incomingOutput) => !outputIndexById.has(incomingOutput.id))
+      .map((incomingOutput) => incomingOutput.id),
+  );
+  const minimumExistingOrder = mergedOutputs.reduce(
+    (minimum, output, index) =>
+      Math.min(minimum, Number.isFinite(output.stackOrder) ? (output.stackOrder as number) : index),
+    0,
+  );
+  let nextNewOutputOrder = minimumExistingOrder - newOutputIds.size;
 
   incomingOutputs.forEach((incomingOutput) => {
     const existingIndex = outputIndexById.get(incomingOutput.id);
     if (existingIndex === undefined) {
+      const orderedIncomingOutput = {
+        ...incomingOutput,
+        stackOrder: nextNewOutputOrder,
+      };
+      nextNewOutputOrder += 1;
       outputIndexById.set(incomingOutput.id, mergedOutputs.length);
-      mergedOutputs.push(incomingOutput);
+      mergedOutputs.push(orderedIncomingOutput);
       return;
     }
 

@@ -1,7 +1,7 @@
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { BlendMode, MergeNode } from '@blackboard/types';
-import { CollapsibleSection } from '@blackboard/ui';
-import { SegmentedControl, Slider } from '@/components';
+import { CollapsibleSection, Slider } from '@blackboard/ui';
+import { SegmentedControl, SettingRow } from '@/components';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
 
 const blendModeOptions = [
@@ -45,14 +45,14 @@ function MergeAdjustments({ nodeId }: MergeAdjustmentsProps) {
             isKeyframed={hasKeyframeAt(node.opacity, currentFrame)}
             onToggleKeyframe={() => setKeyframe(node.id, 'opacity')}
           />
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-gray-400">Blend Mode</label>
+          <SettingRow label="Blend Mode">
             <SegmentedControl
               value={node.operator ?? BlendMode.OVER}
               options={blendModeOptions}
               onChange={(value) => updateNode(node.id, { operator: value as BlendMode }, true)}
+              className="w-full"
             />
-          </div>
+          </SettingRow>
         </div>
       </CollapsibleSection>
     </div>

@@ -1,7 +1,9 @@
 import React from 'react';
 import * as Icons from '@blackboard/icons';
 import type { AnyNode, MediaColorAssignmentSource, MediaColorManagement } from '@blackboard/types';
+import { SplitControl, SplitControlAction } from '@blackboard/ui';
 import { OcioColorSpaceDropdown } from './OcioColorSpaceDropdown';
+import { SettingRow } from './SettingRow';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { useOcio } from '@/state/ocioContext';
 import {
@@ -105,24 +107,32 @@ export function MediaColorManagementControls({
       ) : null}
 
       <div className="space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <label className="text-xs font-medium text-gray-400">Input Color Space</label>
+        <SettingRow label="Input Color Space">
           {isExplicitMediaColorAssignment(colorManagement) ? (
-            <button
-              type="button"
-              onClick={handleReset}
-              title="Reset to current automatic assignment"
-              className="inline-flex h-7 w-7 items-center justify-center rounded text-gray-400 transition hover:bg-white/10 hover:text-gray-100"
-            >
-              <Icons.Reset className="h-3.5 w-3.5" />
-            </button>
-          ) : null}
-        </div>
-        <OcioColorSpaceDropdown
-          value={sourceColorSpace}
-          onChange={handleColorSpaceChange}
-          includeData
-        />
+            <SplitControl className="w-full">
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <OcioColorSpaceDropdown
+                  value={sourceColorSpace}
+                  onChange={handleColorSpaceChange}
+                  includeData
+                />
+              </div>
+              <SplitControlAction
+                onClick={handleReset}
+                title="Reset to current automatic assignment"
+                aria-label="Reset input color space to automatic assignment"
+              >
+                <Icons.Reset className="h-4 w-4" />
+              </SplitControlAction>
+            </SplitControl>
+          ) : (
+            <OcioColorSpaceDropdown
+              value={sourceColorSpace}
+              onChange={handleColorSpaceChange}
+              includeData
+            />
+          )}
+        </SettingRow>
         {batchCount > 1 ? (
           <p className="text-[10px] text-gray-500">
             Changes apply to {batchCount} selected media sources.

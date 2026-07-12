@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import React, { useId, useState } from 'react';
 import * as Icons from '@blackboard/icons';
 import Popover from './Popover';
 import ResetIconButton from './ResetIconButton';
-import ScrollArea from './ScrollArea';
 import { Spinner } from './Spinner';
+import TextArea from './TextArea';
 
 export interface PromptTextFieldProps {
   label: React.ReactNode;
@@ -82,12 +82,9 @@ function PromptTextField({
   resetTooltip,
   onKeyDown,
 }: PromptTextFieldProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const generatedInputId = useId();
   const descriptionId = useId();
   const [isPromptMenuOpen, setIsPromptMenuOpen] = useState(false);
-  const [resizeMaxHeight, setResizeMaxHeight] = useState(initialMaxHeight);
-  const dragStartRef = useRef<{ height: number; y: number } | null>(null);
   const inputId = id ?? generatedInputId;
   const hasDescription = description !== undefined && description !== null;
   const descriptionTitle = typeof description === 'string' ? description : undefined;
@@ -97,66 +94,6 @@ function PromptTextField({
   const canEnhance = canUsePromptTools && !isBusy && value.trim().length > 0 && Boolean(onEnhance);
   const hasSuggestions = suggestionsVisible && suggestions.length > 0;
   const unavailableReason = canUsePromptTools ? '' : promptToolsUnavailableReason;
-
-  const handleResizePointerDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      dragStartRef.current = {
-        height: resizeMaxHeight,
-        y: event.clientY,
-      };
-    },
-    [resizeMaxHeight],
-  );
-
-  const handleResizePointerMove = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      const dragStart = dragStartRef.current;
-      if (!dragStart) return;
-      const nextHeight = dragStart.height + event.clientY - dragStart.y;
-      setResizeMaxHeight(Math.min(maxHeight, Math.max(minHeight, nextHeight)));
-    },
-    [maxHeight, minHeight],
-  );
-
-  const handleResizePointerEnd = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    dragStartRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }, []);
-
-  const handleResizeKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-      event.preventDefault();
-      setResizeMaxHeight((current) =>
-        Math.min(
-          maxHeight,
-          Math.max(minHeight, current + (event.key === 'ArrowDown' ? resizeStep : -resizeStep)),
-        ),
-      );
-    },
-    [maxHeight, minHeight, resizeStep],
-  );
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = 'auto';
-    textarea.style.height = `${Math.max(minHeight, textarea.scrollHeight)}px`;
-  }, [minHeight, value]);
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const handler = (e: WheelEvent) => {
-      e.stopPropagation();
-    };
-    textarea.addEventListener('wheel', handler);
-    return () => textarea.removeEventListener('wheel', handler);
-  }, []);
 
   const actionButtonClass =
     'inline-flex h-6 items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15 disabled:cursor-not-allowed disabled:opacity-50';
@@ -324,49 +261,22 @@ function PromptTextField({
           ) : null}
         </div>
       </div>
-      <div className="relative">
-        <ScrollArea
-          axis="y"
-          rootClassName="rounded-lg border border-gray-700 bg-gray-900 transition focus-within:border-primary-400/70 focus-within:ring-2 focus-within:ring-primary-400/20"
-          viewportClassName={maxHeightClassName}
-          viewportStyle={{ maxHeight: resizeMaxHeight }}
-        >
-          <textarea
-            ref={(el) => {
-              (textareaRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = el;
-              if (inputRef) {
-                (inputRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = el;
-              }
-            }}
-            id={inputId}
-            value={value}
-            rows={rows}
-            disabled={disabled}
-            aria-describedby={hasDescription ? descriptionId : undefined}
-            placeholder={placeholder}
-            onChange={(event) => onValueChange(event.currentTarget.value)}
-            className="block min-h-9 w-full resize-none overflow-hidden border-0 bg-transparent px-3 py-2 text-xs leading-5 text-gray-100 outline-none placeholder:text-gray-600 disabled:cursor-not-allowed disabled:text-gray-500"
-          />
-        </ScrollArea>
-        <div
-          role="slider"
-          tabIndex={0}
-          aria-label={resizeLabel}
-          aria-valuemin={minHeight}
-          aria-valuemax={maxHeight}
-          aria-valuenow={Math.round(resizeMaxHeight)}
-          title={resizeLabel}
-          onPointerDown={handleResizePointerDown}
-          onPointerMove={handleResizePointerMove}
-          onPointerUp={handleResizePointerEnd}
-          onPointerCancel={handleResizePointerEnd}
-          onKeyDown={handleResizeKeyDown}
-          className="absolute bottom-0 right-0 h-5 w-5 cursor-nwse-resize touch-none select-none rounded-br-xl opacity-55 transition hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary-300/35"
-        >
-          <span className="absolute bottom-1 right-1 h-2.5 w-2.5 rounded-br-md border-b border-r border-white/25" />
-          <span className="absolute bottom-1.5 right-1.5 h-1.5 w-1.5 rounded-br border-b border-r border-white/20" />
-        </div>
-      </div>
+      <TextArea
+        ref={inputRef}
+        id={inputId}
+        value={value}
+        onValueChange={onValueChange}
+        rows={rows}
+        disabled={disabled}
+        aria-describedby={hasDescription ? descriptionId : undefined}
+        placeholder={placeholder}
+        minHeight={minHeight}
+        maxHeight={maxHeight}
+        initialMaxHeight={initialMaxHeight}
+        resizeStep={resizeStep}
+        resizeLabel={resizeLabel}
+        viewportClassName={maxHeightClassName}
+      />
       {hasSuggestions ? (
         <div className="space-y-1 pt-0.5">
           <div className="flex items-center justify-between gap-2">

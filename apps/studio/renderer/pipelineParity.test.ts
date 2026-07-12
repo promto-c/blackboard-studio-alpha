@@ -31,8 +31,11 @@ class MockRenderer {
     material: THREE.Material | undefined;
   }> = [];
   compileCalls = 0;
+  setSizeCalls = 0;
 
-  setSize() {}
+  setSize() {
+    this.setSizeCalls += 1;
+  }
 
   setRenderTarget(target: THREE.WebGLRenderTarget | null) {
     this.currentTarget = target;
@@ -85,6 +88,7 @@ const createViewerSettings = (): ViewerSettings => ({
 const testColorManagement: RendererColorManagement = {
   getColorSpaceTransform: () => null,
   getDisplayViewTransform: () => null,
+  getTransform: () => null,
   transformRgb: (_source, _destination, color) => [...color],
   resolveColorSpaceName: (value) => value ?? TEXTURE_PAINT_SPACE,
   defaultDisplay: 'sRGB - Display',
@@ -201,6 +205,16 @@ const createLogGradeNode = (): AnyNode =>
     grade: { processingDomain: 'log' },
   }) as AnyNode;
 
+const createOcioTransformNode = (): AnyNode =>
+  ({
+    id: 'ocio-transform',
+    type: NodeType.OCIO_COLOR_SPACE,
+    name: 'Color Space Transform',
+    enabled: true,
+    sourceColorSpace: TEXTURE_PAINT_SPACE,
+    destinationColorSpace: SCENE_WORKING_SPACE,
+  }) as AnyNode;
+
 const createMaskNode = (stacked = false): AnyNode =>
   ({
     id: stacked ? 'stacked-roto' : 'global-roto',
@@ -310,6 +324,22 @@ const createRegistry = (): Map<string, RendererNodeEntry> =>
         flags: { isRenderable: true },
         getShader: () => 'void main() { /* LogGradePass */ }',
         getUniforms: () => ({ u_exposure: { value: 0 } }),
+      },
+    ],
+    [
+      NodeType.OCIO_COLOR_SPACE,
+      {
+        renderMode: 'ocio',
+        category: 'Adjustment',
+        processingDomain: 'scene_linear',
+        flags: { isRenderable: true },
+        getOcioTransforms: (_node, context) => [
+          {
+            type: 'colorSpace',
+            source: TEXTURE_PAINT_SPACE,
+            destination: context.workingColorSpace,
+          },
+        ],
       },
     ],
     [
@@ -552,6 +582,37 @@ describe('viewport/export render pipeline parity guards', () => {
     );
   });
 
+  it('renders registry-declared OCIO nodes through one GPU transform pass', () => {
+    const getTransform = vi.fn(() =>
+      createOcioShaderInfo('transform', 'ocio-node-transform', 'OCIONodeTransform'),
+    );
+    const { resources } = createResources();
+
+    renderViewportFrameWithSharedPipelineBase({
+      resources,
+      nodes: [createMediaNode(), createOcioTransformNode()],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      displayView: TEST_DISPLAY_VIEW,
+      colorManagement: { ...testColorManagement, getTransform },
+      getMediaTexture: () => createTexture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    expect(getTransform).toHaveBeenCalledWith([
+      {
+        type: 'colorSpace',
+        source: TEXTURE_PAINT_SPACE,
+        destination: SCENE_WORKING_SPACE,
+      },
+    ]);
+    const material = resources.materials.get('ocio-transform_ocio_transform');
+    expect(material?.fragmentShader).toContain('OCIONodeTransform');
+    expect(material?.fragmentShader).toContain('fragColor = vec4(transformed.rgb, source.a);');
+  });
+
   it('uses registry scene-size behavior for plugin-defined format nodes', () => {
     const formatType = 'plugin_format';
     const registry = createRegistry();
@@ -583,6 +644,7 @@ describe('viewport/export render pipeline parity guards', () => {
       height: 360,
     } as unknown as AnyNode;
     const { resources } = createResources();
+    const initialTargetPool = [...resources.renderTargets];
 
     const result = renderViewportFrameWithSharedPipeline({
       resources,
@@ -603,6 +665,26 @@ describe('viewport/export render pipeline parity guards', () => {
     expect(initialSceneSize?.toArray()).toEqual([1280, 720]);
     expect(result.finalCompositeTarget?.width).toBe(640);
     expect(result.finalCompositeTarget?.height).toBe(360);
+
+    const firstFrameUtilityTargets = new Map(resources.utilityTargets);
+    renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [createMediaNode(), formatNode],
+      sceneNode: createSceneNode(),
+      frame: 1,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => createTexture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: registry,
+    });
+
+    resources.renderTargets.forEach((target, index) => {
+      expect(target).toBe(initialTargetPool[index]);
+    });
+    expect(resources.utilityTargets?.size).toBe(firstFrameUtilityTargets.size);
+    firstFrameUtilityTargets.forEach((target, key) => {
+      expect(resources.utilityTargets?.get(key)).toBe(target);
+    });
   });
 
   it('rebuilds stale byte targets at the scene working precision', () => {
@@ -627,6 +709,7 @@ describe('viewport/export render pipeline parity guards', () => {
     });
 
     expect(result.renderTargets).not.toEqual(staleTargets);
+    expect(resources.renderTargets).toBe(result.renderTargets);
     expect(
       result.renderTargets.every((target) => target.texture.type === THREE.HalfFloatType),
     ).toBe(true);
@@ -650,6 +733,29 @@ describe('viewport/export render pipeline parity guards', () => {
       resources.utilityTargets?.get('__viewer:display-output'),
     );
     expect(result.displayOutputTarget).not.toBe(result.finalCompositeTarget);
+  });
+
+  it('captures an offscreen viewer pass without resizing or presenting the canvas', () => {
+    const { renderer, resources } = createResources();
+    const result = renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [createMediaNode()],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      captureDisplayOutput: true,
+      presentToCanvas: false,
+      getMediaTexture: () => new THREE.Texture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    expect(renderer.setSizeCalls).toBe(0);
+    expect(
+      renderer.renderCalls.filter(({ target }) => target === result.displayOutputTarget),
+    ).toHaveLength(1);
+    expect(renderer.renderCalls.every(({ target }) => target !== null)).toBe(true);
+    expect(renderer.currentTarget).toBeNull();
   });
 
   it('applies output-gamut warnings in the terminal RGB viewer material', () => {
@@ -1092,6 +1198,45 @@ describe('viewport/export render pipeline parity guards', () => {
     }
   });
 
+  it('decodes resolved source frames and skips transparent-black range extensions', async () => {
+    const registry = createRegistry();
+    const mediaDefinition = registry.get(NodeType.MEDIA_SOURCE);
+    if (!mediaDefinition?.mediaDescriptor) throw new Error('Media descriptor is required');
+    mediaDefinition.mediaDescriptor = {
+      ...mediaDefinition.mediaDescriptor,
+      resolveFrame: (_node, frame) => (frame < 1002 ? null : frame - 1002),
+    };
+
+    const decodedFrames: number[] = [];
+    const getAsset = vi.fn(async () => new Blob(['asset']));
+    const renderFrame = (frame: number) =>
+      renderWithSharedPipeline({
+        renderer: new MockRenderer() as unknown as THREE.WebGLRenderer,
+        nodes: [createMediaNode()],
+        sceneNode: createSceneNode(),
+        frame,
+        width: 1920,
+        height: 1080,
+        finalColorSpace: 'raw_texture',
+        getAsset,
+        nodeRegistry: registry,
+        loadAssetTexture: async ({ frame: sourceFrame }) => {
+          decodedFrames.push(sourceFrame);
+          return createTexture();
+        },
+      });
+
+    const inRangeResult = await renderFrame(1004);
+    inRangeResult.dispose();
+    expect(decodedFrames).toEqual([2]);
+
+    getAsset.mockClear();
+    const blackResult = await renderFrame(1001);
+    blackResult.dispose();
+    expect(getAsset).not.toHaveBeenCalled();
+    expect(decodedFrames).toEqual([2]);
+  });
+
   it('uses the same display/view processor path for viewport and export', async () => {
     const viewerSettings = createViewerSettings();
     const displayRequests: Array<{
@@ -1501,6 +1646,97 @@ describe('viewport/export render pipeline parity guards', () => {
       }
     },
   );
+
+  it('applies a generated-output difference mask in the media compositor', async () => {
+    const renderer = new MockRenderer();
+    const outputTexture = createTexture();
+    const referenceTexture = createTexture();
+    const registry = createRegistry();
+    const mediaDefinition = registry.get(NodeType.MEDIA_SOURCE);
+    if (!mediaDefinition?.mediaDescriptor) throw new Error('Media descriptor is required');
+    mediaDefinition.mediaDescriptor = {
+      ...mediaDefinition.mediaDescriptor,
+      getAssetIds: () => ['output_asset', 'reference_asset'],
+      getCompositeLayers: () => [
+        {
+          id: 'generated_output',
+          textureKey: 'output_asset',
+          assetId: 'output_asset',
+          width: 1920,
+          height: 1080,
+          differenceMask: {
+            textureKey: 'reference_asset',
+            assetId: 'reference_asset',
+            width: 1920,
+            height: 1080,
+            thresholdLow: 0.06,
+            thresholdHigh: 0.18,
+            edgeAdjustment: 4,
+            removeSpecks: 3,
+            fillHoles: 6,
+            previewMode: 'overlay',
+          },
+        },
+      ],
+    };
+
+    const result = await renderWithSharedPipeline({
+      renderer: renderer as unknown as THREE.WebGLRenderer,
+      nodes: [createMediaNode()],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      width: 1920,
+      height: 1080,
+      finalColorSpace: 'raw_texture',
+      getAsset: async () => new Blob(['asset']),
+      nodeRegistry: registry,
+      loadAssetTexture: async ({ assetId }) =>
+        assetId === 'reference_asset' ? referenceTexture : outputTexture,
+    });
+
+    try {
+      const differenceMaterial = renderer.renderCalls
+        .map(({ material }) => material)
+        .find(
+          (material): material is THREE.ShaderMaterial =>
+            materialWithUniform(material, 'u_tDifferenceReference') &&
+            material.uniforms.u_tDifferenceReference.value === referenceTexture,
+        );
+
+      expect(differenceMaterial?.uniforms.u_tDiffuse.value).toBe(outputTexture);
+      expect(differenceMaterial?.uniforms.u_difference_low.value).toBe(0.06);
+      expect(differenceMaterial?.uniforms.u_difference_high.value).toBe(0.18);
+      expect(differenceMaterial?.uniforms.u_difference_edge.value).toBe(4);
+      expect(differenceMaterial?.uniforms.u_difference_remove_specks.value).toBe(3);
+      expect(differenceMaterial?.uniforms.u_difference_fill_holes.value).toBe(6);
+      expect(differenceMaterial?.uniforms.u_difference_preview_mode.value).toBe(0);
+      expect(differenceMaterial?.fragmentShader).toContain('float sampleDifference');
+      expect(differenceMaterial?.fragmentShader).toContain(
+        'src.a *= u_opacity * difference_alpha;',
+      );
+    } finally {
+      result.dispose();
+    }
+
+    const { resources } = createResources();
+    renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [createMediaNode()],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => outputTexture,
+      getMediaTextureByKey: (key) => (key === 'reference_asset' ? referenceTexture : outputTexture),
+      getTextTexture: () => undefined,
+      nodeRegistry: registry,
+    });
+
+    const viewportDifferenceMaterial = [...resources.materials.values()].find(
+      (material) => material.uniforms.u_tDifferenceReference?.value === referenceTexture,
+    );
+    expect(viewportDifferenceMaterial?.uniforms.u_difference_edge.value).toBe(4);
+    expect(viewportDifferenceMaterial?.uniforms.u_difference_preview_mode.value).toBe(1);
+  });
 
   it('bypasses OCIO RGB transforms for explicitly tagged data media', async () => {
     const renderer = new MockRenderer();

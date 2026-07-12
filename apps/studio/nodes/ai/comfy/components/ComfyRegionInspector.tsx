@@ -9,7 +9,7 @@ import type {
   ViewportPromptRegionDefaults,
 } from '@blackboard/types';
 import { NodeType } from '@blackboard/types';
-import { CollapsibleSection, PromptTextField } from '@blackboard/ui';
+import { CollapsibleSection, NumberInput, PromptTextField } from '@blackboard/ui';
 import { SegmentedControl } from '@/components';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
@@ -65,19 +65,13 @@ function MetricInput({
       <span className="block text-[10px] font-semibold uppercase tracking-wide text-gray-500">
         {label}
       </span>
-      <input
-        type="number"
+      <NumberInput
         inputMode="numeric"
         min={min}
         step={1}
         value={Math.round(value)}
-        onChange={(event) => {
-          const nextValue = Number(event.currentTarget.value);
-          if (Number.isFinite(nextValue)) {
-            onChange(nextValue);
-          }
-        }}
-        className="h-8 w-full min-w-0 rounded-md border border-white/10 bg-gray-950/70 px-2 text-xs font-medium text-gray-100 outline-none transition focus:border-primary-300/60 focus:ring-2 focus:ring-primary-300/15"
+        normalizeValue={Math.round}
+        onValueChange={onChange}
       />
     </label>
   );

@@ -464,6 +464,7 @@ export const createMediaSourceNode = (opts: {
   mediaColorManagement?: MediaSourceNode['mediaColorManagement'];
   videoColorMetadata?: MediaSourceNode['videoColorMetadata'];
   duration?: number;
+  frameCount?: number;
   transform?: ImageTransform;
 }): MediaSourceNode => {
   const mediaColorManagement =
@@ -492,7 +493,10 @@ export const createMediaSourceNode = (opts: {
     ...(opts.mediaKind === 'video'
       ? {
           duration: opts.duration ?? 0,
-          loop: true,
+          frameCount: opts.frameCount ?? Math.max(1, Math.ceil((opts.duration ?? 0) * 30)),
+          startFrame: 0,
+          beforeRangeBehavior: 'black',
+          afterRangeBehavior: 'black',
           ...(opts.videoColorMetadata ? { videoColorMetadata: opts.videoColorMetadata } : {}),
         }
       : {}),
@@ -542,7 +546,8 @@ export const createSequenceNode = (opts: {
     mediaColorManagement,
     fps: 30,
     startFrame: 0,
-    loop: true,
+    beforeRangeBehavior: 'black',
+    afterRangeBehavior: 'black',
   };
 };
 

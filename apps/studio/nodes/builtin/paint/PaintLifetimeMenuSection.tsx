@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { PaintLifetime } from '@blackboard/types';
+import { NumberInput } from '@blackboard/ui';
 import { MenuSectionLabel, SegmentedControl } from '@/components';
 import { clampPaintFrame, normalizePaintLifetime } from './paintLifetime';
 
-const FRAME_INPUT_CLASS =
-  'bg-gray-900/70 text-gray-100 text-xs rounded-md focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-offset-gray-900 focus:ring-primary-700 block px-2.5 py-2 font-mono w-full border border-white/10';
 const SECONDARY_BUTTON_CLASS =
   'rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-2 text-[11px] font-medium text-gray-300 transition-colors hover:bg-white/[0.08]';
 const PRIMARY_BUTTON_CLASS =
@@ -107,16 +106,13 @@ function PaintLifetimeMenuSection({
               Frame
             </span>
             <div className="grid grid-cols-[1fr_auto] gap-2">
-              <input
-                type="number"
+              <NumberInput
                 value={singleFrame}
                 min={0}
                 max={maxFrames}
                 step={1}
-                onChange={(event) =>
-                  setSingleFrame(clampPaintFrame(Number(event.target.value), maxFrames))
-                }
-                className={FRAME_INPUT_CLASS}
+                normalizeValue={Math.round}
+                onValueChange={(value) => setSingleFrame(clampPaintFrame(value, maxFrames))}
               />
               <button
                 type="button"
@@ -136,32 +132,26 @@ function PaintLifetimeMenuSection({
             <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">
               Start
             </span>
-            <input
-              type="number"
+            <NumberInput
               value={rangeStart}
               min={0}
               max={maxFrames}
               step={1}
-              onChange={(event) =>
-                setRangeStart(clampPaintFrame(Number(event.target.value), maxFrames))
-              }
-              className={FRAME_INPUT_CLASS}
+              normalizeValue={Math.round}
+              onValueChange={(value) => setRangeStart(clampPaintFrame(value, maxFrames))}
             />
           </label>
           <label className="space-y-1">
             <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">
               End
             </span>
-            <input
-              type="number"
+            <NumberInput
               value={rangeEnd}
               min={0}
               max={maxFrames}
               step={1}
-              onChange={(event) =>
-                setRangeEnd(clampPaintFrame(Number(event.target.value), maxFrames))
-              }
-              className={FRAME_INPUT_CLASS}
+              normalizeValue={Math.round}
+              onValueChange={(value) => setRangeEnd(clampPaintFrame(value, maxFrames))}
             />
           </label>
         </div>
