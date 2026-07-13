@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
-import { useOcio } from '@/state/ocioContext';
 import { getAsset, saveAsset } from '@/state/assetStorage';
 import { readImageDimensions } from '@/state/editor/utils';
 import {
@@ -18,7 +17,6 @@ import {
   SceneNode,
   ViewportPromptRegion,
 } from '@blackboard/types';
-import { getValueAtFrame } from '@blackboard/renderer';
 import {
   fetchComfyWorkflowFile,
   DEFAULT_COMFY_ENDPOINT,
@@ -63,6 +61,7 @@ import { registerBackgroundJobCancelHandler } from '@/state/editor/services/back
 import { useNodeExecutionHandler } from '@/hooks/useNodeExecutionHandler';
 import type { NodeExecutionContext } from '@/utils/nodeExecutionRegistry';
 import { getImportedImageColorManagement, isImageFileLike } from '@/utils/mediaFiles';
+import { decodeRasterImageSource } from '@/utils/rasterImageSource';
 import { isNonEmptyString, getNonEmptyString } from '@/utils/guards';
 import { defaultComfyRunCoordinator } from './comfyRunCoordinator';
 import {
@@ -80,11 +79,7 @@ import {
   getWorkflowNameFromPath,
 } from './comfyWorkflowDisplay';
 import { createGeneratedOutputsFromComfyFiles } from './comfyGeneratedOutputs';
-import { getScenePreviewColorSpace, getMediaSourceColorSpace } from '@/color-management';
-import {
-  renderNodeInputFrameToPngBlob,
-  renderNodeInputRegionToPngBlob,
-} from '@/utils/nodeInputFrame';
+import { getMediaSourceColorSpace } from '@/color-management';
 import { ComfyWorkflowPicker } from './components/ComfyWorkflowPicker';
 import { ComfyWorkflowControlsSection } from './components/ComfyWorkflowControlsSection';
 import { ComfyWorkflowInputList } from './components/ComfyWorkflowInputList';
@@ -126,6 +121,11 @@ import {
 } from './comfyOutputCandidates';
 import { ComfyInputUploadCache, getComfyInputBlobFingerprint } from './comfyInputUploadCache';
 import {
+  getComfyRenderedInputName,
+  renderComfyConnectedInputToPngBlob,
+} from './comfyInputRendering';
+import { getComfyInputUploadFilename } from './comfyInputUploadFilename';
+import {
   queueComfyPromptWithInputRecovery,
   type ComfyInputUploadRecoveryOptions,
   type ComfyQueuedInputUpload,
@@ -150,11 +150,13 @@ interface RunProgress {
 interface ComfyResolvedInputUpload extends ComfyQueuedInputUpload {
   candidate: ComfyWorkflowInputCandidate;
   alignmentBlob: Blob;
+  alignmentName: string;
   alignmentReference?: ComfyAlignmentReference;
 }
 
 interface ComfyAlignmentInput {
   blob: Blob;
+  nameHint?: string;
   reference?: ComfyAlignmentReference;
 }
 
@@ -279,39 +281,6 @@ const getComfyOutputDynamicNestedInputNames = (
 
 const getOutputCountLabel = (count: number): string => `${count} output${count === 1 ? '' : 's'}`;
 
-const getImageExtensionFromMime = (mimeType: string): string => {
-  if (mimeType === 'image/jpeg') return 'jpg';
-  if (mimeType === 'image/webp') return 'webp';
-  if (mimeType === 'image/gif') return 'gif';
-  return 'png';
-};
-
-const sanitizeComfyUploadNamePart = (value: string): string =>
-  value
-    .trim()
-    .replace(/[^a-z0-9_-]+/gi, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 48) || 'input';
-
-const getComfyInputUploadFilename = ({
-  sourceName,
-  candidate,
-  blob,
-}: {
-  sourceName: string;
-  candidate: ComfyWorkflowInputCandidate;
-  blob: Blob;
-}): string => {
-  const uploadSourceName = sanitizeComfyUploadNamePart(sourceName);
-  const inputName = sanitizeComfyUploadNamePart(`${candidate.nodeId}_${candidate.inputName}`);
-  const extensionFromName = sourceName
-    .match(/\.(png|jpe?g|webp|gif|exr)$/i)?.[1]
-    ?.toLowerCase()
-    .replace('jpeg', 'jpg');
-  const extension = extensionFromName ?? getImageExtensionFromMime(blob.type);
-  return `${uploadSourceName}_${inputName}_${Date.now()}.${extension}`;
-};
-
 const createComfyPromptExtraData = (
   workflow: ComfyWorkflow,
   prompt: Record<string, unknown>,
@@ -321,69 +290,6 @@ const createComfyPromptExtraData = (
     workflow: workflow.sourceGraph ?? prompt,
   },
 });
-
-const getSourceNodeImageAssetId = (sourceNode: AnyNode, frame: number): string | null => {
-  const mediaKind = 'mediaKind' in sourceNode ? sourceNode.mediaKind : undefined;
-  if (mediaKind === 'video') return null;
-
-  const frames =
-    'frames' in sourceNode && Array.isArray(sourceNode.frames) ? sourceNode.frames : [];
-  if (frames.length > 0) {
-    const frameIndex = Math.max(0, Math.min(frames.length - 1, Math.round(frame)));
-    const frameAssetId = frames[frameIndex];
-    return getNonEmptyString(frameAssetId) ?? null;
-  }
-
-  const src = 'src' in sourceNode ? sourceNode.src : undefined;
-  return getNonEmptyString(src) ?? null;
-};
-
-const readNativeWorkflowSourceImage = async (
-  sourceNode: AnyNode,
-  frame: number,
-): Promise<{ blob: Blob; sourceName: string } | null> => {
-  const assetId = getSourceNodeImageAssetId(sourceNode, frame);
-  if (!assetId) return null;
-
-  const blob = await getAsset(assetId);
-  if (!blob) return null;
-
-  const sourceName = sourceNode.name || sourceNode.id;
-  if (!isImageFileLike(blob, sourceName)) return null;
-
-  return { blob, sourceName };
-};
-
-const getNativeAlignmentReference = (
-  sourceNode: AnyNode,
-  frame: number,
-): ComfyAlignmentReference | undefined => {
-  if (
-    !('transform' in sourceNode) ||
-    !('width' in sourceNode) ||
-    !('height' in sourceNode) ||
-    typeof sourceNode.width !== 'number' ||
-    typeof sourceNode.height !== 'number' ||
-    sourceNode.width <= 0 ||
-    sourceNode.height <= 0
-  ) {
-    return undefined;
-  }
-  const transform = sourceNode.transform as Partial<ComfyNode['transform']> | undefined;
-  if (!transform || transform.x === undefined || transform.y === undefined) return undefined;
-
-  const x = getValueAtFrame(transform.x, frame);
-  const y = getValueAtFrame(transform.y, frame);
-  const scaleX = getValueAtFrame(transform.scaleX ?? 1, frame);
-  const scaleY = getValueAtFrame(transform.scaleY ?? 1, frame);
-  if (![x, y, scaleX, scaleY].every(Number.isFinite)) return undefined;
-
-  return {
-    width: sourceNode.width,
-    height: sourceNode.height,
-    transform: { x, y, scaleX, scaleY },
-  };
-};
 
 const getSceneFrameAlignmentReference = (
   sceneNode: Pick<SceneNode, 'width' | 'height'>,
@@ -428,20 +334,25 @@ const cropImageBlobToRegion = async ({
   region,
   sceneNode,
   alphaMode,
+  nameHint,
 }: {
   blob: Blob;
   region: ViewportPromptRegion;
   sceneNode: Pick<SceneNode, 'width' | 'height'>;
   alphaMode: 'opaque' | 'preserve';
+  nameHint?: string;
 }): Promise<Blob> => {
-  const bitmap = await createImageBitmap(blob);
+  const image = await decodeRasterImageSource(blob, {
+    nameHint,
+    label: 'Comfy region input image',
+  });
 
   try {
     // Scale the region rect from scene coords to the bitmap's pixel coords
-    const regionBmpX = (region.rect.x / sceneNode.width) * bitmap.width;
-    const regionBmpY = (region.rect.y / sceneNode.height) * bitmap.height;
-    const regionBmpW = (region.rect.width / sceneNode.width) * bitmap.width;
-    const regionBmpH = (region.rect.height / sceneNode.height) * bitmap.height;
+    const regionBmpX = (region.rect.x / sceneNode.width) * image.width;
+    const regionBmpY = (region.rect.y / sceneNode.height) * image.height;
+    const regionBmpW = (region.rect.width / sceneNode.width) * image.width;
+    const regionBmpH = (region.rect.height / sceneNode.height) * image.height;
 
     // Compute pixel-aligned bounds consistently with floor/ceil
     const pixelLeft = Math.floor(Math.min(regionBmpX, regionBmpX + regionBmpW));
@@ -462,8 +373,8 @@ const cropImageBlobToRegion = async ({
     // Calculate the overlap between the pixel-aligned rect and the bitmap bounds
     const overlapLeft = Math.max(0, pixelLeft);
     const overlapTop = Math.max(0, pixelTop);
-    const overlapRight = Math.min(bitmap.width, pixelRight);
-    const overlapBottom = Math.min(bitmap.height, pixelBottom);
+    const overlapRight = Math.min(image.width, pixelRight);
+    const overlapBottom = Math.min(image.height, pixelBottom);
     const overlapWidth = overlapRight - overlapLeft;
     const overlapHeight = overlapBottom - overlapTop;
 
@@ -484,7 +395,7 @@ const cropImageBlobToRegion = async ({
 
       if (canvasOffsetX >= 0 && canvasOffsetY >= 0) {
         context.drawImage(
-          bitmap,
+          image.source,
           overlapLeft,
           overlapTop,
           overlapWidth,
@@ -500,7 +411,7 @@ const cropImageBlobToRegion = async ({
 
     return encodeCanvasToPngBlob(canvas);
   } finally {
-    bitmap.close();
+    image.close();
   }
 };
 
@@ -527,7 +438,6 @@ export function ComfyAdjustmentsPanel({
   } = useEditorActions();
   const { comfyMissingModelDetailsVisible, aiTaskRoutes, integrationConnections, setPreferences } =
     usePreferences();
-  const { workingColorSpace } = useOcio();
   const endpoint = normalizeComfyEndpoint(
     getComfyEndpoint({ integrationConnections }) ?? DEFAULT_COMFY_ENDPOINT,
   );
@@ -1717,43 +1627,26 @@ export function ComfyAdjustmentsPanel({
         throw new Error('Scene node not found for Comfy input rendering.');
       }
 
-      const nativeSourceImage = selectedRegion
-        ? null
-        : await readNativeWorkflowSourceImage(sourceNode, currentFrame);
       const regionAlphaMode =
         selectedRegion?.regionInputAlphaMode ??
         node.viewportPromptRegionDefaults?.regionInputAlphaMode ??
         'opaque';
-      const blob = selectedRegion
-        ? await renderNodeInputRegionToPngBlob({
-            nodes: allNodes,
-            flows,
-            sourceNodeId,
-            sceneNode,
-            projectColorManagement,
-            frame: currentFrame,
-            regionRect: selectedRegion.rect,
-            finalColorSpace: getScenePreviewColorSpace(sceneNode.colorSpace, workingColorSpace),
-            regionInputAlphaMode: regionAlphaMode,
-          })
-        : (nativeSourceImage?.blob ??
-          (await renderNodeInputFrameToPngBlob({
-            nodes: allNodes,
-            flows,
-            sourceNodeId,
-            sceneNode,
-            projectColorManagement,
-            frame: currentFrame,
-            finalColorSpace: getScenePreviewColorSpace(sceneNode.colorSpace, workingColorSpace),
-          })));
+      const blob = await renderComfyConnectedInputToPngBlob({
+        nodes: allNodes,
+        flows,
+        sourceNodeId,
+        sceneNode,
+        projectColorManagement,
+        frame: currentFrame,
+        region: selectedRegion,
+        regionInputAlphaMode: regionAlphaMode,
+      });
       return {
         blob,
-        sourceName: nativeSourceImage?.sourceName ?? sourceNode.name ?? sourceNode.id,
+        sourceName: getComfyRenderedInputName(sourceNode.name ?? sourceNode.id),
         alignmentReference: selectedRegion
           ? getSceneRegionAlignmentReference(selectedRegion.rect, sceneNode)
-          : nativeSourceImage
-            ? getNativeAlignmentReference(sourceNode, currentFrame)
-            : getSceneFrameAlignmentReference(sceneNode),
+          : getSceneFrameAlignmentReference(sceneNode),
       };
     }
 
@@ -1777,6 +1670,7 @@ export function ComfyAdjustmentsPanel({
               region: selectedRegion,
               sceneNode,
               alphaMode: regionAlphaMode,
+              nameHint: inputImage.name,
             })
           : blob,
       sourceName: inputImage.name || candidate.label,
@@ -1855,6 +1749,7 @@ export function ComfyAdjustmentsPanel({
         candidate,
         imageName,
         alignmentBlob: resolvedInput.blob,
+        alignmentName: resolvedInput.sourceName,
         alignmentReference: resolvedInput.alignmentReference,
         cacheHit: Boolean(shouldUseCachedUpload),
       });
@@ -1863,6 +1758,7 @@ export function ComfyAdjustmentsPanel({
     lastAlignmentInputRef.current = uploads[0]
       ? {
           blob: uploads[0].alignmentBlob,
+          nameHint: uploads[0].alignmentName,
           reference: uploads[0].alignmentReference,
         }
       : null;
@@ -1962,6 +1858,7 @@ export function ComfyAdjustmentsPanel({
                     output,
                     sceneNode,
                     inputBlob: input.blob,
+                    inputNameHint: input.nameHint,
                     reference: input.reference,
                     options: node.alignmentOptions,
                   })) ?? output
@@ -1977,10 +1874,13 @@ export function ComfyAdjustmentsPanel({
     }
 
     try {
-      const bitmap = await createImageBitmap(input.blob);
-      const referenceWidth = bitmap.width;
-      const referenceHeight = bitmap.height;
-      bitmap.close();
+      const image = await decodeRasterImageSource(input.blob, {
+        nameHint: input.nameHint,
+        label: 'Comfy alignment reference image',
+      });
+      const referenceWidth = image.width;
+      const referenceHeight = image.height;
+      image.close();
       const referenceAssetId = await saveAsset(input.blob);
 
       return alignedOutputs.map((output) =>
@@ -2052,6 +1952,7 @@ export function ComfyAdjustmentsPanel({
           if (resolvedInput) {
             resolvedAlignmentInput = {
               blob: resolvedInput.blob,
+              nameHint: resolvedInput.sourceName,
               reference: resolvedInput.alignmentReference,
             };
             break;
@@ -2067,6 +1968,7 @@ export function ComfyAdjustmentsPanel({
       output: selectedOutputForProps,
       sceneNode,
       inputBlob: resolvedAlignmentInput.blob,
+      inputNameHint: resolvedAlignmentInput.nameHint,
       reference: resolvedAlignmentInput.reference,
       options: node.alignmentOptions,
     });
@@ -2341,6 +2243,7 @@ export function ComfyAdjustmentsPanel({
             const alignmentInput = inputImages[0]
               ? {
                   blob: inputImages[0].alignmentBlob,
+                  nameHint: inputImages[0].alignmentName,
                   reference: inputImages[0].alignmentReference,
                 }
               : undefined;
@@ -3025,6 +2928,7 @@ export function ComfyAdjustmentsPanel({
             const alignmentInput = inputImages[0]
               ? {
                   blob: inputImages[0].alignmentBlob,
+                  nameHint: inputImages[0].alignmentName,
                   reference: inputImages[0].alignmentReference,
                 }
               : undefined;

@@ -176,7 +176,10 @@ export default function RangeSlider({
   };
 
   return (
-    <div className={`bb-range-slider space-y-1.5 ${disabled ? 'opacity-50' : ''}`}>
+    <div
+      className={`bb-range-slider space-y-1.5 ${disabled ? 'opacity-50' : ''}`}
+      data-custom-track={trackBackground ? 'true' : undefined}
+    >
       <div className="flex items-center justify-between gap-3">
         <label className="truncate text-xs font-medium text-gray-400">{label}</label>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -187,23 +190,23 @@ export default function RangeSlider({
         </div>
       </div>
       <div
-        className="relative h-7 touch-none select-none"
+        className="relative h-[18px] touch-none select-none"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={finishPointerInteraction}
         onPointerCancel={finishPointerInteraction}
       >
         <div
-          className="absolute inset-x-0 top-3 h-1 rounded-full bg-gray-700 shadow-inner"
+          className="bb-range-slider__track absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-full"
           style={trackBackground ? { background: trackBackground } : undefined}
         />
         <div
           data-range-fill
           title={`Drag to offset the ${label} range`}
-          className="group absolute top-2 h-5 cursor-grab touch-none active:cursor-grabbing"
+          className="group absolute inset-y-0 cursor-grab touch-none active:cursor-grabbing"
           style={{ left: `${lowPercent}%`, right: `${100 - highPercent}%` }}
         >
-          <div className="pointer-events-none absolute inset-x-0 top-1 h-1 rounded-full bg-white/30 shadow-[0_0_0_1px_rgb(var(--color-primary-300)/0.45)] transition group-hover:bg-white/45" />
+          <div className="bb-range-slider__selection pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-full transition group-hover:brightness-125" />
         </div>
         {(['low', 'high'] as const).map((handle) => {
           const handleValue = handle === 'low' ? low : high;
@@ -221,9 +224,14 @@ export default function RangeSlider({
               disabled={disabled}
               data-range-handle={handle}
               onKeyDown={(event) => handleKeyDown(handle, event)}
-              className="absolute top-1.5 h-4 w-4 -translate-x-1/2 rounded-full border border-primary-200/70 bg-gray-100 shadow-[0_1px_4px_rgba(0,0,0,0.55)] outline-none transition hover:scale-110 focus-visible:ring-2 focus-visible:ring-primary-300/50 disabled:cursor-not-allowed"
+              className="bb-range-slider__handle group absolute top-0 z-[1] flex h-[18px] w-[18px] -translate-x-1/2 cursor-ew-resize items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-primary-400/55 disabled:cursor-not-allowed"
               style={{ left: `${percent}%` }}
-            />
+            >
+              <span
+                aria-hidden="true"
+                className="bb-range-slider__handle-marker pointer-events-none"
+              />
+            </button>
           );
         })}
       </div>

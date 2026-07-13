@@ -1671,9 +1671,11 @@ describe('viewport/export render pipeline parity guards', () => {
             height: 1080,
             thresholdLow: 0.06,
             thresholdHigh: 0.18,
+            comparisonBlur: 1.25,
             edgeAdjustment: 4,
             removeSpecks: 3,
             fillHoles: 6,
+            morphologyShape: 'round',
             previewMode: 'overlay',
           },
         },
@@ -1706,19 +1708,25 @@ describe('viewport/export render pipeline parity guards', () => {
       expect(differenceMaterial?.uniforms.u_tDiffuse.value).toBe(outputTexture);
       expect(differenceMaterial?.uniforms.u_difference_low.value).toBe(0.06);
       expect(differenceMaterial?.uniforms.u_difference_high.value).toBe(0.18);
-      expect(differenceMaterial?.uniforms.u_difference_edge.value).toBe(4);
-      expect(differenceMaterial?.uniforms.u_difference_remove_specks.value).toBe(3);
-      expect(differenceMaterial?.uniforms.u_difference_fill_holes.value).toBe(6);
-      expect(differenceMaterial?.uniforms.u_difference_preview_mode.value).toBe(0);
+      expect(differenceMaterial?.uniforms.u_difference_comparison_blur.value).toBe(1.25);
       expect(differenceMaterial?.fragmentShader).toContain('float sampleDifference');
-      expect(differenceMaterial?.fragmentShader).toContain(
-        'src.a *= u_opacity * difference_alpha;',
+      expect(differenceMaterial?.fragmentShader).toContain('float perceptualImageDifference');
+
+      const morphologyPasses = renderer.renderCalls.filter(({ material }) =>
+        materialWithUniform(material, 'u_operation'),
       );
+      expect(morphologyPasses).toHaveLength(20);
+
+      const compositeMaterial = renderer.renderCalls
+        .map(({ material }) => material)
+        .find((material) => materialWithUniform(material, 'u_tDifferenceMask'));
+      expect(compositeMaterial?.uniforms.u_difference_preview_mode.value).toBe(0);
+      expect(compositeMaterial?.fragmentShader).toContain('src.a *= u_opacity * difference_alpha;');
     } finally {
       result.dispose();
     }
 
-    const { resources } = createResources();
+    const { renderer: viewportRenderer, resources } = createResources();
     renderViewportFrameWithSharedPipeline({
       resources,
       nodes: [createMediaNode()],
@@ -1734,8 +1742,21 @@ describe('viewport/export render pipeline parity guards', () => {
     const viewportDifferenceMaterial = [...resources.materials.values()].find(
       (material) => material.uniforms.u_tDifferenceReference?.value === referenceTexture,
     );
-    expect(viewportDifferenceMaterial?.uniforms.u_difference_edge.value).toBe(4);
-    expect(viewportDifferenceMaterial?.uniforms.u_difference_preview_mode.value).toBe(1);
+    expect(viewportDifferenceMaterial?.fragmentShader).toContain('float sampleDifference');
+    expect(
+      viewportRenderer.renderCalls.filter(({ material }) =>
+        materialWithUniform(material, 'u_operation'),
+      ),
+    ).toHaveLength(20);
+    const viewportCompositeMaterial = [...resources.materials.values()].find(
+      (material) => material.uniforms.u_tDifferenceMask,
+    );
+    expect(viewportCompositeMaterial?.uniforms.u_difference_preview_mode.value).toBe(1);
+    expect(
+      [...(resources.utilityTargets?.keys() ?? [])].filter((key) =>
+        key.includes('media-composite:difference-mask:'),
+      ),
+    ).toHaveLength(2);
   });
 
   it('bypasses OCIO RGB transforms for explicitly tagged data media', async () => {

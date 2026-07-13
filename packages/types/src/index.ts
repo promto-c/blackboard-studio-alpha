@@ -1429,6 +1429,8 @@ export interface GeneratedOutput {
   differenceMask?: GeneratedOutputDifferenceMask;
 }
 
+export type DifferenceMaskMorphologyShape = 'round' | 'square';
+
 /** Input/output difference matte applied as non-destructive generated-output alpha. */
 export interface GeneratedOutputDifferenceMask {
   enabled: boolean;
@@ -1436,16 +1438,20 @@ export interface GeneratedOutputDifferenceMask {
   referenceWidth: number;
   referenceHeight: number;
   referenceTransform?: Pick<ImageTransform, 'x' | 'y' | 'scaleX' | 'scaleY'>;
-  /** Difference below this normalized value is transparent. */
+  /** Perceptual difference score below which the mask is transparent. */
   thresholdLow: number;
-  /** Difference at or above this normalized value is fully opaque. */
+  /** Perceptual difference score at or above which the mask is fully opaque. */
   thresholdHigh: number;
+  /** Scene-pixel prefilter radius used to suppress codec noise and single-pixel variation. */
+  comparisonBlur: number;
   /** Signed scene-pixel edge adjustment. Negative contracts; positive expands. */
   edgeAdjustment: number;
-  /** Scene-pixel neighborhood used to reject isolated mask islands. */
+  /** Scene-pixel radius for morphological opening of small foreground regions. */
   removeSpecks: number;
-  /** Scene-pixel neighborhood used to close small holes in mask coverage. */
+  /** Scene-pixel radius for morphological closing of holes and gaps. */
   fillHoles: number;
+  /** Structuring-element shape used by opening, closing, and edge adjustment. */
+  morphologyShape: DifferenceMaskMorphologyShape;
   invert?: boolean;
   /** Viewport-only inspection mode. Export always uses the composited result. */
   previewMode?: 'result' | 'overlay' | 'matte';

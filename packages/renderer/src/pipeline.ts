@@ -28,9 +28,15 @@ import type {
   RendererOcioGpuUniform,
   RendererOcioShaderInfo,
   RendererMaskLayer,
+  RendererDifferenceMaskLayer,
   ResolveOutputContext,
 } from './types';
 import { RendererShader } from './glsl';
+import {
+  getDifferenceMaskMorphologyPasses,
+  MAX_DIFFERENCE_MASK_MORPHOLOGY_RADIUS,
+  PERCEPTUAL_DIFFERENCE_GLSL,
+} from './differenceMask';
 import { getValueAtFrame } from './animation';
 import { createNodePredicates } from './nodePredicates';
 import {
@@ -551,6 +557,110 @@ const createOcioUniforms = (
   return uniforms;
 };
 
+const buildDifferenceMaskBaseShader = (): string => `
+precision highp float;
+precision highp int;
+
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform sampler2D u_tDiffuse;
+uniform sampler2D u_tDifferenceReference;
+uniform float u_scaleX;
+uniform float u_scaleY;
+uniform vec2 u_offset;
+uniform vec2 u_scene_res;
+uniform vec2 u_image_res;
+uniform vec2 u_reference_res;
+uniform float u_reference_scaleX;
+uniform float u_reference_scaleY;
+uniform vec2 u_reference_offset;
+uniform float u_difference_low;
+uniform float u_difference_high;
+uniform float u_difference_comparison_blur;
+
+${PERCEPTUAL_DIFFERENCE_GLSL}
+
+float sampleDifference(vec2 sample_scene_px) {
+  vec2 output_px = sample_scene_px - u_offset;
+  output_px.x /= u_scaleX;
+  output_px.y /= u_scaleY;
+  vec2 output_uv = output_px / u_image_res + 0.5;
+  if (output_uv.x < 0.0 || output_uv.x > 1.0 || output_uv.y < 0.0 || output_uv.y > 1.0) {
+    return 0.0;
+  }
+
+  vec2 reference_px = sample_scene_px - u_reference_offset;
+  reference_px.x /= u_reference_scaleX;
+  reference_px.y /= u_reference_scaleY;
+  vec2 reference_uv = reference_px / u_reference_res + 0.5;
+  if (reference_uv.x < 0.0 || reference_uv.x > 1.0 || reference_uv.y < 0.0 || reference_uv.y > 1.0) {
+    return 1.0;
+  }
+
+  vec4 output_color = texture(u_tDiffuse, output_uv);
+  vec4 reference_color = texture(u_tDifferenceReference, reference_uv);
+  float smoothing_radius = max(u_difference_comparison_blur, 0.0);
+  if (smoothing_radius > 0.01) {
+    vec2 output_step = vec2(
+      smoothing_radius / max(abs(u_scaleX * u_image_res.x), 0.0001),
+      smoothing_radius / max(abs(u_scaleY * u_image_res.y), 0.0001)
+    );
+    vec2 reference_step = vec2(
+      smoothing_radius / max(abs(u_reference_scaleX * u_reference_res.x), 0.0001),
+      smoothing_radius / max(abs(u_reference_scaleY * u_reference_res.y), 0.0001)
+    );
+    output_color = output_color * 0.5
+      + texture(u_tDiffuse, output_uv + vec2(output_step.x, 0.0)) * 0.125
+      + texture(u_tDiffuse, output_uv - vec2(output_step.x, 0.0)) * 0.125
+      + texture(u_tDiffuse, output_uv + vec2(0.0, output_step.y)) * 0.125
+      + texture(u_tDiffuse, output_uv - vec2(0.0, output_step.y)) * 0.125;
+    reference_color = reference_color * 0.5
+      + texture(u_tDifferenceReference, reference_uv + vec2(reference_step.x, 0.0)) * 0.125
+      + texture(u_tDifferenceReference, reference_uv - vec2(reference_step.x, 0.0)) * 0.125
+      + texture(u_tDifferenceReference, reference_uv + vec2(0.0, reference_step.y)) * 0.125
+      + texture(u_tDifferenceReference, reference_uv - vec2(0.0, reference_step.y)) * 0.125;
+  }
+  return perceptualImageDifference(output_color, reference_color);
+}
+
+void main() {
+  vec2 scene_px = v_uv * u_scene_res - (u_scene_res / 2.0);
+  float threshold_high = max(u_difference_high, u_difference_low + 0.0001);
+  float mask_alpha = smoothstep(u_difference_low, threshold_high, sampleDifference(scene_px));
+  fragColor = vec4(vec3(mask_alpha), 1.0);
+}
+`;
+
+const DIFFERENCE_MASK_MORPHOLOGY_SHADER = `
+precision highp float;
+precision highp int;
+
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform sampler2D u_tMask;
+uniform vec2 u_direction;
+uniform float u_radius;
+uniform int u_operation;
+
+void main() {
+  float value = texture(u_tMask, v_uv).r;
+  for (int offset = 1; offset <= ${MAX_DIFFERENCE_MASK_MORPHOLOGY_RADIUS}; offset++) {
+    if (float(offset - 1) >= u_radius) break;
+    vec2 delta = u_direction * min(float(offset), u_radius);
+    float negative_sample = texture(u_tMask, v_uv - delta).r;
+    float positive_sample = texture(u_tMask, v_uv + delta).r;
+    if (u_operation == 0) {
+      value = min(value, min(negative_sample, positive_sample));
+    } else {
+      value = max(value, max(negative_sample, positive_sample));
+    }
+  }
+  fragColor = vec4(vec3(value), 1.0);
+}
+`;
+
 const buildOcioTransformedTextureShader = (
   ocioTransform: RendererOcioShaderInfo | null | undefined,
   compositeOver: boolean,
@@ -576,16 +686,7 @@ uniform bool u_use_generated_color;
 uniform vec3 u_generated_color;
 ${
   useDifferenceMask
-    ? `uniform sampler2D u_tDifferenceReference;
-uniform vec2 u_reference_res;
-uniform float u_reference_scaleX;
-uniform float u_reference_scaleY;
-uniform vec2 u_reference_offset;
-uniform float u_difference_low;
-uniform float u_difference_high;
-uniform float u_difference_edge;
-uniform float u_difference_remove_specks;
-uniform float u_difference_fill_holes;
+    ? `uniform sampler2D u_tDifferenceMask;
 uniform bool u_difference_invert;
 uniform int u_difference_preview_mode;`
     : ''
@@ -594,66 +695,6 @@ uniform int u_difference_preview_mode;`
 ${ocioTransform?.shaderText ?? ''}
 
 ${compositeOver ? STRAIGHT_ALPHA_OVER_GLSL : ''}
-
-${
-  useDifferenceMask
-    ? `float sampleDifference(vec2 sample_scene_px) {
-  vec2 output_px = sample_scene_px - u_offset;
-  output_px.x /= u_scaleX;
-  output_px.y /= u_scaleY;
-  vec2 output_uv = output_px / u_image_res + 0.5;
-  if (output_uv.x < 0.0 || output_uv.x > 1.0 || output_uv.y < 0.0 || output_uv.y > 1.0) {
-    return 0.0;
-  }
-
-  vec2 reference_px = sample_scene_px - u_reference_offset;
-  reference_px.x /= u_reference_scaleX;
-  reference_px.y /= u_reference_scaleY;
-  vec2 reference_uv = reference_px / u_reference_res + 0.5;
-  if (reference_uv.x < 0.0 || reference_uv.x > 1.0 || reference_uv.y < 0.0 || reference_uv.y > 1.0) {
-    return 1.0;
-  }
-
-  vec3 output_rgb = texture(u_tDiffuse, output_uv).rgb;
-  vec3 reference_rgb = texture(u_tDifferenceReference, reference_uv).rgb;
-  vec3 delta = abs(output_rgb - reference_rgb);
-  return max(delta.r, max(delta.g, delta.b));
-}
-
-float sampleMaskCoverage(vec2 sample_scene_px, float radius) {
-  vec2 diagonal = vec2(0.70710678) * radius;
-  float threshold_high = max(u_difference_high, u_difference_low + 0.0001);
-  float coverage = 0.0;
-  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(radius, 0.0)));
-  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(-radius, 0.0)));
-  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(0.0, radius)));
-  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(0.0, -radius)));
-  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + diagonal));
-  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(-diagonal.x, diagonal.y)));
-  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px + vec2(diagonal.x, -diagonal.y)));
-  coverage += smoothstep(u_difference_low, threshold_high, sampleDifference(sample_scene_px - diagonal));
-  return coverage / 8.0;
-}
-
-float sampleCleanedMask(vec2 sample_scene_px) {
-  float threshold_high = max(u_difference_high, u_difference_low + 0.0001);
-  float mask_alpha = smoothstep(
-    u_difference_low,
-    threshold_high,
-    sampleDifference(sample_scene_px)
-  );
-  if (u_difference_remove_specks > 0.01) {
-    float surrounding_coverage = sampleMaskCoverage(sample_scene_px, u_difference_remove_specks);
-    mask_alpha *= smoothstep(0.2, 0.58, surrounding_coverage);
-  }
-  if (u_difference_fill_holes > 0.01) {
-    float surrounding_coverage = sampleMaskCoverage(sample_scene_px, u_difference_fill_holes);
-    mask_alpha = max(mask_alpha, smoothstep(0.42, 0.78, surrounding_coverage));
-  }
-  return mask_alpha;
-}`
-    : ''
-}
 
 void main() {
   vec2 scene_px = v_uv * u_scene_res - (u_scene_res / 2.0);
@@ -683,28 +724,7 @@ void main() {
   float difference_alpha = 1.0;
   ${
     useDifferenceMask
-      ? `difference_alpha = sampleCleanedMask(scene_px);
-  float edge_radius = abs(u_difference_edge);
-  if (edge_radius > 0.01) {
-    float adjusted_alpha = difference_alpha;
-    vec2 diagonal = vec2(0.70710678) * edge_radius;
-    float samples[8] = float[8](
-      sampleCleanedMask(scene_px + vec2(edge_radius, 0.0)),
-      sampleCleanedMask(scene_px + vec2(-edge_radius, 0.0)),
-      sampleCleanedMask(scene_px + vec2(0.0, edge_radius)),
-      sampleCleanedMask(scene_px + vec2(0.0, -edge_radius)),
-      sampleCleanedMask(scene_px + vec2(diagonal.x, diagonal.y)),
-      sampleCleanedMask(scene_px + vec2(-diagonal.x, diagonal.y)),
-      sampleCleanedMask(scene_px + vec2(diagonal.x, -diagonal.y)),
-      sampleCleanedMask(scene_px - diagonal)
-    );
-    for (int index = 0; index < 8; index++) {
-      adjusted_alpha = u_difference_edge > 0.0
-        ? max(adjusted_alpha, samples[index])
-        : min(adjusted_alpha, samples[index]);
-    }
-    difference_alpha = adjusted_alpha;
-  }
+      ? `difference_alpha = texture(u_tDifferenceMask, v_uv).r;
   if (u_difference_invert) difference_alpha = 1.0 - difference_alpha;`
       : ''
   }
@@ -1303,6 +1323,110 @@ const applyBlendMode = (material: THREE.ShaderMaterial, mode: BlendMode): void =
 const applyNoBlending = (material: THREE.ShaderMaterial): void => {
   material.blending = THREE.NoBlending;
   material.transparent = false;
+};
+
+interface DifferenceMaskPassRenderOptions {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  quad: THREE.Mesh;
+  getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial;
+  getTarget: (key: string) => THREE.WebGLRenderTarget;
+  ensureTarget: (target: THREE.WebGLRenderTarget) => void;
+  resourceKey: string;
+  outputTexture: THREE.Texture;
+  referenceTexture: THREE.Texture;
+  layer: RendererMediaCompositeLayer;
+  mask: RendererDifferenceMaskLayer;
+  sceneSize: RenderFormatSize;
+  frame: number;
+}
+
+/** Renders a scene-aligned perceptual matte and applies true multipass morphology. */
+const renderDifferenceMaskTexture = ({
+  renderer,
+  scene,
+  camera,
+  quad,
+  getMaterial,
+  getTarget,
+  ensureTarget,
+  resourceKey,
+  outputTexture,
+  referenceTexture,
+  layer,
+  mask,
+  sceneSize,
+  frame,
+}: DifferenceMaskPassRenderOptions): THREE.Texture => {
+  let readTarget = getTarget(`${resourceKey}:a`);
+  let writeTarget = getTarget(`${resourceKey}:b`);
+  ensureTarget(readTarget);
+  ensureTarget(writeTarget);
+
+  const outputTransform = layer.transform;
+  const baseMaterial = getMaterial(`${resourceKey}:base`, buildDifferenceMaskBaseShader(), {
+    u_tDiffuse: { value: outputTexture },
+    u_tDifferenceReference: { value: referenceTexture },
+    u_scaleX: { value: getValueAtFrame(outputTransform?.scaleX ?? 1, frame) },
+    u_scaleY: { value: getValueAtFrame(outputTransform?.scaleY ?? 1, frame) },
+    u_offset: {
+      value: new THREE.Vector2(
+        getValueAtFrame(outputTransform?.x ?? 0, frame),
+        getValueAtFrame(outputTransform?.y ?? 0, frame),
+      ),
+    },
+    u_scene_res: { value: new THREE.Vector2(sceneSize.width, sceneSize.height) },
+    u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
+    u_reference_res: { value: new THREE.Vector2(mask.width, mask.height) },
+    u_reference_scaleX: { value: getValueAtFrame(mask.transform?.scaleX ?? 1, frame) },
+    u_reference_scaleY: { value: getValueAtFrame(mask.transform?.scaleY ?? 1, frame) },
+    u_reference_offset: {
+      value: new THREE.Vector2(
+        getValueAtFrame(mask.transform?.x ?? 0, frame),
+        getValueAtFrame(mask.transform?.y ?? 0, frame),
+      ),
+    },
+    u_difference_low: { value: mask.thresholdLow },
+    u_difference_high: { value: mask.thresholdHigh },
+    u_difference_comparison_blur: { value: mask.comparisonBlur },
+  });
+  applyNoBlending(baseMaterial);
+  quad.material = baseMaterial;
+  renderer.setRenderTarget(readTarget);
+  renderer.render(scene, camera);
+
+  const passes = getDifferenceMaskMorphologyPasses(mask);
+  const pixelX = 1 / sceneSize.width;
+  const pixelY = 1 / sceneSize.height;
+  const diagonalScale = Math.SQRT1_2;
+  passes.forEach((pass) => {
+    const direction =
+      pass.axis === 'horizontal'
+        ? new THREE.Vector2(pixelX, 0)
+        : pass.axis === 'vertical'
+          ? new THREE.Vector2(0, pixelY)
+          : pass.axis === 'diagonal-down'
+            ? new THREE.Vector2(pixelX * diagonalScale, pixelY * diagonalScale)
+            : new THREE.Vector2(pixelX * diagonalScale, -pixelY * diagonalScale);
+    const morphologyMaterial = getMaterial(
+      `${resourceKey}:${pass.operation}:${pass.axis}`,
+      DIFFERENCE_MASK_MORPHOLOGY_SHADER,
+      {
+        u_tMask: { value: readTarget.texture },
+        u_direction: { value: direction },
+        u_radius: { value: pass.radius },
+        u_operation: { value: pass.operation === 'erode' ? 0 : 1 },
+      },
+    );
+    applyNoBlending(morphologyMaterial);
+    quad.material = morphologyMaterial;
+    renderer.setRenderTarget(writeTarget);
+    renderer.render(scene, camera);
+    [readTarget, writeTarget] = [writeTarget, readTarget];
+  });
+
+  return readTarget.texture;
 };
 
 /**
@@ -2590,7 +2714,7 @@ export const renderWithSharedPipeline = async (
         if (!texture) continue;
 
         const differenceMask = layer.differenceMask;
-        const differenceMaskTexture = differenceMask
+        const differenceReferenceTexture = differenceMask
           ? await loadTextureForMediaAsset({
               key: differenceMask.textureKey,
               assetId: differenceMask.assetId ?? differenceMask.textureKey,
@@ -2599,9 +2723,28 @@ export const renderWithSharedPipeline = async (
               targetFrame: frame,
             })
           : null;
-        const useDifferenceMask = Boolean(differenceMask && differenceMaskTexture);
+        const useDifferenceMask = Boolean(differenceMask && differenceReferenceTexture);
 
         const transform = layer.transform;
+        const renderedDifferenceMask =
+          differenceMask && differenceReferenceTexture
+            ? renderDifferenceMaskTexture({
+                renderer,
+                scene,
+                camera,
+                quad,
+                getMaterial,
+                getTarget: (key) => getUtilityOutputTarget(key),
+                ensureTarget: (maskTarget) => ensureTargetForSceneSize(maskTarget),
+                resourceKey: `${node.id}:media-composite:difference-mask`,
+                outputTexture: texture,
+                referenceTexture: differenceReferenceTexture,
+                layer,
+                mask: differenceMask,
+                sceneSize: currentSceneSize,
+                frame,
+              })
+            : null;
         const ocioTransform = getMediaLayerOcioColorSpaceTransform(
           layer,
           options.sceneNode.colorSpace,
@@ -2628,29 +2771,9 @@ export const renderWithSharedPipeline = async (
             u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
             u_source_alpha_mode: { value: getSourceAlphaModeUniform(layer) },
             u_flipY: { value: false },
-            ...(useDifferenceMask && differenceMask && differenceMaskTexture
+            ...(useDifferenceMask && differenceMask && renderedDifferenceMask
               ? {
-                  u_tDifferenceReference: { value: differenceMaskTexture },
-                  u_reference_res: {
-                    value: new THREE.Vector2(differenceMask.width, differenceMask.height),
-                  },
-                  u_reference_scaleX: {
-                    value: getValueAtFrame(differenceMask.transform?.scaleX ?? 1, frame),
-                  },
-                  u_reference_scaleY: {
-                    value: getValueAtFrame(differenceMask.transform?.scaleY ?? 1, frame),
-                  },
-                  u_reference_offset: {
-                    value: new THREE.Vector2(
-                      getValueAtFrame(differenceMask.transform?.x ?? 0, frame),
-                      getValueAtFrame(differenceMask.transform?.y ?? 0, frame),
-                    ),
-                  },
-                  u_difference_low: { value: differenceMask.thresholdLow },
-                  u_difference_high: { value: differenceMask.thresholdHigh },
-                  u_difference_edge: { value: differenceMask.edgeAdjustment },
-                  u_difference_remove_specks: { value: differenceMask.removeSpecks },
-                  u_difference_fill_holes: { value: differenceMask.fillHoles },
+                  u_tDifferenceMask: { value: renderedDifferenceMask },
                   u_difference_invert: { value: differenceMask.invert === true },
                   u_difference_preview_mode: { value: 0 },
                 }
@@ -3500,12 +3623,31 @@ export const renderViewportFrameWithSharedPipeline = (
       if (!texture) continue;
 
       const differenceMask = layer.differenceMask;
-      const differenceMaskTexture = differenceMask
+      const differenceReferenceTexture = differenceMask
         ? getMediaTextureByKey?.(differenceMask.textureKey, differenceMask.assetId, false)
         : null;
-      const useDifferenceMask = Boolean(differenceMask && differenceMaskTexture);
+      const useDifferenceMask = Boolean(differenceMask && differenceReferenceTexture);
 
       const transform = layer.transform;
+      const renderedDifferenceMask =
+        differenceMask && differenceReferenceTexture
+          ? renderDifferenceMaskTexture({
+              renderer,
+              scene: resources.scene,
+              camera: resources.camera,
+              quad: resources.quad,
+              getMaterial,
+              getTarget: (key) => getUtilityOutputTarget(key),
+              ensureTarget: (maskTarget) => ensureTargetForSceneSize(maskTarget),
+              resourceKey: `${node.id}:media-composite:difference-mask`,
+              outputTexture: texture,
+              referenceTexture: differenceReferenceTexture,
+              layer,
+              mask: differenceMask,
+              sceneSize: currentSceneSize,
+              frame,
+            })
+          : null;
       const ocioTransform = getMediaLayerOcioColorSpaceTransform(
         layer,
         sceneNode.colorSpace,
@@ -3532,29 +3674,9 @@ export const renderViewportFrameWithSharedPipeline = (
           u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
           u_source_alpha_mode: { value: getSourceAlphaModeUniform(layer) },
           u_flipY: { value: false },
-          ...(useDifferenceMask && differenceMask && differenceMaskTexture
+          ...(useDifferenceMask && differenceMask && renderedDifferenceMask
             ? {
-                u_tDifferenceReference: { value: differenceMaskTexture },
-                u_reference_res: {
-                  value: new THREE.Vector2(differenceMask.width, differenceMask.height),
-                },
-                u_reference_scaleX: {
-                  value: getValueAtFrame(differenceMask.transform?.scaleX ?? 1, frame),
-                },
-                u_reference_scaleY: {
-                  value: getValueAtFrame(differenceMask.transform?.scaleY ?? 1, frame),
-                },
-                u_reference_offset: {
-                  value: new THREE.Vector2(
-                    getValueAtFrame(differenceMask.transform?.x ?? 0, frame),
-                    getValueAtFrame(differenceMask.transform?.y ?? 0, frame),
-                  ),
-                },
-                u_difference_low: { value: differenceMask.thresholdLow },
-                u_difference_high: { value: differenceMask.thresholdHigh },
-                u_difference_edge: { value: differenceMask.edgeAdjustment },
-                u_difference_remove_specks: { value: differenceMask.removeSpecks },
-                u_difference_fill_holes: { value: differenceMask.fillHoles },
+                u_tDifferenceMask: { value: renderedDifferenceMask },
                 u_difference_invert: { value: differenceMask.invert === true },
                 u_difference_preview_mode: {
                   value:

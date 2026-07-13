@@ -59,6 +59,17 @@ export {
   destinationOutStraightAlphaPixel,
   sourceOverStraightAlphaPixel,
 } from './alpha';
+export {
+  calculatePerceptualDifference,
+  getDifferenceMaskMorphologyPasses,
+  MAX_DIFFERENCE_MASK_MORPHOLOGY_RADIUS,
+  srgbToOklab,
+  type DifferenceMaskCleanupSettings,
+  type DifferenceMaskMorphologyAxis,
+  type DifferenceMaskMorphologyOperation,
+  type DifferenceMaskMorphologyPass,
+  type DifferenceMaskRgba,
+} from './differenceMask';
 
 // WebGL runtime helpers
 export {

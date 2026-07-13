@@ -17,6 +17,12 @@ describe('RangeSlider', () => {
     );
 
     expect(screen.getAllByRole('slider')).toHaveLength(2);
+    expect(
+      screen
+        .getByRole('slider', { name: 'Saturation low' })
+        .querySelector('[aria-hidden="true"]')
+        ?.classList.contains('bb-range-slider__handle-marker'),
+    ).toBe(true);
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Saturation low' }), {
       key: 'ArrowRight',
     });
@@ -69,9 +75,9 @@ describe('RangeSlider', () => {
       left: 0,
       right: 100,
       top: 0,
-      bottom: 28,
+      bottom: 18,
       width: 100,
-      height: 28,
+      height: 18,
       x: 0,
       y: 0,
       toJSON: () => ({}),

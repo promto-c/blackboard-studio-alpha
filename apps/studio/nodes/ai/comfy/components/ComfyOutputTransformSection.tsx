@@ -1,13 +1,18 @@
 import { useMemo, useRef, useState } from 'react';
 import type {
   ComfyNode,
+  DifferenceMaskMorphologyShape,
   GeneratedOutput,
   GeneratedOutputDifferenceMask,
   ImageTransform,
 } from '@blackboard/types';
 import { ImageFitMode, NodeType, SceneNode } from '@blackboard/types';
-import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
-import { CollapsibleSection, Slider } from '@blackboard/ui';
+import {
+  getValueAtFrame,
+  hasKeyframeAt,
+  MAX_DIFFERENCE_MASK_MORPHOLOGY_RADIUS,
+} from '@blackboard/renderer';
+import { CollapsibleSection, RangeSlider, Slider } from '@blackboard/ui';
 import { calculateTransformForFitMode } from '@/state/editor/selectors';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { ImageTransformSettings, type LinkedScaleUpdate } from '@/nodes/ImageTransformSettings';
@@ -19,6 +24,10 @@ import {
   SplitButton,
 } from '@/components';
 import { getMediaSourceColorSpace } from '@/color-management';
+import {
+  DEFAULT_COMFY_DIFFERENCE_MASK_SETTINGS,
+  resolveComfyDifferenceMask,
+} from '../comfyDifferenceMask';
 import { ComfyAlignmentOptionsSection } from './ComfyAlignmentOptionsSection';
 
 const formatSize = (width: number, height: number): string =>
@@ -57,6 +66,9 @@ export function ComfyOutputTransformSection({
   const positionXAtCurrentFrame = getValueAtFrame(outputTransform.x, currentFrame);
   const positionYAtCurrentFrame = getValueAtFrame(outputTransform.y, currentFrame);
   const outputSizeLabel = formatSize(output.width, output.height);
+  const differenceMask = output.differenceMask
+    ? resolveComfyDifferenceMask(output.differenceMask)
+    : null;
 
   const autoFitScale = useMemo(() => {
     if (outputUseOutputSizeAsScene || !isAutoImageFitMode(fitMode)) return null;
@@ -138,12 +150,12 @@ export function ComfyOutputTransformSection({
     updates: Partial<GeneratedOutputDifferenceMask>,
     withHistory = true,
   ) => {
-    if (!output.differenceMask) return;
+    if (!differenceMask) return;
     const nextGeneratedOutputs = (node.generatedOutputs ?? []).map((generatedOutput) =>
       generatedOutput.id === output.id
         ? {
             ...generatedOutput,
-            differenceMask: { ...output.differenceMask, ...updates },
+            differenceMask: { ...differenceMask, ...updates },
           }
         : generatedOutput,
     );
@@ -151,7 +163,7 @@ export function ComfyOutputTransformSection({
   };
 
   const startMaskAdjustmentPreview = () => {
-    const previewMode = output.differenceMask?.previewMode ?? 'result';
+    const previewMode = differenceMask?.previewMode ?? 'result';
     maskPreviewBeforeInteractionRef.current = previewMode;
     if (previewMode === 'result') {
       updateOutputDifferenceMask({ previewMode: 'overlay' }, false);
@@ -245,40 +257,34 @@ export function ComfyOutputTransformSection({
       ) : null}
 
       {output.mediaKind !== 'model_3d' ? (
-        <CollapsibleSection
-          title="Post Process"
-          defaultOpen={output.differenceMask?.enabled === true}
-        >
+        <CollapsibleSection title="Post Process" defaultOpen={differenceMask?.enabled === true}>
           <div className="space-y-3">
             <label
               className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 text-xs transition ${
-                output.differenceMask
+                differenceMask
                   ? 'cursor-pointer border-white/10 bg-gray-900/50 text-gray-300 hover:border-primary-300/20'
                   : 'cursor-not-allowed border-white/5 bg-gray-950/30 text-gray-600'
               }`}
             >
               <input
                 type="checkbox"
-                checked={output.differenceMask?.enabled === true}
-                disabled={!output.differenceMask}
+                checked={differenceMask?.enabled === true}
+                disabled={!differenceMask}
                 onChange={(event) => updateOutputDifferenceMask({ enabled: event.target.checked })}
                 className="peer sr-only"
               />
-              <CheckboxIndicator
-                checked={output.differenceMask?.enabled === true}
-                className="mt-0.5"
-              />
+              <CheckboxIndicator checked={differenceMask?.enabled === true} className="mt-0.5" />
               <span className="min-w-0">
                 <span className="block font-medium">Difference mask</span>
                 <span className="mt-0.5 block text-[11px] leading-4 text-gray-500">
-                  {output.differenceMask
+                  {differenceMask
                     ? 'Reveal only areas changed from the image used for this generation.'
                     : 'Generate again with an image input to capture a difference reference.'}
                 </span>
               </span>
             </label>
 
-            {output.differenceMask?.enabled ? (
+            {differenceMask?.enabled ? (
               <div className="space-y-3 rounded-lg border border-white/10 bg-gray-950/30 p-3">
                 <div>
                   <div className="mb-2 text-xs font-medium text-gray-300">Viewport preview</div>
@@ -289,7 +295,7 @@ export function ComfyOutputTransformSection({
                       { value: 'overlay', label: 'Overlay' },
                       { value: 'matte', label: 'Matte' },
                     ]}
-                    value={output.differenceMask.previewMode ?? 'result'}
+                    value={differenceMask.previewMode ?? 'result'}
                     onChange={(previewMode) =>
                       updateOutputDifferenceMask({
                         previewMode: previewMode as NonNullable<
@@ -303,61 +309,88 @@ export function ComfyOutputTransformSection({
                   </div>
                 </div>
                 <div>
-                  <div className="text-xs font-medium text-gray-300">Difference range</div>
+                  <div className="text-xs font-medium text-gray-300">Change detection</div>
                   <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
-                    Changes fade in between the minimum and full-opacity thresholds.
+                    Compares perceptual OKLab lightness and color, not raw RGB channels. Small image
+                    noise is smoothed before measuring change.
                   </div>
                 </div>
                 <Slider
-                  label="Minimum change"
-                  value={output.differenceMask.thresholdLow}
+                  label="Noise reduction"
+                  description="Smooth compression noise and single-pixel variation before comparison."
+                  value={differenceMask.comparisonBlur}
                   min={0}
-                  max={0.5}
-                  step={0.005}
-                  displayFormatter={(value) => `${Math.round(value * 100)}%`}
+                  max={6}
+                  step={0.25}
+                  displayFormatter={(value) => (value === 0 ? 'Off' : `${value.toFixed(2)} px`)}
                   onInteractionStart={startMaskAdjustmentPreview}
                   onInteractionEnd={endMaskAdjustmentPreview}
-                  onChange={(thresholdLow) =>
-                    updateMaskWhileAdjusting({
-                      thresholdLow: Math.min(
-                        thresholdLow,
-                        output.differenceMask!.thresholdHigh - 0.005,
-                      ),
+                  onChange={(comparisonBlur) => updateMaskWhileAdjusting({ comparisonBlur })}
+                  onReset={() =>
+                    updateOutputDifferenceMask({
+                      comparisonBlur: DEFAULT_COMFY_DIFFERENCE_MASK_SETTINGS.comparisonBlur,
                     })
                   }
-                  onReset={() => updateOutputDifferenceMask({ thresholdLow: 0.06 })}
                 />
-                <Slider
-                  label="Full opacity"
-                  value={output.differenceMask.thresholdHigh}
-                  min={0.005}
-                  max={0.75}
-                  step={0.005}
-                  displayFormatter={(value) => `${Math.round(value * 100)}%`}
-                  onInteractionStart={startMaskAdjustmentPreview}
-                  onInteractionEnd={endMaskAdjustmentPreview}
-                  onChange={(thresholdHigh) =>
-                    updateMaskWhileAdjusting({
-                      thresholdHigh: Math.max(
-                        thresholdHigh,
-                        output.differenceMask!.thresholdLow + 0.005,
-                      ),
-                    })
-                  }
-                  onReset={() => updateOutputDifferenceMask({ thresholdHigh: 0.18 })}
-                />
+                <div>
+                  <RangeSlider
+                    label="Change opacity range"
+                    value={[differenceMask.thresholdLow, differenceMask.thresholdHigh]}
+                    min={0}
+                    max={0.75}
+                    step={0.005}
+                    minGap={0.005}
+                    displayFormatter={(value) => `${Math.round(value * 100)}%`}
+                    onInteractionStart={startMaskAdjustmentPreview}
+                    onInteractionEnd={endMaskAdjustmentPreview}
+                    onValueChange={([thresholdLow, thresholdHigh]) =>
+                      updateMaskWhileAdjusting({ thresholdLow, thresholdHigh })
+                    }
+                    onReset={() =>
+                      updateOutputDifferenceMask({
+                        thresholdLow: DEFAULT_COMFY_DIFFERENCE_MASK_SETTINGS.thresholdLow,
+                        thresholdHigh: DEFAULT_COMFY_DIFFERENCE_MASK_SETTINGS.thresholdHigh,
+                      })
+                    }
+                    trackBackground="linear-gradient(90deg, #111827, #64748b 45%, #f8fafc)"
+                  />
+                  <div className="mt-1 flex items-center justify-between gap-3 text-[10px] leading-4 text-gray-500">
+                    <span>Minimum change · transparent below</span>
+                    <span className="text-right">Full opacity · solid above</span>
+                  </div>
+                </div>
                 <div className="border-t border-white/10 pt-3">
-                  <div className="text-xs font-medium text-gray-300">Cleanup</div>
+                  <div className="text-xs font-medium text-gray-300">Shape cleanup</div>
                   <div className="mt-0.5 text-[11px] leading-4 text-gray-500">
-                    Remove isolated islands or close transparent holes without changing the main
-                    mask edge.
+                    Uses GPU morphological opening and closing on the matte, preserving solid change
+                    regions while cleaning their shape.
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-2 text-xs font-medium text-gray-300">Cleanup shape</div>
+                  <SegmentedControl
+                    ariaLabel="Difference mask cleanup shape"
+                    options={[
+                      { value: 'round', label: 'Round' },
+                      { value: 'square', label: 'Square' },
+                    ]}
+                    value={differenceMask.morphologyShape}
+                    onChange={(morphologyShape) =>
+                      updateOutputDifferenceMask({
+                        morphologyShape: morphologyShape as DifferenceMaskMorphologyShape,
+                      })
+                    }
+                  />
+                  <div className="mt-1 text-[10px] leading-4 text-gray-500">
+                    Round avoids box corners at large radii. Square preserves axis-aligned geometry.
                   </div>
                 </div>
                 <Slider
-                  label="Remove small islands"
-                  value={output.differenceMask.removeSpecks ?? 0}
+                  label="Remove small regions"
+                  description="Opening removes isolated regions and narrow protrusions up to this radius."
+                  value={differenceMask.removeSpecks}
                   min={0}
-                  max={24}
+                  max={MAX_DIFFERENCE_MASK_MORPHOLOGY_RADIUS}
                   step={1}
                   displayFormatter={(value) => (value === 0 ? 'Off' : `${value} px`)}
                   onInteractionStart={startMaskAdjustmentPreview}
@@ -366,10 +399,11 @@ export function ComfyOutputTransformSection({
                   onReset={() => updateOutputDifferenceMask({ removeSpecks: 0 })}
                 />
                 <Slider
-                  label="Fill small holes"
-                  value={output.differenceMask.fillHoles ?? 0}
+                  label="Fill holes and gaps"
+                  description="Closing fills transparent holes and narrow gaps up to this radius."
+                  value={differenceMask.fillHoles}
                   min={0}
-                  max={24}
+                  max={MAX_DIFFERENCE_MASK_MORPHOLOGY_RADIUS}
                   step={1}
                   displayFormatter={(value) => (value === 0 ? 'Off' : `${value} px`)}
                   onInteractionStart={startMaskAdjustmentPreview}
@@ -380,9 +414,9 @@ export function ComfyOutputTransformSection({
                 <Slider
                   label="Mask edge"
                   description="Contract or expand the cleaned mask edge. Applied last."
-                  value={output.differenceMask.edgeAdjustment}
-                  min={-32}
-                  max={32}
+                  value={differenceMask.edgeAdjustment}
+                  min={-MAX_DIFFERENCE_MASK_MORPHOLOGY_RADIUS}
+                  max={MAX_DIFFERENCE_MASK_MORPHOLOGY_RADIUS}
                   step={1}
                   displayFormatter={(value) =>
                     value < 0
@@ -399,13 +433,13 @@ export function ComfyOutputTransformSection({
                 <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-400">
                   <input
                     type="checkbox"
-                    checked={output.differenceMask.invert === true}
+                    checked={differenceMask.invert === true}
                     onChange={(event) =>
                       updateOutputDifferenceMask({ invert: event.target.checked })
                     }
                     className="peer sr-only"
                   />
-                  <CheckboxIndicator checked={output.differenceMask.invert === true} />
+                  <CheckboxIndicator checked={differenceMask.invert === true} />
                   Invert mask
                 </label>
               </div>

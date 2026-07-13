@@ -10,6 +10,7 @@ import {
   AnyNode,
   ColorProcessingDomain,
   DataChannelSemantic,
+  DifferenceMaskMorphologyShape,
   GeneratedColorResolver,
   ImageTransform,
   InputPortType,
@@ -272,9 +273,11 @@ export interface MediaDifferenceMaskLayer {
   transform?: Partial<Pick<ImageTransform, 'x' | 'y' | 'scaleX' | 'scaleY'>>;
   thresholdLow: number;
   thresholdHigh: number;
+  comparisonBlur: number;
   edgeAdjustment: number;
   removeSpecks: number;
   fillHoles: number;
+  morphologyShape: DifferenceMaskMorphologyShape;
   invert?: boolean;
   previewMode?: 'result' | 'overlay' | 'matte';
 }

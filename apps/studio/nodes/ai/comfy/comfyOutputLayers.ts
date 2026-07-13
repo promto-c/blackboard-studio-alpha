@@ -11,6 +11,7 @@ import { isDataChannel, isDataMediaColorManagement } from '@/color-management';
 import { createAutoFitTransform, type SourceTransformNode } from '../../sourceNodeBehavior';
 import { getComfyOutputTransform } from './comfyOutputTransform';
 import { isComfy3DGeneratedOutput } from './comfyOutputActivation';
+import { resolveComfyDifferenceMask } from './comfyDifferenceMask';
 export {
   getComfyGeneratedOutputsForActivation,
   getComfyGeneratedOutputsForGalleryActivation,
@@ -212,7 +213,9 @@ export const getComfyCompositeLayers = (
       if (!texture) return [];
 
       const transform = getComfyOutputTransform({ node, output, sceneNode });
-      const differenceMask = output.differenceMask?.enabled ? output.differenceMask : null;
+      const differenceMask = output.differenceMask?.enabled
+        ? resolveComfyDifferenceMask(output.differenceMask)
+        : null;
       const differenceMaskTransform = differenceMask
         ? (differenceMask.referenceTransform ??
           createAutoFitTransform({
@@ -249,9 +252,11 @@ export const getComfyCompositeLayers = (
                   transform: differenceMaskTransform,
                   thresholdLow: differenceMask.thresholdLow,
                   thresholdHigh: differenceMask.thresholdHigh,
+                  comparisonBlur: differenceMask.comparisonBlur,
                   edgeAdjustment: differenceMask.edgeAdjustment,
                   removeSpecks: differenceMask.removeSpecks ?? 0,
                   fillHoles: differenceMask.fillHoles ?? 0,
+                  morphologyShape: differenceMask.morphologyShape,
                   invert: differenceMask.invert,
                   previewMode: differenceMask.previewMode,
                 },

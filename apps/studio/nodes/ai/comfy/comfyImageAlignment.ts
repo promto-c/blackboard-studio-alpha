@@ -8,6 +8,7 @@ import {
   refineNccSubPixel,
 } from '@/utils/opticalFlow';
 import { isAutoImageFitMode } from '@/nodes/imageFitMode';
+import { decodeRasterImageSource, type RasterImageSource } from '@/utils/rasterImageSource';
 import { getComfyOutputRegionOffset, getComfyOutputTransform } from './comfyOutputTransform';
 import { resolveComfyAlignmentOptions, type ComfyAlignmentOptions } from './comfyAlignmentOptions';
 
@@ -537,25 +538,20 @@ export const selectTrackingPoints = (image: PixelImage): Array<{ x: number; y: n
 /**
  * Get analysis dimensions for a second high-resolution pass.
  * Returns null if the source is already at or below the low-res threshold. */
-const getHighResAnalysisSize = async (
-  blob: Blob,
-): Promise<{ width: number; height: number } | null> => {
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const lowScale = Math.min(1, ANALYSIS_MAX_SIZE / Math.max(bitmap.width, bitmap.height));
-    // Only run high-res if the low-res scale was < 0.9 (meaning we downscaled)
-    if (lowScale >= 0.9) return null;
-    const highScale = Math.min(
-      1,
-      (ANALYSIS_MAX_SIZE * HIGH_RES_SCALE) / Math.max(bitmap.width, bitmap.height),
-    );
-    return {
-      width: Math.max(32, Math.round(bitmap.width * highScale)),
-      height: Math.max(32, Math.round(bitmap.height * highScale)),
-    };
-  } finally {
-    bitmap.close();
-  }
+const getHighResAnalysisSize = (
+  source: RasterImageSource,
+): { width: number; height: number } | null => {
+  const lowScale = Math.min(1, ANALYSIS_MAX_SIZE / Math.max(source.width, source.height));
+  // Only run high-res if the low-res scale was < 0.9 (meaning we downscaled)
+  if (lowScale >= 0.9) return null;
+  const highScale = Math.min(
+    1,
+    (ANALYSIS_MAX_SIZE * HIGH_RES_SCALE) / Math.max(source.width, source.height),
+  );
+  return {
+    width: Math.max(32, Math.round(source.width * highScale)),
+    height: Math.max(32, Math.round(source.height * highScale)),
+  };
 };
 
 /**
@@ -565,18 +561,18 @@ const getHighResAnalysisSize = async (
  * so the transform is directly comparable. Returns the more precise HR estimate.
  */
 const estimateWithHighResRefinement = async (
-  inputBlob: Blob,
-  outputBlob: Blob,
+  inputImage: RasterImageSource,
+  outputImage: RasterImageSource,
   coarseEstimate: ComfyImageAlignmentEstimate,
   coarseSize: { width: number; height: number },
   holdOutChangedRegions: boolean,
 ): Promise<ComfyImageAlignmentEstimate | null> => {
-  const hrSize = await getHighResAnalysisSize(inputBlob);
+  const hrSize = getHighResAnalysisSize(inputImage);
   if (!hrSize) return coarseEstimate;
 
   const [hrSource, hrOutput] = await Promise.all([
-    readNormalizedPixels(inputBlob, hrSize.width, hrSize.height),
-    readNormalizedPixels(outputBlob, hrSize.width, hrSize.height),
+    readNormalizedPixels(inputImage, hrSize.width, hrSize.height),
+    readNormalizedPixels(outputImage, hrSize.width, hrSize.height),
   ]);
   const highResCoarseEstimate: ComfyImageAlignmentEstimate = {
     ...coarseEstimate,
@@ -674,35 +670,25 @@ export const estimateComfyImageAlignment = (
 };
 
 const readNormalizedPixels = async (
-  blob: Blob,
+  image: RasterImageSource,
   width: number,
   height: number,
 ): Promise<PixelImage> => {
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    if (!context) throw new Error('Could not create an image alignment canvas.');
-    context.drawImage(bitmap, 0, 0, width, height);
-    return { data: context.getImageData(0, 0, width, height).data, width, height };
-  } finally {
-    bitmap.close();
-  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Could not create an image alignment canvas.');
+  context.drawImage(image.source, 0, 0, width, height);
+  return { data: context.getImageData(0, 0, width, height).data, width, height };
 };
 
-const getAnalysisSize = async (blob: Blob): Promise<{ width: number; height: number }> => {
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const scale = Math.min(1, ANALYSIS_MAX_SIZE / Math.max(bitmap.width, bitmap.height));
-    return {
-      width: Math.max(32, Math.round(bitmap.width * scale)),
-      height: Math.max(32, Math.round(bitmap.height * scale)),
-    };
-  } finally {
-    bitmap.close();
-  }
+const getAnalysisSize = (source: RasterImageSource): { width: number; height: number } => {
+  const scale = Math.min(1, ANALYSIS_MAX_SIZE / Math.max(source.width, source.height));
+  return {
+    width: Math.max(32, Math.round(source.width * scale)),
+    height: Math.max(32, Math.round(source.height * scale)),
+  };
 };
 
 export const alignComfyOutputToInput = async ({
@@ -710,6 +696,7 @@ export const alignComfyOutputToInput = async ({
   output,
   sceneNode,
   inputBlob,
+  inputNameHint,
   reference,
   options,
 }: {
@@ -717,6 +704,7 @@ export const alignComfyOutputToInput = async ({
   output: GeneratedOutput;
   sceneNode: { width: number; height: number } | null | undefined;
   inputBlob: Blob;
+  inputNameHint?: string;
   reference?: ComfyAlignmentReference;
   options?: ComfyAlignmentOptions;
 }): Promise<GeneratedOutput | null> => {
@@ -725,102 +713,117 @@ export const alignComfyOutputToInput = async ({
   if (!outputBlob) return null;
 
   const opts = resolveComfyAlignmentOptions(options);
+  const inputImage = await decodeRasterImageSource(inputBlob, {
+    nameHint: inputNameHint,
+    label: 'Comfy alignment input image',
+  });
+  let outputImage: RasterImageSource | null = null;
 
-  const analysisSize = await getAnalysisSize(inputBlob);
-  const [sourcePixels, outputPixels] = await Promise.all([
-    readNormalizedPixels(inputBlob, analysisSize.width, analysisSize.height),
-    readNormalizedPixels(outputBlob, analysisSize.width, analysisSize.height),
-  ]);
-  const estimate = estimateComfyImageAlignment(sourcePixels, outputPixels, opts);
-  if (!estimate) return null;
+  try {
+    outputImage = await decodeRasterImageSource(outputBlob, {
+      nameHint: output.label,
+      label: 'selected Comfy output image',
+      cacheKey: output.src,
+    });
+    const analysisSize = getAnalysisSize(inputImage);
+    const [sourcePixels, outputPixels] = await Promise.all([
+      readNormalizedPixels(inputImage, analysisSize.width, analysisSize.height),
+      readNormalizedPixels(outputImage, analysisSize.width, analysisSize.height),
+    ]);
+    const estimate = estimateComfyImageAlignment(sourcePixels, outputPixels, opts);
+    if (!estimate) return null;
 
-  // --- Optional: high-resolution refinement pass ---
-  const finalEstimate = opts.highResRefinement
-    ? await estimateWithHighResRefinement(
-        inputBlob,
-        outputBlob,
-        estimate,
-        analysisSize,
-        opts.skipEditedRegions,
-      )
-    : estimate;
+    // --- Optional: high-resolution refinement pass ---
+    const finalEstimate = opts.highResRefinement
+      ? await estimateWithHighResRefinement(
+          inputImage,
+          outputImage,
+          estimate,
+          analysisSize,
+          opts.skipEditedRegions,
+        )
+      : estimate;
 
-  if (!finalEstimate) return null;
+    if (!finalEstimate) return null;
 
-  const baseFitMode = isAutoImageFitMode(output.transform?.fitMode ?? ImageFitMode.FIT)
-    ? (output.transform?.fitMode ?? ImageFitMode.FIT)
-    : ImageFitMode.FIT;
-  const baseOutput = {
-    ...output,
-    transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: baseFitMode },
-  };
-  const baseTransform = getComfyOutputTransform({ node, output: baseOutput, sceneNode });
-  const baseScaleX = Number(baseTransform.scaleX);
-  const baseScaleY = Number(baseTransform.scaleY);
-  const baseX = Number(baseTransform.x);
-  const baseY = Number(baseTransform.y);
-  if (![baseScaleX, baseScaleY, baseX, baseY].every(Number.isFinite)) return null;
+    const baseFitMode = isAutoImageFitMode(output.transform?.fitMode ?? ImageFitMode.FIT)
+      ? (output.transform?.fitMode ?? ImageFitMode.FIT)
+      : ImageFitMode.FIT;
+    const baseOutput = {
+      ...output,
+      transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: baseFitMode },
+    };
+    const baseTransform = getComfyOutputTransform({ node, output: baseOutput, sceneNode });
+    const baseScaleX = Number(baseTransform.scaleX);
+    const baseScaleY = Number(baseTransform.scaleY);
+    const baseX = Number(baseTransform.x);
+    const baseY = Number(baseTransform.y);
+    if (![baseScaleX, baseScaleY, baseX, baseY].every(Number.isFinite)) return null;
 
-  // Correction = INVERSE of the estimate: source = correctionScale * output + correctionOffset
-  //   correctionScale = 1/estimateScale
-  //   correctionOffset = -estimateOffset / estimateScale
-  const correction = invertAxisAlignedTransformAroundCenter(
-    {
-      scaleX: finalEstimate.sourceToOutputScaleX,
-      scaleY: finalEstimate.sourceToOutputScaleY,
-      offsetX: finalEstimate.sourceToOutputOffsetX,
-      offsetY: finalEstimate.sourceToOutputOffsetY,
-    },
-    analysisSize,
-  );
-  if (!correction) return null;
+    // Correction = INVERSE of the estimate: source = correctionScale * output + correctionOffset
+    //   correctionScale = 1/estimateScale
+    //   correctionOffset = -estimateOffset / estimateScale
+    const correction = invertAxisAlignedTransformAroundCenter(
+      {
+        scaleX: finalEstimate.sourceToOutputScaleX,
+        scaleY: finalEstimate.sourceToOutputScaleY,
+        offsetX: finalEstimate.sourceToOutputOffsetX,
+        offsetY: finalEstimate.sourceToOutputOffsetY,
+      },
+      analysisSize,
+    );
+    if (!correction) return null;
 
-  const regionOffset = getComfyOutputRegionOffset({ node, output, sceneNode });
+    const regionOffset = getComfyOutputRegionOffset({ node, output, sceneNode });
 
-  if (
-    reference &&
-    reference.width > 0 &&
-    reference.height > 0 &&
-    [
-      reference.transform.x,
-      reference.transform.y,
-      reference.transform.scaleX,
-      reference.transform.scaleY,
-    ].every(Number.isFinite)
-  ) {
-    // The tracker solved native input pixels -> native output pixels. Compose
-    // its inverse with the input node's actual scene placement instead of
-    // assuming both images use the Comfy node's auto-fit transform.
+    if (
+      reference &&
+      reference.width > 0 &&
+      reference.height > 0 &&
+      [
+        reference.transform.x,
+        reference.transform.y,
+        reference.transform.scaleX,
+        reference.transform.scaleY,
+      ].every(Number.isFinite)
+    ) {
+      // The tracker solved native input pixels -> native output pixels. Compose
+      // its inverse with the input node's actual scene placement instead of
+      // assuming both images use the Comfy node's auto-fit transform.
+      return {
+        ...output,
+        transform: composeComfyAlignmentWithReference({
+          reference,
+          outputSize: output,
+          analysisSize,
+          correction,
+          regionOffset,
+        }),
+      };
+    }
+
+    // Coordinate mapping from analysis-coords to screen-coords.
+    // Pixel (px, py) at analysis resolution maps to pixel (px, py) at output resolution
+    // via: screen_x = px * (baseScaleX * output.width) / analysisWidth.
+    // Screen Y is flipped relative to canvas Y (renderer Y-up vs canvas Y-down), hence `-` on y.
     return {
       ...output,
-      transform: composeComfyAlignmentWithReference({
-        reference,
-        outputSize: output,
-        analysisSize,
-        correction,
-        regionOffset,
-      }),
+      transform: {
+        x:
+          baseX -
+          regionOffset.x +
+          correction.offsetX * ((baseScaleX * output.width) / analysisSize.width),
+        y:
+          baseY -
+          regionOffset.y -
+          correction.offsetY * ((baseScaleY * output.height) / analysisSize.height),
+        scaleX: baseScaleX * correction.scaleX,
+        scaleY: baseScaleY * correction.scaleY,
+        fitMode: ImageFitMode.CUSTOM,
+      },
     };
+  } finally {
+    outputImage?.close();
+    inputImage.close();
   }
-
-  // Coordinate mapping from analysis-coords to screen-coords.
-  // Pixel (px, py) at analysis resolution maps to pixel (px, py) at output resolution
-  // via: screen_x = px * (baseScaleX * output.width) / analysisWidth.
-  // Screen Y is flipped relative to canvas Y (renderer Y-up vs canvas Y-down), hence `-` on y.
-  return {
-    ...output,
-    transform: {
-      x:
-        baseX -
-        regionOffset.x +
-        correction.offsetX * ((baseScaleX * output.width) / analysisSize.width),
-      y:
-        baseY -
-        regionOffset.y -
-        correction.offsetY * ((baseScaleY * output.height) / analysisSize.height),
-      scaleX: baseScaleX * correction.scaleX,
-      scaleY: baseScaleY * correction.scaleY,
-      fitMode: ImageFitMode.CUSTOM,
-    },
-  };
 };
