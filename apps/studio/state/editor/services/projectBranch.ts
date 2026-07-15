@@ -37,6 +37,7 @@ import { collectNodeAssetIds } from '@/state/editor/utils';
 import { cherryPickAgentNodeChanges } from '@/utils/agentBranchMerge';
 import type { GetState, SetState } from '@/state/editor/slices/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
+import { clampToTimelineRange, getSceneTimelineRange } from '@/utils/timelineRange';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -175,13 +176,16 @@ export const loadProjectStateIntoEditor = async ({
   }
 
   const sceneNode = findSceneNode(getOrderedNodesFromFlow(rootFlow));
-  const maxFrames = sceneNode?.maxFrames ?? 0;
+  const timelineRange = sceneNode
+    ? getSceneTimelineRange(sceneNode)
+    : { startFrame: 0, endFrame: 0, frameCount: 1 };
+  const maxFrames = timelineRange.endFrame;
   const fps = sceneNode?.fps || 30;
   const initialState = getInitialState();
   const currentFrame =
     typeof projectState.currentFrame === 'number' && Number.isFinite(projectState.currentFrame)
-      ? Math.max(0, Math.min(maxFrames, Math.round(projectState.currentFrame)))
-      : initialState.currentFrame;
+      ? clampToTimelineRange(projectState.currentFrame, timelineRange)
+      : timelineRange.startFrame;
   const nextViewerSlots = sanitizeViewerSlots(
     projectState.viewerSlots as ViewerSlotAssignments | undefined,
     loadedNodes,
@@ -232,6 +236,7 @@ export const loadProjectStateIntoEditor = async ({
     activeAiAgentRunId: nextActiveAiAgentRunId,
     activeAiChatId: nextActiveAiChatId,
     currentFrame,
+    timelineStartFrame: timelineRange.startFrame,
     maxFrames,
     fps,
     nodePositionsByFlow: projectState.nodePositionsByFlow || {},

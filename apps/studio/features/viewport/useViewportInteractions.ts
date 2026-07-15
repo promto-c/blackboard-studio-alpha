@@ -44,8 +44,11 @@ import { useComfyCropInteraction } from '@/nodes/ai/comfy/useComfyCropInteractio
 import { useRotoInteraction } from '@/nodes/builtin/roto/useRotoInteraction';
 
 // ── Adapter classes (one per node type with viewport interaction) ───
-import { noopViewportInteraction } from './interactions';
+import { BaseViewportInteraction } from './interactions/BaseViewportInteraction';
 import type { ViewportAdapterContext } from './viewportAdapterContext';
+
+// Side-effect: registers adapter factories on node definitions
+import './interactions';
 
 // -------------------------------------------------------------------
 // Re-export types that consumers (Viewport.tsx) need
@@ -339,14 +342,14 @@ export function useViewportInteractions(
   ctx.hooks = { roto, paint, warp, bokeh, comfyCrop, spatial };
 
   // ── Get interaction from registry (swapped only when node type changes) ──
-  const interactionRef = useRef<ViewportInteraction>(noopViewportInteraction);
+  const interactionRef = useRef<ViewportInteraction>(BaseViewportInteraction.NOOP);
   const prevTypeRef = useRef<string | null>(null);
   const nodeType = selectedNode?.type ?? null;
 
   if (nodeType !== prevTypeRef.current) {
     prevTypeRef.current = nodeType;
     const def = selectedNode ? nodeRegistry.get(selectedNode.type) : undefined;
-    interactionRef.current = def?.createViewportInteraction?.(ctx) ?? noopViewportInteraction;
+    interactionRef.current = def?.createViewportInteraction?.(ctx) ?? BaseViewportInteraction.NOOP;
   }
 
   // ── Return ──────────────────────────────────────────────────────────

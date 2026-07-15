@@ -1,6 +1,6 @@
 [package]
 name = "blackboard-studio-desktop"
-version = "0.0.22"
+version = "0.0.23"
 description = "Native desktop shell for Blackboard Studio."
 authors = ["Blackboard Studio Maintainers"]
 edition = "2021"

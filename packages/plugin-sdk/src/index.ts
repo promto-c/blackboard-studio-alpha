@@ -6,14 +6,16 @@
 import React from 'react';
 import type {
   ColorProcessingDomain,
+  DataChannelSemantic,
   GeneratedColorResolver,
   RenderSceneSize,
   RenderSceneSizeBehavior,
+  RgbaChannel,
   TransformData,
 } from '@blackboard/types';
 
-// Re-export TransformData for plugin authors
-export type { TransformData } from '@blackboard/types';
+// Re-export shared public types used by plugin node contracts.
+export type { RgbaChannel, TransformData } from '@blackboard/types';
 
 // ---------------------------------------------------------------------------
 // Core types re-exported for plugin authors
@@ -57,7 +59,13 @@ export interface InputPortDescriptor {
   name: string;
   label: string;
   type: InputPortType;
+  /** Optional technical channel semantic for data/alpha/vector/depth ports. */
+  dataSemantic?: DataChannelSemantic;
+  /** RGBA component sampled when a full image is connected to this scalar channel input. */
+  channel?: RgbaChannel;
   processingDomain?: ColorProcessingDomain;
+  /** Optional CSS color used by the host for graph sockets and wires. */
+  color?: string;
   required: boolean;
   description?: string;
   uniformName?: string;
@@ -75,9 +83,27 @@ export type InputPortDescriptors =
   | InputPortDescriptor[]
   | ((node: unknown) => InputPortDescriptor[]);
 
+/** Declares a source-port-aware output on a node. */
+export interface OutputPortDescriptor {
+  name: string;
+  label: string;
+  dataSemantic?: DataChannelSemantic;
+  /** Component carrying this scalar output; the remaining RGBA components must be zero. */
+  channel?: RgbaChannel;
+  processingDomain?: ColorProcessingDomain;
+  /** Optional CSS color used by the host for graph sockets and wires. */
+  color?: string;
+  description?: string;
+}
+
+export type OutputPortDescriptors =
+  | OutputPortDescriptor[]
+  | ((node: unknown) => OutputPortDescriptor[]);
+
 // ---------------------------------------------------------------------------
-// Viewport interaction handler — enables extensions to declare viewport
-// mouse event behavior without modifying Viewport.tsx.
+// Viewport interaction interface — extensions implement this to handle
+// mouse events in the viewport. Created by the host via
+// `createViewportInteraction` factory on NodeDefinition.
 // ---------------------------------------------------------------------------
 
 /** Scene-space point. */
@@ -86,54 +112,40 @@ export interface ViewportScenePoint {
   y: number;
 }
 
-/** Context passed to every viewport interaction callback. */
-export interface ViewportInteractionContext {
-  node: unknown;
-  scenePoint: ViewportScenePoint;
+/** Normalized pointer event passed to ViewportInteraction handlers. */
+export interface ViewportPointerEvent {
   clientPoint: ViewportScenePoint;
-  activeTool: string | null;
-  modifiers: { alt: boolean; shift: boolean; ctrl: boolean; meta: boolean };
-  frame: number;
-  zoom: number;
+  scenePoint: ViewportScenePoint;
+  button: number;
+  modifiers: {
+    alt: boolean;
+    shift: boolean;
+    ctrl: boolean;
+    meta: boolean;
+  };
   nativeEvent: MouseEvent;
 }
 
-/** Mutation API provided to interaction handlers. */
-export interface ViewportInteractionActions {
-  updateNode: (nodeId: string, changes: Record<string, unknown>) => void;
-  pushHistory: (label: string) => void;
-  setActiveViewportTool: (tool: string | null) => void;
-  setKeyframe: (nodeId: string, path: string, frame: number, value: number) => void;
-}
-
-/** Result returned by interaction handlers. */
-export interface ViewportInteractionResult {
-  cursor?: string;
-  handled?: boolean;
-}
-
 /**
- * Viewport interaction handler — implement these methods to handle
- * mouse events in the viewport for your extension's node type.
+ * ViewportInteraction — a plain TypeScript object that encapsulates
+ * viewport mouse handling for a specific node type.
+ *
+ * The host creates this via `createViewportInteraction(context)` on the
+ * node definition and delegates mouse events to it without knowing
+ * the node type.
  */
-export interface ViewportInteractionHandler {
-  onMouseDown?: (
-    ctx: ViewportInteractionContext,
-    actions: ViewportInteractionActions,
-  ) => ViewportInteractionResult | void;
-  onMouseMove?: (
-    ctx: ViewportInteractionContext,
-    actions: ViewportInteractionActions,
-  ) => ViewportInteractionResult | void;
-  onMouseUp?: (
-    ctx: ViewportInteractionContext,
-    actions: ViewportInteractionActions,
-  ) => ViewportInteractionResult | void;
-  onDoubleClick?: (
-    ctx: ViewportInteractionContext,
-    actions: ViewportInteractionActions,
-  ) => ViewportInteractionResult | void;
-  getCursor?: (ctx: Omit<ViewportInteractionContext, 'nativeEvent'>) => string | undefined;
+export interface ViewportInteraction {
+  getCursor(): string | null;
+  isPreviewActive?(): boolean;
+  hasGlobalMouseCapture(): boolean;
+  handleMouseDown(event: ViewportPointerEvent): boolean;
+  handleMouseMove(event: ViewportPointerEvent): boolean;
+  handleMouseUp(event: ViewportPointerEvent): boolean;
+  handleMouseLeave(): void;
+  cleanupOnToolChange(previousTool: string | null): void;
+  handleContextMenu?(event: ViewportPointerEvent): boolean;
+  shouldForceOverlays(): boolean;
+  handleCommand(commandId: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +271,7 @@ export interface NodeDefinition {
   category: 'Image' | 'Spatial' | 'Adjustment' | 'Effect' | 'Utility';
   renderMode: RenderMode;
   processingDomain: ColorProcessingDomain | ((node: unknown) => ColorProcessingDomain);
-  /** Domain accepted by the implicit primary `pipe` input when it differs from the output. */
+  /** Domain accepted by the primary `pipe` input when it differs from the output. */
   primaryInputDomain?: ColorProcessingDomain | ((node: unknown) => ColorProcessingDomain);
   /** `reinterpret` permits color-domain mismatches at an explicit conversion boundary. */
   primaryInputDomainPolicy?: 'strict' | 'reinterpret';
@@ -284,11 +296,13 @@ export interface NodeDefinition {
   sceneSize?: RendererSceneSizeBehavior;
   getGeneratedColor?: GeneratedColorResolver<unknown, RenderContext>;
 
-  /** Optional secondary input ports. The primary `pipe` port is reserved and implicit. */
+  /** Optional named input ports. The host provides the reserved primary `pipe` port. */
   inputPorts?: InputPortDescriptors;
+  /** Optional source-port-aware outputs, including host graph presentation metadata. */
+  outputPorts?: OutputPortDescriptors;
 
-  /** Viewport interaction handler for mouse events. */
-  viewportInteraction?: ViewportInteractionHandler;
+  /** Factory that creates a ViewportInteraction for this node type. */
+  createViewportInteraction?: (context: unknown) => ViewportInteraction;
   /** Media descriptor for texture/asset management. */
   mediaDescriptor?: MediaDescriptor;
   /** Declarative flags for node type behavior. */

@@ -45,6 +45,7 @@ const createProjectState = (assetId: string) => {
       height: 1080,
       bitDepth: 16,
       colorSpace: ColorManagementDefaults.WORKING_SPACE,
+      startFrame: 0,
       maxFrames: 0,
       fps: 30,
     },

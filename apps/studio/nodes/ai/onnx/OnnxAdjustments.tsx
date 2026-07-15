@@ -47,6 +47,7 @@ import { Link } from '@blackboard/icons';
 import { OnnxRunButtonGroup } from './OnnxRunButtonGroup';
 import { useOnnxModelMetadata } from './useOnnxModelMetadata';
 import SourceTransformControls from '../../SourceTransformControls';
+import { getSceneTimelineRange } from '@/utils/timelineRange';
 
 const MIN_INPUT_SIZE = 64;
 const MAX_INPUT_SIZE = 8192;
@@ -751,20 +752,29 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
   );
 
   const runNodeAllFrames = useCallback(() => {
-    const maxFrames = sceneNode?.maxFrames ?? 1;
-    if (maxFrames <= 1) {
+    if (!sceneNode) {
       void runNode();
       return;
     }
-    const frames = Array.from({ length: maxFrames }, (_, i) => i);
+    const range = getSceneTimelineRange(sceneNode);
+    if (range.frameCount <= 1) {
+      void runNode();
+      return;
+    }
+    const frames = Array.from({ length: range.frameCount }, (_, index) => range.startFrame + index);
     void runNode(frames);
   }, [runNode, sceneNode]);
 
   const runNodeFrameRange = useCallback(
     (startFrame: number, endFrame: number) => {
-      const maxFrames = sceneNode?.maxFrames ?? 1;
+      if (!sceneNode) return;
+      const range = getSceneTimelineRange(sceneNode);
       const frames: number[] = [];
-      for (let f = startFrame; f <= endFrame && f < maxFrames; f++) {
+      for (
+        let f = Math.max(startFrame, range.startFrame);
+        f <= endFrame && f <= range.endFrame;
+        f++
+      ) {
         frames.push(f);
       }
       if (frames.length > 0) {
@@ -774,7 +784,10 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
     [runNode, sceneNode],
   );
 
-  const totalFrames = sceneNode?.maxFrames ?? 1;
+  const timelineRange = sceneNode
+    ? getSceneTimelineRange(sceneNode)
+    : { startFrame: 0, endFrame: 0, frameCount: 1 };
+  const totalFrames = timelineRange.frameCount;
   const storedFrameCount = useMemo(() => (node.frames ?? []).filter(Boolean).length, [node.frames]);
 
   const handleSelectOutput = useCallback(
@@ -1434,6 +1447,8 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
                 disabled={isInferenceRunning}
                 runShortcutHint={'\u2318\u23CE'}
                 currentFrame={currentFrame}
+                timelineStartFrame={timelineRange.startFrame}
+                timelineEndFrame={timelineRange.endFrame}
                 totalFrames={totalFrames}
                 storedFrameCount={storedFrameCount}
                 showRunFrames={node.resultBehavior === 'frame_sequence'}

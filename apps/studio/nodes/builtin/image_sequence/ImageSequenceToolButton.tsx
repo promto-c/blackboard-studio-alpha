@@ -62,7 +62,7 @@ const ImageSequenceToolButton = () => {
         label="Sequence"
         icon={<Icons.FolderOpen className="h-6 w-6" />}
         onClick={handleOpenFolder}
-        title="Import a folder of images as a sequence node."
+        title="Import a folder containing one or more image sequences."
       />
       <input
         type="file"

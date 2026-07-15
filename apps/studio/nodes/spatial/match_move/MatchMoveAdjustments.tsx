@@ -16,7 +16,6 @@ import {
   StyledDropdown,
 } from '@blackboard/ui';
 import { ExecuteButton, SegmentedControl, ToggleSettingRow } from '@/components';
-import { SettingRow } from '@/components/SettingRow';
 import { useNodeExecutionHandler } from '@/hooks/useNodeExecutionHandler';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import {
@@ -54,10 +53,9 @@ const lensModelOptions = [
 const formatNumber = (value: number | undefined, digits = 2): string =>
   Number.isFinite(value) ? (value as number).toFixed(digits) : '-';
 
-const clampFrame = (value: number, maxFrames: number): number => {
-  const maxFrame = Math.max(0, maxFrames);
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(maxFrame, Math.round(value)));
+const clampFrame = (value: number, startFrame: number, endFrame: number): number => {
+  if (!Number.isFinite(value)) return startFrame;
+  return Math.max(startFrame, Math.min(endFrame, Math.round(value)));
 };
 
 const getStatusClassName = (result: MatchMoveSolveResult | undefined): string => {
@@ -130,6 +128,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
   const node = anyNode as MatchMoveNode;
   const nodes = useEditorSelector((state) => state.nodes);
   const currentFrame = useEditorSelector((state) => state.currentFrame);
+  const timelineStartFrame = useEditorSelector((state) => state.timelineStartFrame);
   const maxFrames = useEditorSelector((state) => state.maxFrames);
   const fps = useEditorSelector((state) => state.fps);
   const projectId = useEditorSelector((state) => state.projectId);
@@ -279,8 +278,8 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
       const trackingSettings = {
         ...node.tracking,
         sourceId: effectiveSourceId,
-        startFrame: clampFrame(node.tracking.startFrame, maxFrames),
-        endFrame: clampFrame(node.tracking.endFrame, maxFrames),
+        startFrame: clampFrame(node.tracking.startFrame, timelineStartFrame, maxFrames),
+        endFrame: clampFrame(node.tracking.endFrame, timelineStartFrame, maxFrames),
       };
       const result = await runMatchMoveTracking({
         getFramePixelData: reader.getFramePixelData,
@@ -371,6 +370,7 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
     runState.progress,
     runState.running,
     sourceId,
+    timelineStartFrame,
   ]);
 
   useNodeExecutionHandler(node.id, runTracking);
@@ -415,29 +415,45 @@ function MatchMoveAdjustments({ node: anyNode }: { node: AnyNode }) {
             <LabeledNumberInput
               label="Start"
               value={node.tracking.startFrame}
-              min={0}
+              min={timelineStartFrame}
               max={maxFrames}
-              onChange={(value) => commitTracking({ startFrame: clampFrame(value, maxFrames) })}
+              onChange={(value) =>
+                commitTracking({
+                  startFrame: clampFrame(value, timelineStartFrame, maxFrames),
+                })
+              }
             />
             <LabeledNumberInput
               label="End"
               value={node.tracking.endFrame}
-              min={0}
+              min={timelineStartFrame}
               max={maxFrames}
-              onChange={(value) => commitTracking({ endFrame: clampFrame(value, maxFrames) })}
+              onChange={(value) =>
+                commitTracking({
+                  endFrame: clampFrame(value, timelineStartFrame, maxFrames),
+                })
+              }
             />
             <div className="grid grid-rows-2 gap-1">
               <button
                 type="button"
                 className="rounded bg-white/[0.05] px-2 text-[10px] font-semibold text-gray-300 hover:bg-white/[0.08]"
-                onClick={() => commitTracking({ startFrame: clampFrame(currentFrame, maxFrames) })}
+                onClick={() =>
+                  commitTracking({
+                    startFrame: clampFrame(currentFrame, timelineStartFrame, maxFrames),
+                  })
+                }
               >
                 Start
               </button>
               <button
                 type="button"
                 className="rounded bg-white/[0.05] px-2 text-[10px] font-semibold text-gray-300 hover:bg-white/[0.08]"
-                onClick={() => commitTracking({ endFrame: clampFrame(currentFrame, maxFrames) })}
+                onClick={() =>
+                  commitTracking({
+                    endFrame: clampFrame(currentFrame, timelineStartFrame, maxFrames),
+                  })
+                }
               >
                 End
               </button>

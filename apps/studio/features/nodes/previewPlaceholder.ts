@@ -12,13 +12,14 @@ export interface PreviewEntry {
 
 /**
  * Build a preview entry for a hovered node type, determining whether a
- * merge node would also be created based on existing stacks.
+ * merge node would also be created based on connected source stacks.
  *
  * Returns null when no preview is relevant (previewNodeType is null).
  */
 export function computePreviewEntry(
   previewNodeType: NodeType | null,
   stacks: AnyNode[][],
+  connectedNodeIds: ReadonlySet<string>,
 ): PreviewEntry | null {
   if (!previewNodeType) return null;
 
@@ -27,10 +28,7 @@ export function computePreviewEntry(
 
   const isMerge =
     isSourceNodeType(previewNodeType) &&
-    stacks.some(
-      (s) =>
-        isSourceNodeType(s[0].type) && !(s[0] as { detachedFromPipe?: boolean }).detachedFromPipe,
-    );
+    stacks.some((stack) => isSourceNodeType(stack[0].type) && connectedNodeIds.has(stack[0].id));
 
   return { nodeType: previewNodeType, name, isMerge };
 }

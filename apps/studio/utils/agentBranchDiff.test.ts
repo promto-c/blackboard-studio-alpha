@@ -20,6 +20,7 @@ const scene = (id: string, name: string): SceneNode => ({
   height: 1080,
   bitDepth: 16,
   colorSpace: 'Linear',
+  startFrame: 0,
   maxFrames: 12,
   fps: 24,
 });

@@ -90,6 +90,22 @@ describe('compare preferences', () => {
   });
 });
 
+describe('paint brush preferences', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('defaults and clamps streaming stroke stabilization', () => {
+    expect(createDefaultPreferences().paintBrush.stabilization).toBe(30);
+
+    localStorage.setItem(
+      'blackboard-studio-preferences',
+      JSON.stringify({ paintBrush: { stabilization: 999 } }),
+    );
+    expect(loadPreferences().paintBrush.stabilization).toBe(100);
+  });
+});
+
 describe('Roto interactive preview preferences', () => {
   afterEach(() => {
     localStorage.clear();

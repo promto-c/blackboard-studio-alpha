@@ -3,7 +3,7 @@ import { NodeType, type AnyNode, type GroupExternalInput, type GroupNode } from 
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { getInputPorts } from '@/nodes/helpers';
 import { getRootFlow } from '@/state/editor/flowModel';
-import { usesImplicitPipelineInput } from '@/utils/nodePredicates';
+import { usesPipelineInput } from '@/utils/nodePredicates';
 import * as Icons from '@blackboard/icons';
 import { TextInput } from '@blackboard/ui';
 
@@ -15,8 +15,8 @@ type Candidate = {
 };
 
 const getInputPortsForNode = (node: AnyNode) => {
-  const explicitPorts = getInputPorts(node);
-  if (!usesImplicitPipelineInput(node.type)) return explicitPorts;
+  const declaredPorts = getInputPorts(node);
+  if (!usesPipelineInput(node.type)) return declaredPorts;
 
   return [
     {
@@ -26,7 +26,7 @@ const getInputPortsForNode = (node: AnyNode) => {
       required: false,
       description: 'Primary pipeline input.',
     },
-    ...explicitPorts.filter((port) => port.name !== 'pipe'),
+    ...declaredPorts.filter((port) => port.name !== 'pipe'),
   ];
 };
 

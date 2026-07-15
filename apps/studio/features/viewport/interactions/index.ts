@@ -1,10 +1,7 @@
 /**
- * Barrel export for viewport interaction adapter classes.
- *
- * Module-level side-effect block registers the adapter factories
- * on node definitions at import time. Named exports are only the
- * symbols consumed by other files — the adapter classes themselves
- * are only referenced here via side-effect registration.
+ * Side-effect module that registers viewport interaction adapter factories
+ * on node definitions. No named exports — the adapters are consumed via
+ * the node registry's `createViewportInteraction` field.
  */
 import { RotoViewportInteraction } from './rotoViewportInteraction';
 import { PaintViewportInteraction } from './paintViewportInteraction';
@@ -13,9 +10,6 @@ import { SpatialViewportInteraction } from './spatialViewportInteraction';
 import { BokehViewportInteraction } from './bokehViewportInteraction';
 import { KeyerViewportInteraction } from './keyerViewportInteraction';
 import { ComfyViewportInteraction } from './comfyViewportInteraction';
-import { noopViewportInteraction } from './BaseViewportInteraction';
-
-export { noopViewportInteraction };
 
 // ── Register adapter factories on node definitions ─────────────────
 import { rotoNode } from '@/nodes/builtin/roto';

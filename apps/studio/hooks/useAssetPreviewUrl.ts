@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { useEditorSelector } from '@/state/editorContext';
 import {
   createAssetPreviewCacheKey,
   isAbortError,
@@ -9,6 +8,7 @@ import {
   type PreviewPriority,
   type PreviewStrategy,
 } from '@/services/assetPreview';
+import { useMediaPreviewColorManagement } from './useMediaPreviewColorManagement';
 
 export type { AssetPreviewSource };
 
@@ -19,6 +19,7 @@ export interface UseAssetPreviewOptions {
   maxDimension: number;
   priority: PreviewPriority;
   enabled?: boolean;
+  autoDetectDisplayView?: boolean;
 }
 
 export interface UseAssetPreviewResult {
@@ -39,7 +40,10 @@ export const useAssetPreview = (
   source: AssetPreviewSource | null,
   options: UseAssetPreviewOptions,
 ): UseAssetPreviewResult => {
-  const projectColorManagement = useEditorSelector((state) => state.colorManagement);
+  const projectColorManagement = useMediaPreviewColorManagement(
+    source?.mediaColorManagement ?? null,
+    options.autoDetectDisplayView,
+  );
   const [result, setResult] = useState<UseAssetPreviewResult>(IDLE_RESULT);
   const enabled = options.enabled ?? true;
   const previewKey = source

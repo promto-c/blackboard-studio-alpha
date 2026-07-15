@@ -29,6 +29,7 @@ export const mergePaintBrushSettings = (
   return {
     ...merged,
     softness: resolvePaintSoftness(merged),
+    stabilization: clampPercent(merged.stabilization),
     spacing: clampSpacing(merged.spacing),
   };
 };

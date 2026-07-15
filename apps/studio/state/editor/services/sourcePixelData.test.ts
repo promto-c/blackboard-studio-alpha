@@ -39,6 +39,7 @@ const SCENE_NODE: AnyNode = {
   height: 2,
   bitDepth: 16,
   colorSpace: ColorManagementDefaults.WORKING_SPACE,
+  startFrame: 0,
   maxFrames: 0,
   fps: 30,
 };

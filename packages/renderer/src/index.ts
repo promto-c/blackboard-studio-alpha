@@ -9,7 +9,6 @@ export type {
   NodeRegistryLike,
   RendererColorManagement,
   ResolveOutputContext,
-  PaintTextureBundle,
   RendererMaskLayer,
   RendererInputPort,
   RendererOutputPort,
@@ -49,6 +48,8 @@ export {
   isTechnicalProcessingDomain,
   resolveRendererNodeProcessingDomain,
   resolveRendererNodeInputDomain,
+  resolveRendererNodeInputPort,
+  resolveRendererNodeOutputPort,
 } from './processingDomains';
 
 // Straight-alpha CPU compositing and texture upload contract

@@ -60,14 +60,9 @@ describe('KeyerViewportInteraction', () => {
 
     const event = {
       button: 0,
-      clientX: 0,
-      clientY: 0,
-      sceneX: 0,
-      sceneY: 0,
-      ctrlKey: false,
-      shiftKey: false,
-      altKey: false,
-      metaKey: false,
+      clientPoint: { x: 0, y: 0 },
+      scenePoint: { x: 0, y: 0 },
+      modifiers: { alt: false, shift: false, ctrl: false, meta: false },
       nativeEvent: { preventDefault } as unknown as MouseEvent,
     };
 
@@ -189,14 +184,9 @@ describe('KeyerViewportInteraction', () => {
     } as unknown as ViewportAdapterContext);
     const pointer = (sceneX: number, sceneY: number) => ({
       button: 0,
-      clientX: 0,
-      clientY: 0,
-      sceneX,
-      sceneY,
-      ctrlKey: false,
-      shiftKey: false,
-      altKey: false,
-      metaKey: false,
+      clientPoint: { x: 0, y: 0 },
+      scenePoint: { x: sceneX, y: sceneY },
+      modifiers: { alt: false, shift: false, ctrl: false, meta: false },
       nativeEvent: { preventDefault: vi.fn() } as unknown as MouseEvent,
     });
 

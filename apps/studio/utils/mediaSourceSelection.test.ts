@@ -27,6 +27,7 @@ const SCENE_NODE: AnyNode = {
   height: 1080,
   bitDepth: 16,
   colorSpace: 'Linear',
+  startFrame: 0,
   maxFrames: 0,
   fps: 30,
 };

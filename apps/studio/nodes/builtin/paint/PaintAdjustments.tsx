@@ -18,6 +18,7 @@ const LIFETIME_MODE_OPTIONS = [
 function PaintAdjustments({ node: anyNode }: { node: AnyNode }) {
   const node = anyNode as PaintNode;
   const currentFrame = useEditorSelector((state) => state.currentFrame);
+  const timelineStartFrame = useEditorSelector((state) => state.timelineStartFrame);
   const maxFrames = useEditorSelector((state) => state.maxFrames);
   const { updateNode } = useEditorActions();
 
@@ -41,8 +42,8 @@ function PaintAdjustments({ node: anyNode }: { node: AnyNode }) {
             ? normalizedLifetime
             : {
                 mode: 'range',
-                startFrame: clampPaintFrame(currentFrame, maxFrames),
-                endFrame: clampPaintFrame(currentFrame, maxFrames),
+                startFrame: clampPaintFrame(currentFrame, maxFrames, timelineStartFrame),
+                endFrame: clampPaintFrame(currentFrame, maxFrames, timelineStartFrame),
               },
       },
       true,
@@ -58,8 +59,8 @@ function PaintAdjustments({ node: anyNode }: { node: AnyNode }) {
         ? normalizedLifetime
         : {
             mode: 'range' as const,
-            startFrame: clampPaintFrame(currentFrame, maxFrames),
-            endFrame: clampPaintFrame(currentFrame, maxFrames),
+            startFrame: clampPaintFrame(currentFrame, maxFrames, timelineStartFrame),
+            endFrame: clampPaintFrame(currentFrame, maxFrames, timelineStartFrame),
           };
 
     updateNode(
@@ -67,7 +68,7 @@ function PaintAdjustments({ node: anyNode }: { node: AnyNode }) {
       {
         defaultLifetime: {
           ...baseRange,
-          [key]: clampPaintFrame(value, maxFrames),
+          [key]: clampPaintFrame(value, maxFrames, timelineStartFrame),
         },
       },
       true,
@@ -81,8 +82,8 @@ function PaintAdjustments({ node: anyNode }: { node: AnyNode }) {
       ? normalizedDefaultLifetime
       : {
           mode: 'range' as const,
-          startFrame: clampPaintFrame(currentFrame, maxFrames),
-          endFrame: clampPaintFrame(currentFrame, maxFrames),
+          startFrame: clampPaintFrame(currentFrame, maxFrames, timelineStartFrame),
+          endFrame: clampPaintFrame(currentFrame, maxFrames, timelineStartFrame),
         };
 
   return (
@@ -112,7 +113,7 @@ function PaintAdjustments({ node: anyNode }: { node: AnyNode }) {
                 </span>
                 <NumberInput
                   value={rangeLifetime.startFrame}
-                  min={0}
+                  min={timelineStartFrame}
                   max={maxFrames}
                   step={1}
                   normalizeValue={Math.round}
@@ -125,7 +126,7 @@ function PaintAdjustments({ node: anyNode }: { node: AnyNode }) {
                 </span>
                 <NumberInput
                   value={rangeLifetime.endFrame}
-                  min={0}
+                  min={timelineStartFrame}
                   max={maxFrames}
                   step={1}
                   normalizeValue={Math.round}

@@ -11,7 +11,6 @@ const makeStroke = (id: string, name: string, parentLayerId: string | null = nul
   name,
   tool: 'brush' as const,
   visible: true,
-  raster: `asset:${id}`,
   path: {
     mode: 'polyline' as const,
     points: [
@@ -19,7 +18,6 @@ const makeStroke = (id: string, name: string, parentLayerId: string | null = nul
       { x: 10, y: 10 },
     ],
   },
-  pointCount: 2,
   size: 18,
   spacing: 20,
   softness: 50,

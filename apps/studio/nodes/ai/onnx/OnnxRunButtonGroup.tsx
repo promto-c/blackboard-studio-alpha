@@ -15,6 +15,8 @@ export interface OnnxRunButtonGroupProps {
   disabled: boolean;
   runShortcutHint: string;
   currentFrame: number;
+  timelineStartFrame: number;
+  timelineEndFrame: number;
   totalFrames: number;
   storedFrameCount: number;
   onRunFrame: () => void;
@@ -28,6 +30,8 @@ export function OnnxRunButtonGroup({
   disabled,
   runShortcutHint,
   currentFrame,
+  timelineStartFrame,
+  timelineEndFrame,
   totalFrames,
   storedFrameCount,
   onRunFrame,
@@ -38,7 +42,7 @@ export function OnnxRunButtonGroup({
 }: OnnxRunButtonGroupProps) {
   const [isRunMenuOpen, setIsRunMenuOpen] = React.useState(false);
   const [rangeStart, setRangeStart] = React.useState(currentFrame);
-  const [rangeEnd, setRangeEnd] = React.useState(Math.min(currentFrame + 3, totalFrames - 1));
+  const [rangeEnd, setRangeEnd] = React.useState(Math.min(currentFrame + 3, timelineEndFrame));
 
   React.useEffect(() => {
     if (disabled) {
@@ -50,17 +54,17 @@ export function OnnxRunButtonGroup({
   React.useEffect(() => {
     if (isRunMenuOpen) {
       setRangeStart(currentFrame);
-      setRangeEnd(Math.min(currentFrame + 3, totalFrames - 1));
+      setRangeEnd(Math.min(currentFrame + 3, timelineEndFrame));
     }
-  }, [isRunMenuOpen, currentFrame, totalFrames]);
+  }, [isRunMenuOpen, currentFrame, timelineEndFrame]);
 
   const handleRangeStartChange = (value: number) => {
-    const clamped = CLAMP(value, 0, Math.max(rangeEnd - 1, 0));
+    const clamped = CLAMP(value, timelineStartFrame, Math.max(rangeEnd - 1, timelineStartFrame));
     setRangeStart(clamped);
   };
 
   const handleRangeEndChange = (value: number) => {
-    const clamped = CLAMP(value, rangeStart + 1, totalFrames - 1);
+    const clamped = CLAMP(value, rangeStart + 1, timelineEndFrame);
     setRangeEnd(clamped);
   };
 
@@ -119,8 +123,8 @@ export function OnnxRunButtonGroup({
                   <label className="block text-[9px] font-medium text-gray-500 mb-0.5">From</label>
                   <NumberInput
                     value={rangeStart}
-                    min={0}
-                    max={Math.max(rangeEnd - 1, 0)}
+                    min={timelineStartFrame}
+                    max={Math.max(rangeEnd - 1, timelineStartFrame)}
                     normalizeValue={Math.round}
                     onValueChange={handleRangeStartChange}
                   />
@@ -131,7 +135,7 @@ export function OnnxRunButtonGroup({
                   <NumberInput
                     value={rangeEnd}
                     min={rangeStart + 1}
-                    max={totalFrames - 1}
+                    max={timelineEndFrame}
                     normalizeValue={Math.round}
                     onValueChange={handleRangeEndChange}
                   />

@@ -2,6 +2,14 @@ import type { ViewportInteraction, ViewportPointerEvent } from '@/nodes/NodeDefi
 import type { ViewportAdapterContext } from '../viewportAdapterContext';
 
 export class BaseViewportInteraction implements ViewportInteraction {
+  /**
+   * Shared no-op instance used as a fallback interaction when no node is
+   * selected or a node type doesn't provide createViewportInteraction.
+   */
+  static readonly NOOP: ViewportInteraction = new BaseViewportInteraction(
+    null as unknown as ViewportAdapterContext,
+  );
+
   constructor(protected ctx: ViewportAdapterContext) {}
 
   getCursor(): string | null {
@@ -40,16 +48,3 @@ export class BaseViewportInteraction implements ViewportInteraction {
     return false;
   }
 }
-
-export const noopViewportInteraction: ViewportInteraction = {
-  getCursor: () => null,
-  isPreviewActive: () => false,
-  hasGlobalMouseCapture: () => false,
-  handleMouseDown: () => false,
-  handleMouseMove: () => false,
-  handleMouseUp: () => false,
-  handleMouseLeave: () => {},
-  cleanupOnToolChange: () => {},
-  shouldForceOverlays: () => false,
-  handleCommand: () => false,
-};

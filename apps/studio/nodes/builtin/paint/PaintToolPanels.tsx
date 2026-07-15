@@ -24,10 +24,12 @@ function DrawingToolsPanel({ onClose }: { onClose: () => void }) {
     activeViewportTool === 'erase';
   const supportsColor = activeViewportTool === 'brush';
   const channelOptions = useMemo(
-    // TODO: Re-enable R/G/B once per-channel paint targeting is fully implemented end to end.
     () => [
       { value: 'view', label: 'As View' },
       { value: 'rgb', label: 'RGB' },
+      { value: 'r', label: 'R' },
+      { value: 'g', label: 'G' },
+      { value: 'b', label: 'B' },
       { value: 'a', label: 'A' },
     ],
     [],
@@ -59,6 +61,9 @@ function DrawingToolsPanel({ onClose }: { onClose: () => void }) {
               value={paintBrush.channels}
               onChange={(value) => updateBrush({ channels: value as typeof paintBrush.channels })}
             />
+            <p className="text-[10px] leading-4 text-gray-500">
+              RGB channels preserve alpha. Alpha preserves RGB.
+            </p>
           </div>
         ) : null}
         {supportsColor ? (
@@ -91,6 +96,16 @@ function DrawingToolsPanel({ onClose }: { onClose: () => void }) {
           step={1}
           onChange={(value) => updateBrush({ softness: value })}
           onReset={() => updateBrush({ softness: DEFAULT_PAINT_BRUSH_SETTINGS.softness })}
+          displayFormatter={(value) => `${Math.round(value)}%`}
+        />
+        <Slider
+          label="Stabilize"
+          value={paintBrush.stabilization}
+          min={0}
+          max={100}
+          step={1}
+          onChange={(value) => updateBrush({ stabilization: value })}
+          onReset={() => updateBrush({ stabilization: DEFAULT_PAINT_BRUSH_SETTINGS.stabilization })}
           displayFormatter={(value) => `${Math.round(value)}%`}
         />
         <Slider

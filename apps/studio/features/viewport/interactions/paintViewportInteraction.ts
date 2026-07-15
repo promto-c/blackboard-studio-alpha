@@ -39,20 +39,13 @@ export class PaintViewportInteraction extends BaseViewportInteraction {
   handleMouseDown(event: ViewportPointerEvent): boolean {
     return this.paint.handleMouseDown(
       event.nativeEvent as unknown as React.MouseEvent<HTMLDivElement>,
-      { x: event.clientX, y: event.clientY },
-      { x: event.sceneX, y: event.sceneY },
+      event.clientPoint,
+      event.scenePoint,
     );
   }
 
   handleMouseMove(event: ViewportPointerEvent): boolean {
-    return this.paint.handleMouseMove(
-      event.nativeEvent,
-      { x: event.clientX, y: event.clientY },
-      {
-        x: event.sceneX,
-        y: event.sceneY,
-      },
-    );
+    return this.paint.handleMouseMove(event.nativeEvent, event.clientPoint, event.scenePoint);
   }
 
   handleMouseUp(event: ViewportPointerEvent): boolean {

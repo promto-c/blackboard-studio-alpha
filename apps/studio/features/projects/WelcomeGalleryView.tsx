@@ -9,6 +9,7 @@ import {
   permanentDeleteGalleryEntries,
 } from '@blackboard/project-store';
 import { useEditorActions } from '@/state/editorContext';
+import { usePreferences } from '@/state/preferencesContext';
 import { GalleryCard } from '@/features/editor/galleryShared';
 import type { GalleryEntry, GallerySelection } from '@/features/editor/galleryShared';
 import { getGallerySelectionAfterClick } from '@/features/editor/gallerySelection';
@@ -49,6 +50,7 @@ const loadEntries = async (): Promise<GalleryEntry[]> => {
 function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
   const { loadProject, switchProjectBranch, syncComfyGeneratedOutputsWithGalleryEntries } =
     useEditorActions();
+  const { autoDetectViewportView } = usePreferences();
   const [allEntries, setAllEntries] = useState<GalleryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
@@ -366,6 +368,7 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
                     selected={selection.has(entry.id)}
                     selectable={!!entry.assetId}
                     onCardClick={(event) => handleCardClick(entry, event)}
+                    autoDetectDisplayView={autoDetectViewportView}
                   />
                 </div>
               ))}
@@ -388,6 +391,7 @@ function WelcomeGalleryView({ onBack }: WelcomeGalleryViewProps) {
                 : undefined
             }
             className="min-h-[24rem] lg:min-h-0"
+            autoDetectDisplayView={autoDetectViewportView}
           />
         ) : (
           <div className="flex min-h-[24rem] flex-col items-center justify-center gap-3 rounded-lg border border-white/10 bg-gray-950/35 p-8 text-center lg:min-h-0">

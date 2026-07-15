@@ -85,7 +85,6 @@ describe('useViewportRenderLoop', () => {
     };
     const textureCacheRef = { current: { get: () => undefined } };
     const textTexturesRef = { current: new Map() };
-    const paintTexturesRef = { current: new Map() };
     const rotoMaskTexturesRef = { current: new Map() };
 
     const { result, rerender } = renderHook(
@@ -109,7 +108,6 @@ describe('useViewportRenderLoop', () => {
           threeStuff,
           textureCacheRef,
           textTexturesRef,
-          paintTexturesRef,
           rotoMaskTexturesRef,
           freezeImageWhileEditing: false,
           deferProjectThumbnailCapture: true,

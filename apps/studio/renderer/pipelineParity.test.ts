@@ -141,6 +141,7 @@ const createSceneNode = (): SceneNode => ({
   height: 1080,
   bitDepth: 16,
   colorSpace: SCENE_WORKING_SPACE,
+  startFrame: 0,
   maxFrames: 0,
   fps: 30,
 });
@@ -384,12 +385,8 @@ const createRegistry = (): Map<string, RendererNodeEntry> =>
           inputTexture: THREE.Texture | undefined,
           context: ResolveOutputContext,
         ) => {
-          const paintTextures = context.getPaintTextures?.(node.id);
-          if (!paintTextures) return false;
           const material = context.getMaterial(`${node.id}_paint`, 'void main() {}', {
             u_tDiffuse: { value: inputTexture },
-            u_tPaint: { value: paintTextures.color },
-            u_tPaintAlpha: { value: paintTextures.alpha },
           });
           context.applyNoBlending(material);
           context.quad.material = material;
@@ -437,14 +434,21 @@ const createRegistry = (): Map<string, RendererNodeEntry> =>
       {
         renderMode: 'utility',
         category: 'Utility',
-        processingDomain: 'data',
+        processingDomain: 'scene_linear',
+        outputPorts: [
+          { name: 'output', label: 'RGBA', processingDomain: 'scene_linear' },
+          { name: 'r', label: 'R', processingDomain: 'data' },
+          { name: 'g', label: 'G', processingDomain: 'data' },
+          { name: 'b', label: 'B', processingDomain: 'data' },
+          { name: 'a', label: 'A', processingDomain: 'alpha', dataSemantic: 'alpha' },
+        ],
         flags: { isRenderable: true },
         renderOutput: (
           node: AnyNode,
           target: THREE.WebGLRenderTarget,
           _inputTexture: THREE.Texture | undefined,
           context: ResolveOutputContext,
-          portName = 'r',
+          portName = 'output',
         ) => {
           const material = context.getMaterial(
             `${node.id}_extract_${portName}`,
@@ -541,6 +545,38 @@ describe('viewport/export render pipeline parity guards', () => {
 
     expect(firstFrameCompileCount).toBeGreaterThan(0);
     expect(renderer.compileCalls).toBe(firstFrameCompileCount);
+  });
+
+  it('renders the exact sparse component requested by a normal color output', () => {
+    const { resources } = createResources();
+    const extract = {
+      id: 'extract',
+      type: NodeType.EXTRACT_CHANNELS,
+      name: 'Extract Channels',
+      enabled: true,
+    } as AnyNode;
+
+    renderViewportFrameWithSharedPipelineBase({
+      resources,
+      nodes: [extract],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      displayView: TEST_DISPLAY_VIEW,
+      outputDomain: {
+        kind: 'color',
+        sourceNodeId: extract.id,
+        sourcePort: 'r',
+      },
+      colorManagement: testColorManagement,
+      getMediaTexture: () => undefined,
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    expect(resources.materials.has('extract_extract_r')).toBe(true);
+    expect(resources.materials.has('extract_extract_output')).toBe(false);
+    expect(resources.materials.has('viewer_data')).toBe(false);
   });
 
   it('renders text masks with an unclamped scene-linear generated color', () => {
@@ -999,8 +1035,6 @@ describe('viewport/export render pipeline parity guards', () => {
   it('composites stacked paint output from the stack write target', () => {
     const { resources } = createResources();
     const [, , auxBuffer] = resources.renderTargets;
-    const paintTexture = createTexture();
-    const paintAlphaTexture = createTexture();
 
     const result = renderViewportFrameWithSharedPipeline({
       resources,
@@ -1010,10 +1044,6 @@ describe('viewport/export render pipeline parity guards', () => {
       viewerSettings: createViewerSettings(),
       getMediaTexture: () => createTexture(),
       getTextTexture: () => undefined,
-      getPaintTextures: () => ({
-        color: paintTexture,
-        alpha: paintAlphaTexture,
-      }),
       nodeRegistry: createRegistry(),
     });
 
@@ -1021,15 +1051,13 @@ describe('viewport/export render pipeline parity guards', () => {
     const compositeMaterial = resources.materials.get('media_comp_straight_over');
 
     expect(result.renderTargets).toHaveLength(3);
-    expect(paintMaterial?.uniforms.u_tPaint.value).toBe(paintTexture);
-    expect(paintMaterial?.uniforms.u_tPaintAlpha.value).toBe(paintAlphaTexture);
+    expect(paintMaterial?.uniforms.u_tDiffuse.value).toBeDefined();
     expect(compositeMaterial?.uniforms.u_tDiffuse.value).toBe(auxBuffer.texture);
   });
 
   it('applies global paint through the shared adjustment renderer in the viewport path', () => {
     const { resources } = createResources();
-    const paintTexture = createTexture();
-    const paintAlphaTexture = createTexture();
+    const mediaTexture = createTexture();
 
     const result = renderViewportFrameWithSharedPipeline({
       resources,
@@ -1037,20 +1065,15 @@ describe('viewport/export render pipeline parity guards', () => {
       sceneNode: createSceneNode(),
       frame: 0,
       viewerSettings: createViewerSettings(),
-      getMediaTexture: () => createTexture(),
+      getMediaTexture: () => mediaTexture,
       getTextTexture: () => undefined,
-      getPaintTextures: () => ({
-        color: paintTexture,
-        alpha: paintAlphaTexture,
-      }),
       nodeRegistry: createRegistry(),
     });
 
     const paintMaterial = resources.materials.get('global-paint_paint');
 
     expect(result.renderTargets).toHaveLength(3);
-    expect(paintMaterial?.uniforms.u_tPaint.value).toBe(paintTexture);
-    expect(paintMaterial?.uniforms.u_tPaintAlpha.value).toBe(paintAlphaTexture);
+    expect(paintMaterial?.uniforms.u_tDiffuse.value).toBeDefined();
   });
 
   it('uses explicit merge pipe and source inputs in the viewport path', () => {
@@ -1077,15 +1100,45 @@ describe('viewport/export render pipeline parity guards', () => {
 
     const pipeTarget = resources.utilityTargets?.get('pipe:output');
     const sourceTarget = resources.utilityTargets?.get('source:output');
-    const pipeCopyMaterial = resources.materials.get('merge_merge_pipe_input');
     const mergeMaterial = resources.materials.get('merge_merge_comp_straight_over');
 
     expect(result.renderTargets).toHaveLength(3);
     expect(pipeTarget).toBeDefined();
     expect(sourceTarget).toBeDefined();
-    expect(pipeCopyMaterial?.uniforms.u_tDiffuse.value).toBe(pipeTarget?.texture);
+    expect(mergeMaterial?.uniforms.u_tBackdrop.value).toBe(pipeTarget?.texture);
     expect(mergeMaterial?.uniforms.u_tDiffuse.value).toBe(sourceTarget?.texture);
     expectSceneCompositeShaderPreservesRgbRange(mergeMaterial);
+  });
+
+  it('resolves merge output as the input texture of a downstream node', () => {
+    const { resources } = createResources();
+    const downstreamBlur = {
+      ...createBlurNode(false),
+      id: 'downstream-blur',
+      inputs: { pipe: 'merge' },
+    } as AnyNode;
+
+    renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [
+        createMediaNodeWithId('pipe', 'pipe-asset'),
+        createMediaNodeWithId('source', 'source-asset'),
+        createMergeNode(),
+        downstreamBlur,
+      ],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => createTexture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    const mergeTarget = resources.utilityTargets?.get('merge:output');
+    const downstreamInputMaterial = resources.materials.get('downstream-blur_ds');
+
+    expect(mergeTarget).toBeDefined();
+    expect(downstreamInputMaterial?.uniforms.u_tDiffuse.value).toBe(mergeTarget?.texture);
   });
 
   it('presents utility node output through the shared utility renderer in the viewport path', () => {
@@ -1849,6 +1902,10 @@ describe('viewport/export render pipeline parity guards', () => {
     });
 
     expect(getDisplayViewTransform).not.toHaveBeenCalled();
+    expect((resources.quad.material as THREE.ShaderMaterial).fragmentShader).toContain(
+      'fragColor = vec4(display_value, 1.0);',
+    );
+    expect((resources.quad.material as THREE.ShaderMaterial).uniforms.u_channel.value).toBe(3);
     expect(
       viewportRenderer.renderCalls.some(({ material }) =>
         (material as THREE.ShaderMaterial | undefined)?.fragmentShader.includes('OCIODataDisplay'),

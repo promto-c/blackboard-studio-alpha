@@ -67,8 +67,10 @@ describe('graph command media color defaults', () => {
       frames: ['frame-1', 'frame-2'],
       width: 1920,
       height: 1080,
+      startFrame: 1001,
     });
 
+    expect(node.startFrame).toBe(1001);
     expect(node.colorSpace).toBe(ColorManagementDefaults.TEXTURE_SPACE);
     expect(node.mediaColorManagement).toEqual({
       sourceColorSpace: ColorManagementDefaults.TEXTURE_SPACE,

@@ -506,8 +506,16 @@ export type DataChannelSemantic =
   | 'cryptomatte'
   | 'material_property';
 
+/** A single component of an RGBA image carried by a channel-aware graph port. */
+export type RgbaChannel = 'r' | 'g' | 'b' | 'a';
+
 export type RenderOutputDomain =
-  | { kind: 'color' }
+  | {
+      kind: 'color';
+      /** Sparse RGBA component origin when a channel output enters a normal image port. */
+      sourceNodeId?: NodeId;
+      sourcePort?: string;
+    }
   | {
       kind: 'data';
       sourceNodeId: NodeId;
@@ -679,7 +687,6 @@ export interface BaseNode {
   inputs?: NodeInputs;
   inputSourcePorts?: NodeInputSourcePorts;
   stacked?: boolean;
-  detachedFromPipe?: boolean;
 }
 
 export interface SceneNode extends BaseNode {
@@ -689,6 +696,9 @@ export interface SceneNode extends BaseNode {
   height: number;
   bitDepth: 8 | 16 | 32;
   colorSpace: OcioSceneColorSpace;
+  /** First absolute frame in the composition timeline. */
+  startFrame: number;
+  /** Last absolute frame in the composition timeline. */
   maxFrames: number;
   fps: number;
 }
@@ -766,8 +776,24 @@ export interface MediaSourceNode extends EffectNode, TemporalSourceSettings {
   frameCount?: number;
 }
 
+export interface ImageSequencePlate {
+  id: string;
+  name: string;
+  frames: string[];
+  sourceFileName?: string;
+  width: number;
+  height: number;
+  colorSpace: OcioColorSpaceName;
+  mediaColorManagement?: MediaColorManagement;
+  startFrame: number;
+}
+
 export interface ImageSequenceNode extends EffectNode, TemporalSourceSettings {
   type: typeof NodeType.IMAGE_SEQUENCE;
+  /** Imported filename series available within this source node. */
+  plates?: ImageSequencePlate[];
+  /** Plate projected onto the node's active source fields. */
+  activePlateId?: string;
   frames: string[];
   sourceFileName?: string;
   width: number;
@@ -1098,6 +1124,8 @@ export interface PaintBrushSettings {
   size: number;
   spacing: number;
   softness: number;
+  /** Input stabilization strength from 0 (raw) to 100 (maximum). */
+  stabilization: number;
   opacity: number;
   color: [number, number, number];
   alpha: number;
@@ -1159,9 +1187,8 @@ export interface PaintStroke {
   name: string;
   tool: PaintTool;
   visible: boolean;
-  raster: string;
-  path?: PaintStrokePath | null;
-  pointCount: number;
+  /** Canonical editable geometry in centered DOM/SVG pixels (positive Y points down). */
+  path: PaintStrokePath;
   size: number;
   spacing: number;
   softness: number;
@@ -1792,6 +1819,8 @@ export interface RenderSettings {
 }
 
 export interface CacheNodeEntry {
+  /** Timeline frames backed by real source data, excluding hold/loop/bounce extensions. */
+  availableFrames: boolean[];
   cachedFrames: boolean[];
   cachingFrames: boolean[];
 }

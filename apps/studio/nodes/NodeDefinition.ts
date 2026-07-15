@@ -16,6 +16,7 @@ import {
   InputPortType,
   RenderSceneSize,
   RenderSceneSizeBehavior,
+  RgbaChannel,
   RotoPointRef,
   SceneNode,
   SourceAlphaMode,
@@ -70,8 +71,12 @@ export interface InputPortDescriptor {
   type: InputPortType;
   /** Optional technical channel semantic for data/alpha/vector/depth ports. */
   dataSemantic?: DataChannelSemantic;
+  /** RGBA component sampled when a full image is connected to this scalar channel input. */
+  channel?: RgbaChannel;
   /** Accepted color/data processing domain. Omit only for intentionally polymorphic inputs. */
   processingDomain?: ColorProcessingDomain;
+  /** Optional CSS color used to identify this port in graph sockets and wires. */
+  color?: string;
   /** Whether this input is required for the node to function. */
   required: boolean;
   /** Tooltip / description for the port. */
@@ -99,8 +104,12 @@ export interface OutputPortDescriptor {
   label: string;
   /** Optional technical channel semantic for data/alpha/vector/depth outputs. */
   dataSemantic?: DataChannelSemantic;
+  /** Component carrying this scalar output; the remaining RGBA components must be zero. */
+  channel?: RgbaChannel;
   /** Output processing domain. Port declarations override the node-level domain. */
   processingDomain?: ColorProcessingDomain;
+  /** Optional CSS color used to identify this port in graph sockets and wires. */
+  color?: string;
   /** Tooltip / description for the port. */
   description?: string;
 }
@@ -108,88 +117,6 @@ export interface OutputPortDescriptor {
 export type OutputPortDescriptors =
   | OutputPortDescriptor[]
   | ((node: AnyNode) => OutputPortDescriptor[]);
-
-// ---------------------------------------------------------------------------
-// Viewport interaction handler — allows each node to declare how it
-// responds to mouse events in the viewport, replacing hardcoded if/else
-// chains in Viewport.tsx.
-// ---------------------------------------------------------------------------
-
-/** Scene-space point centered on the canvas; X increases right and Y increases down. */
-export interface ViewportScenePoint {
-  x: number;
-  y: number;
-}
-
-/** Context passed to every viewport interaction callback. */
-export interface ViewportInteractionContext {
-  /** The node the interaction applies to. */
-  node: AnyNode;
-  /** Mouse position in scene coordinates. */
-  scenePoint: ViewportScenePoint;
-  /** Mouse position in client/screen coordinates. */
-  clientPoint: ViewportScenePoint;
-  /** Currently active viewport tool for this node type (e.g. 'select', 'add_pin'). */
-  activeTool: string | null;
-  /** Keyboard modifier state at the time of the event. */
-  modifiers: { alt: boolean; shift: boolean; ctrl: boolean; meta: boolean };
-  /** Current animation frame number. */
-  frame: number;
-  /** Current viewport zoom level. */
-  zoom: number;
-  /** The original DOM event, available for advanced use. */
-  nativeEvent: MouseEvent;
-}
-
-/** Mutation API provided to interaction handlers so they can update state. */
-export interface ViewportInteractionActions {
-  updateNode: (nodeId: string, changes: Record<string, unknown>) => void;
-  pushHistory: (label: string) => void;
-  setActiveViewportTool: (tool: string | null) => void;
-  setHierarchySelection: (nodeId: string, layerIds: string[], itemIds: string[]) => void;
-  setSelectedRotoPointRefs: (pointRefs: RotoPointRef[]) => void;
-  setKeyframe: (nodeId: string, path: string, frame: number, value: number) => void;
-  startDrawingShape: (pathData: unknown) => void;
-  addPointToDrawingShape: (point: unknown) => void;
-  updateDrawingPoint: (point: unknown) => void;
-  commitDrawingShape: () => void;
-  cancelDrawingShape: () => void;
-  addRotoPointToPath: (nodeId: string, pathId: string, index: number, point: unknown) => void;
-}
-
-/** Result returned by interaction handlers to control cursor and event propagation. */
-export interface ViewportInteractionResult {
-  /** CSS cursor class to apply. Omit to leave cursor unchanged. */
-  cursor?: string;
-  /** If true, the event should not propagate to default pan/zoom behavior. */
-  handled?: boolean;
-}
-
-/**
- * Viewport interaction handler — each node can implement these methods
- * to handle mouse events in the viewport. This replaces the per-type
- * if/else chains in Viewport.tsx with registry-driven dispatch.
- */
-export interface ViewportInteractionHandler {
-  onMouseDown?: (
-    ctx: ViewportInteractionContext,
-    actions: ViewportInteractionActions,
-  ) => ViewportInteractionResult | void;
-  onMouseMove?: (
-    ctx: ViewportInteractionContext,
-    actions: ViewportInteractionActions,
-  ) => ViewportInteractionResult | void;
-  onMouseUp?: (
-    ctx: ViewportInteractionContext,
-    actions: ViewportInteractionActions,
-  ) => ViewportInteractionResult | void;
-  onDoubleClick?: (
-    ctx: ViewportInteractionContext,
-    actions: ViewportInteractionActions,
-  ) => ViewportInteractionResult | void;
-  /** Return a CSS cursor class for the current state (hover feedback). */
-  getCursor?: (ctx: Omit<ViewportInteractionContext, 'nativeEvent'>) => string | undefined;
-}
 
 // ---------------------------------------------------------------------------
 // Viewport overlay component — allows each node to render its own SVG
@@ -357,21 +284,27 @@ export interface NodeFlags {
 // to know about the node type. Replaces per-type if/else chains.
 // ---------------------------------------------------------------------------
 
+/** Scene-space point. */
+export interface ViewportScenePoint {
+  x: number;
+  y: number;
+}
+
 /** Normalized pointer event passed to ViewportInteraction handlers. */
 export interface ViewportPointerEvent {
   /** Mouse position in viewport-relative pixels. */
-  clientX: number;
-  clientY: number;
+  clientPoint: ViewportScenePoint;
   /** Mouse position relative to scene center. X increases right and Y increases down. */
-  sceneX: number;
-  sceneY: number;
+  scenePoint: ViewportScenePoint;
   /** Mouse button: 0 = left, 1 = middle, 2 = right. */
   button: number;
   /** Keyboard modifier state at the time of the event. */
-  ctrlKey: boolean;
-  shiftKey: boolean;
-  altKey: boolean;
-  metaKey: boolean;
+  modifiers: {
+    alt: boolean;
+    shift: boolean;
+    ctrl: boolean;
+    meta: boolean;
+  };
   /** The original DOM event for advanced use (e.g. preventDefault). */
   nativeEvent: MouseEvent;
 }
@@ -676,19 +609,13 @@ export interface NodeDefinition {
   // Stabilization support
   getStabilizeTransform?: (node: AnyNode, frame: number, context?: unknown) => TransformData | null;
 
-  /** Optional secondary input ports. The primary `pipe` port is reserved and implicit. */
+  /** Optional named input ports. Shared pipeline UI provides the reserved primary `pipe` port. */
   inputPorts?: InputPortDescriptors;
 
   /** Optional output ports this node declares. Defaults to a single `output` port. */
   outputPorts?: OutputPortDescriptors;
 
-  // --- Phase 0 additions: registry-driven dispatch hooks ---
-
-  /**
-   * Viewport interaction handler — declares how this node type responds
-   * to mouse events in the viewport. Replaces per-type if/else chains.
-   */
-  viewportInteraction?: ViewportInteractionHandler;
+  // --- Viewport interaction factory ---
 
   /**
    * Factory that creates a ViewportInteraction for this node type.

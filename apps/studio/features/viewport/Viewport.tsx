@@ -32,7 +32,6 @@ import { resolveCurrentViewerDisplayView } from '@/color-management';
 import { useViewportRenderer } from '@/hooks/viewport/useViewportRenderer';
 import { useViewportMediaResources } from '@/hooks/viewport/useViewportMediaResources';
 import { useViewportTextTextures } from '@/hooks/viewport/useViewportTextTextures';
-import { useViewportPaintTextures } from '@/hooks/viewport/useViewportPaintTextures';
 import { useViewportRotoMasks } from '@/hooks/viewport/useViewportRotoMasks';
 import { useViewportVideoSync } from '@/hooks/viewport/useViewportVideoSync';
 import { useViewportGestures } from '@/hooks/viewport/useViewportGestures';
@@ -61,10 +60,15 @@ import {
   getNodeInputRenderNodes,
   getScene3DProjectionRenderNodes,
   getViewportRenderNodes,
+  resolveViewerRouting,
 } from '@/utils/viewerSlots';
 import { expandGroupNodesForRender } from '@/utils/groupRenderProjection';
 import { useRotoItemsClipboard } from '@/nodes/builtin/roto/rotoItemsClipboard';
 import { usePaintItemsClipboard } from '@/nodes/builtin/paint/paintItemsClipboard';
+import {
+  disposePaintGpuEngine,
+  setPaintRendererInteractive,
+} from '@/nodes/builtin/paint/paintGpuEngine';
 import {
   createStandardClipboardHotkeyBindings,
   createStandardClipboardHotkeyCommands,
@@ -144,6 +148,7 @@ function Viewport() {
   const isPlaying = useEditorSelector((s) => s.isPlaying);
   const playbackDirection = useEditorSelector((s) => s.playbackDirection);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
+  const timelineStartFrame = useEditorSelector((s) => s.timelineStartFrame);
   const isFrameScrubbing = useEditorSelector((s) => s.isFrameScrubbing);
   const activeViewportTool = useEditorSelector((s) => s.activeViewportTool);
   const isDrawing = useEditorSelector((s) => s.isDrawing);
@@ -228,11 +233,13 @@ function Viewport() {
   }, [activeFlow, flows, nodes, viewerNodeId]);
 
   // ── Compare view nodes ───────────────────────────────────────
-  const compareSlotANodeId =
-    compareView.isActive && compareView.slotA ? (viewerSlots?.[compareView.slotA] ?? null) : null;
-  const compareSlotBNodeId =
-    compareView.isActive && compareView.slotB ? (viewerSlots?.[compareView.slotB] ?? null) : null;
-  const isCompareActive = compareView.isActive && !!compareSlotANodeId && !!compareSlotBNodeId;
+  const viewerRouting = useMemo(
+    () => resolveViewerRouting(viewerNodeId, viewerSlots, compareView),
+    [compareView, viewerNodeId, viewerSlots],
+  );
+  const compareSlotANodeId = viewerRouting.compare?.nodeIdA ?? null;
+  const compareSlotBNodeId = viewerRouting.compare?.nodeIdB ?? null;
+  const isCompareActive = viewerRouting.compare !== null;
   const viewportNodesA = useMemo(() => {
     if (!compareSlotANodeId) return viewportNodes;
     return expandGroupNodesForRender(
@@ -427,6 +434,7 @@ function Viewport() {
     retentionNodes: cacheRetentionNodes,
     currentFrame,
     selectedNode,
+    timelineStartFrame,
     maxFrames,
     updateCacheStatus,
     fps,
@@ -570,14 +578,9 @@ function Viewport() {
   });
 
   const paintLivePreview = ctxRef.current.hooks.paint.livePreview;
-  const paintTexturesRef = useViewportPaintTextures({
-    nodes: viewportResourceNodes,
-    currentFrame: visualFrame,
-    sceneNode: renderSceneNode,
-    projectColorManagement,
-    livePreview: paintLivePreview,
-    bumpMediaUpdate: bumpMediaUpdateTrigger,
-  });
+  useEffect(() => {
+    bumpMediaUpdateTrigger();
+  }, [bumpMediaUpdateTrigger, paintLivePreview]);
 
   const isInteractiveRotoPreviewActive = interaction.isPreviewActive?.() ?? false;
   const freezeRotoMaskWhileEditing =
@@ -642,6 +645,15 @@ function Viewport() {
     handleRendererDispose,
     handleRendererError,
   );
+
+  useEffect(() => {
+    if (!gl) return;
+    setPaintRendererInteractive(gl, true);
+    return () => {
+      setPaintRendererInteractive(gl, false);
+      disposePaintGpuEngine(gl);
+    };
+  }, [gl]);
 
   useViewportScene3DAssets({
     renderer: gl,
@@ -761,7 +773,6 @@ function Viewport() {
     threeStuff,
     textureCacheRef,
     textTexturesRef,
-    paintTexturesRef,
     rotoMaskTexturesRef,
     freezeImageWhileEditing: freezeRotoMaskWhileEditing,
     deferProjectThumbnailCapture:
@@ -796,7 +807,6 @@ function Viewport() {
     slotADisplayOutputRef: displayOutputBufferRef,
     textureCacheRef,
     textTexturesRef,
-    paintTexturesRef,
     rotoMaskTexturesRef,
     zoom,
     pan,
@@ -1150,15 +1160,10 @@ function Viewport() {
     // Delegate to unified interaction (returns true if consumed)
     if (
       interaction.handleMouseDown({
-        clientX: e.clientX,
-        clientY: e.clientY,
-        sceneX: scenePos.x,
-        sceneY: scenePos.y,
+        clientPoint: { x: e.clientX, y: e.clientY },
+        scenePoint: { x: scenePos.x, y: scenePos.y },
         button: e.button,
-        ctrlKey: e.ctrlKey,
-        shiftKey: e.shiftKey,
-        altKey: e.altKey,
-        metaKey: e.metaKey,
+        modifiers: { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey },
         nativeEvent: e.nativeEvent,
       })
     )
@@ -1221,15 +1226,10 @@ function Viewport() {
       // Delegate to unified interaction (returns true if consumed)
       if (
         interaction.handleMouseMove({
-          clientX: e.clientX,
-          clientY: e.clientY,
-          sceneX: scenePos.x,
-          sceneY: scenePos.y,
+          clientPoint: { x: e.clientX, y: e.clientY },
+          scenePoint: { x: scenePos.x, y: scenePos.y },
           button: e.button,
-          ctrlKey: e.ctrlKey,
-          shiftKey: e.shiftKey,
-          altKey: e.altKey,
-          metaKey: e.metaKey,
+          modifiers: { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey },
           nativeEvent,
         })
       )
@@ -1273,15 +1273,10 @@ function Viewport() {
       if (!mousePos) return;
       const scenePos = viewportToSceneCentered(mousePos);
       interaction.handleMouseUp({
-        clientX: e.clientX,
-        clientY: e.clientY,
-        sceneX: scenePos.x,
-        sceneY: scenePos.y,
+        clientPoint: { x: e.clientX, y: e.clientY },
+        scenePoint: { x: scenePos.x, y: scenePos.y },
         button: e.button,
-        ctrlKey: e.ctrlKey,
-        shiftKey: e.shiftKey,
-        altKey: e.altKey,
-        metaKey: e.metaKey,
+        modifiers: { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey },
         nativeEvent,
       });
     },
@@ -1390,15 +1385,10 @@ function Viewport() {
   const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isScene3DMode) return;
     interaction.handleContextMenu?.({
-      clientX: e.clientX,
-      clientY: e.clientY,
-      sceneX: 0,
-      sceneY: 0,
+      clientPoint: { x: e.clientX, y: e.clientY },
+      scenePoint: { x: 0, y: 0 },
       button: e.button,
-      ctrlKey: e.ctrlKey,
-      shiftKey: e.shiftKey,
-      altKey: e.altKey,
-      metaKey: e.metaKey,
+      modifiers: { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey },
       nativeEvent: e.nativeEvent,
     });
   };
@@ -1437,6 +1427,7 @@ function Viewport() {
     hierarchySelections,
     selectedNodeId,
     visualFrame,
+    timelineStartFrame,
     maxFrames,
     rotoPointWeightMode,
     stabilizationMatrix,

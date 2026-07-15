@@ -147,15 +147,24 @@ const sanitizeFilenamePart = (value: string, fallback: string): string => {
 const stripKnownImageExtension = (value: string): string =>
   value.replace(/\.(?:jpe?g|png|webp|exr)$/i, '');
 
-const clampFrame = (value: number, maxFrames: number): number =>
-  Math.max(0, Math.min(Math.max(0, maxFrames), Math.round(value)));
+const clampFrame = (value: number, startFrame: number, endFrame: number): number =>
+  Math.max(startFrame, Math.min(endFrame, Math.round(value)));
 
 const getSequenceFrameRange = (
   renderSettings: RenderSettings,
+  timelineStartFrame: number,
   maxFrames: number,
 ): { startFrame: number; endFrame: number; frameCount: number } => {
-  const startFrame = clampFrame(renderSettings.sequenceStartFrame ?? 0, maxFrames);
-  const endFrame = clampFrame(renderSettings.sequenceEndFrame ?? maxFrames, maxFrames);
+  const startFrame = clampFrame(
+    renderSettings.sequenceStartFrame ?? timelineStartFrame,
+    timelineStartFrame,
+    maxFrames,
+  );
+  const endFrame = clampFrame(
+    renderSettings.sequenceEndFrame ?? maxFrames,
+    timelineStartFrame,
+    maxFrames,
+  );
   const first = Math.min(startFrame, endFrame);
   const last = Math.max(startFrame, endFrame);
 
@@ -444,6 +453,7 @@ export function RenderSettingsPanel() {
   const projectId = useEditorSelector((s) => s.projectId);
   const viewerSettings = useEditorSelector((s) => s.viewerSettings);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
+  const timelineStartFrame = useEditorSelector((s) => s.timelineStartFrame);
   const maxFrames = useEditorSelector((s) => s.maxFrames);
   const backgroundJobs = useEditorSelector((s) => s.backgroundJobs);
   const renderNodes = useMemo(
@@ -516,8 +526,8 @@ export function RenderSettingsPanel() {
   }, [backgroundJobs]);
 
   const sequenceRange = useMemo(
-    () => getSequenceFrameRange(renderSettings, maxFrames),
-    [maxFrames, renderSettings],
+    () => getSequenceFrameRange(renderSettings, timelineStartFrame, maxFrames),
+    [maxFrames, renderSettings, timelineStartFrame],
   );
   const sequencePreview = useMemo(() => {
     const first = formatOutputFilename(renderSettings, sequenceRange.startFrame, 0, {
@@ -585,7 +595,7 @@ export function RenderSettingsPanel() {
       handleSettingChange(key, Math.max(1, Math.min(8, parsed)));
       return;
     }
-    handleSettingChange(key, clampFrame(parsed, maxFrames));
+    handleSettingChange(key, clampFrame(parsed, timelineStartFrame, maxFrames));
   };
 
   const chooseDirectory = async (): Promise<FileSystemDirectoryHandle | null> => {
@@ -1037,22 +1047,22 @@ export function RenderSettingsPanel() {
                 <SettingRow label="Frame Range">
                   <div className="flex w-full items-center gap-1.5">
                     <NumberInput
-                      value={renderSettings.sequenceStartFrame ?? 0}
+                      value={sequenceRange.startFrame}
                       onValueChange={(value) =>
                         handleSequenceNumberChange('sequenceStartFrame', value)
                       }
                       normalizeValue={Math.round}
-                      min={0}
+                      min={timelineStartFrame}
                       max={maxFrames}
                     />
                     <span className="shrink-0 text-gray-500">-</span>
                     <NumberInput
-                      value={renderSettings.sequenceEndFrame ?? maxFrames}
+                      value={sequenceRange.endFrame}
                       onValueChange={(value) =>
                         handleSequenceNumberChange('sequenceEndFrame', value)
                       }
                       normalizeValue={Math.round}
-                      min={0}
+                      min={timelineStartFrame}
                       max={maxFrames}
                     />
                   </div>

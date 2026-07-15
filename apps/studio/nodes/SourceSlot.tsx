@@ -9,6 +9,7 @@ export type SourceSlotKind = 'image' | 'video' | 'image_sequence';
 interface SourceSlotProps {
   nodeId: string;
   kind: SourceSlotKind;
+  children?: React.ReactNode;
   sourceFileName?: string;
   width: number;
   height: number;
@@ -29,7 +30,15 @@ const KIND_ICON: Record<SourceSlotKind, React.ComponentType<{ className?: string
 
 const formatDimensions = (w: number, h: number): string => (w > 0 && h > 0 ? `${w} × ${h}` : '—');
 
-function SourceSlot({ nodeId, kind, sourceFileName, width, height, frameCount }: SourceSlotProps) {
+function SourceSlot({
+  nodeId,
+  kind,
+  children,
+  sourceFileName,
+  width,
+  height,
+  frameCount,
+}: SourceSlotProps) {
   const { replaceNodeSource, replaceNodeSourceSequence } = useEditorActions();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const seqInputRef = useRef<HTMLInputElement>(null);
@@ -65,27 +74,30 @@ function SourceSlot({ nodeId, kind, sourceFileName, width, height, frameCount }:
 
   return (
     <CollapsibleSection title="Source" defaultOpen>
-      <div className="flex items-start gap-3 p-3 bg-gray-900/50 rounded-lg border border-gray-800">
-        <div className="shrink-0 mt-0.5">
-          <Icon className="h-5 w-5 text-gray-400" />
+      <div className="space-y-3">
+        {children}
+        <div className="flex items-start gap-3 p-3 bg-gray-900/50 rounded-lg border border-gray-800">
+          <div className="shrink-0 mt-0.5">
+            <Icon className="h-5 w-5 text-gray-400" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium text-gray-200 truncate" title={sourceFileName}>
+              {sourceFileName || 'No source selected'}
+            </p>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              {formatDimensions(width, height)}
+              {frameCount !== undefined ? ` · ${frameCount} frames` : ''}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleReplace}
+            title={kind === 'image_sequence' ? 'Replace source folder' : 'Replace source file'}
+            className="shrink-0 rounded-md p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+          >
+            <ArrowDownTray className="h-4 w-4" />
+          </button>
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium text-gray-200 truncate" title={sourceFileName}>
-            {sourceFileName || 'No source selected'}
-          </p>
-          <p className="text-[11px] text-gray-500 mt-0.5">
-            {formatDimensions(width, height)}
-            {frameCount !== undefined ? ` · ${frameCount} frames` : ''}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={handleReplace}
-          title="Replace source file"
-          className="shrink-0 rounded-md p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
-        >
-          <ArrowDownTray className="h-4 w-4" />
-        </button>
       </div>
 
       <input

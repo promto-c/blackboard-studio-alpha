@@ -11,6 +11,7 @@ import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import { createNodeActions } from '@/state/editor/slices/nodeActions';
 import { getOutputTechnicalChannelPort } from '@/color-management/outputTechnicalChannels';
 import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
+import { connectDefaultPipeline } from '@/utils/pipelineGraph';
 
 type TestState = {
   nodes: AnyNode[];
@@ -25,9 +26,12 @@ type TestState = {
 
 const createHarness = (nodeOrNodes: AnyNode | AnyNode[], currentFrame = 24) => {
   const nodes = Array.isArray(nodeOrNodes) ? nodeOrNodes : [nodeOrNodes];
-  const rootFlow = buildFlowFromNodes(nodes, ROOT_FLOW_ID, 'Root Flow');
-  let state: TestState = {
+  const rootFlow = connectDefaultPipeline(
+    buildFlowFromNodes(nodes, ROOT_FLOW_ID, 'Root Flow'),
     nodes,
+  );
+  let state: TestState = {
+    nodes: getOrderedNodesFromFlow(rootFlow),
     flows: { [rootFlow.id]: rootFlow },
     rootFlowId: rootFlow.id,
     activeFlowId: rootFlow.id,
@@ -155,7 +159,11 @@ describe('createNodeActions addNode', () => {
     const addedSource = state.nodes.find((node) => node.type === NodeType.ONNX_MODEL);
 
     expect(addedSource).toBeDefined();
-    expect(addedSource).toEqual(expect.objectContaining({ detachedFromPipe: true }));
+    expect(
+      state.flows[ROOT_FLOW_ID].edges.some(
+        (edge) => edge.sourceNodeId === addedSource!.id || edge.targetNodeId === addedSource!.id,
+      ),
+    ).toBe(false);
     expect(state.nodes.some((node) => node.type === NodeType.MERGE)).toBe(false);
     expect(state.selectedNodeId).toBe(addedSource!.id);
     expect(pushHistory).toHaveBeenCalledWith(
@@ -361,7 +369,6 @@ describe('createNodeActions addNode', () => {
     )!;
     const mergeNode = state.nodes.find((node) => node.type === NodeType.MERGE)!;
 
-    expect(addedSource).toEqual(expect.objectContaining({ detachedFromPipe: true }));
     expect(mergeNode).toEqual(
       expect.objectContaining({
         inputs: { source: addedSource.id, pipe: 'image-1' },
@@ -426,7 +433,6 @@ describe('createNodeActions addNode', () => {
       (node) => node.type === NodeType.MEDIA_SOURCE && node.id !== 'image-1',
     )!;
     const mergeNode = state.nodes.find((node) => node.type === NodeType.MERGE)!;
-    const upstreamImage = state.nodes.find((node) => node.id === 'image-1')!;
     const selectedGrade = state.nodes.find((node) => node.id === 'grade-1')!;
 
     expect(mergeNode).toBeDefined();
@@ -664,13 +670,12 @@ describe('createNodeActions addNode', () => {
     );
   });
 
-  it('does not connect merge to output when selected source has no downstream connection to output', () => {
+  it('keeps a new source floating when the selected source is outside the output graph', () => {
     const nodes = [scene(), image('image-1'), image('image-2')];
     const { actions, getState, pushHistory } = createHarness(nodes);
 
-    // Select image-1 — it is NOT the last implicit pipe source (image-2 is),
-    // and no explicit pipe edges exist. Output is still connected implicitly
-    // via image-2. So selected node has no direct connection to output.
+    // The default canonical output edge belongs to image-2, so image-1 is a
+    // floating graph node and must not trigger an automatic merge.
     getState().selectedNodeId = 'image-1';
     getState().selectedNodeIds = ['image-1'];
 
@@ -681,35 +686,25 @@ describe('createNodeActions addNode', () => {
       (node) =>
         node.type === NodeType.MEDIA_SOURCE && node.id !== 'image-1' && node.id !== 'image-2',
     )!;
-    const mergeNode = state.nodes.find((node) => node.type === NodeType.MERGE)!;
-
-    expect(mergeNode).toEqual(
-      expect.objectContaining({
-        inputs: { source: addedSource.id, pipe: 'image-1' },
-      }),
-    );
-    // Merge should NOT have a direct pipe edge to output — selected node was
-    // not connected to output, so merge stays floating too.
-    expect(state.flows[ROOT_FLOW_ID].edges).not.toContainEqual(
-      expect.objectContaining({
-        sourceNodeId: mergeNode.id,
-        targetNodeId: 'output',
-        targetPort: 'pipe',
-      }),
+    expect(state.nodes.some((node) => node.type === NodeType.MERGE)).toBe(false);
+    expect(state.flows[ROOT_FLOW_ID].edges).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceNodeId: addedSource.id }),
+        expect.objectContaining({ targetNodeId: addedSource.id }),
+      ]),
     );
     expect(pushHistory).toHaveBeenCalledWith(
       expect.objectContaining({
-        label: 'Add Merge Media Source 3',
+        label: 'Add Media Source 3 Node',
       }),
     );
   });
 
-  it('connects merge to output when selected source is implicitly the last pipe source', () => {
+  it('connects merge to output when the selected source owns the output edge', () => {
     const nodes = [scene(), image('image-1')];
     const { actions, getState, pushHistory } = createHarness(nodes);
 
-    // No explicit pipe edges, but output is not detached. image-1 is the last
-    // implicit pipe source — its output implicitly feeds into output.
+    // Project creation materializes image-1 -> output as a canonical edge.
     getState().selectedNodeId = 'image-1';
     getState().selectedNodeIds = ['image-1'];
 
@@ -726,8 +721,7 @@ describe('createNodeActions addNode', () => {
         inputs: { source: addedSource.id, pipe: 'image-1' },
       }),
     );
-    // Merge SHOULD connect to output — selected node was the last implicit
-    // pipe source.
+    // The merge replaces the selected source at the canonical output edge.
     expect(state.flows[ROOT_FLOW_ID].edges).toContainEqual(
       expect.objectContaining({
         sourceNodeId: mergeNode.id,
@@ -742,28 +736,34 @@ describe('createNodeActions addNode', () => {
     );
   });
 
-  it('inserts pre-connected extract and merge channel nodes into a selected pipe target', () => {
-    const nodes = [scene(), image('image-1'), grade('grade-1')];
+  it('inserts pre-connected channel nodes after the selected node and preserves its downstream', () => {
+    const nodes = [scene(), image('image-1'), grade('grade-1'), grade('grade-2')];
     const { actions, getState, pushHistory } = createHarness(nodes);
+    actions.connectNodeInput('grade-1', 'pipe', 'image-1');
+    actions.connectNodeInput('grade-2', 'pipe', 'grade-1');
+    actions.connectNodeInput('output', 'pipe', 'grade-2');
     getState().selectedNodeId = 'grade-1';
+    getState().selectedNodeIds = ['grade-1'];
 
     actions.addNode(NodeType.EXTRACT_CHANNELS);
 
     const state = getState();
     const extractNode = state.nodes.find((node) => node.type === NodeType.EXTRACT_CHANNELS)!;
     const mergeNode = state.nodes.find((node) => node.type === NodeType.MERGE_CHANNELS)!;
-    const targetNode = state.nodes.find((node) => node.id === 'grade-1')!;
+    const selectedNode = state.nodes.find((node) => node.id === 'grade-1')!;
+    const downstreamNode = state.nodes.find((node) => node.id === 'grade-2')!;
 
     expect(state.nodes.map((node) => node.id)).toEqual([
       'scene',
       'image-1',
+      'grade-1',
       extractNode.id,
       mergeNode.id,
-      'grade-1',
+      'grade-2',
     ]);
     expect(extractNode).toEqual(
       expect.objectContaining({
-        inputs: { source: 'image-1' },
+        inputs: { source: 'grade-1' },
       }),
     );
     expect(mergeNode).toEqual(
@@ -782,7 +782,12 @@ describe('createNodeActions addNode', () => {
         },
       }),
     );
-    expect(targetNode).toEqual(
+    expect(selectedNode).toEqual(
+      expect.objectContaining({
+        inputs: { pipe: 'image-1' },
+      }),
+    );
+    expect(downstreamNode).toEqual(
       expect.objectContaining({
         inputs: { pipe: mergeNode.id },
       }),
@@ -790,7 +795,7 @@ describe('createNodeActions addNode', () => {
     expect(state.flows[ROOT_FLOW_ID].edges).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          sourceNodeId: 'image-1',
+          sourceNodeId: 'grade-1',
           targetNodeId: extractNode.id,
           targetPort: 'source',
         }),
@@ -802,7 +807,12 @@ describe('createNodeActions addNode', () => {
         }),
         expect.objectContaining({
           sourceNodeId: mergeNode.id,
-          targetNodeId: 'grade-1',
+          targetNodeId: 'grade-2',
+          targetPort: 'pipe',
+        }),
+        expect.objectContaining({
+          sourceNodeId: 'grade-2',
+          targetNodeId: 'output',
           targetPort: 'pipe',
         }),
       ]),
@@ -892,15 +902,69 @@ describe('createNodeActions output technical channels', () => {
 });
 
 describe('createNodeActions connectNodeInput', () => {
-  it('rejects technical outputs connected to scene-linear effect pipes', () => {
+  it('connects named component outputs to scene-linear effect pipes', () => {
     const extract = { ...image('extract'), type: NodeType.EXTRACT_CHANNELS } as AnyNode;
     const gradeNode = grade('grade');
     const { actions, getState, pushHistory } = createHarness([scene(), extract, gradeNode]);
 
     actions.connectNodeInput('grade', 'pipe', 'extract', 'r');
 
+    expect(getState().nodes.find((node) => node.id === 'grade')).toEqual(
+      expect.objectContaining({
+        inputs: { pipe: 'extract' },
+        inputSourcePorts: { pipe: 'r' },
+      }),
+    );
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'extract',
+          sourcePort: 'r',
+          targetNodeId: 'grade',
+          targetPort: 'pipe',
+        }),
+      ]),
+    );
+    expect(pushHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('connects ordinary RGBA outputs to named component inputs', () => {
+    const source = image('image');
+    const mergeChannels = {
+      ...image('merge-channels'),
+      type: NodeType.MERGE_CHANNELS,
+    } as AnyNode;
+    const { actions, getState, pushHistory } = createHarness([scene(), source, mergeChannels]);
+
+    actions.connectNodeInput('merge-channels', 'g', 'image', 'output');
+
+    expect(getState().nodes.find((node) => node.id === 'merge-channels')).toEqual(
+      expect.objectContaining({ inputs: { g: 'image' } }),
+    );
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'image',
+          sourcePort: 'output',
+          targetNodeId: 'merge-channels',
+          targetPort: 'g',
+        }),
+      ]),
+    );
+    expect(pushHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects generic technical outputs connected to scene-linear effect pipes', () => {
+    const tracking = { ...image('tracking'), type: NodeType.MATCH_MOVE } as AnyNode;
+    const gradeNode = grade('grade');
+    const { actions, getState, pushHistory } = createHarness([scene(), tracking, gradeNode]);
+
+    actions.connectNodeInput('grade', 'pipe', 'tracking', 'output');
+
     expect(getState().nodes.find((node) => node.id === 'grade')).not.toHaveProperty('inputs');
-    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual([]);
+    expect(getState().flows[ROOT_FLOW_ID].edges).not.toContainEqual(
+      expect.objectContaining({ targetNodeId: 'grade', targetPort: 'pipe' }),
+    );
     expect(pushHistory).not.toHaveBeenCalled();
   });
 
@@ -912,13 +976,13 @@ describe('createNodeActions connectNodeInput', () => {
     actions.connectNodeInput('target', 'comfy-input:workflow:12:image', 'source');
 
     expect(getState().nodes.find((node) => node.id === 'target')).not.toHaveProperty('inputs');
-    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual([
+    expect(getState().flows[ROOT_FLOW_ID].edges).toContainEqual(
       expect.objectContaining({
         sourceNodeId: 'target',
         targetNodeId: 'source',
         targetPort: 'mask',
       }),
-    ]);
+    );
     expect(pushHistory).not.toHaveBeenCalled();
   });
 
@@ -933,13 +997,15 @@ describe('createNodeActions connectNodeInput', () => {
         inputs: { 'comfy-input:workflow:12:image': 'source' },
       }),
     );
-    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual([
-      expect.objectContaining({
-        sourceNodeId: 'source',
-        targetNodeId: 'target',
-        targetPort: 'comfy-input:workflow:12:image',
-      }),
-    ]);
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'source',
+          targetNodeId: 'target',
+          targetPort: 'comfy-input:workflow:12:image',
+        }),
+      ]),
+    );
     expect(pushHistory).toHaveBeenCalledWith(
       expect.objectContaining({
         label: 'Connect comfy-input:workflow:12:image input',
@@ -961,14 +1027,16 @@ describe('createNodeActions connectNodeInput', () => {
         inputSourcePorts: { a: 'r' },
       }),
     );
-    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual([
-      expect.objectContaining({
-        sourceNodeId: 'extract',
-        sourcePort: 'r',
-        targetNodeId: 'merge',
-        targetPort: 'a',
-      }),
-    ]);
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'extract',
+          sourcePort: 'r',
+          targetNodeId: 'merge',
+          targetPort: 'a',
+        }),
+      ]),
+    );
   });
 
   it('connects and disconnects the canonical output pipe as an explicit graph edge', () => {
@@ -994,12 +1062,9 @@ describe('createNodeActions connectNodeInput', () => {
         targetPort: 'pipe',
       }),
     );
-    expect(
-      getState().flows[ROOT_FLOW_ID].nodes.find((node) => node.id === 'output'),
-    ).toHaveProperty('detachedFromPipe', true);
   });
 
-  it('preserves explicit output pipe edges when node projections rebuild the flow', () => {
+  it('preserves the canonical output edge when node projections rebuild the flow', () => {
     const nodes = [scene(), image('source'), image('merge')];
     const { actions, getState } = createHarness(nodes);
 
@@ -1071,7 +1136,7 @@ describe('createNodeActions group nodes', () => {
     expect(state.nodes.map((node) => node.id)).toContain('input-1');
     const childNodeIds = state.flows[groupNode.childFlowId!].nodes.map((node) => node.id);
     expect(childNodeIds).not.toContain('input-1');
-    expect(childNodeIds).toEqual([`input_${groupNode.id}_input_blur-1_pipe`, 'blur-1', 'output']);
+    expect(childNodeIds).toEqual(['blur-1', 'output']);
   });
 
   it('creates a group node with a native child flow from selected nodes', () => {
@@ -1221,7 +1286,7 @@ describe('createNodeActions group nodes', () => {
     );
   });
 
-  it('creates an input entry node for the implicit upstream pipe when opening a group', () => {
+  it('creates an input entry node for the upstream pipe edge when opening a group', () => {
     const nodes = [scene(), image('source'), blur('blur-1'), grade('grade-1')];
     const { actions, getState } = createHarness(nodes);
     getState().selectedNodeId = 'blur-1';
@@ -1299,7 +1364,7 @@ describe('createNodeActions group nodes', () => {
     );
   });
 
-  it('keeps a shared implicit input entry when removing one exposed group input', () => {
+  it('keeps a shared input entry when removing one exposed group input', () => {
     const nodes = [
       scene(),
       image('source'),
@@ -1454,7 +1519,7 @@ describe('createNodeActions node clipboard', () => {
     expect(pastedBlur).toEqual(
       expect.objectContaining({
         name: 'blur-1 1',
-        inputs: { mask: pastedSource.id },
+        inputs: { mask: pastedSource.id, pipe: pastedSource.id },
       }),
     );
     expect(state.selectedNodeIds).toEqual([pastedSource.id, pastedBlur.id]);
@@ -1476,7 +1541,7 @@ describe('createNodeActions node clipboard', () => {
     );
   });
 
-  it('pastes with no selection as a detached island', async () => {
+  it('pastes with no selection as a self-contained floating island', async () => {
     const nodes = [scene(), image('source'), blur('blur-1'), grade('grade-1')];
     const { actions, getState } = createHarness(nodes);
     getState().selectedNodeId = 'blur-1';
@@ -1488,11 +1553,18 @@ describe('createNodeActions node clipboard', () => {
     await actions.pasteNodesFromClipboard();
 
     const state = getState();
-    expect(state.nodes.find((node) => node.id === 'source_copy')).toEqual(
-      expect.objectContaining({ detachedFromPipe: true }),
+    expect(state.flows[ROOT_FLOW_ID].edges).toContainEqual(
+      expect.objectContaining({
+        sourceNodeId: 'source_copy',
+        targetNodeId: 'blur-1_copy',
+        targetPort: 'pipe',
+      }),
     );
-    expect(state.nodes.find((node) => node.id === 'blur-1_copy')).toEqual(
-      expect.objectContaining({ detachedFromPipe: true }),
+    expect(state.flows[ROOT_FLOW_ID].edges).not.toContainEqual(
+      expect.objectContaining({
+        sourceNodeId: 'blur-1_copy',
+        targetNodeId: 'output',
+      }),
     );
   });
 
@@ -1659,7 +1731,7 @@ describe('createNodeActions stackNodeOntoStack', () => {
       expect.objectContaining({
         label: 'Stack grade-1',
         state: expect.objectContaining({
-          nodes: getState().nodes,
+          flows: getState().flows,
         }),
       }),
     );
@@ -1704,5 +1776,67 @@ describe('createNodeActions stackNodeOntoStack', () => {
     expect(actions.stackNodeOntoStack('image-2', 'image-1')).toBe(false);
     expect(getState().nodes.map((node) => node.id)).toEqual(['scene', 'image-1', 'image-2']);
     expect(pushHistory).not.toHaveBeenCalled();
+  });
+
+  it('rewires the primary pipe when an adjustment is stacked and unstacked', () => {
+    const nodes = [scene(), image('image-1'), grade('grade-1'), blur('blur-1')];
+    const { actions, getState } = createHarness(nodes);
+
+    actions.toggleNodeStacking('grade-1');
+
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'image-1',
+          targetNodeId: 'blur-1',
+          targetPort: 'pipe',
+        }),
+      ]),
+    );
+    expect(getState().flows[ROOT_FLOW_ID].edges).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ targetNodeId: 'grade-1', targetPort: 'pipe' }),
+      ]),
+    );
+
+    actions.toggleNodeStacking('grade-1');
+
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'image-1',
+          targetNodeId: 'grade-1',
+          targetPort: 'pipe',
+        }),
+        expect.objectContaining({
+          sourceNodeId: 'grade-1',
+          targetNodeId: 'blur-1',
+          targetPort: 'pipe',
+        }),
+      ]),
+    );
+  });
+});
+
+describe('createNodeActions reorderNodes', () => {
+  it('rewires canonical pipe edges to match the new list order', () => {
+    const nodes = [scene(), image('image-1'), grade('grade-1'), blur('blur-1')];
+    const { actions, getState } = createHarness(nodes);
+
+    actions.reorderNodes([3], 2);
+
+    expect(getState().nodes.map((node) => node.id)).toEqual([
+      'scene',
+      'image-1',
+      'blur-1',
+      'grade-1',
+    ]);
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceNodeId: 'image-1', targetNodeId: 'blur-1' }),
+        expect.objectContaining({ sourceNodeId: 'blur-1', targetNodeId: 'grade-1' }),
+        expect.objectContaining({ sourceNodeId: 'grade-1', targetNodeId: 'output' }),
+      ]),
+    );
   });
 });

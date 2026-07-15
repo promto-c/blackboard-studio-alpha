@@ -2,6 +2,7 @@ import {
   NodeType,
   AnyNode,
   Flow,
+  FlowId,
   GroupNode,
   Keyframe,
   AnimatableNumber,
@@ -18,7 +19,12 @@ import {
   getStackedGroupEndIndex,
 } from '@/utils/nodeStacks';
 import { isNodeStacked, isStackAdjustmentType } from '@/utils/nodePredicates';
-import { getRootFlow, updateFlowNode, OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import {
+  getRootFlow,
+  replaceFlowNodes,
+  updateFlowNode,
+  OUTPUT_NODE_ID,
+} from '@/state/editor/flowModel';
 import type { SetState, GetState, EditorState } from '@/state/editor/slices/types';
 import {
   buildGraphCommandState,
@@ -44,6 +50,22 @@ import {
   getOutputTechnicalChannelPort,
   isOutputTechnicalChannelPort,
 } from '@/color-management/outputTechnicalChannels';
+import { rewirePrimaryPipeline } from '@/utils/pipelineGraph';
+
+const rebuildActivePipeline = (
+  state: Readonly<EditorState>,
+  orderedNodes: AnyNode[],
+): Record<FlowId, Flow> | null => {
+  const flowId = state.activeFlowId ?? state.rootFlowId;
+  const previousFlow = flowId ? state.flows[flowId] : null;
+  if (!flowId || !previousFlow) return null;
+
+  const rebuiltFlows = replaceFlowNodes(state.flows, flowId, orderedNodes, previousFlow.name);
+  return {
+    ...rebuiltFlows,
+    [flowId]: rewirePrimaryPipeline(previousFlow, rebuiltFlows[flowId], orderedNodes),
+  };
+};
 
 export function createNodeActions(
   set: SetState,
@@ -511,11 +533,13 @@ export function createNodeActions(
         const newNode = newNodes.find((l) => l.id === nodeId) as
           | (AnyNode & { stacked?: boolean })
           | undefined;
+        const flows = rebuildActivePipeline(state, newNodes);
+        if (!flows) return { patch: {} };
         return {
-          patch: { nodes: newNodes },
+          patch: { flows },
           history: {
             label: `${newNode?.stacked ? 'Stack' : 'Unstack'} ${newNode?.name}`,
-            state: { nodes: newNodes },
+            state: { flows },
           },
         };
       });
@@ -539,7 +563,7 @@ export function createNodeActions(
       }
 
       let result = false;
-      deps.commitMutation(() => {
+      deps.commitMutation((currentState) => {
         const nodes = [...state.nodes];
         const groupToMove = nodes.slice(sourceIndex, sourceIndex + sourceStack.length);
         nodes.splice(sourceIndex, groupToMove.length);
@@ -554,13 +578,15 @@ export function createNodeActions(
         );
         nodes.splice(insertionIndex + 1, 0, ...stackedGroup);
 
+        const flows = rebuildActivePipeline(currentState, nodes);
+        if (!flows) return { patch: {} };
         result = true;
         return {
-          patch: { nodes, selectedNodeId: state.selectedNodeId },
+          patch: { flows, selectedNodeId: state.selectedNodeId },
           history: {
             label: `Stack ${sourceNode.name}`,
             state: {
-              nodes,
+              flows,
               selectedNodeId: state.selectedNodeId,
               nodePositionsByFlow: state.nodePositionsByFlow,
             },
@@ -613,11 +639,14 @@ export function createNodeActions(
 
         newNodes.splice(insertionIndex, 0, ...allItemsToMove);
 
+        const flows = rebuildActivePipeline(state, newNodes);
+        if (!flows) return { patch: {} };
+
         return {
-          patch: { nodes: newNodes },
+          patch: { flows },
           history: {
             label: 'Reorder Nodes',
-            state: { nodes: newNodes },
+            state: { flows },
           },
         };
       });
@@ -653,24 +682,6 @@ export function createNodeActions(
       const result = disconnectNodeCommand(state, nodeId, portName);
       if (!result) return;
       executeGraphCommand(deps.commitMutation, result);
-    },
-
-    setOutputPipeDetached: (detached: boolean) => {
-      deps.commitMutation((state) => {
-        const flowId = state.activeFlowId ?? state.rootFlowId;
-        const nextFlows = updateFlowNode(state.flows, flowId, OUTPUT_NODE_ID, {
-          detachedFromPipe: detached,
-        } as Partial<AnyNode>);
-        if (!nextFlows) return { patch: {} };
-
-        return {
-          patch: { flows: nextFlows },
-          history: {
-            label: detached ? 'Disconnect output input' : 'Reconnect output input',
-            state: { flows: nextFlows, selectedNodeId: state.selectedNodeId },
-          },
-        };
-      });
     },
 
     setOutputTechnicalChannels: (channels: OutputTechnicalChannel[], withHistory = true) => {

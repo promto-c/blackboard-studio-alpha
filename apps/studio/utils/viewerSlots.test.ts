@@ -3,6 +3,7 @@ import {
   AnyNode,
   BlendMode,
   Flow,
+  type FlowEdge,
   ImageFitMode,
   NodeType,
   ViewerSlotAssignments,
@@ -17,6 +18,7 @@ import {
   getViewerRenderNodes,
   getViewerTargetLabel,
   getViewportRenderNodes,
+  resolveViewerRouting,
   sanitizeActiveViewerSlot,
   sanitizeViewerNodeId,
   sanitizeViewerSlots,
@@ -31,6 +33,7 @@ const SCENE_NODE: AnyNode = {
   height: 1080,
   bitDepth: 16,
   colorSpace: 'Linear',
+  startFrame: 0,
   maxFrames: 0,
   fps: 30,
 };
@@ -98,7 +101,6 @@ const COMFY_SOURCE: AnyNode = {
   width: 2048,
   height: 2490,
   colorSpace: 'sRGB',
-  detachedFromPipe: true,
   workflows: [],
   workflowControls: [],
   workflowInputImages: {},
@@ -125,10 +127,7 @@ const REFORMAT_NODE: AnyNode = {
   resizeMode: 'none',
 };
 
-const DETACHED_IMAGE_B: AnyNode = {
-  ...IMAGE_B,
-  detachedFromPipe: true,
-};
+const FLOATING_IMAGE_B: AnyNode = { ...IMAGE_B };
 
 const GRADE_B: AnyNode = {
   id: 'grade_b',
@@ -150,7 +149,7 @@ const MERGE_B: AnyNode = {
 };
 
 const NODES = [SCENE_NODE, IMAGE_A, IMAGE_B, GRADE_B, IMAGE_C];
-const MERGED_SOURCE_NODES = [SCENE_NODE, IMAGE_A, DETACHED_IMAGE_B, MERGE_B];
+const MERGED_SOURCE_NODES = [SCENE_NODE, IMAGE_A, FLOATING_IMAGE_B, MERGE_B];
 
 const OUTPUT_NODE: AnyNode = {
   id: OUTPUT_NODE_ID,
@@ -158,6 +157,28 @@ const OUTPUT_NODE: AnyNode = {
   name: 'Output',
   enabled: true,
 };
+
+const edge = (
+  sourceNodeId: string,
+  targetNodeId: string,
+  targetPort = 'pipe',
+  sourcePort = 'output',
+): FlowEdge => ({
+  id: `edge_${sourceNodeId}_${sourcePort}_${targetNodeId}_${targetPort}`,
+  sourceNodeId,
+  sourcePort,
+  targetNodeId,
+  targetPort,
+});
+
+const flowWithEdges = (nodes: AnyNode[], edges: FlowEdge[]): Flow => ({
+  id: 'test-flow',
+  name: 'Test Flow',
+  nodes: [...nodes, OUTPUT_NODE],
+  edges,
+  stacks: [],
+  outputNodeId: OUTPUT_NODE_ID,
+});
 
 const SCENE_3D_NODE: AnyNode = {
   id: 'scene_3d',
@@ -207,6 +228,37 @@ const FLOW_TO_IMAGE_A: Flow = {
 };
 
 describe('viewerSlots utils', () => {
+  it('resolves both compared slots as active viewer targets', () => {
+    expect(
+      resolveViewerRouting(
+        'img_a',
+        { 1: 'img_a', 2: 'img_b' },
+        {
+          isActive: true,
+          slotA: 1,
+          slotB: 2,
+        },
+      ),
+    ).toEqual({
+      targetNodeIds: ['img_a', 'img_b'],
+      compare: { slotA: 1, slotB: 2, nodeIdA: 'img_a', nodeIdB: 'img_b' },
+    });
+  });
+
+  it('falls back to the regular viewer target when Compare routing is incomplete', () => {
+    expect(
+      resolveViewerRouting(
+        'img_a',
+        { 1: 'img_a' },
+        {
+          isActive: true,
+          slotA: 1,
+          slotB: 2,
+        },
+      ),
+    ).toEqual({ targetNodeIds: ['img_a'], compare: null });
+  });
+
   it('returns full node list when no viewer node is set', () => {
     expect(getViewerRenderNodes(NODES, null)).toEqual(NODES);
   });
@@ -235,7 +287,11 @@ describe('viewerSlots utils', () => {
       useOutputSizeAsScene: true,
     };
 
-    expect(getOutputRenderNodes([SCENE_NODE, matchOutputImage], null)).toEqual([
+    const matchOutputFlow = flowWithEdges(
+      [SCENE_NODE, matchOutputImage],
+      [edge(matchOutputImage.id, OUTPUT_NODE_ID)],
+    );
+    expect(getOutputRenderNodes([SCENE_NODE, matchOutputImage], matchOutputFlow)).toEqual([
       { ...SCENE_NODE, width: 2048, height: 2490 },
       {
         ...matchOutputImage,
@@ -244,17 +300,31 @@ describe('viewerSlots utils', () => {
     ]);
 
     const keepSceneImage = { ...matchOutputImage, useOutputSizeAsScene: false };
-    expect(getOutputRenderNodes([SCENE_NODE, keepSceneImage], null)).toEqual([
+    const keepSceneFlow = flowWithEdges(
+      [SCENE_NODE, keepSceneImage],
+      [edge(keepSceneImage.id, OUTPUT_NODE_ID)],
+    );
+    expect(getOutputRenderNodes([SCENE_NODE, keepSceneImage], keepSceneFlow)).toEqual([
       SCENE_NODE,
       keepSceneImage,
     ]);
   });
 
   it('derives output scene size from reformat nodes', () => {
-    expect(getOutputRenderNodes([SCENE_NODE, IMAGE_A, REFORMAT_NODE], null)).toEqual([
+    const nodes = [SCENE_NODE, IMAGE_A, REFORMAT_NODE];
+    const flow = flowWithEdges(nodes, [
+      edge(IMAGE_A.id, REFORMAT_NODE.id),
+      edge(REFORMAT_NODE.id, OUTPUT_NODE_ID),
+    ]);
+    expect(getOutputRenderNodes(nodes, flow)).toEqual([
       { ...SCENE_NODE, width: 503, height: 1033 },
       IMAGE_A,
-      { ...REFORMAT_NODE, sourceWidth: 1920, sourceHeight: 1080 },
+      {
+        ...REFORMAT_NODE,
+        inputs: { pipe: IMAGE_A.id },
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+      },
     ]);
   });
 
@@ -266,28 +336,47 @@ describe('viewerSlots utils', () => {
       height: 720,
     } as AnyNode;
 
-    expect(
-      getOutputRenderNodes([SCENE_NODE, IMAGE_A, REFORMAT_NODE, secondReformat], null),
-    ).toEqual([
+    const nodes = [SCENE_NODE, IMAGE_A, REFORMAT_NODE, secondReformat];
+    const flow = flowWithEdges(nodes, [
+      edge(IMAGE_A.id, REFORMAT_NODE.id),
+      edge(REFORMAT_NODE.id, secondReformat.id),
+      edge(secondReformat.id, OUTPUT_NODE_ID),
+    ]);
+    expect(getOutputRenderNodes(nodes, flow)).toEqual([
       { ...SCENE_NODE, width: 1280, height: 720 },
       IMAGE_A,
-      { ...REFORMAT_NODE, sourceWidth: 1920, sourceHeight: 1080 },
-      { ...secondReformat, sourceWidth: 503, sourceHeight: 1033 },
+      {
+        ...REFORMAT_NODE,
+        inputs: { pipe: IMAGE_A.id },
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+      },
+      {
+        ...secondReformat,
+        inputs: { pipe: REFORMAT_NODE.id },
+        sourceWidth: 503,
+        sourceHeight: 1033,
+      },
     ]);
   });
 
   it('views downstream nodes in the latest reformat scene size', () => {
     const gradeAfterReformat = { ...GRADE_B, inputs: { pipe: REFORMAT_NODE.id } } as AnyNode;
+    const nodes = [SCENE_NODE, IMAGE_A, REFORMAT_NODE, gradeAfterReformat];
+    const flow = flowWithEdges(nodes, [
+      edge(IMAGE_A.id, REFORMAT_NODE.id),
+      edge(REFORMAT_NODE.id, gradeAfterReformat.id),
+    ]);
 
-    expect(
-      getViewerRenderNodes(
-        [SCENE_NODE, IMAGE_A, REFORMAT_NODE, gradeAfterReformat],
-        gradeAfterReformat.id,
-      ),
-    ).toEqual([
+    expect(getViewerRenderNodes(nodes, gradeAfterReformat.id, flow)).toEqual([
       { ...SCENE_NODE, width: 503, height: 1033 },
       IMAGE_A,
-      { ...REFORMAT_NODE, sourceWidth: 1920, sourceHeight: 1080 },
+      {
+        ...REFORMAT_NODE,
+        inputs: { pipe: IMAGE_A.id },
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+      },
       gradeAfterReformat,
     ]);
   });
@@ -304,10 +393,10 @@ describe('viewerSlots utils', () => {
       ...ROTO_NODE,
       inputs: { pipe: matchOutputImage.id },
     } as AnyNode;
+    const nodes = [SCENE_NODE, matchOutputImage, rotoFromMatchOutput];
+    const flow = flowWithEdges(nodes, [edge(matchOutputImage.id, rotoFromMatchOutput.id)]);
 
-    expect(
-      getViewerRenderNodes([SCENE_NODE, matchOutputImage, rotoFromMatchOutput], 'roto'),
-    ).toEqual([
+    expect(getViewerRenderNodes(nodes, 'roto', flow)).toEqual([
       { ...SCENE_NODE, width: 2048, height: 2490 },
       {
         ...matchOutputImage,
@@ -319,14 +408,18 @@ describe('viewerSlots utils', () => {
 
   it('views explicitly connected pipe branches instead of earlier list sources', () => {
     const rotoFromComfy = { ...ROTO_NODE, inputs: { pipe: COMFY_SOURCE.id } } as AnyNode;
+    const nodes = [SCENE_NODE, IMAGE_A, rotoFromComfy, COMFY_SOURCE];
+    const flow = flowWithEdges(nodes, [edge(COMFY_SOURCE.id, rotoFromComfy.id)]);
 
-    expect(
-      getViewerRenderNodes([SCENE_NODE, IMAGE_A, rotoFromComfy, COMFY_SOURCE], 'roto'),
-    ).toEqual([SCENE_NODE, COMFY_SOURCE, rotoFromComfy]);
+    expect(getViewerRenderNodes(nodes, 'roto', flow)).toEqual([
+      SCENE_NODE,
+      COMFY_SOURCE,
+      rotoFromComfy,
+    ]);
   });
 
-  it('views detached floating adjustments from an empty scene', () => {
-    const floatingRoto = { ...ROTO_NODE, detachedFromPipe: true } as AnyNode;
+  it('views floating adjustments from an empty scene', () => {
+    const floatingRoto = { ...ROTO_NODE } as AnyNode;
 
     expect(getViewerRenderNodes([SCENE_NODE, IMAGE_A, floatingRoto], 'roto')).toEqual([
       SCENE_NODE,
@@ -392,9 +485,12 @@ describe('viewerSlots utils', () => {
   });
 
   it('renders merge nodes from their explicitly connected inputs', () => {
-    expect(getViewerRenderNodes(MERGED_SOURCE_NODES, 'merge_b')).toEqual([
+    const sourceOnlyFlow = flowWithEdges(MERGED_SOURCE_NODES, [
+      edge(IMAGE_B.id, MERGE_B.id, 'source'),
+    ]);
+    expect(getViewerRenderNodes(MERGED_SOURCE_NODES, 'merge_b', sourceOnlyFlow)).toEqual([
       SCENE_NODE,
-      DETACHED_IMAGE_B,
+      FLOATING_IMAGE_B,
       MERGE_B,
     ]);
 
@@ -402,10 +498,18 @@ describe('viewerSlots utils', () => {
       ...MERGE_B,
       inputs: { source: IMAGE_B.id, pipe: IMAGE_A.id },
     } as AnyNode;
+    const mergedNodes = [SCENE_NODE, IMAGE_A, FLOATING_IMAGE_B, mergeWithPipe];
+    const mergeFlow = flowWithEdges(mergedNodes, [
+      edge(IMAGE_B.id, mergeWithPipe.id, 'source'),
+      edge(IMAGE_A.id, mergeWithPipe.id),
+    ]);
 
-    expect(
-      getViewerRenderNodes([SCENE_NODE, IMAGE_A, DETACHED_IMAGE_B, mergeWithPipe], 'merge_b'),
-    ).toEqual([SCENE_NODE, IMAGE_A, DETACHED_IMAGE_B, mergeWithPipe]);
+    expect(getViewerRenderNodes(mergedNodes, 'merge_b', mergeFlow)).toEqual([
+      SCENE_NODE,
+      IMAGE_A,
+      FLOATING_IMAGE_B,
+      mergeWithPipe,
+    ]);
   });
 
   it('treats output viewer target as full node list', () => {
@@ -456,7 +560,7 @@ describe('viewerSlots utils', () => {
     ).toEqual([SCENE_NODE]);
   });
 
-  it('resolves a node input branch from node input projections', () => {
+  it('ignores stale node input projections without a canonical edge', () => {
     const scene3DWithBackdrop = {
       ...SCENE_3D_NODE,
       inputs: { backdrop: IMAGE_B.id },
@@ -468,7 +572,7 @@ describe('viewerSlots utils', () => {
         'scene_3d',
         'backdrop',
       ),
-    ).toEqual([SCENE_NODE, IMAGE_B]);
+    ).toEqual([SCENE_NODE]);
   });
 
   it('resolves a node input branch from canonical flow edges', () => {
@@ -502,7 +606,6 @@ describe('viewerSlots utils', () => {
   it('renders the Scene 3D projection instead of only its backdrop branch', () => {
     const scene3DWithBackdrop = {
       ...SCENE_3D_NODE,
-      detachedFromPipe: true,
       inputs: { backdrop: IMAGE_B.id },
     } as AnyNode;
     const flowToScene3DBackdrop: Flow = {

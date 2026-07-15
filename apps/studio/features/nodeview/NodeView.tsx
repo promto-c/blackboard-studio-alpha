@@ -3,13 +3,13 @@ import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import {
   AnyNode,
   EditorTab,
+  type FlowEdge,
   NodePositions,
   NodeType,
   type OutputNode,
   SceneNode,
   ViewerSlotAssignments,
 } from '@blackboard/types';
-import { getInputConnections } from '@/utils/connectionGraph';
 import {
   buildPipelineOrder,
   placeNewNodes,
@@ -22,17 +22,8 @@ import { useNodeDrag } from '@/hooks/useNodeDrag';
 import { usePreferences } from '@/state/preferencesContext';
 import { getOutputTechnicalChannelPort } from '@/color-management';
 
-import {
-  getOutputPipeEdge,
-  getSelectedNodeIdsForGrouping,
-  isFlowOutputDetached,
-  OUTPUT_NODE_ID,
-} from '@/state/editor/flowModel';
-import {
-  isStackAdjustmentType,
-  participatesInImplicitPipeline,
-  usesImplicitPipelineInput,
-} from '@/utils/nodePredicates';
+import { getSelectedNodeIdsForGrouping, OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import { isStackAdjustmentType } from '@/utils/nodePredicates';
 import { hasPreviousStackTarget } from '@/utils/nodeStacks';
 import {
   useHotkeyScope,
@@ -54,15 +45,15 @@ import { getActiveNodeJobMap } from '@/features/nodes/NodeProgressBackground';
 import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
 import { useInAppMediaDrop } from '@/hooks/useInAppMediaDrop';
 import { hasInAppMediaDrag, readInAppMediaDrag } from '@/utils/inAppMediaDrag';
+import { buildNodePortColorMap } from './nodePortVisuals';
+import { resolveVisibleGraphNodeId } from './nodeViewState';
+import {
+  collectUpstreamEdgeIds,
+  collectUpstreamEdgeIdsForNodes,
+  collectUpstreamNodeIds,
+} from '@/utils/flowTopology';
+import { resolveViewerRouting } from '@/utils/viewerSlots';
 // --- Types ---
-
-interface Connection {
-  sourceNodeId: string;
-  sourcePortName?: string;
-  targetNodeId: string;
-  targetPortName: string;
-  isPipe?: boolean;
-}
 
 interface DragConnectState {
   sourceNodeId: string;
@@ -117,6 +108,7 @@ function NodeView({
   fitInsetRight = 0,
 }: NodeViewProps) {
   const nodes = useEditorSelector((s) => s.nodes);
+  const portColors = useMemo(() => buildNodePortColorMap(nodes), [nodes]);
   const activeFlow = useEditorSelector((s) => {
     const flowId = s.activeFlowId ?? s.rootFlowId;
     return flowId ? s.flows[flowId] : null;
@@ -126,6 +118,9 @@ function NodeView({
   );
   const backgroundJobs = useEditorSelector((s) => s.backgroundJobs);
   const previewNodeType = useEditorSelector((s) => s.previewNodeType);
+  const isCompareActive = useEditorSelector((s) => s.compareView.isActive);
+  const compareSlotA = useEditorSelector((s) => s.compareView.slotA);
+  const compareSlotB = useEditorSelector((s) => s.compareView.slotB);
   const nodePositions = useEditorSelector((s) => {
     const flowId = s.activeFlowId ?? s.rootFlowId;
     return (flowId ? s.nodePositionsByFlow[flowId] : undefined) ?? {};
@@ -136,10 +131,8 @@ function NodeView({
     toggleNodeSelection,
     toggleNodeEnabled,
     deleteNode,
-    updateNode,
     connectNodeInput,
     disconnectNodeInput,
-    setOutputPipeDetached,
     setNodePosition,
     setNodePositions,
     commitNodePosition,
@@ -282,9 +275,6 @@ function NodeView({
     (nodeId: string) => hasPreviousStackTarget(nodes, nodeId),
     [nodes],
   );
-  const outputPipeEdge = useMemo(() => getOutputPipeEdge(activeFlow), [activeFlow]);
-  const isOutputDetached = useMemo(() => isFlowOutputDetached(activeFlow), [activeFlow]);
-
   const graphNodeIds = useMemo(() => {
     const ids = new Set<string>([OUTPUT_NODE_ID]);
     for (const stack of nodeStacks) {
@@ -293,136 +283,61 @@ function NodeView({
     return ids;
   }, [nodeStacks]);
 
-  // --- Pipe connections (implicit from node order) ---
+  const connections = useMemo(() => activeFlow?.edges ?? [], [activeFlow]);
 
-  const pipeConnections = useMemo(() => {
-    const conns: Connection[] = [];
-
-    // Scene is a global control, not a pipeline node. "previousExitId" tracks
-    // the current output from real graph stacks only.
-    let previousExitId: string | null = null;
-
-    for (const stack of nodeStacks) {
-      const baseNode = stack[0];
-      if (!participatesInImplicitPipeline(baseNode.type)) {
-        continue;
-      }
-      if (baseNode.detachedFromPipe) continue;
-
-      if (previousExitId && usesImplicitPipelineInput(baseNode.type)) {
-        conns.push({
-          sourceNodeId: previousExitId,
-          sourcePortName: 'output',
-          targetNodeId: baseNode.id,
-          targetPortName: 'pipe',
-          isPipe: true,
-        });
-      }
-      previousExitId = baseNode.id;
-    }
-
-    // Last implicit pipeline exit -> Output, unless Output has been explicitly rewired/detached.
-    if (previousExitId && !outputPipeEdge && !isOutputDetached) {
-      conns.push({
-        sourceNodeId: previousExitId,
-        sourcePortName: 'output',
-        targetNodeId: OUTPUT_NODE_ID,
-        targetPortName: 'pipe',
-        isPipe: true,
-      });
-    }
-
-    return conns;
-  }, [nodeStacks, outputPipeEdge, isOutputDetached]);
-
-  // --- Explicit connections (from node.inputs) ---
-
-  const explicitConnections = useMemo(() => {
-    const conns: Connection[] = [];
-    for (const node of nodes) {
-      for (const { portName, sourceNodeId, sourcePortName } of getInputConnections(node)) {
-        conns.push({
-          sourceNodeId,
-          sourcePortName,
-          targetNodeId: node.id,
-          targetPortName: portName,
-        });
-      }
-    }
-    for (const edge of activeFlow?.edges ?? []) {
-      if (edge.targetNodeId !== OUTPUT_NODE_ID) continue;
-      conns.push({
-        sourceNodeId: edge.sourceNodeId,
-        sourcePortName: edge.sourcePort,
-        targetNodeId: OUTPUT_NODE_ID,
-        targetPortName: edge.targetPort,
-      });
-    }
-    return conns;
-  }, [activeFlow, nodes]);
-
-  // Merge all connections
-  const allConnections = useMemo(() => {
-    const explicitTargetKeys = new Set(
-      explicitConnections.map(
-        (connection) => `${connection.targetNodeId}:${connection.targetPortName}`,
+  const connectedInputKeys = useMemo(
+    () =>
+      new Set(
+        connections.map((connection) => `${connection.targetNodeId}:${connection.targetPort}`),
       ),
-    );
-    return [
-      ...pipeConnections.filter(
-        (connection) =>
-          !explicitTargetKeys.has(`${connection.targetNodeId}:${connection.targetPortName}`),
-      ),
-      ...explicitConnections,
-    ];
-  }, [pipeConnections, explicitConnections]);
+    [connections],
+  );
 
-  const connectionMap = useMemo(() => {
-    const map = new Map<string, Connection>();
-    for (const conn of allConnections) {
-      map.set(`${conn.targetNodeId}:${conn.targetPortName}`, conn);
-    }
-    return map;
-  }, [allConnections]);
+  const selectedGraphNodeId = useMemo(
+    () => resolveVisibleGraphNodeId(selectedNodeId, nodeStacks),
+    [nodeStacks, selectedNodeId],
+  );
+  const viewerRouting = useMemo(
+    () =>
+      resolveViewerRouting(viewerNodeId, viewerSlots, {
+        isActive: isCompareActive,
+        slotA: compareSlotA,
+        slotB: compareSlotB,
+      }),
+    [compareSlotA, compareSlotB, isCompareActive, viewerNodeId, viewerSlots],
+  );
+  const viewerGraphNodeIds = useMemo(
+    () =>
+      viewerRouting.targetNodeIds
+        .map((nodeId) => resolveVisibleGraphNodeId(nodeId, nodeStacks))
+        .filter((nodeId): nodeId is string => !!nodeId),
+    [nodeStacks, viewerRouting.targetNodeIds],
+  );
+  const compareViewerSlots = useMemo(
+    () =>
+      new Set(
+        viewerRouting.compare ? [viewerRouting.compare.slotA, viewerRouting.compare.slotB] : [],
+      ),
+    [viewerRouting.compare],
+  );
+  const highlightedConnectionKeys = useMemo(
+    () => collectUpstreamEdgeIds(connections, selectedGraphNodeId),
+    [connections, selectedGraphNodeId],
+  );
+  const flowingConnectionKeys = useMemo(
+    () => collectUpstreamEdgeIdsForNodes(connections, viewerGraphNodeIds),
+    [connections, viewerGraphNodeIds],
+  );
 
   // --- Connection selection ---
-  const [selectedConnection, setSelectedConnection] = useState<Connection | null>(null);
-  const getPipeDetachTargetId = useCallback((conn: Connection): string | null => {
-    if (!conn.isPipe) return null;
-    if (conn.targetPortName === 'pipe') {
-      return conn.targetNodeId;
-    }
-    return null;
-  }, []);
-  const detachPipeConnection = useCallback(
-    (conn: Connection): boolean => {
-      const targetNodeId = getPipeDetachTargetId(conn);
-      if (!targetNodeId) return false;
-      if (targetNodeId === OUTPUT_NODE_ID) {
-        setOutputPipeDetached(true);
-        setSelectedConnection(null);
-        return true;
-      }
-      updateNode(targetNodeId, { detachedFromPipe: true } as Partial<AnyNode>, true);
-      setSelectedConnection(null);
-      return true;
-    },
-    [getPipeDetachTargetId, setOutputPipeDetached, updateNode],
-  );
-  const canCutConnection = useCallback(
-    (conn: Connection): boolean => !conn.isPipe || getPipeDetachTargetId(conn) !== null,
-    [getPipeDetachTargetId],
-  );
+  const [selectedConnection, setSelectedConnection] = useState<FlowEdge | null>(null);
   const cutConnection = useCallback(
-    (conn: Connection): boolean => {
-      if (conn.isPipe) {
-        return detachPipeConnection(conn);
-      }
-      disconnectNodeInput(conn.targetNodeId, conn.targetPortName);
+    (connection: FlowEdge): boolean => {
+      disconnectNodeInput(connection.targetNodeId, connection.targetPort);
       setSelectedConnection(null);
       return true;
     },
-    [detachPipeConnection, disconnectNodeInput],
+    [disconnectNodeInput],
   );
   const updateGraphPointerPosition = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
@@ -453,9 +368,6 @@ function NodeView({
         run: () => {
           if (!selectedConnection) {
             return false;
-          }
-          if (selectedConnection.isPipe) {
-            return cutConnection(selectedConnection);
           }
           return cutConnection(selectedConnection);
         },
@@ -552,12 +464,6 @@ function NodeView({
               dragConnectState.sourceNodeId,
               dragConnectState.sourcePortName,
             );
-            if (targetPortName === 'pipe' && targetNodeId !== OUTPUT_NODE_ID) {
-              const targetNode = nodes.find((candidate) => candidate.id === targetNodeId);
-              if (targetNode?.detachedFromPipe) {
-                updateNode(targetNodeId, { detachedFromPipe: false } as Partial<AnyNode>, true);
-              }
-            }
           }
         }
       }
@@ -570,7 +476,7 @@ function NodeView({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragConnectState, connectNodeInput, nodes, updateNode]);
+  }, [dragConnectState, connectNodeInput]);
 
   // Convert drag preview cursor to canvas-space for wire rendering
   const dragPreview = useMemo(() => {
@@ -600,7 +506,13 @@ function NodeView({
     isMerge: boolean;
     position: { x: number; y: number };
   } | null>(() => {
-    const entry = computePreviewEntry(previewNodeType, nodeStacks);
+    const entry = computePreviewEntry(
+      previewNodeType,
+      nodeStacks,
+      activeFlow
+        ? collectUpstreamNodeIds(activeFlow.edges, activeFlow.outputNodeId)
+        : new Set<string>(),
+    );
     if (!entry) return null;
 
     const position = computeGraphPreviewPosition(
@@ -610,7 +522,7 @@ function NodeView({
       selectedNodeId,
     );
     return { ...entry, position };
-  }, [previewNodeType, nodeStacks, nodePositions, stackMap, selectedNodeId]);
+  }, [activeFlow, previewNodeType, nodeStacks, nodePositions, stackMap, selectedNodeId]);
 
   useEffect(() => {
     if (!stackMagnetDropCommitId) return;
@@ -1174,13 +1086,15 @@ function NodeView({
       <div ref={contentRef} style={getTransformStyle()}>
         {/* Connection wires */}
         <ConnectionWires
-          connections={allConnections}
+          connections={connections}
           portPositions={portPositions}
           selectedConnection={selectedConnection}
           onSelectConnection={setSelectedConnection}
-          canCutConnection={canCutConnection}
           onCutConnection={cutConnection}
           dragPreview={dragPreview}
+          portColors={portColors}
+          highlightedConnectionKeys={highlightedConnectionKeys}
+          flowingConnectionKeys={flowingConnectionKeys}
         />
 
         {/* Output node */}
@@ -1196,17 +1110,18 @@ function NodeView({
           <OutputNodeCard
             isSelected={isOutputNodeSelected}
             isDragTarget={!!dragConnectState}
-            isConnected={connectionMap.has(`${OUTPUT_NODE_ID}:pipe`)}
+            isConnected={connectedInputKeys.has(`${OUTPUT_NODE_ID}:pipe`)}
             technicalChannels={outputNode?.technicalChannels ?? []}
             connectedTechnicalPorts={
               new Set(
                 (outputNode?.technicalChannels ?? [])
                   .map((channel) => getOutputTechnicalChannelPort(channel.id))
-                  .filter((portName) => connectionMap.has(`${OUTPUT_NODE_ID}:${portName}`)),
+                  .filter((portName) => connectedInputKeys.has(`${OUTPUT_NODE_ID}:${portName}`)),
               )
             }
             viewerNodeId={viewerNodeId}
             viewerSlots={viewerSlots}
+            compareViewerSlots={compareViewerSlots}
             onSelect={(event) => selectNodeFromPointer(event, OUTPUT_NODE_ID)}
             onDragStart={(e) => {
               if (isPanning.current) return;
@@ -1287,9 +1202,10 @@ function NodeView({
                 selectedNodeId={selectedNodeId}
                 selectedNodeIds={selectedNodeIds}
                 thumbnailMode={thumbnailMode}
-                connectionMap={connectionMap}
+                connectedInputKeys={connectedInputKeys}
                 viewerNodeId={viewerNodeId}
                 viewerSlots={viewerSlots}
+                compareViewerSlots={compareViewerSlots}
                 isDragTarget={!!dragConnectState && dragConnectState.sourceNodeId !== baseNode.id}
                 onSelect={(event) => selectNodeFromPointer(event, baseNode.id)}
                 onSelectNode={(event, nodeId) => selectNodeFromPointer(event, nodeId)}

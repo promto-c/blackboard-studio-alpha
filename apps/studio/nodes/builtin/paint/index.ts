@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { NodeType, type AnyNode } from '@blackboard/types';
+import type { PaintNode } from '@blackboard/types';
 import type { ResolveOutputContext } from '@blackboard/renderer';
 import { NodeDefinition } from '../../NodeDefinition';
-import { PAINT_OVER_SHADER } from './paintShader';
 import PaintAdjustments from './PaintAdjustments';
 import { PaintNodeIcon } from './PaintNodeIcon';
 import PaintItemsPanel from './PaintItemsPanel';
@@ -11,7 +11,7 @@ import PaintOverlay from './PaintOverlay';
 import PaintViewportTools from './PaintViewportTools';
 import PaintToolPanels from './PaintToolPanels';
 import { DEFAULT_NEW_STROKE_LIFETIME } from './paintLifetime';
-import { isStoredPaintAssetId } from './paintRaster';
+import { renderPaintGpu } from './paintGpuEngine';
 
 export const paintNode: NodeDefinition = {
   type: NodeType.PAINT,
@@ -47,12 +47,7 @@ export const paintNode: NodeDefinition = {
     };
   },
   mediaDescriptor: {
-    getAssetIds: (node) => {
-      const paintNode = node as { strokes?: Array<{ raster?: string }> };
-      return (paintNode.strokes ?? [])
-        .map((stroke) => stroke.raster ?? '')
-        .filter(isStoredPaintAssetId);
-    },
+    getAssetIds: () => [],
     checkFrameReady: () => true,
   },
   renderOutput: (
@@ -61,19 +56,7 @@ export const paintNode: NodeDefinition = {
     inputTexture: THREE.Texture | undefined,
     context: ResolveOutputContext,
   ): boolean => {
-    const paintTextures = context.getPaintTextures?.(node.id);
-    if (!paintTextures) return false;
-    const material = context.getMaterial(`${node.id}_paint`, PAINT_OVER_SHADER, {
-      u_tDiffuse: { value: inputTexture ?? context.getTransparentInputTexture() },
-      u_tPaint: { value: paintTextures.color },
-      u_tPaintAlpha: { value: paintTextures.alpha },
-    });
-    context.applyNoBlending(material);
-    context.clearRenderTargetTransparent(target);
-    (context.quad as THREE.Mesh).material = material;
-    context.renderer.setRenderTarget(target);
-    context.renderer.render(context.scene, context.camera);
-    return true;
+    return renderPaintGpu(node as PaintNode, target, inputTexture, context);
   },
   getInitialNodeProps: () => ({
     strokes: [],

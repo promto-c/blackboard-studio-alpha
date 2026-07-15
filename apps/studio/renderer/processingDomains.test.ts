@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  areProcessingDomainsCompatible,
   assertRendererProcessingDomainsSupported,
   getDataSemanticProcessingDomain,
   resolveRendererNodeInputDomain,
@@ -20,6 +21,17 @@ describe('renderer processing domains', () => {
     expect(getDataSemanticProcessingDomain('depth')).toBe('depth');
     expect(getDataSemanticProcessingDomain('motion_vector')).toBe('vector');
     expect(getDataSemanticProcessingDomain('cryptomatte')).toBe('data');
+  });
+
+  it('allows only explicit RGBA component ports to cross image/data boundaries', () => {
+    expect(areProcessingDomainsCompatible('data', 'scene_linear', { sourceChannel: 'r' })).toBe(
+      true,
+    );
+    expect(areProcessingDomainsCompatible('scene_linear', 'data', { targetChannel: 'g' })).toBe(
+      true,
+    );
+    expect(areProcessingDomainsCompatible('data', 'scene_linear')).toBe(false);
+    expect(areProcessingDomainsCompatible('depth', 'scene_linear')).toBe(false);
   });
 
   it('prioritizes output-port and dynamic media domains over the node default', () => {
@@ -129,5 +141,61 @@ describe('renderer processing domains', () => {
     expect(() =>
       assertRendererProcessingDomainsSupported([source, target], (type) => definitions.get(type)),
     ).toThrow('Cannot connect "data" output');
+  });
+
+  it('accepts persisted component-to-image and image-to-component connections', () => {
+    const channelSource = { id: 'extract', type: 'extract', name: 'Extract' } as never;
+    const colorTarget = {
+      id: 'grade',
+      type: 'grade',
+      name: 'Grade',
+      inputs: { pipe: 'extract' },
+      inputSourcePorts: { pipe: 'r' },
+    } as never;
+    const colorSource = { id: 'image', type: 'image', name: 'Image' } as never;
+    const channelTarget = {
+      id: 'merge',
+      type: 'merge',
+      name: 'Merge Channels',
+      inputs: { g: 'image' },
+    } as never;
+    const definitions = new Map<string, RendererNodeEntry>([
+      [
+        'extract',
+        {
+          ...definition('scene_linear'),
+          outputPorts: [{ name: 'r', label: 'R', processingDomain: 'data', channel: 'r' }],
+        },
+      ],
+      ['grade', definition('scene_linear')],
+      ['image', definition('scene_linear')],
+      [
+        'merge',
+        {
+          ...definition('scene_linear'),
+          inputPorts: [
+            {
+              name: 'g',
+              label: 'G',
+              type: 'texture',
+              required: false,
+              processingDomain: 'data',
+              channel: 'g',
+            },
+          ],
+        },
+      ],
+    ]);
+
+    expect(() =>
+      assertRendererProcessingDomainsSupported([channelSource, colorTarget], (type) =>
+        definitions.get(type),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertRendererProcessingDomainsSupported([colorSource, channelTarget], (type) =>
+        definitions.get(type),
+      ),
+    ).not.toThrow();
   });
 });

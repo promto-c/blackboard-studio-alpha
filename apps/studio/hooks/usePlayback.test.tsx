@@ -9,6 +9,7 @@ interface TestPlaybackState {
   playbackDirection: 1 | -1;
   fps: number;
   currentFrame: number;
+  timelineStartFrame: number;
   maxFrames: number;
 }
 
@@ -28,12 +29,13 @@ describe('usePlayback boundary behavior', () => {
     vi.unstubAllGlobals();
   });
 
-  const renderPlayback = (boundaryBehavior: PlaybackBoundaryBehavior) => {
+  const renderPlayback = (boundaryBehavior: PlaybackBoundaryBehavior, startFrame = 0) => {
     let state: TestPlaybackState = {
       isPlaying: true,
       playbackDirection: 1,
       fps: 24,
       currentFrame: 10,
+      timelineStartFrame: startFrame,
       maxFrames: 10,
     };
     const store = {
@@ -61,6 +63,30 @@ describe('usePlayback boundary behavior', () => {
   it('wraps callers that explicitly request looping preview playback', () => {
     const { state, hook } = renderPlayback('loop');
     expect(state()).toMatchObject({ isPlaying: true, currentFrame: 0 });
+    hook.unmount();
+  });
+
+  it('wraps backward playback to the end of an absolute range', () => {
+    let state: TestPlaybackState = {
+      isPlaying: true,
+      playbackDirection: -1,
+      fps: 24,
+      currentFrame: 1001,
+      timelineStartFrame: 1001,
+      maxFrames: 1010,
+    };
+    const store = {
+      getState: () => state,
+      setState: (update: (previous: TestPlaybackState) => Partial<TestPlaybackState>) => {
+        state = { ...state, ...update(state) };
+      },
+    };
+    const renderLockRef = { current: false };
+    const hook = renderHook(() => usePlayback(store, true, 'every_frame', renderLockRef, 'loop'));
+
+    act(() => callbacks.shift()?.(16));
+
+    expect(state.currentFrame).toBe(1010);
     hook.unmount();
   });
 });

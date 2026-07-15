@@ -3,6 +3,8 @@ import {
   areProcessingDomainsCompatible,
   isTechnicalProcessingDomain,
   resolveRendererNodeInputDomain,
+  resolveRendererNodeInputPort,
+  resolveRendererNodeOutputPort,
   resolveRendererNodeProcessingDomain,
 } from '@blackboard/renderer';
 import { nodeRegistry } from '@/nodes/registry';
@@ -54,8 +56,15 @@ export const canConnectNodeProcessingDomains = ({
   const sourceNode = nodes.find((node) => node.id === sourceNodeId);
   const targetNode = nodes.find((node) => node.id === targetNodeId);
   if (!sourceNode || !targetNode) return false;
+  const sourceDefinition = nodeRegistry.get(sourceNode.type);
   const sourceDomain = getNodeOutputProcessingDomain(sourceNode, sourcePortName);
   const targetDefinition = nodeRegistry.get(targetNode.type);
+  const sourcePort = sourceDefinition
+    ? resolveRendererNodeOutputPort(sourceDefinition, sourceNode, sourcePortName)
+    : undefined;
+  const targetPort = targetDefinition
+    ? resolveRendererNodeInputPort(targetDefinition, targetNode, targetPortName)
+    : undefined;
   if (
     targetPortName === 'pipe' &&
     targetDefinition?.primaryInputDomainPolicy === 'reinterpret' &&
@@ -66,5 +75,9 @@ export const canConnectNodeProcessingDomains = ({
   return areProcessingDomainsCompatible(
     sourceDomain,
     getNodeInputProcessingDomain(targetNode, targetPortName),
+    {
+      sourceChannel: sourcePort?.channel,
+      targetChannel: targetPort?.channel,
+    },
   );
 };

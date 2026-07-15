@@ -44,13 +44,6 @@ const hasRenderableSource = (node: AnyNode): boolean => {
   return getNodeAssetIds(node).length > 0;
 };
 
-const asIsolatedThumbnailNode = (node: AnyNode): AnyNode => {
-  const { detachedFromPipe: _detachedFromPipe, ...rest } = node as AnyNode & {
-    detachedFromPipe?: boolean;
-  };
-  return rest as AnyNode;
-};
-
 // ---------------------------------------------------------------------------
 // Shared WebGL renderer – a single off-screen context reused by all thumbnail
 // renders so we never exceed the browser's WebGL context limit.
@@ -143,7 +136,7 @@ export async function renderStackToBlob(
       const blurRadiusScale = maxDimension / maxSceneDimension;
       const output = resolveProjectDisplayOutput(projectColorManagement.viewer);
       const { canvas, dispose } = await renderWithSharedPipeline({
-        nodes: stack.map(asIsolatedThumbnailNode),
+        nodes: stack,
         sceneNode,
         projectColorManagement,
         frame,
@@ -217,6 +210,7 @@ export const createMediaPreviewGraph = (
     height,
     bitDepth: 16,
     colorSpace: workingColorSpace,
+    startFrame: 0,
     maxFrames: 0,
     fps: media.fps ?? 30,
   };

@@ -7,12 +7,13 @@ export const DEFAULT_NEW_STROKE_LIFETIME: PaintLifetimePreset = {
 const sanitizeFrame = (frame: number): number =>
   Number.isFinite(frame) ? Math.max(0, Math.round(frame)) : 0;
 
-export const clampPaintFrame = (frame: number, maxFrame?: number): number => {
-  const nextFrame = sanitizeFrame(frame);
+export const clampPaintFrame = (frame: number, maxFrame?: number, minFrame = 0): number => {
+  const minimum = sanitizeFrame(minFrame);
+  const nextFrame = Math.max(minimum, sanitizeFrame(frame));
   if (maxFrame === undefined || !Number.isFinite(maxFrame)) {
     return nextFrame;
   }
-  return Math.min(nextFrame, Math.max(0, Math.round(maxFrame)));
+  return Math.min(nextFrame, Math.max(minimum, Math.round(maxFrame)));
 };
 
 export const normalizePaintLifetime = (lifetime?: PaintLifetime | null): PaintLifetime => {

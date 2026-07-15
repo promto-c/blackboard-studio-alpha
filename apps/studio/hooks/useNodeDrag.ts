@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
+import { useWindowDragAdjustment } from '@/hooks/useWindowDragAdjustment';
 
 interface NodeDragState {
   nodeId: string;
@@ -43,10 +44,8 @@ export function useNodeDrag({ zoom, onDrag, onDragEnd }: UseNodeDragOptions) {
     [],
   );
 
-  useEffect(() => {
-    if (!armedDragState) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
+  useWindowDragAdjustment(armedDragState !== null, {
+    onMouseMove: (e: MouseEvent) => {
       const armed = armedRef.current;
       if (!armed) return;
 
@@ -63,9 +62,8 @@ export function useNodeDrag({ zoom, onDrag, onDragEnd }: UseNodeDragOptions) {
       }
 
       onDrag(armed.nodeId, armed.startNodeX + screenDx / zoom, armed.startNodeY + screenDy / zoom);
-    };
-
-    const handleMouseUp = () => {
+    },
+    onMouseUp: () => {
       const activeDrag = dragRef.current;
       if (activeDrag && onDragEnd) {
         onDragEnd(activeDrag.nodeId);
@@ -74,15 +72,8 @@ export function useNodeDrag({ zoom, onDrag, onDragEnd }: UseNodeDragOptions) {
       dragRef.current = null;
       setArmedDragState(null);
       setDragState(null);
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [armedDragState, zoom, onDrag, onDragEnd]);
+    },
+  });
 
   return {
     startDrag,

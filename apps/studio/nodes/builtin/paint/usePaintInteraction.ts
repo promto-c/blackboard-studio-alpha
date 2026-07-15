@@ -1,10 +1,12 @@
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useWindowDragAdjustment } from '@/hooks/useWindowDragAdjustment';
 import type {
   AnyNode,
   PaintBrushSettings,
   PaintNode,
   PaintStroke,
+  PaintStrokeChannels,
   PaintStrokePath,
   PaintTool,
   Point,
@@ -13,18 +15,14 @@ import type {
   ViewerSettings,
 } from '@blackboard/types';
 import { NodeType } from '@blackboard/types';
-import { renderWithSharedPipeline } from '@/renderer/pipeline';
 import {
-  buildPaintStrokeRaster,
-  createPaintStrokePath,
   getNextPaintStrokeName,
   isPaintTool,
   isPaintViewportTool,
-  savePaintStrokeRaster,
   type PaintLivePreview,
-} from './paintRaster';
-import { withSharedPaintSnapshotRenderer } from './paintSnapshotRenderer';
-import { renderTargetToPaintCloneSource, type PaintCloneSource } from './paintFloatReadback';
+} from './paintModel';
+import { PaintStrokeSession } from './paintStrokeSession';
+import { clearPaintLivePreview, setPaintLivePreview } from './paintRuntime';
 import { createCloneOffset, getCloneSourceFromOffset } from './cloneMath';
 import { resolvePaintLifetimePreset } from './paintLifetime';
 import {
@@ -33,13 +31,13 @@ import {
   isPaintStrokeActiveAtFrame,
   isPaintStrokeVisible,
 } from './paintLayers';
-import { mergePaintBrushSettings, resolvePaintSoftness } from './softness';
+import { mergePaintBrushSettings } from './softness';
 import { resolvePaintBrushChannels } from './channels';
 import { colorManagementService, convertColorPickingToSceneLinear } from '@/color-management';
 
 type ViewportMouseEvent = MouseEvent | React.MouseEvent<HTMLDivElement>;
 
-interface UsePaintInteractionParams {
+export interface UsePaintInteractionParams {
   nodes: AnyNode[];
   selectedNode: AnyNode | undefined;
   selectedNodeId: string | null;
@@ -62,6 +60,12 @@ interface UsePaintInteractionParams {
 interface PaintNudgeAffectedStroke {
   originalPath: PaintStrokePath;
   affectedIndexMap: Map<number, number>;
+}
+
+interface ActivePaintStrokeStyle {
+  brush: PaintBrushSettings;
+  color: [number, number, number];
+  channels: PaintStrokeChannels;
 }
 
 export interface PaintNudgeDragState {
@@ -103,20 +107,19 @@ export function usePaintInteraction({
     () => colorManagementService.resolveProjectColorManagement(projectColorManagement),
     [projectColorManagement],
   );
-  const [strokePoints, setStrokePoints] = useState<Point[] | null>(null);
-  const strokeBufferRef = useRef<Point[] | null>(null);
+  const [strokePath, setStrokePath] = useState<PaintStrokePath | null>(null);
+  const strokeSessionRef = useRef<PaintStrokeSession | null>(null);
   const strokePreviewFrameRef = useRef<number | null>(null);
   const strokeNodeRef = useRef<PaintNode | null>(null);
   const strokeToolRef = useRef<PaintTool | null>(null);
   const strokeCloneOffsetRef = useRef<Point | null>(null);
+  const strokeStyleRef = useRef<ActivePaintStrokeStyle | null>(null);
   const [isAdjustingBrushSize, setIsAdjustingBrushSize] = useState(false);
   const [clonePlacementDrag, setClonePlacementDrag] = useState<{
     source: Point;
     target: Point;
   } | null>(null);
   const [cloneOffsetByNodeId, setCloneOffsetByNodeId] = useState<Record<string, Point | null>>({});
-  const [activeSourceSnapshot, setActiveSourceSnapshot] = useState<PaintCloneSource | null>(null);
-  const sourceSnapshotPromiseRef = useRef<Promise<PaintCloneSource | null> | null>(null);
   const previewSessionRef = useRef(0);
 
   const cancelPendingStrokePreview = useCallback(() => {
@@ -129,8 +132,8 @@ export function usePaintInteraction({
     if (strokePreviewFrameRef.current !== null) return;
     strokePreviewFrameRef.current = requestAnimationFrame(() => {
       strokePreviewFrameRef.current = null;
-      const points = strokeBufferRef.current;
-      if (points) setStrokePoints([...points]);
+      const session = strokeSessionRef.current;
+      if (session) setStrokePath(session.getPath());
     });
   }, []);
 
@@ -174,7 +177,7 @@ export function usePaintInteraction({
   const paintNode = selectedNode?.type === NodeType.PAINT ? (selectedNode as PaintNode) : null;
   const activePaintTool = isPaintTool(activeViewportTool) ? activeViewportTool : null;
   const isActiveViewportPaintTool = isPaintViewportTool(activeViewportTool);
-  const isPainting = Boolean(strokePoints?.length);
+  const isPainting = Boolean(strokePath?.points.length);
   const isSettingCloneSource = clonePlacementDrag !== null;
   const activeCloneOffset = useMemo(
     () => (paintNode ? (cloneOffsetByNodeId[paintNode.id] ?? null) : null),
@@ -187,8 +190,6 @@ export function usePaintInteraction({
 
   const clearActiveStrokePreview = useCallback(() => {
     previewSessionRef.current += 1;
-    sourceSnapshotPromiseRef.current = null;
-    setActiveSourceSnapshot(null);
   }, []);
 
   const clearNudgePreview = useCallback(() => {
@@ -196,10 +197,8 @@ export function usePaintInteraction({
   }, []);
 
   // Brush size adjustment effect
-  useEffect(() => {
-    if (!isAdjustingBrushSize) return;
-
-    const handleBrushAdjustMouseMove = (event: MouseEvent) => {
+  useWindowDragAdjustment(isAdjustingBrushSize, {
+    onMouseMove: (event: MouseEvent) => {
       const start = brushAdjustStartRef.current;
       if (!start) return;
 
@@ -210,112 +209,40 @@ export function usePaintInteraction({
       setPreferences({
         paintBrush: mergePaintBrushSettings(start.brushBase, { size: nextSize }),
       });
-    };
-
-    const handleBrushAdjustMouseUp = () => {
+    },
+    onMouseUp: () => {
       setIsAdjustingBrushSize(false);
       brushAdjustStartRef.current = null;
-    };
-
-    window.addEventListener('mousemove', handleBrushAdjustMouseMove);
-    window.addEventListener('mouseup', handleBrushAdjustMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleBrushAdjustMouseMove);
-      window.removeEventListener('mouseup', handleBrushAdjustMouseUp);
-    };
-  }, [isAdjustingBrushSize, setPreferences]);
+    },
+  });
 
   // Nudge radius adjustment effect
-  useEffect(() => {
-    if (!isAdjustingNudgeRadius) return;
-
-    const handleNudgeRadiusMove = (event: MouseEvent) => {
+  useWindowDragAdjustment(isAdjustingNudgeRadius, {
+    onMouseMove: (event: MouseEvent) => {
       const start = nudgeRadiusAdjustStartRef.current;
       if (!start) return;
       const dx = event.clientX - start.startX;
       setPreferences({ nudgeRadius: Math.max(1, Math.min(500, start.initialRadius + dx)) });
-    };
-
-    const handleNudgeRadiusUp = () => {
+    },
+    onMouseUp: () => {
       setIsAdjustingNudgeRadius(false);
       nudgeRadiusAdjustStartRef.current = null;
-    };
-
-    window.addEventListener('mousemove', handleNudgeRadiusMove);
-    window.addEventListener('mouseup', handleNudgeRadiusUp);
-    return () => {
-      window.removeEventListener('mousemove', handleNudgeRadiusMove);
-      window.removeEventListener('mouseup', handleNudgeRadiusUp);
-    };
-  }, [isAdjustingNudgeRadius, setPreferences]);
-
-  const captureCloneSourceSnapshot = useCallback(
-    async (node: PaintNode): Promise<PaintCloneSource | null> => {
-      if (!sceneNode) return null;
-
-      const paintNodeIndex = nodes.findIndex((candidate) => candidate.id === node.id);
-      if (paintNodeIndex < 0) return null;
-
-      const upstreamNodes = nodes.slice(0, paintNodeIndex);
-      return withSharedPaintSnapshotRenderer(async (renderer) => {
-        const { finalOutputTarget, dispose } = await renderWithSharedPipeline({
-          captureFinalOutput: true,
-          nodes: upstreamNodes,
-          sceneNode,
-          projectColorManagement,
-          frame,
-          width: sceneNode.width,
-          height: sceneNode.height,
-          finalColorSpace: 'scene_linear',
-          presentToCanvas: false,
-          textureCacheMode: 'persistent',
-          renderer,
-        });
-
-        try {
-          if (!finalOutputTarget) {
-            throw new Error('Clone sampling requires a floating-point renderer capture.');
-          }
-          return renderTargetToPaintCloneSource(renderer, finalOutputTarget);
-        } finally {
-          dispose();
-        }
-      });
     },
-    [frame, nodes, projectColorManagement, sceneNode],
-  );
+  });
 
   const commitStroke = useCallback(
-    async (
+    (
       node: PaintNode,
       tool: PaintTool,
-      points: Point[],
+      path: PaintStrokePath,
       cloneOffset: Point | null,
-      sourceSnapshot: PaintCloneSource | null,
+      style: ActivePaintStrokeStyle,
     ) => {
-      if (!sceneNode || points.length === 0) return;
+      if (!sceneNode || path.points.length === 0) return;
       const latestNode =
         (latestNodesRef.current.find(
           (candidate) => candidate.id === node.id && candidate.type === NodeType.PAINT,
         ) as PaintNode | undefined) ?? node;
-      const softness = resolvePaintSoftness(paintBrush);
-      const strokeChannels = resolvePaintBrushChannels(paintBrush.channels, viewerChannels);
-      const strokeRaster = buildPaintStrokeRaster({
-        tool,
-        points,
-        width: sceneNode.width,
-        height: sceneNode.height,
-        size: paintBrush.size,
-        spacing: paintBrush.spacing,
-        softness,
-        opacity: paintBrush.opacity,
-        color: sceneLinearBrushColor,
-        alpha: paintBrush.alpha,
-        channels: strokeChannels,
-        cloneOffset,
-        cloneSource: sourceSnapshot,
-      });
-      if (!strokeRaster) return;
       const parentLayerId = getPaintCreationParentLayerId(latestNode, selectedPaintLayerIds);
 
       const stroke: PaintStroke = {
@@ -323,26 +250,20 @@ export function usePaintInteraction({
         name: getNextPaintStrokeName(latestNode.strokes, tool),
         tool,
         visible: true,
-        raster: '',
-        path: createPaintStrokePath(points, paintBrush.size),
-        pointCount: points.length,
-        size: paintBrush.size,
-        spacing: paintBrush.spacing,
-        softness,
-        opacity: paintBrush.opacity,
-        color: tool === 'clone' ? undefined : paintBrush.color,
-        alpha: strokeChannels === 'a' ? paintBrush.alpha : undefined,
-        channels: strokeChannels,
+        path,
+        size: style.brush.size,
+        spacing: style.brush.spacing,
+        softness: style.brush.softness,
+        opacity: style.brush.opacity,
+        color: tool === 'clone' ? undefined : style.color,
+        alpha: style.channels === 'a' ? style.brush.alpha : undefined,
+        channels: style.channels,
         parentLayerId,
         stackOrder: getNextPaintStackOrder(),
         cloneOffset: tool === 'clone' ? cloneOffset : null,
         lifetime: resolvePaintLifetimePreset(latestNode.defaultLifetime, frame),
       };
-
-      const raster = await savePaintStrokeRaster(strokeRaster).catch(() => '');
-      if (!raster) return;
-
-      const strokes = [{ ...stroke, raster }, ...latestNode.strokes];
+      const strokes = [stroke, ...latestNode.strokes];
       latestNodesRef.current = latestNodesRef.current.map((candidate) =>
         candidate.id === latestNode.id && candidate.type === NodeType.PAINT
           ? ({ ...candidate, strokes } as AnyNode)
@@ -350,15 +271,7 @@ export function usePaintInteraction({
       );
       updateNode(latestNode.id, { strokes }, true);
     },
-    [
-      frame,
-      paintBrush,
-      sceneNode,
-      sceneLinearBrushColor,
-      selectedPaintLayerIds,
-      updateNode,
-      viewerChannels,
-    ],
+    [frame, sceneNode, selectedPaintLayerIds, updateNode],
   );
 
   const finishNudgeDrag = useCallback((): boolean => {
@@ -511,35 +424,27 @@ export function usePaintInteraction({
       event.preventDefault();
       clearActiveStrokePreview();
       setCursorScenePos(scenePos);
-      strokeBufferRef.current = [scenePos];
+      const strokeSession = new PaintStrokeSession(scenePos, event.timeStamp, {
+        brushSize: paintBrush.size,
+        stabilization: paintBrush.stabilization,
+      });
+      strokeSessionRef.current = strokeSession;
+      strokeStyleRef.current = {
+        brush: mergePaintBrushSettings(paintBrush, {}),
+        color: [...sceneLinearBrushColor],
+        channels: resolvedPaintChannels,
+      };
       strokeNodeRef.current = paintNode;
       strokeToolRef.current = activePaintTool;
       strokeCloneOffsetRef.current = activePaintTool === 'clone' ? activeCloneOffset : null;
-      setStrokePoints([scenePos]);
-      if (activePaintTool === 'clone') {
-        const nextSessionId = previewSessionRef.current + 1;
-        previewSessionRef.current = nextSessionId;
-        const snapshotPromise = captureCloneSourceSnapshot(paintNode);
-        sourceSnapshotPromiseRef.current = snapshotPromise;
-        void snapshotPromise
-          .then((snapshot) => {
-            if (previewSessionRef.current !== nextSessionId) return;
-            setActiveSourceSnapshot(snapshot);
-          })
-          .catch(() => {
-            if (previewSessionRef.current !== nextSessionId) return;
-            setActiveSourceSnapshot(null);
-          });
-      } else {
-        sourceSnapshotPromiseRef.current = Promise.resolve<PaintCloneSource | null>(null);
-      }
+      setStrokePath(strokeSession.getPath());
+      previewSessionRef.current += 1;
       return true;
     },
     [
       activeCloneOffset,
       activePaintTool,
       activeViewportTool,
-      captureCloneSourceSnapshot,
       clearActiveStrokePreview,
       clearNudgePreview,
       frame,
@@ -549,6 +454,8 @@ export function usePaintInteraction({
       paintNode,
       selectedNodeId,
       selectedPaintStrokeIds,
+      resolvedPaintChannels,
+      sceneLinearBrushColor,
       setHierarchySelection,
       zoom,
     ],
@@ -662,18 +569,9 @@ export function usePaintInteraction({
 
       setCursorScenePos(scenePos);
 
-      const buffer = strokeBufferRef.current;
-      if (!buffer) return false;
-
-      const lastPoint = buffer[buffer.length - 1];
-      const stampSpacing = paintBrush.size * (paintBrush.spacing / 100);
-      const minDistance = Math.max(0.5, Math.min(stampSpacing * 0.5, paintBrush.size * 0.25));
-      if (getDistance(lastPoint, scenePos) < minDistance) {
-        return true;
-      }
-
-      const nextPoints = [...buffer, scenePos];
-      strokeBufferRef.current = nextPoints;
+      const strokeSession = strokeSessionRef.current;
+      if (!strokeSession) return false;
+      strokeSession.add(scenePos, event.timeStamp);
       scheduleStrokePreview();
       return true;
     },
@@ -687,8 +585,6 @@ export function usePaintInteraction({
       isAdjustingNudgeRadius,
       nudgeDragState,
       nudgeRadius,
-      paintBrush.size,
-      paintBrush.spacing,
       paintNode,
       selectedPaintStrokeIds,
       scheduleStrokePreview,
@@ -697,33 +593,34 @@ export function usePaintInteraction({
     ],
   );
 
-  const finishStroke = useCallback(async (): Promise<boolean> => {
-    const buffer = strokeBufferRef.current;
+  const finishStroke = useCallback((): boolean => {
+    const strokeSession = strokeSessionRef.current;
     const strokeNode = strokeNodeRef.current;
     const strokeTool = strokeToolRef.current;
-    if (!strokeNode || !strokeTool || !buffer || buffer.length === 0) {
+    const strokeStyle = strokeStyleRef.current;
+    if (!strokeNode || !strokeTool || !strokeSession || !strokeStyle) {
       cancelPendingStrokePreview();
-      strokeBufferRef.current = null;
+      strokeSessionRef.current = null;
       strokeNodeRef.current = null;
       strokeToolRef.current = null;
       strokeCloneOffsetRef.current = null;
-      setStrokePoints(null);
+      strokeStyleRef.current = null;
+      setStrokePath(null);
       clearActiveStrokePreview();
       return false;
     }
 
-    const points = buffer;
+    const path = strokeSession.finish();
     cancelPendingStrokePreview();
-    const snapshotPromise = sourceSnapshotPromiseRef.current;
     const strokeCloneOffset = strokeCloneOffsetRef.current;
-    strokeBufferRef.current = null;
+    strokeSessionRef.current = null;
     strokeNodeRef.current = null;
     strokeToolRef.current = null;
     strokeCloneOffsetRef.current = null;
-    setStrokePoints(null);
+    strokeStyleRef.current = null;
+    setStrokePath(null);
     clearActiveStrokePreview();
-    const snapshot = snapshotPromise ? await snapshotPromise : null;
-    await commitStroke(strokeNode, strokeTool, points, strokeCloneOffset, snapshot);
+    commitStroke(strokeNode, strokeTool, path, strokeCloneOffset, strokeStyle);
     return true;
   }, [cancelPendingStrokePreview, clearActiveStrokePreview, commitStroke]);
 
@@ -744,7 +641,7 @@ export function usePaintInteraction({
       if (isAdjustingBrushSize) {
         return true;
       }
-      void finishStroke();
+      finishStroke();
       return isPainting;
     },
     [
@@ -773,7 +670,7 @@ export function usePaintInteraction({
       return;
     }
     if (isPainting) {
-      void finishStroke();
+      finishStroke();
     }
   }, [
     finishClonePlacement,
@@ -791,11 +688,12 @@ export function usePaintInteraction({
     (previousTool: string | null) => {
       if (!isActiveViewportPaintTool) {
         cancelPendingStrokePreview();
-        strokeBufferRef.current = null;
+        strokeSessionRef.current = null;
         strokeNodeRef.current = null;
         strokeToolRef.current = null;
         strokeCloneOffsetRef.current = null;
-        setStrokePoints(null);
+        strokeStyleRef.current = null;
+        setStrokePath(null);
         setIsAdjustingBrushSize(false);
         setClonePlacementDrag(null);
         clearActiveStrokePreview();
@@ -866,11 +764,11 @@ export function usePaintInteraction({
   );
 
   const livePreview = useMemo<PaintLivePreview | null>(() => {
-    if (!paintNode || !activePaintTool || !strokePoints || strokePoints.length === 0) {
+    const style = strokeStyleRef.current;
+    if (!paintNode || !activePaintTool || !strokePath || strokePath.points.length === 0 || !style) {
       return null;
     }
 
-    const softness = resolvePaintSoftness(paintBrush);
     const parentLayerId = getPaintCreationParentLayerId(paintNode, selectedPaintLayerIds);
     const previewLifetime = resolvePaintLifetimePreset(paintNode.defaultLifetime, frame);
     const previewStroke: PaintStroke = {
@@ -878,18 +776,16 @@ export function usePaintInteraction({
       name: 'Preview',
       tool: activePaintTool,
       visible: true,
-      raster: '',
-      path: null,
-      pointCount: strokePoints.length,
-      size: paintBrush.size,
-      spacing: paintBrush.spacing,
-      softness,
-      opacity: paintBrush.opacity,
-      color: activePaintTool === 'clone' ? undefined : paintBrush.color,
-      alpha: resolvedPaintChannels === 'a' ? paintBrush.alpha : undefined,
-      channels: resolvedPaintChannels,
+      path: strokePath,
+      size: style.brush.size,
+      spacing: style.brush.spacing,
+      softness: style.brush.softness,
+      opacity: style.brush.opacity,
+      color: activePaintTool === 'clone' ? undefined : style.color,
+      alpha: style.channels === 'a' ? style.brush.alpha : undefined,
+      channels: style.channels,
       parentLayerId,
-      cloneOffset: activeCloneOffset,
+      cloneOffset: strokeCloneOffsetRef.current,
       lifetime: previewLifetime,
     };
 
@@ -902,32 +798,24 @@ export function usePaintInteraction({
 
     return {
       nodeId: paintNode.id,
-      cacheKey: `${activePaintTool}:${paintBrush.channels}:${resolvedPaintChannels}:${paintBrush.alpha}:${paintBrush.spacing}:${strokePoints.length}`,
-      cursor: strokePoints.length,
+      sessionId: previewSessionRef.current,
       tool: activePaintTool,
-      points: strokePoints,
-      size: paintBrush.size,
-      spacing: paintBrush.spacing,
-      softness,
-      opacity: paintBrush.opacity,
-      color: sceneLinearBrushColor,
-      alpha: paintBrush.alpha,
-      channels: resolvedPaintChannels,
-      cloneOffset: activeCloneOffset,
-      cloneSource: activePaintTool === 'clone' ? activeSourceSnapshot : null,
+      path: previewStroke.path,
+      size: style.brush.size,
+      spacing: style.brush.spacing,
+      softness: style.brush.softness,
+      opacity: style.brush.opacity,
+      color: style.color,
+      alpha: style.brush.alpha,
+      channels: style.channels,
+      cloneOffset: strokeCloneOffsetRef.current,
     };
-  }, [
-    activeCloneOffset,
-    activePaintTool,
-    activeSourceSnapshot,
-    frame,
-    paintBrush,
-    paintNode,
-    resolvedPaintChannels,
-    sceneLinearBrushColor,
-    selectedPaintLayerIds,
-    strokePoints,
-  ]);
+  }, [activePaintTool, frame, paintNode, selectedPaintLayerIds, strokePath]);
+
+  useEffect(() => {
+    setPaintLivePreview(livePreview);
+    return () => clearPaintLivePreview(livePreview?.nodeId);
+  }, [livePreview]);
 
   return {
     handleMouseDown,
@@ -937,7 +825,7 @@ export function usePaintInteraction({
     cleanupOnToolChange,
     shouldForceOverlays,
     cursorScenePos,
-    strokePoints,
+    strokePoints: strokePath?.points ?? null,
     isPainting,
     isAdjustingBrushSize,
     isSettingCloneSource,

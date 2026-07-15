@@ -1,9 +1,19 @@
-import { AnimatableNumber, AnyNode, Keyframe } from '@blackboard/types';
+import { AnimatableNumber, AnyNode, Keyframe, type ImageSequencePlate } from '@blackboard/types';
 import { getLinearValueAtFrame } from '@blackboard/renderer';
 import { readExrDimensions } from '@/utils/exr';
-import { isExrFileLike, isImageFileLike } from '@/utils/mediaFiles';
+import {
+  getImportedImageColorManagement,
+  isExrFileLike,
+  isImageFileLike,
+} from '@/utils/mediaFiles';
 import { saveAsset, saveDirectoryAssetReferences } from '@/state/assetStorage';
 import { getNodeAssetIds } from '@/nodes/helpers';
+import { ColorManagementDefaults, getMediaSourceColorSpace } from '@/color-management';
+import {
+  getImageSequencePlateTimelineRange,
+  groupImageEntriesIntoPlates,
+} from '@/utils/imageSequencePlates';
+import type { TimelineFrameRange } from '@/utils/timelineRange';
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -151,6 +161,52 @@ export const persistSequenceAssets = async (
     }
   }
   return Promise.all(entries.map((entry) => saveAsset(entry.file)));
+};
+
+export interface PreparedImageSequenceImport {
+  plates: ImageSequencePlate[];
+  timelineRange: TimelineFrameRange;
+}
+
+export const prepareImageSequenceImport = async (
+  entries: DirectoryImageEntry[],
+  importMode: SequenceImportMode,
+  directoryHandle?: FileSystemDirectoryHandle,
+): Promise<PreparedImageSequenceImport> => {
+  const groups = groupImageEntriesIntoPlates(entries);
+  const groupMetadata = await Promise.all(
+    groups.map(async (group) => {
+      const firstEntry = group.entries[0];
+      return {
+        firstEntry,
+        dimensions: await readImageDimensions(firstEntry.file),
+        mediaColorManagement: await getImportedImageColorManagement(firstEntry.file),
+      };
+    }),
+  );
+  const assetIds = await persistSequenceAssets(entries, importMode, directoryHandle);
+  const assetIdByEntry = new Map(entries.map((entry, index) => [entry, assetIds[index]] as const));
+
+  const plates = groups.map((group, index): ImageSequencePlate => {
+    const { firstEntry, dimensions, mediaColorManagement } = groupMetadata[index];
+    return {
+      id: `plate_${index + 1}`,
+      name: group.name,
+      frames: group.entries.map((entry) => assetIdByEntry.get(entry) ?? '').filter(Boolean),
+      sourceFileName: firstEntry.file.name,
+      width: dimensions.width,
+      height: dimensions.height,
+      colorSpace:
+        getMediaSourceColorSpace(mediaColorManagement) ?? ColorManagementDefaults.TEXTURE_SPACE,
+      mediaColorManagement,
+      startFrame: group.frameRange.startFrame,
+    };
+  });
+
+  return {
+    plates,
+    timelineRange: getImageSequencePlateTimelineRange(plates),
+  };
 };
 
 export const collectNodeAssetIds = (nodes: AnyNode[]): string[] => {

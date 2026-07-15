@@ -36,6 +36,7 @@ export function GalleryCard({
   selectable,
   onCardClick,
   loadingParams = false,
+  autoDetectDisplayView = false,
 }: {
   entry: GalleryEntry;
   onLoadParams?: () => void;
@@ -44,6 +45,7 @@ export function GalleryCard({
   selectable: boolean;
   onCardClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   loadingParams?: boolean;
+  autoDetectDisplayView?: boolean;
 }) {
   const cardRef = React.useRef<HTMLDivElement>(null);
   const [mediaFailed, setMediaFailed] = React.useState(false);
@@ -82,6 +84,7 @@ export function GalleryCard({
     maxDimension: GALLERY_THUMBNAIL_MAX_DIMENSION,
     priority: proximity === 'visible' ? 'visible-thumbnail' : 'prefetch-thumbnail',
     enabled: proximity !== 'outside',
+    autoDetectDisplayView,
   });
   React.useEffect(() => {
     setMediaFailed(false);

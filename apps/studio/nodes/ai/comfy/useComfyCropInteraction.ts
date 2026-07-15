@@ -120,6 +120,15 @@ const resizeRect = (
   return normalizeRect(next, sceneNode);
 };
 
+export interface UseComfyCropInteractionParams {
+  selectedNode: ComfyNode | undefined;
+  sceneNode: SceneNode | undefined;
+  activeViewportTool: string | null;
+  zoom: number;
+  updateNode: (nodeId: string, updates: Partial<ComfyNode>, withHistory?: boolean) => void;
+  setHierarchySelection?: (nodeId: string, layerIds: string[], itemIds: string[]) => void;
+}
+
 export const useComfyCropInteraction = ({
   selectedNode,
   sceneNode,
@@ -127,14 +136,7 @@ export const useComfyCropInteraction = ({
   zoom,
   updateNode,
   setHierarchySelection,
-}: {
-  selectedNode: ComfyNode | undefined;
-  sceneNode: SceneNode | undefined;
-  activeViewportTool: string | null;
-  zoom: number;
-  updateNode: (nodeId: string, updates: Partial<ComfyNode>, withHistory?: boolean) => void;
-  setHierarchySelection?: (nodeId: string, layerIds: string[], itemIds: string[]) => void;
-}) => {
+}: UseComfyCropInteractionParams) => {
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [justCreatedRegionId, setJustCreatedRegionId] = useState<string | null>(null);
   const workflow = useMemo(() => {

@@ -53,7 +53,7 @@ export class KeyerViewportInteraction extends BaseViewportInteraction {
 
     event.nativeEvent.preventDefault();
     this.cancelSession();
-    const start = { x: event.sceneX, y: event.sceneY };
+    const start = event.scenePoint;
     const uniforms = selectedNode.uniforms as Record<string, AnyUniform>;
     this.session = {
       node: selectedNode as KeyerNode,
@@ -76,7 +76,7 @@ export class KeyerViewportInteraction extends BaseViewportInteraction {
     if (!session || session.released || this.ctx.selectedNode?.type !== NodeType.KEYER)
       return false;
 
-    session.current = { x: event.sceneX, y: event.sceneY };
+    session.current = event.scenePoint;
     setKeyerSampleDrag({
       nodeId: session.node.id,
       start: session.start,
@@ -100,7 +100,7 @@ export class KeyerViewportInteraction extends BaseViewportInteraction {
     if (!session || session.released || this.ctx.selectedNode?.type !== NodeType.KEYER)
       return false;
 
-    session.current = { x: event.sceneX, y: event.sceneY };
+    session.current = { x: event.scenePoint.x, y: event.scenePoint.y };
     session.released = true;
     this.cancelScheduledPreview();
     setKeyerSampleDrag(null);

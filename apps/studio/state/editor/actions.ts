@@ -7,6 +7,7 @@ import {
 } from '@blackboard/types';
 import { getInitialState } from '@/state/editor/initialState';
 import { buildFlowFromNodes, ROOT_FLOW_ID } from '@/state/editor/flowModel';
+import { connectDefaultPipeline } from '@/utils/pipelineGraph';
 import { computeAutoLayout } from '@/utils/autoLayoutGraph';
 import { buildNodeStacks } from '@/utils/nodeStacks';
 import {
@@ -30,7 +31,10 @@ export const buildProjectInitState = ({
   historyEntry: HistoryEntry;
   persistedState: PersistedProjectState;
 } => {
-  const rootFlow = buildFlowFromNodes(nodes, ROOT_FLOW_ID, 'Root Flow');
+  const rootFlow = connectDefaultPipeline(
+    buildFlowFromNodes(nodes, ROOT_FLOW_ID, 'Root Flow'),
+    nodes,
+  );
   const nodePositions = computeAutoLayout(buildNodeStacks(nodes));
   const nodePositionsByFlow = { [rootFlow.id]: nodePositions };
   const timestamp = Date.now();

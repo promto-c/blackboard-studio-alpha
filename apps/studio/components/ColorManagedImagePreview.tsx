@@ -3,7 +3,6 @@ import { createStudioRenderer } from '@blackboard/renderer';
 import type { MediaColorManagement } from '@blackboard/types';
 import type * as THREE from 'three';
 import { resolveProjectDisplayOutput } from '@/color-management';
-import { useEditorSelector } from '@/state/editorContext';
 import { renderWithSharedPipeline } from '@/renderer/pipeline';
 import { createMediaPreviewGraph } from '@/utils/thumbnailRenderer';
 import {
@@ -13,6 +12,7 @@ import {
   markAssetPreviewMilestone,
   recordAssetPreviewMetric,
 } from '@/services/assetPreview';
+import { useMediaPreviewColorManagement } from '@/hooks/useMediaPreviewColorManagement';
 
 export interface ColorManagedImagePreviewProps {
   assetId: string;
@@ -21,6 +21,7 @@ export interface ColorManagedImagePreviewProps {
   mediaColorManagement: MediaColorManagement;
   className?: string;
   maxDimension?: number;
+  autoDetectDisplayView?: boolean;
 }
 
 export function ColorManagedImagePreview({
@@ -30,6 +31,7 @@ export function ColorManagedImagePreview({
   mediaColorManagement,
   className = '',
   maxDimension = 2048,
+  autoDetectDisplayView = false,
 }: ColorManagedImagePreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -39,7 +41,10 @@ export function ColorManagedImagePreview({
   const [rendererReady, setRendererReady] = useState(false);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
-  const projectColorManagement = useEditorSelector((state) => state.colorManagement);
+  const projectColorManagement = useMediaPreviewColorManagement(
+    mediaColorManagement,
+    autoDetectDisplayView,
+  );
   const source = useMemo(
     () => ({ assetId, width, height, mediaColorManagement, mediaKind: 'image' as const }),
     [assetId, height, mediaColorManagement, width],

@@ -97,6 +97,7 @@ export const DEFAULT_PAINT_BRUSH_SETTINGS: PaintBrushSettings = {
   size: 24,
   spacing: 20,
   softness: 30,
+  stabilization: 30,
   opacity: 100,
   color: [1, 1, 1],
   alpha: 1,
@@ -403,6 +404,10 @@ const normalizePaintBrushSettings = (value: unknown): PaintBrushSettings => {
       256,
     ),
     softness: clampPercent(candidate.softness, DEFAULT_PAINT_BRUSH_SETTINGS.softness),
+    stabilization: clampPercent(
+      candidate.stabilization,
+      DEFAULT_PAINT_BRUSH_SETTINGS.stabilization,
+    ),
     spacing: clampPositiveInteger(candidate.spacing, DEFAULT_PAINT_BRUSH_SETTINGS.spacing, 1, 200),
     opacity: clampPercent(candidate.opacity, DEFAULT_PAINT_BRUSH_SETTINGS.opacity),
     color: isNormalizedRgbTriplet(candidate.color)

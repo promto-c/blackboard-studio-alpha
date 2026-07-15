@@ -191,7 +191,7 @@ describe('expandGroupNodesForRender', () => {
       externalInputId: 'matte_in',
     } as AnyNode;
     const rootFlow = buildFlowFromNodes(
-      [scene(), image('source'), grade('grade-1'), groupNode],
+      [scene(), image('source'), grade('grade-1', { pipe: 'source' }), groupNode],
       ROOT_FLOW_ID,
     );
     const childFlow = buildFlowFromNodes(
@@ -276,61 +276,6 @@ describe('expandGroupNodesForRender', () => {
     const projected = expandGroupNodesForRender(getOrderedNodesFromFlow(childFlow), flows);
 
     expect(projected.map((node) => node.id)).toEqual(['scene-1', 'source', 'grade-1', 'blur-1']);
-  });
-
-  it('resolves private group boundary input nodes without exposing a group input port', () => {
-    const entryNodeId = 'input_pipe_in';
-    const groupNode = {
-      id: 'group-1',
-      kind: NodeKind.GROUP,
-      type: NodeType.GROUP,
-      name: 'Blur Group',
-      enabled: true,
-      childFlowId: 'child-flow',
-      inputNodeId: entryNodeId,
-      outputNodeId: 'blur-1',
-      externalInputs: [],
-    } as AnyNode;
-    const entryNode = {
-      id: entryNodeId,
-      kind: NodeKind.INPUT,
-      type: NodeType.INPUT,
-      name: 'Input',
-      enabled: true,
-      groupNodeId: 'group-1',
-      externalInputId: null,
-    } as AnyNode;
-    const rootFlow = buildFlowFromNodes(
-      [scene(), image('source'), groupNode, grade('grade-1', { matte: 'group-1' })],
-      ROOT_FLOW_ID,
-    );
-    const childFlow = buildFlowFromNodes(
-      [entryNode, blur('blur-1', { pipe: entryNodeId })],
-      'child-flow',
-    );
-    const flows = {
-      [rootFlow.id]: rootFlow,
-      [childFlow.id]: childFlow,
-    };
-
-    expect((groupNode as { externalInputs?: unknown[] }).externalInputs).toEqual([]);
-
-    const projectedRoot = expandGroupNodesForRender(getOrderedNodesFromFlow(rootFlow), flows);
-    expect(projectedRoot.map((node) => node.id)).toEqual([
-      'scene-1',
-      'source',
-      'blur-1',
-      'grade-1',
-    ]);
-    expect(projectedRoot.find((node) => node.id === 'blur-1')?.inputs).toEqual({
-      pipe: 'source',
-    });
-
-    const projectedChild = expandGroupNodesForRender(getOrderedNodesFromFlow(childFlow), flows);
-    expect(projectedChild.map((node) => node.id)).toEqual(['scene-1', 'source', 'blur-1']);
-    expect(projectedChild.find((node) => node.id === 'blur-1')?.inputs).toEqual({
-      pipe: 'source',
-    });
   });
 
   it('omits unresolved exposed group inputs from render projection', () => {

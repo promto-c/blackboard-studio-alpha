@@ -46,6 +46,7 @@ const createHarness = () => {
         height: 4,
         bitDepth: 16,
         colorSpace: 'Linear',
+        startFrame: 0,
         maxFrames: 0,
         fps: 24,
       },

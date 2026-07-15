@@ -95,6 +95,7 @@ function PaintItemsPanel({
 }: PaintItemsPanelProps) {
   const node = anyNode as PaintNode;
   const currentFrame = useEditorSelector((state) => state.currentFrame);
+  const timelineStartFrame = useEditorSelector((state) => state.timelineStartFrame);
   const maxFrames = useEditorSelector((state) => state.maxFrames);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const selectedLayerIds = useEditorSelector(
@@ -779,6 +780,7 @@ function PaintItemsPanel({
               <PaintLifetimeMenuSection
                 lifetime={stroke.lifetime}
                 currentFrame={currentFrame}
+                timelineStartFrame={timelineStartFrame}
                 maxFrames={maxFrames}
                 onApply={(lifetime) => {
                   handleStrokeLifetimeAction(stroke.id, lifetime);
@@ -875,6 +877,7 @@ function PaintItemsPanel({
             <PaintLifetimeMenuSection
               lifetime={item.layer.lifetime}
               currentFrame={currentFrame}
+              timelineStartFrame={timelineStartFrame}
               maxFrames={maxFrames}
               onApply={(lifetime) => {
                 handleLayerLifetimeAction(item.layer.id, lifetime);
@@ -954,6 +957,7 @@ function PaintItemsPanel({
       selectedStrokeIdSet,
       selectionVisibilityToggleLabel,
       strokeIndexById,
+      timelineStartFrame,
       updateNode,
     ],
   );
@@ -1076,6 +1080,7 @@ function PaintItemsPanel({
                   <PaintLifetimeMenuSection
                     lifetime={selectedLifetime}
                     currentFrame={currentFrame}
+                    timelineStartFrame={timelineStartFrame}
                     maxFrames={maxFrames}
                     onApply={(lifetime) => {
                       handleSetSelectedItemsLifetime(lifetime);

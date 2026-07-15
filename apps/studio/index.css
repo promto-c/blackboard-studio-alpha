@@ -191,6 +191,17 @@ a:focus {
   animation: fadeIn 250ms ease-in-out;
 }
 
+@keyframes nodeViewWireFlow {
+  to {
+    stroke-dashoffset: -30;
+  }
+}
+
+.node-view-flow-wire {
+  animation: nodeViewWireFlow 900ms linear infinite;
+  will-change: stroke-dashoffset;
+}
+
 @keyframes treeItemExit {
   to {
     opacity: 0;
@@ -236,6 +247,7 @@ a:focus {
 
 @media (prefers-reduced-motion: reduce) {
   .tab-content-animate,
+  .node-view-flow-wire,
   [data-tree-row] {
     animation: none !important;
   }

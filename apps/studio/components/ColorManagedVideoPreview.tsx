@@ -7,9 +7,9 @@ import { resolveProjectDisplayOutput } from '@/color-management';
 import useAssetObjectUrl from '@/hooks/useAssetObjectUrl';
 import { renderViewportFrameWithSharedPipeline } from '@/renderer/pipeline';
 import { createViewportPipelineResources } from '@/renderer/viewportPipelineResources';
-import { useEditorSelector } from '@/state/editorContext';
 import { createMediaPreviewGraph } from '@/utils/thumbnailRenderer';
 import { createAssetPreviewCacheKey, markAssetPreviewMilestone } from '@/services/assetPreview';
+import { useMediaPreviewColorManagement } from '@/hooks/useMediaPreviewColorManagement';
 
 export interface ColorManagedVideoPreviewProps {
   assetId: string;
@@ -19,6 +19,7 @@ export interface ColorManagedVideoPreviewProps {
   fps?: number;
   className?: string;
   maxDimension?: number;
+  autoDetectDisplayView?: boolean;
 }
 
 const formatTime = (seconds: number): string => {
@@ -35,11 +36,15 @@ export function ColorManagedVideoPreview({
   fps = 30,
   className = '',
   maxDimension = 2048,
+  autoDetectDisplayView = false,
 }: ColorManagedVideoPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const objectUrl = useAssetObjectUrl(assetId);
-  const projectColorManagement = useEditorSelector((state) => state.colorManagement);
+  const projectColorManagement = useMediaPreviewColorManagement(
+    mediaColorManagement,
+    autoDetectDisplayView,
+  );
   const previewSource = useMemo(
     () => ({
       assetId,

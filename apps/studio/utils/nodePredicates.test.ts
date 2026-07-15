@@ -7,8 +7,8 @@ import {
   isStackedExportAdjustmentNode,
   hasStackedFlag,
   isNodeStacked,
-  participatesInImplicitPipeline,
-  usesImplicitPipelineInput,
+  participatesInPipeline,
+  usesPipelineInput,
 } from '@/utils/nodePredicates';
 
 describe('isStackAdjustmentType', () => {
@@ -32,19 +32,19 @@ describe('isStackAdjustmentType', () => {
   });
 });
 
-describe('implicit pipeline predicates', () => {
-  it('keeps channel utilities out of implicit pipe topology', () => {
-    expect(usesImplicitPipelineInput(NodeType.EXTRACT_CHANNELS)).toBe(false);
-    expect(usesImplicitPipelineInput(NodeType.MERGE_CHANNELS)).toBe(false);
-    expect(participatesInImplicitPipeline(NodeType.EXTRACT_CHANNELS)).toBe(false);
-    expect(participatesInImplicitPipeline(NodeType.MERGE_CHANNELS)).toBe(false);
-    expect(usesImplicitPipelineInput(NodeType.NOTE)).toBe(false);
-    expect(participatesInImplicitPipeline(NodeType.NOTE)).toBe(false);
+describe('pipeline predicates', () => {
+  it('keeps channel utilities out of primary pipe topology', () => {
+    expect(usesPipelineInput(NodeType.EXTRACT_CHANNELS)).toBe(false);
+    expect(usesPipelineInput(NodeType.MERGE_CHANNELS)).toBe(false);
+    expect(participatesInPipeline(NodeType.EXTRACT_CHANNELS)).toBe(false);
+    expect(participatesInPipeline(NodeType.MERGE_CHANNELS)).toBe(false);
+    expect(usesPipelineInput(NodeType.NOTE)).toBe(false);
+    expect(participatesInPipeline(NodeType.NOTE)).toBe(false);
   });
 
-  it('keeps normal adjustment nodes on the implicit pipeline', () => {
-    expect(usesImplicitPipelineInput(NodeType.GRADE)).toBe(true);
-    expect(participatesInImplicitPipeline(NodeType.GRADE)).toBe(true);
+  it('keeps normal adjustment nodes in the primary pipeline', () => {
+    expect(usesPipelineInput(NodeType.GRADE)).toBe(true);
+    expect(participatesInPipeline(NodeType.GRADE)).toBe(true);
   });
 });
 

@@ -13,6 +13,7 @@
 
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { useWindowDragAdjustment } from '@/hooks/useWindowDragAdjustment';
 import {
   NodeType,
   type AnyNode,
@@ -1202,27 +1203,20 @@ export function useRotoInteraction(params: UseRotoInteractionParams) {
   // -----------------------------------------------------------------------
   // isAdjustingRadius window drag effect
   // -----------------------------------------------------------------------
-  useEffect(() => {
-    if (!isAdjustingRadius) return;
-    const handleRadiusMouseMove = (e: MouseEvent) => {
+  useWindowDragAdjustment(isAdjustingRadius, {
+    onMouseMove: (e: MouseEvent) => {
       if (radiusAdjustStartRef.current) {
         const dx = e.clientX - radiusAdjustStartRef.current.startX;
         setPreferences({
           nudgeRadius: Math.max(1, Math.min(500, radiusAdjustStartRef.current.initialRadius + dx)),
         });
       }
-    };
-    const handleRadiusMouseUp = () => {
+    },
+    onMouseUp: () => {
       setIsAdjustingRadius(false);
       radiusAdjustStartRef.current = null;
-    };
-    window.addEventListener('mousemove', handleRadiusMouseMove);
-    window.addEventListener('mouseup', handleRadiusMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleRadiusMouseMove);
-      window.removeEventListener('mouseup', handleRadiusMouseUp);
-    };
-  }, [isAdjustingRadius, setPreferences]);
+    },
+  });
 
   // -----------------------------------------------------------------------
   // Tool-change cleanup

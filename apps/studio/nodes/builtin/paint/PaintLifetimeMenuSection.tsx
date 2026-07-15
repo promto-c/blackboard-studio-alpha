@@ -18,6 +18,7 @@ const LIFETIME_MODE_OPTIONS = [
 interface PaintLifetimeMenuSectionProps {
   lifetime?: PaintLifetime | null;
   currentFrame: number;
+  timelineStartFrame: number;
   maxFrames: number;
   onApply: (lifetime: PaintLifetime) => void;
 }
@@ -25,6 +26,7 @@ interface PaintLifetimeMenuSectionProps {
 function PaintLifetimeMenuSection({
   lifetime,
   currentFrame,
+  timelineStartFrame,
   maxFrames,
   onApply,
 }: PaintLifetimeMenuSectionProps) {
@@ -72,13 +74,13 @@ function PaintLifetimeMenuSection({
     if (mode === 'single') {
       onApply({
         mode: 'single',
-        frame: clampPaintFrame(singleFrame, maxFrames),
+        frame: clampPaintFrame(singleFrame, maxFrames, timelineStartFrame),
       });
       return;
     }
 
-    const startFrame = clampPaintFrame(rangeStart, maxFrames);
-    const endFrame = clampPaintFrame(rangeEnd, maxFrames);
+    const startFrame = clampPaintFrame(rangeStart, maxFrames, timelineStartFrame);
+    const endFrame = clampPaintFrame(rangeEnd, maxFrames, timelineStartFrame);
 
     onApply({
       mode: 'range',
@@ -108,15 +110,19 @@ function PaintLifetimeMenuSection({
             <div className="grid grid-cols-[1fr_auto] gap-2">
               <NumberInput
                 value={singleFrame}
-                min={0}
+                min={timelineStartFrame}
                 max={maxFrames}
                 step={1}
                 normalizeValue={Math.round}
-                onValueChange={(value) => setSingleFrame(clampPaintFrame(value, maxFrames))}
+                onValueChange={(value) =>
+                  setSingleFrame(clampPaintFrame(value, maxFrames, timelineStartFrame))
+                }
               />
               <button
                 type="button"
-                onClick={() => setSingleFrame(clampPaintFrame(currentFrame, maxFrames))}
+                onClick={() =>
+                  setSingleFrame(clampPaintFrame(currentFrame, maxFrames, timelineStartFrame))
+                }
                 className={SECONDARY_BUTTON_CLASS}
               >
                 Use Playhead
@@ -134,11 +140,13 @@ function PaintLifetimeMenuSection({
             </span>
             <NumberInput
               value={rangeStart}
-              min={0}
+              min={timelineStartFrame}
               max={maxFrames}
               step={1}
               normalizeValue={Math.round}
-              onValueChange={(value) => setRangeStart(clampPaintFrame(value, maxFrames))}
+              onValueChange={(value) =>
+                setRangeStart(clampPaintFrame(value, maxFrames, timelineStartFrame))
+              }
             />
           </label>
           <label className="space-y-1">
@@ -147,11 +155,13 @@ function PaintLifetimeMenuSection({
             </span>
             <NumberInput
               value={rangeEnd}
-              min={0}
+              min={timelineStartFrame}
               max={maxFrames}
               step={1}
               normalizeValue={Math.round}
-              onValueChange={(value) => setRangeEnd(clampPaintFrame(value, maxFrames))}
+              onValueChange={(value) =>
+                setRangeEnd(clampPaintFrame(value, maxFrames, timelineStartFrame))
+              }
             />
           </label>
         </div>

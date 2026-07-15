@@ -9,8 +9,11 @@ out vec4 fragColor;
 
 void main() {
   vec4 src = texture(u_tDiffuse, v_uv);
-  float ch = u_channel == 0 ? src.r : u_channel == 1 ? src.g : u_channel == 2 ? src.b : src.a;
-  fragColor = vec4(ch, ch, ch, ch);
+  fragColor = vec4(0.0);
+  if (u_channel == 0) fragColor.r = src.r;
+  if (u_channel == 1) fragColor.g = src.g;
+  if (u_channel == 2) fragColor.b = src.b;
+  if (u_channel == 3) fragColor.a = src.a;
 }
 `,
 

@@ -5,6 +5,8 @@ import { getAsset } from '@/state/assetStorage';
 import {
   NodeType,
   type AnyNode,
+  type CacheNodeEntry,
+  type CacheStatus,
   type ImageSequenceNode,
   type MediaSourceNode,
 } from '@blackboard/types';
@@ -16,6 +18,10 @@ import {
   isVideoFileLike,
 } from '@/utils/mediaFiles';
 import { isNonEmptyString, getNonEmptyString } from '@/utils/guards';
+import {
+  buildSourceDataAvailability,
+  buildSourceDataTimelineStatus,
+} from '@/utils/mediaTimelineStatus';
 import { TextureCache } from '@/utils/textureCache';
 import { type BackgroundPrefetchMode, getRecommendedCacheSizeMB } from '@/state/preferences';
 import { usePreferences } from '@/state/preferencesContext';
@@ -26,17 +32,10 @@ import {
   nodeFlags,
   resolveMediaFrame,
 } from '@/nodes/helpers';
+import { getSourceFrameRange } from '@/nodes/sourceFrameRange';
 
-export interface ViewportCacheNodeEntry {
-  cachedFrames: boolean[];
-  cachingFrames: boolean[];
-}
-
-export interface ViewportCacheStatus {
-  memoryUsed: number;
-  memoryLimit: number;
-  nodeEntries: Record<string, ViewportCacheNodeEntry>;
-}
+export type ViewportCacheNodeEntry = CacheNodeEntry;
+export type ViewportCacheStatus = CacheStatus;
 
 interface VideoDecodeSession {
   video: HTMLVideoElement;
@@ -66,6 +65,7 @@ export interface UseViewportMediaCacheOptions {
   retentionNodes?: AnyNode[];
   currentFrame: number;
   selectedNode?: AnyNode;
+  timelineStartFrame?: number;
   maxFrames: number;
   updateCacheStatus: (status: ViewportCacheStatus) => void;
   fps?: number;
@@ -245,6 +245,7 @@ export const useViewportMediaCache = ({
   retentionNodes = nodes,
   currentFrame,
   selectedNode,
+  timelineStartFrame = 0,
   maxFrames,
   updateCacheStatus,
   fps = 30,
@@ -345,40 +346,28 @@ export const useViewportMediaCache = ({
   }, []);
 
   const buildSequenceTimelineStatus = useCallback(
-    (
-      node: ImageSequenceNode,
-      predicate: (assetId: string) => boolean,
-      blackFrameStatus: boolean,
-    ) => {
+    (node: ImageSequenceNode, predicate: (assetId: string) => boolean) => {
       if (node.frames.length === 0) return [];
-      const status = new Array(maxFrames + 1).fill(false);
-      for (let frame = 0; frame <= maxFrames; frame += 1) {
-        const sourceFrame = resolveMediaFrame(node, frame);
-        status[frame] =
-          sourceFrame === null ? blackFrameStatus : predicate(node.frames[sourceFrame]);
-      }
-      return status;
+      return buildSourceDataTimelineStatus(
+        getSourceFrameRange(node),
+        timelineStartFrame,
+        maxFrames,
+        (sourceFrame) => predicate(node.frames[sourceFrame]),
+      );
     },
-    [maxFrames],
+    [maxFrames, timelineStartFrame],
   );
   const buildVideoTimelineStatus = useCallback(
-    (
-      node: MediaSourceNode,
-      predicate: (frameKey: string) => boolean,
-      blackFrameStatus: boolean,
-    ) => {
+    (node: MediaSourceNode, predicate: (frameKey: string) => boolean) => {
       if (!node.src) return [];
-      const status = new Array(maxFrames + 1).fill(false);
-      for (let frame = 0; frame <= maxFrames; frame += 1) {
-        const sourceFrame = resolveMediaFrame(node, frame);
-        status[frame] =
-          sourceFrame === null
-            ? blackFrameStatus
-            : predicate(getVideoFrameKey(node.src, sourceFrame));
-      }
-      return status;
+      return buildSourceDataTimelineStatus(
+        getSourceFrameRange(node),
+        timelineStartFrame,
+        maxFrames,
+        (sourceFrame) => predicate(getVideoFrameKey(node.src, sourceFrame)),
+      );
     },
-    [getVideoFrameKey, maxFrames],
+    [getVideoFrameKey, maxFrames, timelineStartFrame],
   );
 
   const captureVideoFrame = useCallback(
@@ -1032,7 +1021,12 @@ export const useViewportMediaCache = ({
     for (const offset of offsets) {
       for (const node of targetNodes) {
         if (!node.src) continue;
-        const frame = Math.max(0, Math.round(currentFrame + offset));
+        const timelineFrame = Math.max(
+          timelineStartFrame,
+          Math.min(maxFrames, Math.round(currentFrame + offset)),
+        );
+        const frame = resolveMediaFrame(node, timelineFrame);
+        if (frame === null) continue;
         const frameKey = getVideoFrameKey(node.src, frame);
         if (scheduled.has(frameKey)) continue;
         if (
@@ -1077,9 +1071,11 @@ export const useViewportMediaCache = ({
     cacheBudgetMode,
     currentFrame,
     getVideoFrameKey,
+    maxFrames,
     maxCachedFrames,
     requestVideoFrame,
     selectedNode,
+    timelineStartFrame,
     videoNodes,
   ]);
 
@@ -1135,26 +1131,37 @@ export const useViewportMediaCache = ({
       const cache = textureCacheRef.current;
       const memoryStatus = cache.getMemoryStatus();
 
-      const nodeEntries: Record<string, { cachedFrames: boolean[]; cachingFrames: boolean[] }> = {};
+      const nodeEntries: Record<string, ViewportCacheNodeEntry> = {};
 
       for (const seqNode of sequenceNodes) {
         nodeEntries[seqNode.id] = {
-          cachedFrames: buildSequenceTimelineStatus(seqNode, (assetId) => cache.has(assetId), true),
+          availableFrames: buildSourceDataTimelineStatus(
+            getSourceFrameRange(seqNode),
+            timelineStartFrame,
+            maxFrames,
+            (sourceFrame) => Boolean(seqNode.frames[sourceFrame]),
+          ),
+          cachedFrames: buildSequenceTimelineStatus(seqNode, (assetId) => cache.has(assetId)),
           cachingFrames: buildSequenceTimelineStatus(
             seqNode,
             (assetId) => pendingLoadsRef.current.has(assetId) && !cache.has(assetId),
-            false,
           ),
         };
       }
 
       for (const vidNode of videoNodes) {
         nodeEntries[vidNode.id] = {
-          cachedFrames: buildVideoTimelineStatus(vidNode, (frameKey) => cache.has(frameKey), true),
+          availableFrames: vidNode.src
+            ? buildSourceDataAvailability(
+                getSourceFrameRange(vidNode),
+                timelineStartFrame,
+                maxFrames,
+              )
+            : [],
+          cachedFrames: buildVideoTimelineStatus(vidNode, (frameKey) => cache.has(frameKey)),
           cachingFrames: buildVideoTimelineStatus(
             vidNode,
             (frameKey) => pendingVideoFramesRef.current.has(frameKey) && !cache.has(frameKey),
-            false,
           ),
         };
       }
@@ -1170,8 +1177,10 @@ export const useViewportMediaCache = ({
   }, [
     buildSequenceTimelineStatus,
     buildVideoTimelineStatus,
+    maxFrames,
     mediaUpdateTrigger,
     sequenceNodes,
+    timelineStartFrame,
     videoNodes,
     updateCacheStatus,
   ]);

@@ -8,6 +8,7 @@ import {
   type NoteNode,
   type OutputTechnicalChannel,
   SceneNode,
+  type ViewerSlot,
   ViewerSlotAssignments,
 } from '@blackboard/types';
 import { nodeRegistry } from '@/nodes/registry';
@@ -17,7 +18,7 @@ import { getInputPorts, nodeFlags } from '@/nodes/helpers';
 import { NodeActionMenu } from '@/features/nodes/NodeActionMenu';
 import { createExecutionAction, createStackingAction } from '@/features/nodes/nodeActionFactories';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { usesImplicitPipelineInput } from '@/utils/nodePredicates';
+import { usesPipelineInput } from '@/utils/nodePredicates';
 import * as Icons from '@blackboard/icons';
 import { LiveThumbnail, MarkdownNote, ViewerSlotBadges } from '@/components';
 import type { ThumbnailMode } from '@/state/preferences';
@@ -30,8 +31,14 @@ import {
   getProcessingDomainLabel,
 } from '@/utils/nodeProcessingDomains';
 import { getDataSemanticProcessingDomain } from '@blackboard/renderer';
+import { getInputPortKey, getOutputPortKey } from './nodePortKeys';
 
 // --- Port Components ---
+
+const PORT_CENTER_COLOR = '#1f2937';
+
+const getConnectedPortFill = (color: string): string =>
+  `color-mix(in oklch, ${color} 70%, ${PORT_CENTER_COLOR})`;
 
 export function InputPortDot({
   nodeId,
@@ -41,6 +48,7 @@ export function InputPortDot({
   isDragTarget,
   isReserved = false,
   processingDomain,
+  color,
   portRef,
 }: {
   nodeId: string;
@@ -50,6 +58,7 @@ export function InputPortDot({
   isDragTarget: boolean;
   isReserved?: boolean;
   processingDomain?: ColorProcessingDomain | null;
+  color?: string;
   portRef: (el: HTMLDivElement | null) => void;
 }) {
   return (
@@ -64,14 +73,26 @@ export function InputPortDot({
     >
       <div
         className={`w-3 h-3 rounded-full border-2 transition-all flex-shrink-0 ${
-          isConnected
-            ? isReserved
-              ? 'border-transparent bg-transparent ring-2 ring-primary-400/35'
-              : 'bg-primary-500 border-primary-400'
-            : isDragTarget
-              ? 'border-primary-400 bg-primary-900/50 scale-125'
-              : 'border-gray-600 bg-gray-800 hover:border-gray-400'
+          color
+            ? isDragTarget
+              ? 'scale-125'
+              : ''
+            : isConnected
+              ? isReserved
+                ? 'border-transparent bg-transparent ring-2 ring-primary-400/35'
+                : 'bg-primary-500 border-primary-400'
+              : isDragTarget
+                ? 'border-primary-400 bg-primary-900/50 scale-125'
+                : 'border-gray-600 bg-gray-800 hover:border-gray-400'
         }`}
+        style={
+          color
+            ? {
+                backgroundColor: isConnected ? getConnectedPortFill(color) : PORT_CENTER_COLOR,
+                borderColor: color,
+              }
+            : undefined
+        }
       />
     </div>
   );
@@ -82,18 +103,27 @@ export function OutputPortDot({
   onMouseDown,
   label,
   processingDomain,
+  color,
 }: {
   portRef: (el: HTMLDivElement | null) => void;
   onMouseDown?: (e: React.MouseEvent) => void;
   label: string;
   processingDomain: ColorProcessingDomain;
+  color?: string;
 }) {
   return (
     <div ref={portRef} className="flex flex-col items-center">
       <div
-        className={`w-3 h-3 rounded-full border-2 border-gray-600 bg-gray-800 transition-colors flex-shrink-0 ${
-          onMouseDown ? 'hover:border-primary-400 hover:bg-primary-900/50 cursor-crosshair' : ''
+        className={`w-3 h-3 rounded-full border-2 transition-all flex-shrink-0 ${
+          color ? '' : 'border-gray-600 bg-gray-800'
+        } ${
+          onMouseDown
+            ? color
+              ? 'hover:scale-125 cursor-crosshair'
+              : 'hover:border-primary-400 hover:bg-primary-900/50 cursor-crosshair'
+            : ''
         }`}
+        style={color ? { backgroundColor: PORT_CENTER_COLOR, borderColor: color } : undefined}
         onMouseDown={onMouseDown}
         title={`${label} · ${getProcessingDomainLabel(processingDomain)}`}
         data-processing-domain={processingDomain}
@@ -168,44 +198,49 @@ type PortSpec = {
   portName: string;
   label: string;
   processingDomain?: ColorProcessingDomain | null;
+  color?: string;
   isReserved?: boolean;
 };
 type OutputPortSpec = {
   portName: string;
   label: string;
   processingDomain: ColorProcessingDomain;
+  color?: string;
 };
 
 const getReservedPortLabel = (portName: string): string => `${portName} (reserved)`;
 
-function buildStackInputPorts(stack: AnyNode[]) {
-  const baseNode = stack[0];
-  const pipePorts: PortSpec[] = usesImplicitPipelineInput(baseNode.type)
-    ? [
-        {
-          nodeId: baseNode.id,
-          portName: 'pipe',
-          label: 'in',
-          processingDomain: getNodeInputProcessingDomain(baseNode, 'pipe'),
-        },
-      ]
-    : [];
+export function buildStackInputPorts(stack: AnyNode[]) {
   const inputPorts: PortSpec[] = [];
 
-  for (const node of stack) {
-    const declaredPortNames = new Set<string>();
-    for (const port of getInputPorts(node)) {
-      // `pipe` is the reserved primary input rendered above. Definitions use
-      // primaryInputDomain to customize it instead of declaring a second port.
-      if (port.name === 'pipe') continue;
-      declaredPortNames.add(port.name);
+  for (const [nodeIndex, node] of stack.entries()) {
+    const declaredPorts = getInputPorts(node);
+    const declaredPortNames = new Set(declaredPorts.map((port) => port.name));
+
+    // Most processing nodes have a canonical primary pipe. Nodes such as Merge
+    // declare it explicitly so its label and ordering remain registry-owned.
+    if (nodeIndex === 0 && usesPipelineInput(node.type) && !declaredPortNames.has('pipe')) {
+      inputPorts.push({
+        nodeId: node.id,
+        portName: 'pipe',
+        label: 'in',
+        processingDomain: getNodeInputProcessingDomain(node, 'pipe'),
+      });
+    }
+
+    for (const port of declaredPorts) {
+      // A stacked child consumes the previous stack result internally; only
+      // the base node exposes a primary pipe on the outer card.
+      if (port.name === 'pipe' && nodeIndex > 0) continue;
       inputPorts.push({
         nodeId: node.id,
         portName: port.name,
         label: port.label,
         processingDomain: getNodeInputProcessingDomain(node, port.name),
+        color: port.color,
       });
     }
+
     for (const portName of Object.keys(node.inputs ?? {})) {
       if (portName === 'pipe' || declaredPortNames.has(portName)) continue;
       inputPorts.push({
@@ -217,11 +252,7 @@ function buildStackInputPorts(stack: AnyNode[]) {
     }
   }
 
-  if (baseNode.type === NodeType.MERGE) {
-    return [...inputPorts, ...pipePorts];
-  }
-
-  return [...pipePorts, ...inputPorts];
+  return inputPorts;
 }
 
 function getOutputPortsForNode(node: AnyNode): OutputPortSpec[] {
@@ -240,6 +271,7 @@ function getOutputPortsForNode(node: AnyNode): OutputPortSpec[] {
     portName: port.name,
     label: port.label,
     processingDomain: getNodeOutputProcessingDomain(node, port.name),
+    color: port.color,
   }));
 }
 
@@ -285,10 +317,7 @@ function NodeCardShell({
 type InputPortsProps = {
   ports: PortSpec[];
   isDragTarget: boolean;
-  connectionMap: Map<
-    string,
-    { sourceNodeId: string; targetNodeId: string; targetPortName: string }
-  >;
+  connectedInputKeys: ReadonlySet<string>;
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
   className?: string;
 };
@@ -296,7 +325,7 @@ type InputPortsProps = {
 function InputPorts({
   ports,
   isDragTarget,
-  connectionMap,
+  connectedInputKeys,
   registerPortRef,
   className = '',
 }: InputPortsProps) {
@@ -312,21 +341,20 @@ function InputPorts({
         zIndex: 15,
       }}
     >
-      {ports.map(({ nodeId, portName, label, processingDomain, isReserved }) => {
+      {ports.map(({ nodeId, portName, label, processingDomain, color, isReserved }) => {
         const connKey = `${nodeId}:${portName}`;
-        const conn = connectionMap.get(connKey);
-
         return (
           <InputPortDot
             key={connKey}
             nodeId={nodeId}
             portName={portName}
             label={label}
-            isConnected={!!conn}
+            isConnected={connectedInputKeys.has(connKey)}
             isDragTarget={isDragTarget}
             isReserved={isReserved}
             processingDomain={processingDomain}
-            portRef={(el) => registerPortRef(`${nodeId}:input:${portName}`, el)}
+            color={color}
+            portRef={(el) => registerPortRef(getInputPortKey(nodeId, portName), el)}
           />
         );
       })}
@@ -340,9 +368,6 @@ type OutputPortProps = {
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
   onOutputPortMouseDown?: (e: React.MouseEvent, sourcePortName: string) => void;
 };
-
-const getOutputPortKey = (nodeId: string, portName: string) =>
-  portName === 'output' ? `${nodeId}:output` : `${nodeId}:output:${portName}`;
 
 function OutputPort({ ports, nodeId, registerPortRef, onOutputPortMouseDown }: OutputPortProps) {
   return (
@@ -361,6 +386,7 @@ function OutputPort({ ports, nodeId, registerPortRef, onOutputPortMouseDown }: O
           }
           label={port.label}
           processingDomain={port.processingDomain}
+          color={port.color}
         />
       ))}
     </div>
@@ -508,6 +534,7 @@ export function OutputNodeCard({
   connectedTechnicalPorts,
   viewerNodeId,
   viewerSlots,
+  compareViewerSlots,
   onSelect,
   onDragStart,
   registerPortRef,
@@ -519,6 +546,7 @@ export function OutputNodeCard({
   connectedTechnicalPorts: ReadonlySet<string>;
   viewerNodeId: string | null;
   viewerSlots: ViewerSlotAssignments;
+  compareViewerSlots: ReadonlySet<ViewerSlot>;
   onSelect: (event: React.MouseEvent) => void;
   onDragStart: (e: React.MouseEvent) => void;
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
@@ -538,25 +566,14 @@ export function OutputNodeCard({
     })),
   ];
 
-  const connectionMap = new Map<
-    string,
-    { sourceNodeId: string; targetNodeId: string; targetPortName: string }
-  >();
+  const connectedInputKeys = new Set<string>();
   if (isConnected) {
-    connectionMap.set(`${OUTPUT_NODE_ID}:pipe`, {
-      sourceNodeId: '',
-      targetNodeId: OUTPUT_NODE_ID,
-      targetPortName: 'pipe',
-    });
+    connectedInputKeys.add(`${OUTPUT_NODE_ID}:pipe`);
   }
   technicalChannels.forEach((channel) => {
     const portName = getOutputTechnicalChannelPort(channel.id);
     if (!connectedTechnicalPorts.has(portName)) return;
-    connectionMap.set(`${OUTPUT_NODE_ID}:${portName}`, {
-      sourceNodeId: '',
-      targetNodeId: OUTPUT_NODE_ID,
-      targetPortName: portName,
-    });
+    connectedInputKeys.add(`${OUTPUT_NODE_ID}:${portName}`);
   });
 
   return (
@@ -573,13 +590,14 @@ export function OutputNodeCard({
           nodeId={OUTPUT_NODE_ID}
           viewerNodeId={viewerNodeId}
           viewerSlots={viewerSlots}
+          compareViewerSlots={compareViewerSlots}
         />
       </div>
 
       <InputPorts
         ports={ports}
         isDragTarget={isDragTarget}
-        connectionMap={connectionMap}
+        connectedInputKeys={connectedInputKeys}
         registerPortRef={registerPortRef}
       />
     </NodeCardShell>
@@ -669,12 +687,10 @@ interface StackNodeCardProps {
   selectedNodeId: string | null;
   selectedNodeIds: string[];
   thumbnailMode: ThumbnailMode;
-  connectionMap: Map<
-    string,
-    { sourceNodeId: string; targetNodeId: string; targetPortName: string }
-  >;
+  connectedInputKeys: ReadonlySet<string>;
   viewerNodeId: string | null;
   viewerSlots: ViewerSlotAssignments;
+  compareViewerSlots: ReadonlySet<ViewerSlot>;
   isDragTarget: boolean;
   isStackMagnetTarget?: boolean;
   isStackMagnetSource?: boolean;
@@ -701,9 +717,10 @@ export function StackNodeCard({
   selectedNodeId,
   selectedNodeIds,
   thumbnailMode,
-  connectionMap,
+  connectedInputKeys,
   viewerNodeId,
   viewerSlots,
+  compareViewerSlots,
   isDragTarget,
   isStackMagnetTarget = false,
   isStackMagnetSource = false,
@@ -759,7 +776,7 @@ export function StackNodeCard({
       <InputPorts
         ports={stackInputPorts}
         isDragTarget={isDragTarget}
-        connectionMap={connectionMap}
+        connectedInputKeys={connectedInputKeys}
         registerPortRef={registerPortRef}
       />
 
@@ -804,6 +821,7 @@ export function StackNodeCard({
                 nodeId={node.id}
                 viewerNodeId={viewerNodeId}
                 viewerSlots={viewerSlots}
+                compareViewerSlots={compareViewerSlots}
               />
               <NodeActionMenu
                 actions={[

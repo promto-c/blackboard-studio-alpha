@@ -16,6 +16,10 @@ const VIDEO_COLORIMETRIC_VIEW = 'Video (colorimetric)';
  */
 const SDR_CONSUMER_COLOR_SPACES: ReadonlySet<string> = new Set([
   'sRGB Encoded Rec.709 (sRGB)',
+  'Linear Rec.709 (sRGB)',
+  // The built-in OCIO config's default file rule resolves ordinary integer
+  // images (PNG, JPEG, WebP, TIFF, and similar formats) to this color space.
+  'sRGB - Display',
   'sRGB',
   'Rec.709',
   'BT.709',
@@ -29,7 +33,7 @@ export type AutoDetectViewResult = DisplayViewSelection | null;
  * Convenience type alias for a look-up function that returns available
  * view info for a given display.
  */
-type GetViews = (display: string) => readonly DisplayViewInfo[];
+export type GetOcioViews = (display: string) => readonly DisplayViewInfo[];
 
 /**
  * Checks whether the given color-space name is an SDR consumer color
@@ -37,6 +41,26 @@ type GetViews = (display: string) => readonly DisplayViewInfo[];
  */
 const isSdrConsumerColorSpace = (colorSpace: OcioColorSpaceName): boolean =>
   SDR_CONSUMER_COLOR_SPACES.has(colorSpace);
+
+/**
+ * Compute the recommended display/view for one resolved source color space.
+ * This is the shared primitive used by both the project viewport and isolated
+ * media previews such as the welcome gallery viewer.
+ */
+export function getAutoDetectedViewForColorSpace(
+  colorSpace: OcioColorSpaceName | null | undefined,
+  defaultDisplay: string,
+  getViews: GetOcioViews,
+): AutoDetectViewResult {
+  const normalizedColorSpace = colorSpace?.trim();
+  if (!normalizedColorSpace || !isSdrConsumerColorSpace(normalizedColorSpace)) return null;
+
+  const displayViews = getViews(defaultDisplay);
+  const hasVideoColorimetric = displayViews.some((view) => view.name === VIDEO_COLORIMETRIC_VIEW);
+  if (!hasVideoColorimetric) return null;
+
+  return { display: defaultDisplay, view: VIDEO_COLORIMETRIC_VIEW };
+}
 
 /**
  * Finds the first media-source node in the ordered node list whose
@@ -53,9 +77,6 @@ const isSdrConsumerColorSpace = (colorSpace: OcioColorSpaceName): boolean =>
 const getFirstSourceColorSpace = (nodes: readonly AnyNode[]): OcioColorSpaceName | null => {
   for (const node of nodes) {
     if (node.enabled === false) continue;
-
-    // Skip detached nodes
-    if ((node as { detachedFromPipe?: boolean }).detachedFromPipe) continue;
 
     // Skip scene-like nodes (Scene, 3D Scene) — they have a
     // production-oriented colorSpace but are not "inputs."
@@ -106,16 +127,8 @@ const getFirstSourceColorSpace = (nodes: readonly AnyNode[]): OcioColorSpaceName
 export function getAutoDetectedView(
   nodes: readonly AnyNode[],
   defaultDisplay: string,
-  getViews: GetViews,
+  getViews: GetOcioViews,
 ): AutoDetectViewResult {
   const colorSpace = getFirstSourceColorSpace(nodes);
-  if (!colorSpace) return null;
-
-  if (!isSdrConsumerColorSpace(colorSpace)) return null;
-
-  const displayViews = getViews(defaultDisplay);
-  const hasVideoColorimetric = displayViews.some((view) => view.name === VIDEO_COLORIMETRIC_VIEW);
-  if (!hasVideoColorimetric) return null;
-
-  return { display: defaultDisplay, view: VIDEO_COLORIMETRIC_VIEW };
+  return getAutoDetectedViewForColorSpace(colorSpace, defaultDisplay, getViews);
 }

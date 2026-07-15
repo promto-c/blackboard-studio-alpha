@@ -18,6 +18,7 @@ const scene: SceneNode = {
   height: 1080,
   bitDepth: 16,
   colorSpace: 'Linear',
+  startFrame: 0,
   maxFrames: 120,
   fps: 24,
 };

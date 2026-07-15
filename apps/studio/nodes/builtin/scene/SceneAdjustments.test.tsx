@@ -6,13 +6,11 @@ import SceneAdjustments from './SceneAdjustments';
 
 const mocks = vi.hoisted(() => ({
   openPreferences: vi.fn(),
-  setMaxFrames: vi.fn(),
   updateNode: vi.fn(),
 }));
 
 vi.mock('@/state/editorContext', () => ({
   useEditorActions: () => ({
-    setMaxFrames: mocks.setMaxFrames,
     updateNode: mocks.updateNode,
   }),
 }));
@@ -36,6 +34,7 @@ const sceneNode: SceneNode = {
   height: 1080,
   bitDepth: 16,
   colorSpace: 'ACEScg',
+  startFrame: 0,
   maxFrames: 120,
   fps: 24,
 };
@@ -59,5 +58,22 @@ describe('SceneAdjustments', () => {
       section: 'colorManagement',
       colorScope: 'project',
     });
+  });
+
+  it('edits the absolute scene frame range', () => {
+    render(<SceneAdjustments node={{ ...sceneNode, startFrame: 1001, maxFrames: 1240 }} />);
+
+    const startInput = screen.getByRole('spinbutton', { name: 'Timeline start frame' });
+    const endInput = screen.getByRole('spinbutton', { name: 'Timeline end frame' });
+
+    fireEvent.focus(startInput);
+    fireEvent.change(startInput, { target: { value: '1002' } });
+    fireEvent.blur(startInput);
+    expect(mocks.updateNode).toHaveBeenCalledWith('scene-1', { startFrame: 1002 }, true);
+
+    fireEvent.focus(endInput);
+    fireEvent.change(endInput, { target: { value: '1250' } });
+    fireEvent.blur(endInput);
+    expect(mocks.updateNode).toHaveBeenCalledWith('scene-1', { maxFrames: 1250 }, true);
   });
 });

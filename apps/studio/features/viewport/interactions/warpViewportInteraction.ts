@@ -29,13 +29,13 @@ export class WarpViewportInteraction extends BaseViewportInteraction {
   handleMouseDown(event: ViewportPointerEvent): boolean {
     return this.warp.handleMouseDown(
       event.nativeEvent as unknown as React.MouseEvent<HTMLDivElement>,
-      { x: event.clientX, y: event.clientY },
-      { x: event.sceneX, y: event.sceneY },
+      event.clientPoint,
+      event.scenePoint,
     );
   }
 
   handleMouseMove(event: ViewportPointerEvent): boolean {
-    return this.warp.handleMouseMove(event.nativeEvent, { x: event.clientX, y: event.clientY });
+    return this.warp.handleMouseMove(event.nativeEvent, event.clientPoint);
   }
 
   handleMouseUp(_event: ViewportPointerEvent): boolean {

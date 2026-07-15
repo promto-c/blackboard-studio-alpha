@@ -26,6 +26,25 @@ void main() {
 }
 `,
 
+  DATA_VIEW: `
+precision highp float;
+
+in vec2 v_uv;
+uniform sampler2D u_tDiffuse;
+uniform int u_channel;
+out vec4 fragColor;
+
+void main() {
+  vec4 data = texture(u_tDiffuse, v_uv);
+  vec3 display_value = data.rgb;
+  if (u_channel == 0) display_value = vec3(data.r);
+  if (u_channel == 1) display_value = vec3(data.g);
+  if (u_channel == 2) display_value = vec3(data.b);
+  if (u_channel == 3) display_value = vec3(data.a);
+  fragColor = vec4(display_value, 1.0);
+}
+`,
+
   TEXTURE_OPACITY: `
 precision highp float;
 

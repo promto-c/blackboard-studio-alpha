@@ -1,19 +1,23 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import { useOcio } from '@/state/ocioContext';
 import { getAutoDetectedView } from '@/color-management';
+import { getOutputRenderNodes } from '@/utils/viewerSlots';
 
 /**
- * Watches the project node list and the auto-detect preference to
- * automatically set the viewport display/view based on the first input
- * source's color space.
+ * Watches the canonical output graph and the auto-detect preference to set
+ * the viewport display/view from the first connected source's color space.
  *
  * When auto-detect is disabled, clears any previously set auto-detected
  * view so the project default is used.
  */
 export function useAutoDetectViewportView(): void {
   const nodes = useEditorSelector((state) => state.nodes);
+  const activeFlow = useEditorSelector((state) => {
+    const flowId = state.activeFlowId ?? state.rootFlowId;
+    return flowId ? state.flows[flowId] : null;
+  });
   const { autoDetectViewportView } = usePreferences();
   const { setAutoDetectView } = useEditorActions();
   const ocio = useOcio();
@@ -22,7 +26,8 @@ export function useAutoDetectViewportView(): void {
     enabled: false,
   });
   const defaultDisplay = ocio.defaultDisplay;
-  const getViews = useCallback((display: string) => ocio.getViews(display), [ocio.getViews]);
+  const getViews = ocio.getViews;
+  const outputNodes = useMemo(() => getOutputRenderNodes(nodes, activeFlow), [activeFlow, nodes]);
 
   useEffect(() => {
     if (!autoDetectViewportView) {
@@ -34,7 +39,7 @@ export function useAutoDetectViewportView(): void {
       return;
     }
 
-    const detected = getAutoDetectedView(nodes, defaultDisplay, getViews);
+    const detected = getAutoDetectedView(outputNodes, defaultDisplay, getViews);
 
     const detectedView = detected ? `${detected.display}/${detected.view}` : null;
     const prevView = prevRef.current.view;
@@ -43,5 +48,5 @@ export function useAutoDetectViewportView(): void {
       setAutoDetectView(detected);
       prevRef.current = { view: detectedView, enabled: true };
     }
-  }, [autoDetectViewportView, nodes, defaultDisplay, getViews, setAutoDetectView]);
+  }, [autoDetectViewportView, defaultDisplay, getViews, outputNodes, setAutoDetectView]);
 }

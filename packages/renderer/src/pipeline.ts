@@ -179,9 +179,6 @@ export interface RenderPipelineOptions {
   getAsset: (id: string) => Promise<Blob | null>;
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
-  getPaintTextures?: (
-    nodeId: string,
-  ) => MaybePromise<{ color: THREE.Texture; alpha: THREE.Texture } | null | undefined>;
   loadAssetTexture?: (params: {
     assetId: string;
     blob: Blob;
@@ -234,6 +231,23 @@ export const getRenderTargetOptionsForOutput = (
     type: THREE.FloatType,
     ...(discrete ? { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter } : {}),
   };
+};
+
+const getDataViewerChannel = (domain: RenderOutputDomain): number => {
+  if (domain.kind !== 'data') return -1;
+
+  const portChannel = CHANNEL_PORTS.indexOf(domain.sourcePort.toLowerCase() as ChannelPort);
+  if (portChannel >= 0) return portChannel;
+  if (domain.semantic === 'alpha' || domain.semantic === 'mask') return 3;
+  if (
+    domain.semantic === 'normal' ||
+    domain.semantic === 'motion_vector' ||
+    domain.semantic === 'uv' ||
+    domain.semantic === 'position'
+  ) {
+    return -1;
+  }
+  return domain.semantic ? 0 : -1;
 };
 
 const clearRenderTargetTransparent = (
@@ -1074,24 +1088,17 @@ const isTemporalInputPort = (port: RendererInputPort): boolean =>
 
 const getVisiblePipelineNodes = (nodes: AnyNode[], nodeRegistry: NodeRegistryLike): AnyNode[] => {
   const visibleNodes: AnyNode[] = [];
-  let skippingDetachedStack = false;
 
   for (const node of nodes) {
     const def = nodeRegistry.get(node.type);
     if (def?.flags?.isSceneLike) {
-      skippingDetachedStack = false;
       continue;
     }
     if (def?.renderMode === 'utility' && !def.flags?.isRenderable) {
       continue;
     }
 
-    const isStacked = !!node.stacked;
-    if (!isStacked) {
-      skippingDetachedStack = !!node.detachedFromPipe;
-    }
-
-    if (skippingDetachedStack || !node.enabled) {
+    if (!node.enabled) {
       continue;
     }
 
@@ -1523,7 +1530,6 @@ const resolveInputUniforms = (
 };
 
 type MaybePromise<T> = T | Promise<T>;
-type PaintTextureBundle = { color: THREE.Texture; alpha: THREE.Texture };
 type RenderOutputTexture = (
   nodeId: string,
   sourcePortName?: string,
@@ -1556,7 +1562,6 @@ interface AdjustmentRenderOptions {
   ownedOcioTextures?: THREE.Texture[];
   fallbackSourceNode?: AnyNode | null;
   getInputTextureForNode: (nodeId: string, targetFrame: number) => THREE.Texture | undefined;
-  getPaintTextures: (node: AnyNode) => MaybePromise<PaintTextureBundle | null | undefined>;
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
   getScratchRenderTarget?: (key: string) => THREE.WebGLRenderTarget;
@@ -1586,7 +1591,6 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
     ownedOcioTextures,
     fallbackSourceNode,
     getInputTextureForNode,
-    getPaintTextures,
     getRotoMaskLayers,
     getRotoAlphaMode,
     getScratchRenderTarget,
@@ -1747,11 +1751,6 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
       getMediaTexture: (n, f) => getInputTextureForNode(n.id, f) ?? undefined,
       getRotoMaskLayers,
       getRotoAlphaMode,
-      getPaintTextures: (_nId) => {
-        const ptResult = getPaintTextures(node);
-        if (isPromiseLike(ptResult)) return undefined;
-        return ptResult ?? undefined;
-      },
       nodeRegistry,
       clearRenderTargetTransparent: (t) => clearRenderTargetTransparent(renderer, t),
       applyNoBlending,
@@ -1797,6 +1796,7 @@ interface UtilityOutputRenderOptions {
   quad: THREE.Mesh;
   getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial;
   node: AnyNode;
+  sourcePortName?: string;
   outputTarget: THREE.WebGLRenderTarget;
   renderNodeOutputTexture: RenderOutputTexture;
 }
@@ -1809,11 +1809,12 @@ const renderUtilityNodeToTarget = (options: UtilityOutputRenderOptions): MaybePr
     quad,
     getMaterial,
     node,
+    sourcePortName = 'output',
     outputTarget,
     renderNodeOutputTexture,
   } = options;
 
-  const textureResult = renderNodeOutputTexture(node.id);
+  const textureResult = renderNodeOutputTexture(node.id, sourcePortName);
   const renderTexture = (texture: THREE.Texture | undefined): boolean => {
     if (!texture) return false;
 
@@ -1841,13 +1842,11 @@ interface MergeNodeRenderOptions {
   node: AnyNode;
   nodes: AnyNode[];
   frame: number;
-  readBuffer: THREE.WebGLRenderTarget;
+  outputTarget: THREE.WebGLRenderTarget;
   renderNodeOutputTexture: RenderOutputTexture;
-  clearReadBuffer: () => void;
-  renderStraightOverToMain: (material: THREE.ShaderMaterial) => void;
 }
 
-const renderMergeNodeToMain = (options: MergeNodeRenderOptions): MaybePromise<boolean> => {
+const renderMergeNodeToTarget = (options: MergeNodeRenderOptions): MaybePromise<boolean> => {
   const {
     renderer,
     scene,
@@ -1857,48 +1856,36 @@ const renderMergeNodeToMain = (options: MergeNodeRenderOptions): MaybePromise<bo
     node,
     nodes,
     frame,
-    readBuffer,
+    outputTarget,
     renderNodeOutputTexture,
-    clearReadBuffer,
-    renderStraightOverToMain,
   } = options;
   const mergeInputs = (node as { inputs?: Record<string, string> }).inputs ?? {};
-  const explicitPipeTextureResult = mergeInputs.pipe
+  const pipeTextureResult = mergeInputs.pipe
     ? renderNodeOutputTexture(mergeInputs.pipe, getInputSourcePort(node, 'pipe'))
     : undefined;
 
-  const renderWithPipe = (
-    explicitPipeTexture: THREE.Texture | undefined,
-  ): MaybePromise<boolean> => {
-    if (explicitPipeTexture) {
-      const pipeCopyMaterial = getMaterial(`${node.id}_merge_pipe_input`, RendererShader.TEXTURE, {
-        u_tDiffuse: { value: explicitPipeTexture },
-      });
-      applyNoBlending(pipeCopyMaterial);
-      quad.material = pipeCopyMaterial;
-      renderer.setRenderTarget(readBuffer);
-      renderer.render(scene, camera);
-    } else {
-      clearReadBuffer();
-    }
-
+  const renderWithPipe = (pipeTexture: THREE.Texture | undefined): MaybePromise<boolean> => {
     const sourceNodeId = mergeInputs.source;
     const sourceNode = sourceNodeId
       ? nodes.find((candidate) => candidate.id === sourceNodeId)
       : null;
 
-    if (!sourceNode?.enabled) {
-      return false;
-    }
+    const renderResolvedMerge = (sourceOutputTexture: THREE.Texture | undefined): boolean => {
+      const backdropTexture = pipeTexture ?? getTransparentInputTexture();
 
-    const sourceOutputTextureResult = renderNodeOutputTexture(
-      sourceNodeId,
-      getInputSourcePort(node, 'source'),
-    );
-
-    const renderWithSource = (sourceOutputTexture: THREE.Texture | undefined): boolean => {
       if (!sourceOutputTexture) {
-        return false;
+        const pipeCopyMaterial = getMaterial(
+          `${node.id}_merge_pipe_input`,
+          RendererShader.TEXTURE,
+          {
+            u_tDiffuse: { value: backdropTexture },
+          },
+        );
+        applyNoBlending(pipeCopyMaterial);
+        quad.material = pipeCopyMaterial;
+        renderer.setRenderTarget(outputTarget);
+        renderer.render(scene, camera);
+        return true;
       }
 
       const { opacity: blendOpacity, operator } = getNodeBlendProps(node);
@@ -1909,7 +1896,7 @@ const renderMergeNodeToMain = (options: MergeNodeRenderOptions): MaybePromise<bo
               `${node.id}_merge_comp_straight_over`,
               RendererShader.STRAIGHT_TEXTURE_OVER,
               {
-                u_tBackdrop: { value: readBuffer.texture },
+                u_tBackdrop: { value: backdropTexture },
                 u_tDiffuse: { value: sourceOutputTexture },
                 u_opacity: { value: opacity / 100 },
               },
@@ -1920,25 +1907,45 @@ const renderMergeNodeToMain = (options: MergeNodeRenderOptions): MaybePromise<bo
             });
 
       if (operator === BlendMode.OVER) {
-        renderStraightOverToMain(mergeComposite);
+        applyNoBlending(mergeComposite);
       } else {
-        quad.material = mergeComposite;
-        applyBlendMode(mergeComposite, operator);
-        renderer.setRenderTarget(readBuffer);
+        const pipeCopyMaterial = getMaterial(
+          `${node.id}_merge_pipe_input`,
+          RendererShader.TEXTURE,
+          {
+            u_tDiffuse: { value: backdropTexture },
+          },
+        );
+        applyNoBlending(pipeCopyMaterial);
+        quad.material = pipeCopyMaterial;
+        renderer.setRenderTarget(outputTarget);
         renderer.render(scene, camera);
+        applyBlendMode(mergeComposite, operator);
       }
 
+      quad.material = mergeComposite;
+      renderer.setRenderTarget(outputTarget);
+      renderer.render(scene, camera);
       return true;
     };
 
+    if (!sourceNode?.enabled) {
+      return renderResolvedMerge(undefined);
+    }
+
+    const sourceOutputTextureResult = renderNodeOutputTexture(
+      sourceNodeId,
+      getInputSourcePort(node, 'source'),
+    );
+
     return isPromiseLike(sourceOutputTextureResult)
-      ? sourceOutputTextureResult.then(renderWithSource)
-      : renderWithSource(sourceOutputTextureResult);
+      ? sourceOutputTextureResult.then(renderResolvedMerge)
+      : renderResolvedMerge(sourceOutputTextureResult);
   };
 
-  return isPromiseLike(explicitPipeTextureResult)
-    ? explicitPipeTextureResult.then(renderWithPipe)
-    : renderWithPipe(explicitPipeTextureResult);
+  return isPromiseLike(pipeTextureResult)
+    ? pipeTextureResult.then(renderWithPipe)
+    : renderWithPipe(pipeTextureResult);
 };
 
 // ---------------------------------------------------------------------------
@@ -1970,7 +1977,6 @@ interface NodeOutputResolveContext {
   checkCache: (cacheKey: string) => boolean;
   markCache: (cacheKey: string) => void;
   getMediaTexture: (node: AnyNode, frame: number) => MaybePromise<THREE.Texture | null | undefined>;
-  getPaintTextures: (node: AnyNode) => MaybePromise<PaintTextureBundle | null | undefined>;
   getTextTexture: (
     node: TextNode,
   ) => { texture: THREE.Texture; width: number; height: number } | undefined;
@@ -2045,14 +2051,6 @@ function resolveNodeOutputTexture(
             getMediaTexture: (n, f) => ctx.getCachedMediaTexture(n, f),
             getRotoMaskLayers: ctx.getRotoMaskLayers,
             getRotoAlphaMode: ctx.getRotoAlphaMode,
-            getPaintTextures: (_nId) => {
-              const ptResult = ctx.getPaintTextures(node);
-              if (isPromiseLike(ptResult)) {
-                ctx.onAsyncInSync?.();
-                return undefined;
-              }
-              return ptResult ?? undefined;
-            },
             nodeRegistry: ctx.nodeRegistry,
             clearRenderTargetTransparent: (t) => clearRenderTargetTransparent(ctx.renderer, t),
             applyNoBlending,
@@ -2108,6 +2106,29 @@ function resolveNodeOutputTexture(
       return target.texture;
     }
 
+    const nodeDefinition = ctx.nodeRegistry.get(node.type);
+    if (getRenderMode(node, ctx.nodeRegistry) === 'merge' && !nodeDefinition?.renderOutput) {
+      const mergeResult = renderMergeNodeToTarget({
+        renderer: ctx.renderer,
+        scene: ctx.scene,
+        camera: ctx.camera,
+        quad: ctx.quad,
+        getMaterial: ctx.getMaterial,
+        node,
+        nodes: ctx.nodes,
+        frame: ctx.frame,
+        outputTarget: target,
+        renderNodeOutputTexture: resolveOutput,
+      });
+      const resolvedMergeTexture = (rendered: boolean): THREE.Texture | undefined =>
+        rendered ? target.texture : undefined;
+      return tryReturn(
+        isPromiseLike(mergeResult)
+          ? mergeResult.then(resolvedMergeTexture)
+          : resolvedMergeTexture(mergeResult),
+      );
+    }
+
     // Resolve input texture for renderOutput and generic fallback
     const hasPipeSource = !!(node as { inputs?: Record<string, string> }).inputs?.pipe;
     const compositeInputTexture = ctx.compositeBuffer?.texture ?? getTransparentInputTexture();
@@ -2146,15 +2167,6 @@ function resolveNodeOutputTexture(
             getMediaTexture: (n, f) => ctx.getCachedMediaTexture(n, f),
             getRotoMaskLayers: ctx.getRotoMaskLayers,
             getRotoAlphaMode: ctx.getRotoAlphaMode,
-            getPaintTextures: (_nId) => {
-              const ptResult = ctx.getPaintTextures(node);
-              // Coerce async to undefined (sync path shouldn't get promises)
-              if (isPromiseLike(ptResult)) {
-                ctx.onAsyncInSync?.();
-                return undefined;
-              }
-              return ptResult ?? undefined;
-            },
             nodeRegistry: ctx.nodeRegistry,
             clearRenderTargetTransparent: (t) => clearRenderTargetTransparent(ctx.renderer, t),
             applyNoBlending,
@@ -2212,7 +2224,6 @@ function resolveNodeOutputTexture(
               }
               return undefined;
             },
-            getPaintTextures: ctx.getPaintTextures,
             getRotoMaskLayers: ctx.getRotoMaskLayers,
             getRotoAlphaMode: ctx.getRotoAlphaMode,
             getScratchRenderTarget: (key) => ctx.getUtilityOutputTarget(`__scratch:${key}`),
@@ -2541,12 +2552,6 @@ export const renderWithSharedPipeline = async (
       });
     };
 
-    const loadPaintTextures = async (
-      node: AnyNode,
-    ): Promise<{ color: THREE.Texture; alpha: THREE.Texture } | null> => {
-      return (await options.getPaintTextures?.(node.id)) ?? null;
-    };
-
     const visibleNodes = getVisiblePipelineNodes(options.nodes, nodeRegistry);
     const resolutionVisibleNodes = getVisiblePipelineNodes(resolutionNodes, nodeRegistry);
 
@@ -2831,7 +2836,6 @@ export const renderWithSharedPipeline = async (
         ocioTextures,
         ownedOcioTextures: ownedTextures,
         getMediaTexture: (n, f) => loadTextureForMediaNode(n, f),
-        getPaintTextures: loadPaintTextures,
         getTextTexture: (n) => {
           const tt = buildTextTexture(n as TextNode, frame, dynamicTextures);
           return { texture: tt.texture, width: tt.width, height: tt.height };
@@ -2856,14 +2860,12 @@ export const renderWithSharedPipeline = async (
       );
       return isPromiseLike(result) ? result : Promise.resolve(result);
     };
-    const getExplicitPipeTexture = async (node: AnyNode): Promise<THREE.Texture | undefined> => {
+    const getPipeInputTexture = async (node: AnyNode): Promise<THREE.Texture> => {
       const sourceNodeId = (node as { inputs?: Record<string, string> }).inputs?.pipe;
-      if (!sourceNodeId) return undefined;
+      if (!sourceNodeId) return getTransparentInputTexture();
 
-      // When the pipe source is a source node with visible non-pipe input
-      // connections, fall back to the accumulated readBuffer so those
-      // connected inputs are preserved in the downstream output instead of
-      // resolving only the node's standalone output via renderNodeOutputTexture.
+      // Source nodes with visible branch inputs are already composited into the
+      // active branch buffer; preserve that complete canonical input branch.
       const sourceNode = resolutionNodes.find((n) => n.id === sourceNodeId);
       if (sourceNode) {
         const def = nodeRegistry.get(sourceNode.type);
@@ -2879,12 +2881,15 @@ export const renderWithSharedPipeline = async (
             return upstreamNode && upstreamNode.enabled !== false;
           });
           if (hasEnabledInput) {
-            return undefined;
+            return readBuffer.texture;
           }
         }
       }
 
-      return renderNodeOutputTexture(sourceNodeId, getInputSourcePort(node, 'pipe'));
+      return (
+        (await renderNodeOutputTexture(sourceNodeId, getInputSourcePort(node, 'pipe'))) ??
+        getTransparentInputTexture()
+      );
     };
     const renderStraightOverToMain = (
       material: THREE.ShaderMaterial,
@@ -2921,6 +2926,10 @@ export const renderWithSharedPipeline = async (
           quad,
           getMaterial,
           node: baseNode,
+          sourcePortName:
+            options.outputDomain?.sourceNodeId === baseNode.id
+              ? options.outputDomain.sourcePort
+              : undefined,
           outputTarget: writeBuffer,
           renderNodeOutputTexture,
         });
@@ -3062,7 +3071,6 @@ export const renderWithSharedPipeline = async (
                 }
                 return undefined;
               },
-              getPaintTextures: loadPaintTextures,
               getRotoMaskLayers: options.getRotoMaskLayers,
               getRotoAlphaMode: options.getRotoAlphaMode,
               getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
@@ -3156,7 +3164,7 @@ export const renderWithSharedPipeline = async (
         }
         i += consumedCount;
       } else if (baseMode === 'merge') {
-        await renderMergeNodeToMain({
+        await renderMergeNodeToTarget({
           renderer,
           scene,
           camera,
@@ -3165,17 +3173,14 @@ export const renderWithSharedPipeline = async (
           node: baseNode,
           nodes: options.nodes,
           frame,
-          readBuffer,
+          outputTarget: readBuffer,
           renderNodeOutputTexture,
-          clearReadBuffer: () => clearRenderTargetTransparent(renderer, readBuffer),
-          renderStraightOverToMain,
         });
       } else if (
         isExportAdjustmentType(baseNode.type) &&
         !isStackedExportAdjustmentNode(baseNode)
       ) {
-        const explicitPipeTexture = await getExplicitPipeTexture(baseNode);
-        const adjustmentInputTexture = explicitPipeTexture ?? readBuffer.texture;
+        const adjustmentInputTexture = await getPipeInputTexture(baseNode);
         const outputSceneSizeOverride = getNodeOutputSceneSize(
           baseNode,
           nodeRegistry,
@@ -3212,7 +3217,6 @@ export const renderWithSharedPipeline = async (
             }
             return undefined;
           },
-          getPaintTextures: loadPaintTextures,
           getRotoMaskLayers: options.getRotoMaskLayers,
           getRotoAlphaMode: options.getRotoAlphaMode,
           getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
@@ -3386,7 +3390,6 @@ export interface ViewportPipelineOptions {
   ) => { texture: THREE.Texture; width: number; height: number } | undefined;
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
-  getPaintTextures?: (nodeId: string) => { color: THREE.Texture; alpha: THREE.Texture } | undefined;
   captureDisplayOutput?: boolean;
   /**
    * Whether to resize and present the viewer output to the renderer canvas.
@@ -3420,7 +3423,6 @@ export const renderViewportFrameWithSharedPipeline = (
     getTextTexture,
     getRotoMaskLayers,
     getRotoAlphaMode,
-    getPaintTextures,
     nodeRegistry,
   } = options;
   assertRendererProcessingDomainsSupported(nodes, (nodeType) => nodeRegistry.get(nodeType));
@@ -3740,7 +3742,6 @@ export const renderViewportFrameWithSharedPipeline = (
       colorManagement,
       ocioTextures: resources.ocioTextures!,
       getMediaTexture: (n, f) => getMediaTexture(n as MediaNode, f),
-      getPaintTextures: (n) => getPaintTextures?.(n.id),
       getTextTexture: (n) => getTextTexture(n as TextNode),
       renderCompositeMediaToTarget: renderCompositeMediaLayersToTarget,
       renderFullFrameTextureToTarget,
@@ -3762,14 +3763,12 @@ export const renderViewportFrameWithSharedPipeline = (
     }
     return result;
   };
-  const getExplicitPipeTexture = (node: AnyNode): THREE.Texture | undefined => {
+  const getPipeInputTexture = (node: AnyNode): THREE.Texture => {
     const sourceNodeId = (node as { inputs?: Record<string, string> }).inputs?.pipe;
-    if (!sourceNodeId) return undefined;
+    if (!sourceNodeId) return getTransparentInputTexture();
 
-    // When the pipe source is a source node with visible non-pipe input
-    // connections, fall back to the accumulated readBuffer so those
-    // connected inputs are preserved in the downstream output instead of
-    // resolving only the node's standalone output via renderNodeOutputTexture.
+    // Source nodes with visible branch inputs are already composited into the
+    // active branch buffer; preserve that complete canonical input branch.
     const sourceNode = nodes.find((n) => n.id === sourceNodeId);
     if (sourceNode) {
       const def = nodeRegistry.get(sourceNode.type);
@@ -3785,12 +3784,15 @@ export const renderViewportFrameWithSharedPipeline = (
           return upstreamNode && upstreamNode.enabled !== false;
         });
         if (hasEnabledInput) {
-          return undefined;
+          return readBuffer.texture;
         }
       }
     }
 
-    return renderNodeOutputTexture(sourceNodeId, getInputSourcePort(node, 'pipe'));
+    return (
+      renderNodeOutputTexture(sourceNodeId, getInputSourcePort(node, 'pipe')) ??
+      getTransparentInputTexture()
+    );
   };
   const renderStraightOverToMain = (
     material: THREE.ShaderMaterial,
@@ -3828,6 +3830,10 @@ export const renderViewportFrameWithSharedPipeline = (
         quad: resources.quad,
         getMaterial,
         node: baseNode,
+        sourcePortName:
+          options.outputDomain?.sourceNodeId === baseNode.id
+            ? options.outputDomain.sourcePort
+            : undefined,
         outputTarget: writeBuffer,
         renderNodeOutputTexture,
       });
@@ -3972,7 +3978,6 @@ export const renderViewportFrameWithSharedPipeline = (
               }
               return undefined;
             },
-            getPaintTextures: (node) => getPaintTextures?.(node.id),
             getRotoMaskLayers,
             getRotoAlphaMode,
             getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
@@ -4066,7 +4071,7 @@ export const renderViewportFrameWithSharedPipeline = (
       }
       index += consumedCount;
     } else if (baseMode === 'merge') {
-      const renderedMerge = renderMergeNodeToMain({
+      const renderedMerge = renderMergeNodeToTarget({
         renderer,
         scene: resources.scene,
         camera: resources.camera,
@@ -4075,17 +4080,14 @@ export const renderViewportFrameWithSharedPipeline = (
         node: baseNode,
         nodes,
         frame,
-        readBuffer,
+        outputTarget: readBuffer,
         renderNodeOutputTexture,
-        clearReadBuffer: () => clearRenderTargetTransparent(renderer, readBuffer),
-        renderStraightOverToMain,
       });
       if (isPromiseLike(renderedMerge)) {
         throw new Error('Viewport merge rendering must remain synchronous.');
       }
     } else if (isStackAdjustmentType(baseNode.type) && !isStackedAdjustmentNode(baseNode)) {
-      const explicitPipeTexture = getExplicitPipeTexture(baseNode);
-      const adjustmentInputTexture = explicitPipeTexture ?? readBuffer.texture;
+      const adjustmentInputTexture = getPipeInputTexture(baseNode);
       const outputSceneSizeOverride = getNodeOutputSceneSize(baseNode, nodeRegistry, renderContext);
       const outputSceneSize = outputSceneSizeOverride ?? currentSceneSize;
       ensureTargetForSceneSize(writeBuffer, outputSceneSize);
@@ -4115,7 +4117,6 @@ export const renderViewportFrameWithSharedPipeline = (
           }
           return undefined;
         },
-        getPaintTextures: (node) => getPaintTextures?.(node.id),
         getRotoMaskLayers,
         getRotoAlphaMode,
         getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
@@ -4136,8 +4137,9 @@ export const renderViewportFrameWithSharedPipeline = (
 
   const viewerMaterial =
     options.outputDomain?.kind === 'data'
-      ? getMaterial('viewer_data', RendererShader.TEXTURE, {
+      ? getMaterial('viewer_data', RendererShader.DATA_VIEW, {
           u_tDiffuse: { value: readBuffer.texture },
+          u_channel: { value: getDataViewerChannel(options.outputDomain) },
         })
       : createDisplayViewOutputMaterial({
           materialKey: 'viewer',

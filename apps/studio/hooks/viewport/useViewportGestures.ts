@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
+import { useWindowDragAdjustment } from '@/hooks/useWindowDragAdjustment';
 import type { Pan, SceneNode } from '@blackboard/types';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
 import {
@@ -526,26 +527,19 @@ export function useViewportGestures({
     ],
   );
 
-  useEffect(() => {
-    if (!isMousePanning) return;
-    const handleMouseMove = (e: MouseEvent) => {
+  useWindowDragAdjustment(isMousePanning, {
+    onMouseMove: (e: MouseEvent) => {
       if (!panStartRef.current) return;
       const dx = e.clientX - panStartRef.current.startX,
         dy = e.clientY - panStartRef.current.startY;
       const newPan = { x: panStartRef.current.panX + dx, y: panStartRef.current.panY - dy };
       commitViewportTransform(zoomRef.current, newPan, { syncAnimationTarget: true });
-    };
-    const handleMouseUp = () => {
+    },
+    onMouseUp: () => {
       setIsMousePanning(false);
       panStartRef.current = null;
-    };
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [commitViewportTransform, isMousePanning]);
+    },
+  });
 
   return {
     isMousePanning,

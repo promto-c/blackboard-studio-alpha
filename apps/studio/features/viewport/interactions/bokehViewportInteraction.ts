@@ -27,7 +27,7 @@ export class BokehViewportInteraction extends BaseViewportInteraction {
   handleMouseDown(event: ViewportPointerEvent): boolean {
     return this.bokeh.handleMouseDown(
       event.nativeEvent as unknown as React.MouseEvent<HTMLDivElement>,
-      { x: event.sceneX, y: event.sceneY },
+      event.scenePoint,
     );
   }
 }

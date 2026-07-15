@@ -27,7 +27,7 @@ export class SpatialViewportInteraction extends BaseViewportInteraction {
   }
 
   handleMouseMove(event: ViewportPointerEvent): boolean {
-    this.spatial.handleGlobalMouseMove(event.clientX, event.clientY);
+    this.spatial.handleGlobalMouseMove(event.clientPoint.x, event.clientPoint.y);
     return !!this.spatial.dragState;
   }
 

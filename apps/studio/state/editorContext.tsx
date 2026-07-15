@@ -23,13 +23,6 @@ import {
   upsertProjectBranch,
 } from '@/state/persist';
 import { usePlayback } from '@/hooks/usePlayback';
-import {
-  getOrderedNodesFromFlow,
-  getRootFlow,
-  replaceFlowNodes,
-  ROOT_FLOW_ID,
-} from '@/state/editor/flowModel';
-
 import { createViewportUIActions } from '@/state/editor/slices/viewportUIActions';
 import { createViewerActions } from '@/state/editor/slices/viewerActions';
 import { createPlaybackActions } from '@/state/editor/slices/playbackActions';
@@ -43,57 +36,9 @@ import { createNodeViewActions } from '@/state/editor/slices/nodeViewActions';
 import { createBackgroundJobActions } from '@/state/editor/slices/backgroundJobActions';
 import { installAgentMcpRuntimeBridge } from '@/utils/agentMcpRuntimeBridge';
 import { createCommitMutation } from '@/state/editor/commitMutation';
+import { normalizeEditorState } from '@/state/editor/normalizeEditorState';
+import type { EditorState, SetState } from '@/state/editor/slices/types';
 import type { HistoryEntry, NodeType } from '@blackboard/types';
-
-type EditorState = ReturnType<typeof getInitialState> & { maxFrames: number };
-type SetState = (fn: (prevState: EditorState) => Partial<EditorState> | EditorState) => void;
-
-const normalizeEditorState = (
-  previousState: EditorState,
-  patch: Partial<EditorState> | EditorState,
-): EditorState => {
-  const nextState = { ...previousState, ...patch } as EditorState;
-  const hasNodesMutation = 'nodes' in patch;
-  const hasStructuralFlowMutation =
-    'flows' in patch || 'rootFlowId' in patch || 'activeFlowId' in patch;
-  const hasSelectedNodeMutation = 'selectedNodeId' in patch;
-  const hasSelectedNodesMutation = 'selectedNodeIds' in patch;
-
-  if (hasSelectedNodeMutation && !hasSelectedNodesMutation) {
-    nextState.selectedNodeIds = nextState.selectedNodeId ? [nextState.selectedNodeId] : [];
-  } else if (hasSelectedNodesMutation && !hasSelectedNodeMutation) {
-    nextState.selectedNodeId =
-      nextState.selectedNodeIds?.[nextState.selectedNodeIds.length - 1] ?? null;
-  }
-
-  if (hasNodesMutation) {
-    const nextNodes = nextState.nodes ?? [];
-    if (nextNodes.length > 0) {
-      const flowId = nextState.activeFlowId ?? nextState.rootFlowId ?? ROOT_FLOW_ID;
-      nextState.flows = replaceFlowNodes(
-        nextState.flows,
-        flowId,
-        nextNodes,
-        getRootFlow(previousState.flows, flowId)?.name ?? 'Root Flow',
-      );
-      nextState.rootFlowId = nextState.rootFlowId ?? flowId;
-      nextState.activeFlowId = flowId;
-    } else {
-      nextState.flows = {};
-      nextState.rootFlowId = null;
-      nextState.activeFlowId = null;
-      nextState.selectedNodeId = null;
-      nextState.nodePositionsByFlow = {};
-    }
-  }
-
-  if (hasNodesMutation || hasStructuralFlowMutation) {
-    const activeFlow = getRootFlow(nextState.flows, nextState.activeFlowId);
-    nextState.nodes = getOrderedNodesFromFlow(activeFlow);
-  }
-
-  return nextState;
-};
 
 // ---------------------------------------------------------------------------
 // Store – holds state outside React so consumers can subscribe selectively.

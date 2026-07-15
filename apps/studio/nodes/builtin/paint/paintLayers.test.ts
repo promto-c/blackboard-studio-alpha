@@ -27,8 +27,13 @@ const makeNode = (): PaintNode => ({
       name: 'Stroke Root Top',
       tool: 'brush',
       visible: true,
-      raster: 'a',
-      pointCount: 2,
+      path: {
+        mode: 'polyline',
+        points: [
+          { x: 0, y: 0 },
+          { x: 1, y: 1 },
+        ],
+      },
       size: 24,
       spacing: 20,
       softness: 30,
@@ -41,8 +46,13 @@ const makeNode = (): PaintNode => ({
       name: 'Stroke Layer Top',
       tool: 'brush',
       visible: true,
-      raster: 'b',
-      pointCount: 2,
+      path: {
+        mode: 'polyline',
+        points: [
+          { x: 0, y: 0 },
+          { x: 1, y: 1 },
+        ],
+      },
       size: 24,
       spacing: 20,
       softness: 30,
@@ -56,8 +66,13 @@ const makeNode = (): PaintNode => ({
       name: 'Stroke Child',
       tool: 'brush',
       visible: true,
-      raster: 'c',
-      pointCount: 2,
+      path: {
+        mode: 'polyline',
+        points: [
+          { x: 0, y: 0 },
+          { x: 1, y: 1 },
+        ],
+      },
       size: 24,
       spacing: 20,
       softness: 30,
@@ -71,8 +86,13 @@ const makeNode = (): PaintNode => ({
       name: 'Stroke Root Bottom',
       tool: 'brush',
       visible: true,
-      raster: 'd',
-      pointCount: 2,
+      path: {
+        mode: 'polyline',
+        points: [
+          { x: 0, y: 0 },
+          { x: 1, y: 1 },
+        ],
+      },
       size: 24,
       spacing: 20,
       softness: 30,

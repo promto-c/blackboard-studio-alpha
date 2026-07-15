@@ -73,6 +73,7 @@ export const getInitialState = () => ({
   activeAiChatId: null as string | null,
   isPlaying: false,
   currentFrame: 0,
+  timelineStartFrame: 0,
   activeViewportTool: null as string | null,
   isDrawing: false,
   drawingRotoPath: null as RotoPath | null,

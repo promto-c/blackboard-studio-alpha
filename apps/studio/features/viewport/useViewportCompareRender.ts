@@ -58,9 +58,6 @@ interface UseViewportCompareRenderParams {
   slotADisplayOutputRef: RefObject<THREE.WebGLRenderTarget | null>;
   textureCacheRef: RefObject<Pick<TextureCache, 'get'>>;
   textTexturesRef: RefObject<Map<string, TextTextureEntry>>;
-  paintTexturesRef: RefObject<
-    Map<string, { colorTexture: THREE.Texture; alphaTexture: THREE.Texture; committedKey: string }>
-  >;
   rotoMaskTexturesRef: RefObject<
     Map<
       string,
@@ -234,7 +231,6 @@ export function useViewportCompareRender({
   slotADisplayOutputRef,
   textureCacheRef,
   textTexturesRef,
-  paintTexturesRef,
   rotoMaskTexturesRef,
   zoom,
   pan,
@@ -399,15 +395,6 @@ export function useViewportCompareRender({
             return undefined;
           },
           getTextTexture: (node) => textTexturesRef.current.get(node.id),
-          getPaintTextures: (nodeId) => {
-            const entry = paintTexturesRef.current.get(nodeId);
-            return entry
-              ? {
-                  color: entry.colorTexture,
-                  alpha: entry.alphaTexture,
-                }
-              : undefined;
-          },
           getRotoMaskLayers: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.maskLayers,
           getRotoAlphaMode: (nodeId) => {
             const rotoNode = viewportNodesB.find(
@@ -674,7 +661,6 @@ export function useViewportCompareRender({
     slotADisplayOutputRef,
     textureCacheRef,
     textTexturesRef,
-    paintTexturesRef,
     rotoMaskTexturesRef,
     zoom,
     pan,

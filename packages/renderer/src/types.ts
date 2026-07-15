@@ -12,6 +12,7 @@ import type {
   ImageTransform,
   RenderSceneSize,
   RenderSceneSizeBehavior,
+  RgbaChannel,
   SceneNode,
   SourceAlphaMode,
 } from '@blackboard/types';
@@ -59,7 +60,11 @@ export interface RendererInputPort {
   label: string;
   type: 'texture' | 'mask' | 'data';
   dataSemantic?: DataChannelSemantic;
+  /** RGBA component sampled when a full image is connected to this scalar channel input. */
+  channel?: RgbaChannel;
   processingDomain?: ColorProcessingDomain;
+  /** Optional host-UI color for graph sockets and wires. */
+  color?: string;
   required: boolean;
   description?: string;
   uniformName?: string;
@@ -80,7 +85,11 @@ export interface RendererOutputPort {
   name: string;
   label: string;
   dataSemantic?: DataChannelSemantic;
+  /** Component carrying this scalar output; the remaining RGBA components must be zero. */
+  channel?: RgbaChannel;
   processingDomain?: ColorProcessingDomain;
+  /** Optional host-UI color for graph sockets and wires. */
+  color?: string;
   description?: string;
 }
 
@@ -293,11 +302,6 @@ export interface RendererColorManagement {
 // handlers and used internally by resolveOutput().
 // ---------------------------------------------------------------------------
 
-export interface PaintTextureBundle {
-  color: THREE.Texture;
-  alpha: THREE.Texture;
-}
-
 /** One hard-edged matte layer, composited and feathered by the GPU pipeline. */
 export interface RendererMaskLayer {
   /** One already-composited texture, including any temporal shutter samples. */
@@ -332,12 +336,11 @@ export interface ResolveOutputContext {
   transformColorPickingToSceneLinear: (
     color: readonly [number, number, number],
   ) => [number, number, number];
-  /** The current composite buffer (implicit pipeline input). Undefined outside main loop. */
+  /** The current canonical branch composite. Undefined outside the main render loop. */
   compositeBuffer?: THREE.WebGLRenderTarget;
   getMediaTexture: (node: AnyNode, frame: number) => THREE.Texture | undefined;
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
-  getPaintTextures?: (nodeId: string) => PaintTextureBundle | undefined;
   nodeRegistry: NodeRegistryLike;
   clearRenderTargetTransparent: (target: THREE.WebGLRenderTarget) => void;
   applyNoBlending: (material: THREE.ShaderMaterial) => void;

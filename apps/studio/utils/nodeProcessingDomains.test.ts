@@ -24,7 +24,7 @@ const node = (id: string, type: AnyNode['type']): AnyNode =>
   }) as AnyNode;
 
 describe('node processing-domain connections', () => {
-  it('blocks technical channels from scene-linear effect pipes', () => {
+  it('allows named RGBA channels to expand into scene-linear effect pipes', () => {
     const nodes = [node('extract', NodeType.EXTRACT_CHANNELS), node('grade', NodeType.GRADE)];
     expect(
       canConnectNodeProcessingDomains({
@@ -34,7 +34,36 @@ describe('node processing-domain connections', () => {
         targetNodeId: 'grade',
         targetPortName: 'pipe',
       }),
+    ).toBe(true);
+  });
+
+  it('still blocks generic technical data from color-image pipes', () => {
+    const nodes = [node('tracking', NodeType.MATCH_MOVE), node('grade', NodeType.GRADE)];
+    expect(
+      canConnectNodeProcessingDomains({
+        nodes,
+        sourceNodeId: 'tracking',
+        sourcePortName: 'output',
+        targetNodeId: 'grade',
+        targetPortName: 'pipe',
+      }),
     ).toBe(false);
+  });
+
+  it('allows an RGBA image to feed a named channel input', () => {
+    const nodes = [
+      node('media', NodeType.MEDIA_SOURCE),
+      node('merge-channels', NodeType.MERGE_CHANNELS),
+    ];
+    expect(
+      canConnectNodeProcessingDomains({
+        nodes,
+        sourceNodeId: 'media',
+        sourcePortName: 'output',
+        targetNodeId: 'merge-channels',
+        targetPortName: 'g',
+      }),
+    ).toBe(true);
   });
 
   it('allows generic technical channels into typed technical inputs', () => {
@@ -63,7 +92,7 @@ describe('node processing-domain connections', () => {
     ).toBe(true);
   });
 
-  it('allows Color Space Transform to reinterpret a color-domain input', () => {
+  it('allows Color Space Transform to accept color and packed component inputs', () => {
     const nodes = [node('media', NodeType.MEDIA_SOURCE), node('cst', NodeType.OCIO_COLOR_SPACE)];
     expect(
       canConnectNodeProcessingDomains({
@@ -84,7 +113,7 @@ describe('node processing-domain connections', () => {
         targetNodeId: 'cst',
         targetPortName: 'pipe',
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('treats Roto as a scene-linear RGBA effect', () => {

@@ -233,6 +233,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 0,
       fps: 24,
     };
@@ -279,6 +280,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 120,
       fps: 24,
     };
@@ -318,6 +320,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 120,
       fps: 24,
     };
@@ -373,6 +376,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 120,
       fps: 24,
     };
@@ -454,6 +458,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 120,
       fps: 24,
     };
@@ -507,6 +512,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 120,
       fps: 24,
     };
@@ -611,6 +617,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 12,
       fps: 24,
     };
@@ -673,6 +680,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 12,
       fps: 24,
     };
@@ -753,6 +761,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 12,
       fps: 24,
     };
@@ -792,6 +801,7 @@ describe('createProjectActions', () => {
       height: 1080,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 120,
       fps: 24,
     };
@@ -1412,6 +1422,7 @@ describe('createProjectActions', () => {
       height: 20,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 1,
       fps: 24,
     };
@@ -1524,6 +1535,7 @@ describe('createProjectActions', () => {
       height: 20,
       bitDepth: 16,
       colorSpace: 'Linear',
+      startFrame: 0,
       maxFrames: 1,
       fps: 24,
     };

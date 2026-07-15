@@ -1,4 +1,4 @@
-import type { AnyNode, Flow } from '@blackboard/types';
+import { NodeType, type AnyNode, type Flow } from '@blackboard/types';
 import { buildGraphCommandState, insertSourceWithMergeCommand } from '@/utils/graphCommands';
 import { nodeFlags } from '@/nodes/helpers';
 
@@ -68,7 +68,7 @@ import {
   getSequenceProjectName,
   collectImageEntriesFromDirectoryHandle,
   buildImageEntriesFromFiles,
-  persistSequenceAssets,
+  prepareImageSequenceImport,
 } from '@/state/editor/utils';
 import { getImportedImageColorManagement, getMediaFileKind } from '@/utils/mediaFiles';
 import {
@@ -83,6 +83,31 @@ import { findSceneNode, createMediaSourceNode, createSequenceNode } from '@/util
 import { getDefaultViewportTool } from '@/nodes/helpers';
 import type { GetState } from '@/state/editor/slices/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
+import {
+  expandTimelineFrameRange,
+  findSceneTimelineRange,
+  setSceneTimelineRange,
+  type TimelineFrameRange,
+} from '@/utils/timelineRange';
+
+const isTemporalSourceNode = (node: AnyNode): boolean =>
+  node.type === NodeType.IMAGE_SEQUENCE ||
+  (node.type === NodeType.MEDIA_SOURCE && node.mediaKind === 'video');
+
+const applyImportedTimelineRange = (
+  previousNodes: readonly AnyNode[],
+  nextNodes: readonly AnyNode[],
+  incomingRange: Pick<TimelineFrameRange, 'startFrame' | 'endFrame'>,
+  replacedNodeId?: string,
+): AnyNode[] => {
+  const hasOtherTemporalSource = previousNodes.some(
+    (node) => node.id !== replacedNodeId && isTemporalSourceNode(node),
+  );
+  const nextRange = hasOtherTemporalSource
+    ? expandTimelineFrameRange(findSceneTimelineRange(previousNodes), incomingRange)
+    : incomingRange;
+  return setSceneTimelineRange(nextNodes, nextRange);
+};
 
 // ---------------------------------------------------------------------------
 // Type for deps needed by media/source methods
@@ -152,7 +177,8 @@ export const loadImageService = async (
   } else if (mediaKind === 'video') {
     const { width, height, duration, color } = await readVideoMetadata(file);
     const mediaColorManagement = createBrowserDecodedVideoColorManagement();
-    const totalFrames = Math.floor(duration * fps);
+    const frameCount = Math.max(1, Math.ceil(duration * fps));
+    const videoRange = { startFrame: 0, endFrame: frameCount - 1 };
     const { scaleX, scaleY } = calculateTransformForFitMode(
       { width, height },
       { width: sceneNode.width, height: sceneNode.height },
@@ -167,7 +193,7 @@ export const loadImageService = async (
       width,
       height,
       duration,
-      frameCount: Math.max(1, Math.ceil(duration * fps)),
+      frameCount,
       videoColorMetadata: color,
       colorSpace: getMediaSourceColorSpace(mediaColorManagement),
       mediaColorManagement,
@@ -175,17 +201,18 @@ export const loadImageService = async (
     });
 
     const inserted = insertSourceNode(newNode, get);
+    const rangedNodes = applyImportedTimelineRange(get().nodes, inserted.nodes, videoRange);
     const selectedNode = inserted.nodes.find((node) => node.id === inserted.selectedNodeId);
-    deps.commitMutation((state) => ({
+    deps.commitMutation(() => ({
       patch: {
         ...inserted,
+        nodes: rangedNodes,
         activeTab: EditorTab.Flow,
         activeViewportTool: getDefaultViewportTool(selectedNode?.type),
-        maxFrames: Math.max((state as { maxFrames: number }).maxFrames, totalFrames),
       },
       history: {
         label: `Import Node: ${file.name}`,
-        state: { ...inserted },
+        state: { ...inserted, nodes: rangedNodes },
       },
     }));
   }
@@ -204,14 +231,14 @@ export const loadImageSequenceService = async (
   if (imageEntries.length === 0) return;
 
   const firstEntry = imageEntries[0];
-  const { width, height } = await readImageDimensions(firstEntry.file);
-  const mediaColorManagement = await getImportedImageColorManagement(firstEntry.file);
-  const assetIds = await persistSequenceAssets(imageEntries, 'copy');
+  const sequenceImport = await prepareImageSequenceImport(imageEntries, 'copy');
+  const activePlate = sequenceImport.plates[0];
+  if (!activePlate) return;
   const sceneNode = findSceneNode(get().nodes);
   if (!sceneNode) return;
 
   const { scaleX, scaleY } = calculateTransformForFitMode(
-    { width, height },
+    { width: activePlate.width, height: activePlate.height },
     { width: sceneNode.width, height: sceneNode.height },
     ImageFitMode.FIT,
   );
@@ -220,28 +247,36 @@ export const loadImageSequenceService = async (
 
   const sequenceNode = createSequenceNode({
     name: projectName,
-    frames: assetIds,
-    sourceFileName: firstEntry.file.name,
-    width,
-    height,
-    colorSpace: getMediaSourceColorSpace(mediaColorManagement),
-    mediaColorManagement,
+    frames: activePlate.frames,
+    plates: sequenceImport.plates,
+    activePlateId: activePlate.id,
+    sourceFileName: activePlate.sourceFileName,
+    width: activePlate.width,
+    height: activePlate.height,
+    colorSpace: activePlate.colorSpace,
+    mediaColorManagement: activePlate.mediaColorManagement,
+    startFrame: activePlate.startFrame,
     scaleX,
     scaleY,
   });
 
   const inserted = insertSourceNode(sequenceNode, get);
+  const rangedNodes = applyImportedTimelineRange(
+    get().nodes,
+    inserted.nodes,
+    sequenceImport.timelineRange,
+  );
   const selectedNode = inserted.nodes.find((node) => node.id === inserted.selectedNodeId);
-  deps.commitMutation((state) => ({
+  deps.commitMutation(() => ({
     patch: {
       ...inserted,
+      nodes: rangedNodes,
       activeTab: EditorTab.Flow,
       activeViewportTool: getDefaultViewportTool(selectedNode?.type),
-      maxFrames: Math.max((state as { maxFrames: number }).maxFrames, assetIds.length - 1),
     },
     history: {
       label: `Import Sequence`,
-      state: { ...inserted },
+      state: { ...inserted, nodes: rangedNodes },
     },
   }));
 };
@@ -270,42 +305,54 @@ export const loadImageSequenceFromDirectoryService = async (
   if (imageEntries.length === 0) return;
 
   const firstEntry = imageEntries[0];
-  const { width, height } = await readImageDimensions(firstEntry.file);
-  const mediaColorManagement = await getImportedImageColorManagement(firstEntry.file);
-  const assetIds = await persistSequenceAssets(imageEntries, importMode, directoryHandle);
+  const sequenceImport = await prepareImageSequenceImport(
+    imageEntries,
+    importMode,
+    directoryHandle,
+  );
+  const activePlate = sequenceImport.plates[0];
+  if (!activePlate) return;
   const sceneNode = findSceneNode(get().nodes);
   if (!sceneNode) return;
 
   const { scaleX, scaleY } = calculateTransformForFitMode(
-    { width, height },
+    { width: activePlate.width, height: activePlate.height },
     { width: sceneNode.width, height: sceneNode.height },
     ImageFitMode.FIT,
   );
 
   const sequenceNode = createSequenceNode({
     name: directoryHandle.name || getSequenceProjectName(firstEntry.relativePath),
-    frames: assetIds,
-    sourceFileName: firstEntry.file.name,
-    width,
-    height,
-    colorSpace: getMediaSourceColorSpace(mediaColorManagement),
-    mediaColorManagement,
+    frames: activePlate.frames,
+    plates: sequenceImport.plates,
+    activePlateId: activePlate.id,
+    sourceFileName: activePlate.sourceFileName,
+    width: activePlate.width,
+    height: activePlate.height,
+    colorSpace: activePlate.colorSpace,
+    mediaColorManagement: activePlate.mediaColorManagement,
+    startFrame: activePlate.startFrame,
     scaleX,
     scaleY,
   });
 
   const inserted = insertSourceNode(sequenceNode, get);
+  const rangedNodes = applyImportedTimelineRange(
+    get().nodes,
+    inserted.nodes,
+    sequenceImport.timelineRange,
+  );
   const selectedNode = inserted.nodes.find((node) => node.id === inserted.selectedNodeId);
-  deps.commitMutation((state) => ({
+  deps.commitMutation(() => ({
     patch: {
       ...inserted,
+      nodes: rangedNodes,
       activeTab: EditorTab.Flow,
       activeViewportTool: getDefaultViewportTool(selectedNode?.type),
-      maxFrames: Math.max((state as { maxFrames: number }).maxFrames, assetIds.length - 1),
     },
     history: {
       label: `Import Sequence`,
-      state: { ...inserted },
+      state: { ...inserted, nodes: rangedNodes },
     },
   }));
 };
@@ -381,7 +428,8 @@ export const replaceNodeSourceService = async (
       existingMediaColorManagement,
       createBrowserDecodedVideoColorManagement(),
     );
-    const totalFrames = Math.floor(duration * fps);
+    const frameCount = Math.max(1, Math.ceil(duration * fps));
+    const videoRange = { startFrame: 0, endFrame: frameCount - 1 };
     const { scaleX, scaleY } = calculateTransformForFitMode(
       { width, height },
       { width: sceneNode.width, height: sceneNode.height },
@@ -398,7 +446,7 @@ export const replaceNodeSourceService = async (
             width,
             height,
             duration,
-            frameCount: Math.max(1, Math.ceil(duration * fps)),
+            frameCount,
             startFrame: 0,
             beforeRangeBehavior: 'black',
             afterRangeBehavior: 'black',
@@ -409,14 +457,14 @@ export const replaceNodeSourceService = async (
         : n,
     );
 
-    deps.commitMutation((s) => ({
+    const rangedNodes = applyImportedTimelineRange(state.nodes, nextNodes, videoRange, nodeId);
+    deps.commitMutation(() => ({
       patch: {
-        nodes: nextNodes,
-        maxFrames: Math.max((s as { maxFrames: number }).maxFrames, totalFrames),
+        nodes: rangedNodes,
       },
       history: {
         label: `Replace Source: ${file.name}`,
-        state: { nodes: nextNodes, selectedNodeId: state.selectedNodeId },
+        state: { nodes: rangedNodes, selectedNodeId: state.selectedNodeId },
       },
     }));
   }
@@ -439,18 +487,26 @@ export const replaceNodeSourceSequenceService = async (
   const imageEntries = buildImageEntriesFromFiles(files);
   if (imageEntries.length === 0) return;
 
-  const firstEntry = imageEntries[0];
-  const { width, height } = await readImageDimensions(firstEntry.file);
+  const sequenceImport = await prepareImageSequenceImport(imageEntries, 'copy');
+  const importedActivePlate = sequenceImport.plates[0];
+  if (!importedActivePlate) return;
   const colorManagementUpdate = resolveMediaColorManagementSourceChange(
     (targetNode as { mediaColorManagement?: MediaColorManagement }).mediaColorManagement,
-    await getImportedImageColorManagement(firstEntry.file),
+    importedActivePlate.mediaColorManagement,
   );
-  const assetIds = await persistSequenceAssets(imageEntries, 'copy');
+  const activePlate = {
+    ...importedActivePlate,
+    ...colorManagementUpdate,
+    colorSpace: colorManagementUpdate.colorSpace ?? importedActivePlate.colorSpace,
+  };
+  const plates = sequenceImport.plates.map((plate) =>
+    plate.id === activePlate.id ? activePlate : plate,
+  );
   const sceneNode = findSceneNode(state.nodes);
   if (!sceneNode) return;
 
   const { scaleX, scaleY } = calculateTransformForFitMode(
-    { width, height },
+    { width: activePlate.width, height: activePlate.height },
     { width: sceneNode.width, height: sceneNode.height },
     ImageFitMode.FIT,
   );
@@ -459,24 +515,32 @@ export const replaceNodeSourceSequenceService = async (
     n.id === nodeId
       ? ({
           ...n,
-          frames: assetIds,
-          sourceFileName: firstEntry.file.name,
-          width,
-          height,
+          plates,
+          activePlateId: activePlate.id,
+          frames: activePlate.frames,
+          startFrame: activePlate.startFrame,
+          sourceFileName: activePlate.sourceFileName,
+          width: activePlate.width,
+          height: activePlate.height,
           ...colorManagementUpdate,
           transform: { x: 0, y: 0, scaleX, scaleY, fitMode: ImageFitMode.FIT },
         } as AnyNode)
       : n,
   );
 
-  deps.commitMutation((s) => ({
+  const rangedNodes = applyImportedTimelineRange(
+    state.nodes,
+    nextNodes,
+    sequenceImport.timelineRange,
+    nodeId,
+  );
+  deps.commitMutation(() => ({
     patch: {
-      nodes: nextNodes,
-      maxFrames: Math.max((s as { maxFrames: number }).maxFrames, assetIds.length - 1),
+      nodes: rangedNodes,
     },
     history: {
       label: `Replace Source Sequence`,
-      state: { nodes: nextNodes, selectedNodeId: state.selectedNodeId },
+      state: { nodes: rangedNodes, selectedNodeId: state.selectedNodeId },
     },
   }));
 };

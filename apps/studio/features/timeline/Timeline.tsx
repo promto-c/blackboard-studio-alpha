@@ -18,6 +18,7 @@ import { getAnimatableProperties, type AnimatablePropertyDef } from '@/nodes/ani
 import { getSortedKeyframes, getValueAtFrame } from '@blackboard/renderer';
 import { EditorTimelineHeight } from '@/utils/editorLayout';
 import { useSmoothAnimation } from '@/hooks/useSmoothAnimation';
+import { buildTimelineFrameSegments } from '@/utils/mediaTimelineStatus';
 
 type VisibleTrack =
   | { type: 'group'; groupName: string; key: string }
@@ -51,6 +52,7 @@ const CACHE_NODE_COLORS = [
 interface NodeCacheBar {
   nodeId: string;
   nodeName: string;
+  availableFrames: boolean[];
   cachedFrames: boolean[];
   cachingFrames: boolean[];
   color: string;
@@ -61,11 +63,19 @@ const TIMELINE_TOP_BAR_CLASS =
   'flex items-center justify-between border-b border-white/10 bg-gray-900/35 px-2 backdrop-blur-md';
 const TIMELINE_VIEW_ACTIVE_WIDTH = 68;
 const TIMELINE_VIEW_INACTIVE_WIDTH = 28;
-const TIMELINE_VIEW_HEIGHT = 28;
+const TIMELINE_HEADER_CONTROL_HEIGHT = 28;
 
 const getKeyframeId = (ref: SelectedKeyframeRef) => `${ref.nodeId}:${ref.path}:${ref.frame}`;
 type TimelineCacheState = 'uncached' | 'caching' | 'cached';
 type TimelineViewMode = 'dopesheet' | 'graph';
+
+const getTimelineSpan = (startFrame: number, endFrame: number): number =>
+  Math.max(0, endFrame - startFrame);
+
+const getFramePercent = (frame: number, startFrame: number, endFrame: number): number => {
+  const span = getTimelineSpan(startFrame, endFrame);
+  return span > 0 ? ((frame - startFrame) / span) * 100 : 0;
+};
 
 const getTimelineCacheState = (
   frame: number,
@@ -78,7 +88,8 @@ const getTimelineCacheState = (
 };
 
 const buildTimelineCacheSegments = (
-  maxFrames: number,
+  timelineStartFrame: number,
+  timelineEndFrame: number,
   cachedFrames: boolean[],
   cachingFrames: boolean[],
 ) => {
@@ -88,22 +99,22 @@ const buildTimelineCacheSegments = (
     state: Exclude<TimelineCacheState, 'uncached'>;
   }> = [];
   let activeState: Exclude<TimelineCacheState, 'uncached'> | null = null;
-  let startFrame = 0;
+  let segmentStartFrame = timelineStartFrame;
 
-  for (let frame = 0; frame <= maxFrames; frame += 1) {
+  for (let frame = timelineStartFrame; frame <= timelineEndFrame; frame += 1) {
     const state = getTimelineCacheState(frame, cachedFrames, cachingFrames);
     if (state === activeState) continue;
 
     if (activeState) {
-      segments.push({ start: startFrame, end: frame - 1, state: activeState });
+      segments.push({ start: segmentStartFrame, end: frame - 1, state: activeState });
     }
 
     activeState = state === 'uncached' ? null : state;
-    startFrame = frame;
+    segmentStartFrame = frame;
   }
 
   if (activeState) {
-    segments.push({ start: startFrame, end: maxFrames, state: activeState });
+    segments.push({ start: segmentStartFrame, end: timelineEndFrame, state: activeState });
   }
 
   return segments;
@@ -117,8 +128,10 @@ interface TimelineProps {
 
 function MiniTimelineScrubber({
   currentFrame,
+  timelineStartFrame,
   maxFrames,
   keyframes,
+  availableFrames,
   cachedFrames,
   cachingFrames,
   nodeCacheBars,
@@ -127,8 +140,10 @@ function MiniTimelineScrubber({
   setFrameScrubbing,
 }: {
   currentFrame: number;
+  timelineStartFrame: number;
   maxFrames: number;
   keyframes: number[];
+  availableFrames: boolean[];
   cachedFrames: boolean[];
   cachingFrames: boolean[];
   nodeCacheBars: NodeCacheBar[];
@@ -154,13 +169,19 @@ function MiniTimelineScrubber({
   const scrubberKeyframes = useMemo(
     () =>
       Array.from(
-        new Set<number>(keyframes.filter((frame) => frame >= 0 && frame <= maxFrames)),
+        new Set<number>(
+          keyframes.filter((frame) => frame >= timelineStartFrame && frame <= maxFrames),
+        ),
       ).sort((a, b) => a - b),
-    [keyframes, maxFrames],
+    [keyframes, maxFrames, timelineStartFrame],
   );
   const cacheSegments = useMemo(
-    () => buildTimelineCacheSegments(maxFrames, cachedFrames, cachingFrames),
-    [cachedFrames, cachingFrames, maxFrames],
+    () => buildTimelineCacheSegments(timelineStartFrame, maxFrames, cachedFrames, cachingFrames),
+    [cachedFrames, cachingFrames, maxFrames, timelineStartFrame],
+  );
+  const availabilitySegments = useMemo(
+    () => buildTimelineFrameSegments(timelineStartFrame, maxFrames, availableFrames),
+    [availableFrames, maxFrames, timelineStartFrame],
   );
   const separateBars = useMemo(
     () =>
@@ -168,9 +189,19 @@ function MiniTimelineScrubber({
         ? []
         : nodeCacheBars.map((bar) => ({
             ...bar,
-            segments: buildTimelineCacheSegments(maxFrames, bar.cachedFrames, bar.cachingFrames),
+            availabilitySegments: buildTimelineFrameSegments(
+              timelineStartFrame,
+              maxFrames,
+              bar.availableFrames,
+            ),
+            segments: buildTimelineCacheSegments(
+              timelineStartFrame,
+              maxFrames,
+              bar.cachedFrames,
+              bar.cachingFrames,
+            ),
           })),
-    [nodeCacheBars, maxFrames, isConsolidated],
+    [nodeCacheBars, maxFrames, timelineStartFrame, isConsolidated],
   );
 
   const snapToNearestKeyframe = (frame: number) => {
@@ -192,7 +223,7 @@ function MiniTimelineScrubber({
     if (!containerRef.current) return 0;
     const rect = containerRef.current.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    return Math.round(ratio * maxFrames);
+    return timelineStartFrame + Math.round(ratio * getTimelineSpan(timelineStartFrame, maxFrames));
   };
 
   const handleSeek = (clientX: number, keyframesOnly = false) => {
@@ -211,7 +242,7 @@ function MiniTimelineScrubber({
     // Compute viewport-relative position for portaled tooltip
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      const percent = maxFrames > 0 ? (frame / maxFrames) * 100 : 0;
+      const percent = getFramePercent(frame, timelineStartFrame, maxFrames);
       const left = rect.left + (percent / 100) * rect.width;
       const top = rect.top - (!isConsolidated && totalBars > 1 ? 120 : 60); // above scrubber component (consistent Y)
       setTooltipPos({ left, top });
@@ -228,10 +259,12 @@ function MiniTimelineScrubber({
     setTooltipVisible(false);
   };
 
-  const percent = maxFrames > 0 ? (currentFrame / maxFrames) * 100 : 0;
-  const hoverPercent = hoverFrame !== null && maxFrames > 0 ? (hoverFrame / maxFrames) * 100 : 0;
+  const percent = getFramePercent(currentFrame, timelineStartFrame, maxFrames);
+  const hoverPercent =
+    hoverFrame !== null ? getFramePercent(hoverFrame, timelineStartFrame, maxFrames) : 0;
   const hoverCacheState =
     hoverFrame !== null ? getTimelineCacheState(hoverFrame, cachedFrames, cachingFrames) : null;
+  const hoverHasData = hoverFrame !== null && availableFrames[hoverFrame] === true;
   const totalBars = nodeCacheBars.length;
 
   return (
@@ -251,12 +284,23 @@ function MiniTimelineScrubber({
             className="absolute left-0 right-0 h-[5px] rounded-sm overflow-hidden"
             style={{ top: '50%', transform: 'translateY(-50%)' }}
           >
-            {/* Gray base track */}
-            <div className="absolute inset-0 rounded-full bg-gray-700/30" />
+            {/* Real source-data availability */}
+            {availabilitySegments.map((segment) => {
+              const frameCount = getTimelineSpan(timelineStartFrame, maxFrames) + 1;
+              const left = ((segment.start - timelineStartFrame) / frameCount) * 100;
+              const width = ((segment.end - segment.start + 1) / frameCount) * 100;
+              return (
+                <div
+                  key={`available:${segment.start}-${segment.end}`}
+                  className="absolute inset-y-0 rounded-full bg-gray-500/25"
+                  style={{ left: `${left}%`, width: `${width}%` }}
+                />
+              );
+            })}
             {/* Colored cache segments */}
             {cacheSegments.map((segment) => {
-              const frameCount = Math.max(1, maxFrames + 1);
-              const left = (segment.start / frameCount) * 100;
+              const frameCount = getTimelineSpan(timelineStartFrame, maxFrames) + 1;
+              const left = ((segment.start - timelineStartFrame) / frameCount) * 100;
               const width = ((segment.end - segment.start + 1) / frameCount) * 100;
               const colorClass =
                 segment.state === 'cached' ? 'bg-emerald-300/30' : 'bg-amber-200/35';
@@ -273,9 +317,25 @@ function MiniTimelineScrubber({
           /* ── Separate mode: equal-height stacked per-node bars ── */
           separateBars.map((bar, barIdx) => (
             <React.Fragment key={`sep-${bar.nodeId}`}>
+              {bar.availabilitySegments.map((segment) => {
+                const frameCount = getTimelineSpan(timelineStartFrame, maxFrames) + 1;
+                const left = ((segment.start - timelineStartFrame) / frameCount) * 100;
+                const width = ((segment.end - segment.start + 1) / frameCount) * 100;
+                return (
+                  <div
+                    key={`${bar.nodeId}:available:${segment.start}-${segment.end}`}
+                    className="absolute h-[3px] rounded-sm bg-gray-500/25"
+                    style={{
+                      left: `${left}%`,
+                      width: `${width}%`,
+                      bottom: `${barIdx * 3}px`,
+                    }}
+                  />
+                );
+              })}
               {bar.segments.map((seg) => {
-                const frameCount = Math.max(1, maxFrames + 1);
-                const left = (seg.start / frameCount) * 100;
+                const frameCount = getTimelineSpan(timelineStartFrame, maxFrames) + 1;
+                const left = ((seg.start - timelineStartFrame) / frameCount) * 100;
                 const width = ((seg.end - seg.start + 1) / frameCount) * 100;
                 const opacity = seg.state === 'cached' ? '0.6' : '0.35';
                 return (
@@ -308,7 +368,7 @@ function MiniTimelineScrubber({
       {maxFrames > 0 &&
         scrubberKeyframes.map((frame) => {
           if (frame > maxFrames) return null;
-          const kfPercent = (frame / maxFrames) * 100;
+          const kfPercent = getFramePercent(frame, timelineStartFrame, maxFrames);
           return (
             <div
               key={frame}
@@ -337,7 +397,9 @@ function MiniTimelineScrubber({
           >
             <div className="text-center mb-0.5">
               {hoverFrame}
-              {hoverCacheState !== 'uncached' ? (
+              {!hoverHasData ? (
+                <span className="ml-1 text-gray-500">no data</span>
+              ) : hoverCacheState !== 'uncached' ? (
                 <span className="ml-1 text-gray-400">{hoverCacheState}</span>
               ) : (
                 ''
@@ -351,6 +413,7 @@ function MiniTimelineScrubber({
                     bar.cachedFrames,
                     bar.cachingFrames,
                   );
+                  const barHasData = bar.availableFrames[hoverFrame] === true;
                   return (
                     <div
                       key={bar.nodeId}
@@ -361,7 +424,13 @@ function MiniTimelineScrubber({
                       </span>
                       <span className="truncate max-w-[120px]">{bar.nodeName}</span>
                       <span className="ml-auto text-gray-400">
-                        {barState === 'cached' ? 'ready' : barState === 'caching' ? '...' : '—'}
+                        {!barHasData
+                          ? 'no data'
+                          : barState === 'cached'
+                            ? 'ready'
+                            : barState === 'caching'
+                              ? '...'
+                              : '—'}
                       </span>
                     </div>
                   );
@@ -381,9 +450,11 @@ function Ruler({
   zoom,
   panX,
   width,
+  timelineStartFrame,
   maxFrames,
   currentFrame,
   onSeek,
+  availableFrames,
   cachedFrames,
   cachingFrames,
   nodeCacheBars,
@@ -393,9 +464,11 @@ function Ruler({
   zoom: number;
   panX: number;
   width: number;
+  timelineStartFrame: number;
   maxFrames: number;
   currentFrame: number;
   onSeek: (frame: number) => void;
+  availableFrames: boolean[];
   cachedFrames: boolean[];
   cachingFrames: boolean[];
   nodeCacheBars: NodeCacheBar[];
@@ -443,19 +516,21 @@ function Ruler({
     if (pixelsPerFrame < 0.5) step = 50;
     if (pixelsPerFrame < 0.1) step = 100;
 
-    const startFrame = Math.floor(-panX / zoom);
-    const endFrame = Math.floor((width - panX) / zoom);
+    const firstVisibleFrame = timelineStartFrame + Math.floor(-panX / zoom);
+    const lastVisibleFrame = timelineStartFrame + Math.floor((width - panX) / zoom);
 
     // Draw Cached Status Bars
     if (isConsolidated) {
-      // ── Consolidated mode: single merged bar (old style emerald/amber) ──
-      if (cachedFrames.length > 0 || cachingFrames.length > 0) {
+      // ── Consolidated mode: source availability with cache state overlaid ──
+      if (availableFrames.length > 0) {
         const y = RULER_HEIGHT - CACHE_INDICATOR_HEIGHT;
-        for (let f = startFrame; f <= endFrame; f++) {
-          if (f < 0 || (f >= cachedFrames.length && f >= cachingFrames.length)) continue;
-          const x = f * zoom + panX;
+        for (let f = firstVisibleFrame; f <= lastVisibleFrame; f++) {
+          if (f < timelineStartFrame || f > maxFrames || !availableFrames[f]) continue;
+          const x = (f - timelineStartFrame) * zoom + panX;
           const w = Math.max(1, zoom + 0.5);
           const state = getTimelineCacheState(f, cachedFrames, cachingFrames);
+          ctx.fillStyle = 'rgba(107, 114, 128, 0.25)'; // gray-500/25
+          ctx.fillRect(x, y, w, CACHE_INDICATOR_HEIGHT);
           if (state === 'cached') {
             ctx.fillStyle = 'rgba(110, 231, 183, 0.3)'; // emerald-300/30
             ctx.fillRect(x, y, w, CACHE_INDICATOR_HEIGHT);
@@ -469,20 +544,28 @@ function Ruler({
       // ── Separate mode: stacked per-node colored bars (soft style, matching frame slider) ──
       const SEPARATE_BAR_HEIGHT = 3;
       nodeCacheBars.forEach((bar, index) => {
-        const { cachedFrames: barCached, cachingFrames: barCaching } = bar;
-        if (barCached.length === 0 && barCaching.length === 0) return;
+        const {
+          availableFrames: barAvailable,
+          cachedFrames: barCached,
+          cachingFrames: barCaching,
+        } = bar;
+        if (barAvailable.length === 0) return;
 
         const y = RULER_HEIGHT - CACHE_INDICATOR_HEIGHT - index * 2;
 
-        for (let f = startFrame; f <= endFrame; f++) {
-          if (f < 0 || (f >= barCached.length && f >= barCaching.length)) continue;
-          const x = f * zoom + panX;
+        for (let f = firstVisibleFrame; f <= lastVisibleFrame; f++) {
+          if (f < timelineStartFrame || f > maxFrames || !barAvailable[f]) continue;
+          const x = (f - timelineStartFrame) * zoom + panX;
           const w = Math.max(1, zoom + 0.5);
           const state = getTimelineCacheState(f, barCached, barCaching);
-          ctx.fillStyle = bar.color;
-          ctx.globalAlpha = state === 'cached' ? 0.6 : 0.35;
+          ctx.fillStyle = 'rgba(107, 114, 128, 0.25)';
           ctx.fillRect(x, y, w, SEPARATE_BAR_HEIGHT);
-          ctx.globalAlpha = 1;
+          if (state !== 'uncached') {
+            ctx.fillStyle = bar.color;
+            ctx.globalAlpha = state === 'cached' ? 0.6 : 0.35;
+            ctx.fillRect(x, y, w, SEPARATE_BAR_HEIGHT);
+            ctx.globalAlpha = 1;
+          }
         }
       });
     }
@@ -495,9 +578,9 @@ function Ruler({
       ? CACHE_INDICATOR_HEIGHT
       : CACHE_INDICATOR_HEIGHT + Math.max(0, (nodeCacheBars.length - 1) * 2);
 
-    for (let f = startFrame; f <= endFrame; f++) {
-      if (f < 0) continue;
-      const x = f * zoom + panX;
+    for (let f = firstVisibleFrame; f <= lastVisibleFrame; f++) {
+      if (f < timelineStartFrame || f > maxFrames) continue;
+      const x = (f - timelineStartFrame) * zoom + panX;
 
       if (f % step === 0) {
         const isMajor = f % (step * 2) === 0;
@@ -515,7 +598,7 @@ function Ruler({
     ctx.stroke();
 
     // Draw Playhead Indicator on Ruler
-    const playheadX = currentFrame * zoom + panX;
+    const playheadX = (currentFrame - timelineStartFrame) * zoom + panX;
 
     // Resolve accent color from DOM (CSS var is not valid in canvas context)
     const accentRaw = getComputedStyle(document.documentElement)
@@ -546,8 +629,10 @@ function Ruler({
     zoom,
     panX,
     width,
+    timelineStartFrame,
     maxFrames,
     currentFrame,
+    availableFrames,
     cachedFrames,
     cachingFrames,
     nodeCacheBars,
@@ -559,7 +644,7 @@ function Ruler({
 
     const seek = (clientX: number) => {
       const x = clientX - rect.left;
-      const frame = Math.round((x - panX) / zoom);
+      const frame = timelineStartFrame + Math.round((x - panX) / zoom);
       onSeek(frame);
     };
 
@@ -571,8 +656,8 @@ function Ruler({
     const rect = canvasRef.current!.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const frame = Math.round((x - panX) / zoom);
-    const clamped = Math.max(0, Math.min(maxFrames, frame));
+    const frame = timelineStartFrame + Math.round((x - panX) / zoom);
+    const clamped = Math.max(timelineStartFrame, Math.min(maxFrames, frame));
     setHoverFrame(clamped);
     // Compute viewport-relative position for portaled tooltip
     const clampedX = Math.max(8, Math.min(width - 8, x));
@@ -627,6 +712,7 @@ function Ruler({
                       bar.cachedFrames,
                       bar.cachingFrames,
                     );
+                    const barHasData = bar.availableFrames[hoverFrame] === true;
                     return (
                       <div
                         key={bar.nodeId}
@@ -637,7 +723,13 @@ function Ruler({
                         </span>
                         <span className="truncate max-w-[140px]">{bar.nodeName}</span>
                         <span className="ml-auto text-gray-400">
-                          {barState === 'cached' ? 'ready' : barState === 'caching' ? '...' : '—'}
+                          {!barHasData
+                            ? 'no data'
+                            : barState === 'cached'
+                              ? 'ready'
+                              : barState === 'caching'
+                                ? '...'
+                                : '—'}
                         </span>
                       </div>
                     );
@@ -698,6 +790,7 @@ function DopeSheetTrack({
   width,
   nodeId,
   path,
+  timelineStartFrame,
   maxFrames,
   setSelectedKeyframes,
   onKeyframeMouseDown,
@@ -713,6 +806,7 @@ function DopeSheetTrack({
   width: number;
   nodeId: string;
   path: string;
+  timelineStartFrame: number;
   maxFrames: number;
   setSelectedKeyframes: (keyframes: SelectedKeyframeRef[]) => void;
   onKeyframeMouseDown: (e: React.MouseEvent, frame: number) => SelectedKeyframeRef[];
@@ -754,13 +848,13 @@ function DopeSheetTrack({
     const peak = Math.max(maxError, 0.05);
 
     // Only draw if there's data in range
-    const startFrame = Math.floor(-panX / zoom);
-    const endFrame = Math.floor((width - panX) / zoom);
+    const firstVisibleFrame = timelineStartFrame + Math.floor(-panX / zoom);
+    const lastVisibleFrame = timelineStartFrame + Math.floor((width - panX) / zoom);
 
-    for (let f = startFrame; f <= endFrame; f++) {
+    for (let f = firstVisibleFrame; f <= lastVisibleFrame; f++) {
       if (Object.prototype.hasOwnProperty.call(trackingData, f)) {
         const error = trackingData[f];
-        const x = f * zoom + panX;
+        const x = (f - timelineStartFrame) * zoom + panX;
         const w = Math.max(1, zoom + 0.5);
 
         // Normalized value 0..1
@@ -779,7 +873,7 @@ function DopeSheetTrack({
         ctx.fillRect(x, y, w, barHeight);
       }
     }
-  }, [trackingData, width, panX, zoom]);
+  }, [trackingData, width, panX, timelineStartFrame, zoom]);
 
   const handleMouseDown = (e: React.MouseEvent, index: number) => {
     e.stopPropagation();
@@ -807,7 +901,10 @@ function DopeSheetTrack({
       const minFrame = Math.min(...frames);
       const maxFrame = Math.max(...frames);
 
-      const clampedDelta = Math.max(-minFrame, Math.min(maxFrames - maxFrame, rawDelta));
+      const clampedDelta = Math.max(
+        timelineStartFrame - minFrame,
+        Math.min(maxFrames - maxFrame, rawDelta),
+      );
 
       const nextSelection: SelectedKeyframeRef[] = [];
       const orderedItems = [...dragState.items].sort((a, b) => {
@@ -821,7 +918,10 @@ function DopeSheetTrack({
       orderedItems.forEach((item) => {
         const original =
           dragState.originalFrames.get(`${item.nodeId}:${item.path}:${item.frame}`) ?? item.frame;
-        const nextFrame = Math.max(0, Math.min(maxFrames, original + clampedDelta));
+        const nextFrame = Math.max(
+          timelineStartFrame,
+          Math.min(maxFrames, original + clampedDelta),
+        );
         nextSelection.push({ ...item, frame: nextFrame });
         updateKeyframe(item.nodeId, item.path, original, { frame: nextFrame });
       });
@@ -839,12 +939,25 @@ function DopeSheetTrack({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, keyframes, nodeId, path, updateKeyframe, zoom, maxFrames, setSelectedKeyframes]);
+  }, [
+    dragState,
+    keyframes,
+    nodeId,
+    path,
+    updateKeyframe,
+    zoom,
+    timelineStartFrame,
+    maxFrames,
+    setSelectedKeyframes,
+  ]);
 
   const handleDoubleClick = (e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const frame = Math.max(0, Math.min(maxFrames, Math.round((x - panX) / zoom)));
+    const frame = Math.max(
+      timelineStartFrame,
+      Math.min(maxFrames, timelineStartFrame + Math.round((x - panX) / zoom)),
+    );
     const val = getValueAtFrame(prop, frame);
     onAddKeyframe(frame, val);
   };
@@ -864,7 +977,7 @@ function DopeSheetTrack({
         />
       )}
       {keyframes.map((kf, i) => {
-        const x = kf.frame * zoom + panX;
+        const x = (kf.frame - timelineStartFrame) * zoom + panX;
         if (x < -10 || x > width + 10) return null;
         return (
           <KeyframeMarker
@@ -882,6 +995,7 @@ function DopeSheetTrack({
 function Timeline({ height, setHeight, minHeight }: TimelineProps) {
   const isPlaying = useEditorSelector((s) => s.isPlaying);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
+  const timelineStartFrame = useEditorSelector((s) => s.timelineStartFrame);
   const maxFrames = useEditorSelector((s) => s.maxFrames);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const selectedRotoPathIds = useEditorSelector(
@@ -960,10 +1074,20 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
   // Build merged cache status from ALL media nodes (viewport-scoped, not selection-scoped)
   const mergedCache = useMemo(() => {
     const entries = Object.values(cacheStatus.nodeEntries);
-    if (entries.length === 0) return { cached: [] as boolean[], caching: [] as boolean[] };
+    if (entries.length === 0) {
+      return {
+        available: [] as boolean[],
+        cached: [] as boolean[],
+        caching: [] as boolean[],
+      };
+    }
+    const available = new Array(maxFrames + 1).fill(false);
     const cached = new Array(maxFrames + 1).fill(false);
     const caching = new Array(maxFrames + 1).fill(false);
     for (const entry of entries) {
+      for (let i = 0; i < (entry.availableFrames?.length ?? 0) && i <= maxFrames; i++) {
+        if (entry.availableFrames[i]) available[i] = true;
+      }
       for (let i = 0; i < entry.cachedFrames.length && i <= maxFrames; i++) {
         if (entry.cachedFrames[i]) cached[i] = true;
       }
@@ -975,7 +1099,7 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
     for (let i = 0; i <= maxFrames; i++) {
       if (cached[i]) caching[i] = false;
     }
-    return { cached, caching };
+    return { available, cached, caching };
   }, [cacheStatus.nodeEntries, maxFrames]);
 
   // Build colored per-node cache bars (no selection-based sorting)
@@ -984,6 +1108,7 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
     return entries.map(([nodeId, entry], index) => ({
       nodeId,
       nodeName: nodeNameMap.get(nodeId) ?? 'Unknown',
+      availableFrames: entry.availableFrames ?? [],
       cachedFrames: entry.cachedFrames,
       cachingFrames: entry.cachingFrames,
       color: CACHE_NODE_COLORS[index % CACHE_NODE_COLORS.length],
@@ -1269,7 +1394,7 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
         const y = rowIndex * TRACK_HEIGHT + TRACK_HEIGHT / 2;
         if (y < yMin || y > yMax) return;
         frames.forEach((kf) => {
-          const x = kf.frame * zoom + panX;
+          const x = (kf.frame - timelineStartFrame) * zoom + panX;
           if (x >= xMin && x <= xMax) {
             hits.push({ nodeId: selectedNodeId, path, frame: kf.frame });
           }
@@ -1278,7 +1403,7 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
 
       return hits;
     },
-    [keyframesByPath, trackRowIndexByPath, zoom, panX, selectedNodeId],
+    [keyframesByPath, trackRowIndexByPath, zoom, panX, selectedNodeId, timelineStartFrame],
   );
 
   const handleContentMouseDown = useCallback(
@@ -1352,13 +1477,20 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
   );
 
   const clampFrame = (frame: number) => {
-    if (!Number.isFinite(frame)) return 0;
-    return Math.max(0, Math.min(maxFrames, Math.round(frame)));
+    if (!Number.isFinite(frame)) return timelineStartFrame;
+    return Math.max(timelineStartFrame, Math.min(maxFrames, Math.round(frame)));
   };
 
   const seekClamped = (frame: number) => {
     seekFrame(clampFrame(frame));
   };
+
+  const frameFieldDigitCount = Math.max(
+    1,
+    String(timelineStartFrame).length,
+    String(maxFrames).length,
+  );
+  const frameFieldWidth = `calc(${frameFieldDigitCount * 2 + 3}ch + 1.5rem)`;
 
   const timelineViewOptions = useMemo<SlidingSegmentedControlOption<TimelineViewMode>[]>(
     () => [
@@ -1403,12 +1535,15 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
       >
         {/* Center: Transport Controls & Scrubber */}
         <div className="flex-1 flex items-center justify-center gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-white/10 bg-black/20 px-1 py-0.5">
+          <div
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-white/10 bg-black/20 px-1"
+            style={{ height: TIMELINE_HEADER_CONTROL_HEIGHT }}
+          >
             <div className="flex flex-shrink-0 items-center gap-0.5">
               <button
-                onClick={() => seekClamped(0)}
+                onClick={() => seekClamped(timelineStartFrame)}
                 className="rounded p-1 text-gray-400 transition-colors hover:bg-white/5 hover:text-white"
-                title="Start (0)"
+                title={`Start (${timelineStartFrame})`}
               >
                 <Icons.SkipStart className="h-3.5 w-3.5" />
               </button>
@@ -1456,8 +1591,10 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
 
             <MiniTimelineScrubber
               currentFrame={currentFrame}
+              timelineStartFrame={timelineStartFrame}
               maxFrames={maxFrames}
               keyframes={allKeyframesForSelectedNode}
+              availableFrames={mergedCache.available}
               cachedFrames={mergedCache.cached}
               cachingFrames={mergedCache.caching}
               nodeCacheBars={allNodeCacheBars}
@@ -1466,18 +1603,26 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
               setFrameScrubbing={setFrameScrubbing}
             />
           </div>
-          <div className="flex w-32 flex-shrink-0 items-center gap-1 font-mono text-[11px] text-gray-400">
+          <div className="flex-shrink-0" style={{ width: frameFieldWidth }}>
             <NumberInput
               value={currentFrame}
-              min={0}
+              min={timelineStartFrame}
               max={maxFrames}
               step={1}
               normalizeValue={Math.round}
               onValueChange={seekClamped}
-              aria-label="Current timeline frame"
+              suffix={
+                <span className="font-mono text-[11px] font-normal tabular-nums text-gray-500">
+                  / {maxFrames}
+                </span>
+              }
+              className="!min-h-0 !rounded-md !bg-black/20 !px-2 !py-0 !pr-14 !text-[11px]"
+              style={{
+                height: TIMELINE_HEADER_CONTROL_HEIGHT,
+                minHeight: TIMELINE_HEADER_CONTROL_HEIGHT,
+              }}
+              aria-label={`Current timeline frame, maximum ${maxFrames}`}
             />
-            <span className="text-gray-600">/</span>
-            <span className="w-8">{maxFrames}</span>
           </div>
           <SlidingSegmentedControl
             options={timelineViewOptions}
@@ -1485,7 +1630,7 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
             onChange={openTimelineView}
             activeWidth={TIMELINE_VIEW_ACTIVE_WIDTH}
             inactiveWidth={TIMELINE_VIEW_INACTIVE_WIDTH}
-            height={TIMELINE_VIEW_HEIGHT}
+            height={TIMELINE_HEADER_CONTROL_HEIGHT}
           />
         </div>
       </div>
@@ -1515,9 +1660,11 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
                 zoom={zoom}
                 panX={panX}
                 width={timelineWidth}
+                timelineStartFrame={timelineStartFrame}
                 maxFrames={maxFrames}
                 currentFrame={currentFrame}
                 onSeek={seekClamped}
+                availableFrames={mergedCache.available}
                 cachedFrames={mergedCache.cached}
                 cachingFrames={mergedCache.caching}
                 nodeCacheBars={allNodeCacheBars}
@@ -1672,7 +1819,7 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
                     <div
                       className="absolute top-0 bottom-0 w-px pointer-events-none z-30"
                       style={{
-                        left: currentFrame * zoom + panX,
+                        left: (currentFrame - timelineStartFrame) * zoom + panX,
                         backgroundColor: PLAYHEAD_COLOR,
                         boxShadow: '0 0 4px rgba(var(--color-primary-500), 0.5)',
                       }}
@@ -1694,6 +1841,7 @@ function Timeline({ height, setHeight, minHeight }: TimelineProps) {
                                 width={timelineWidth}
                                 nodeId={selectedNodeId!}
                                 path={item.property.path}
+                                timelineStartFrame={timelineStartFrame}
                                 maxFrames={maxFrames}
                                 setSelectedKeyframes={setSelectedKeyframes}
                                 onKeyframeMouseDown={(e, frame) =>

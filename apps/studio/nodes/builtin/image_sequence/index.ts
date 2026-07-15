@@ -12,6 +12,7 @@ import {
   isDataMediaColorManagement,
 } from '@/color-management';
 import { resolveTemporalSourceFrame } from '../../sourceFrameRange';
+import { getImageSequenceAssetIds } from '@/utils/imageSequencePlates';
 
 export const imageSequenceNode: NodeDefinition = {
   type: NodeType.IMAGE_SEQUENCE,
@@ -41,10 +42,7 @@ export const imageSequenceNode: NodeDefinition = {
     afterRangeBehavior: 'black',
   }),
   mediaDescriptor: {
-    getAssetIds: (node) => {
-      const imageSeq = node as ImageSequenceNode;
-      return imageSeq.frames ? imageSeq.frames.filter(Boolean) : [];
-    },
+    getAssetIds: (node) => getImageSequenceAssetIds(node as ImageSequenceNode),
     resolveFrame: (node, frame) => resolveTemporalSourceFrame(node as ImageSequenceNode, frame),
     checkFrameReady: (node, frame, caches) => {
       const seq = node as ImageSequenceNode;

@@ -68,6 +68,7 @@ interface UseViewportMotionCuesParams {
   hierarchySelections: Record<string, { layerIds: string[]; itemIds: string[] }>;
   selectedNodeId: string | null;
   visualFrame: number;
+  timelineStartFrame?: number;
   maxFrames: number;
   rotoPointWeightMode: RotoPointWeightMode;
   stabilizationMatrix: number[][] | null;
@@ -98,6 +99,7 @@ export function useViewportMotionCues({
   hierarchySelections,
   selectedNodeId,
   visualFrame,
+  timelineStartFrame = 0,
   maxFrames,
   rotoPointWeightMode,
   stabilizationMatrix,
@@ -143,7 +145,10 @@ export function useViewportMotionCues({
       for (let offset = -motionCueWindow; offset <= motionCueWindow; offset++) {
         if (offset === 0) continue;
 
-        const sampledFrame = Math.max(0, Math.min(maxFrames, visualFrame + offset));
+        const sampledFrame = Math.max(
+          timelineStartFrame,
+          Math.min(maxFrames, visualFrame + offset),
+        );
         const resolvedPoints = stabilizePoints(
           resolveRotoPathPointsAtFrame(rotoNode, path, sampledFrame),
           stabilizationMatrix,
@@ -176,6 +181,7 @@ export function useViewportMotionCues({
     return byPath;
   }, [
     maxFrames,
+    timelineStartFrame,
     motionCueTargetPathIds,
     motionCueWindow,
     rotoMotionPathVisible,
@@ -209,7 +215,7 @@ export function useViewportMotionCues({
       );
       if (currentPoints.length < 2) continue;
 
-      const previousFrame = Math.max(0, visualFrame - 1);
+      const previousFrame = Math.max(timelineStartFrame, visualFrame - 1);
       const nextFrame = Math.min(maxFrames, visualFrame + 1);
       const previousPoints = stabilizePoints(
         resolveRotoPathPointsAtFrame(rotoNode, path, previousFrame),
@@ -245,6 +251,7 @@ export function useViewportMotionCues({
     return byPath;
   }, [
     maxFrames,
+    timelineStartFrame,
     motionCueTargetPathIds,
     rotoMotionPathVisible,
     rotoMotionCueEnabled,
@@ -278,7 +285,7 @@ export function useViewportMotionCues({
       motionBlur.phase,
     )
       .map((frame, index) => ({
-        frame: Math.max(0, Math.min(maxFrames, frame)),
+        frame: Math.max(timelineStartFrame, Math.min(maxFrames, frame)),
         label: index === 0 ? 'shutter-open' : 'shutter-close',
       }))
       .filter(
@@ -327,6 +334,7 @@ export function useViewportMotionCues({
     return byPath;
   }, [
     maxFrames,
+    timelineStartFrame,
     motionCueTargetPathIds,
     rotoMotionBlurPathVisible,
     rotoMotionCueEnabled,

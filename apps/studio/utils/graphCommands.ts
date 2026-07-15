@@ -9,6 +9,7 @@ import {
   GroupNode,
   ImageFitMode,
   ImageSequenceNode,
+  type ImageSequencePlate,
   ImageTransform,
   InputNode,
   MediaSourceNode,
@@ -36,10 +37,8 @@ import {
   getFlowEdgeId,
   getNodePositionsForFlow,
   getOrderedNodesFromFlow,
-  getOutputPipeEdge,
   getRootFlow,
   getSelectedNodeIdsForGrouping,
-  isFlowOutputDetached,
   isInputNode,
   isOutputNode,
   isSceneNode,
@@ -48,13 +47,14 @@ import {
   replaceFlowNodeInput,
   replaceFlowNodes,
   setNodePositionsForFlow,
-  updateFlowNode,
 } from '@/state/editor/flowModel';
+import { isSourceNodeType, usesPipelineInput } from '@/utils/nodePredicates';
 import {
-  isSourceNodeType,
-  participatesInImplicitPipeline,
-  usesImplicitPipelineInput,
-} from '@/utils/nodePredicates';
+  getSingleOutgoingEdge,
+  getOutputInputEdge,
+  isNodeConnectedToOutput,
+  PIPE_INPUT_PORT,
+} from '@/utils/flowTopology';
 import { buildNodeStacks, getStackedGroupEndIndex } from '@/utils/nodeStacks';
 import { cleanDanglingNodeInputs, wouldCreateCycle } from '@/utils/connectionGraph';
 import {
@@ -174,56 +174,22 @@ function assignNodeInput(
   } as AnyNode;
 }
 
-/**
- * Determine whether a node is the last implicit pipe source feeding into output
- * (no explicit output edge, output not detached, and node is the last pipeline participant).
- */
-function isImplicitLastPipeSource(flow: Flow | null, nodes: AnyNode[], nodeId: string): boolean {
-  return (
-    !getOutputPipeEdge(flow) &&
-    !isFlowOutputDetached(flow) &&
-    getLastImplicitPipeSourceNodeId(nodes) === nodeId
-  );
-}
-
-/**
- * Get the downstream pipe target for a node — either the explicit pipe edge
- * target, or (if the node is the implicit last pipe source) a synthetic edge
- * to OUTPUT_NODE. Returns null when the node has no downstream connection.
- */
 function getDownstreamPipeTarget(
   flow: Flow | null,
-  nodes: AnyNode[],
   nodeId: string,
 ): Pick<FlowEdge, 'sourceNodeId' | 'sourcePort' | 'targetNodeId' | 'targetPort'> | null {
-  const explicitEdge = getSingleDownstreamPipeEdge(flow, nodeId);
-  if (explicitEdge) return explicitEdge;
-  if (isImplicitLastPipeSource(flow, nodes, nodeId)) {
-    return {
-      sourceNodeId: nodeId,
-      sourcePort: 'output',
-      targetNodeId: OUTPUT_NODE_ID,
-      targetPort: 'pipe',
-    };
-  }
-  return null;
+  return getSingleOutgoingEdge(flow, nodeId, PIPE_INPUT_PORT);
 }
 
 /**
- * Replace the output node's pipe input to point to a new source, ensuring
- * the output is marked as connected.
+ * Replace the output node's primary input with a real graph edge.
  */
 function connectOutputPipe(
   flows: Record<FlowId, Flow>,
   flowId: FlowId,
   newNodeId: string,
 ): Record<FlowId, Flow> {
-  let nextFlows = replaceFlowNodeInput(flows, flowId, OUTPUT_NODE_ID, 'pipe', newNodeId) ?? flows;
-  nextFlows =
-    updateFlowNode(nextFlows, flowId, OUTPUT_NODE_ID, {
-      detachedFromPipe: false,
-    } as Partial<AnyNode>) ?? nextFlows;
-  return nextFlows;
+  return replaceFlowNodeInput(flows, flowId, OUTPUT_NODE_ID, PIPE_INPUT_PORT, newNodeId) ?? flows;
 }
 
 /**
@@ -250,33 +216,8 @@ function rebuildFlow(
   };
 }
 
-function getPreviousImplicitPipeSourceNodeId(nodes: AnyNode[], targetIndex: number): string | null {
-  let previousExitId: string | null = null;
-  for (let index = 0; index < targetIndex; index += 1) {
-    const node = nodes[index];
-    if (!participatesInImplicitPipeline(node.type)) continue;
-    if ((node as { detachedFromPipe?: boolean }).detachedFromPipe) continue;
-    previousExitId = node.id;
-  }
-  return previousExitId;
-}
-
-function getLastImplicitPipeSourceNodeId(nodes: AnyNode[]): string | null {
-  return getPreviousImplicitPipeSourceNodeId(nodes, nodes.length);
-}
-
-function getNextImplicitPipeTargetNodeId(nodes: AnyNode[], sourceIndex: number): string | null {
-  for (let index = sourceIndex + 1; index < nodes.length; index += 1) {
-    const node = nodes[index];
-    if (!usesImplicitPipelineInput(node.type)) continue;
-    if ((node as { detachedFromPipe?: boolean }).detachedFromPipe) continue;
-    return node.id;
-  }
-  return null;
-}
-
 const getPrimaryAutoInputPortName = (node: AnyNode): string | null => {
-  if (usesImplicitPipelineInput(node.type)) return 'pipe';
+  if (usesPipelineInput(node.type)) return PIPE_INPUT_PORT;
 
   const ports = getInputPorts(node).filter(
     (port) => port.type === 'texture' || port.type === 'mask',
@@ -304,17 +245,6 @@ const getPrimaryAutoInputPortName = (node: AnyNode): string | null => {
 const canUseNodeAsAutoSource = (node: AnyNode): boolean =>
   !isSceneNode(node) && !isInputNode(node) && !isOutputNode(node);
 
-const getSingleDownstreamPipeEdge = (
-  flow: Flow | null,
-  sourceNodeId: string,
-): Pick<FlowEdge, 'sourceNodeId' | 'sourcePort' | 'targetNodeId' | 'targetPort'> | null => {
-  const edges =
-    flow?.edges.filter(
-      (edge) => edge.sourceNodeId === sourceNodeId && edge.targetPort === 'pipe',
-    ) ?? [];
-  return edges.length === 1 ? edges[0] : null;
-};
-
 const getAutoConnectionSource = (
   state: GraphCommandState,
 ): {
@@ -327,7 +257,7 @@ const getAutoConnectionSource = (
 } | null => {
   const flowId = state.activeFlowId ?? state.rootFlowId;
   const activeFlow = getRootFlow(state.flows, flowId);
-  const outputPipeEdge = getOutputPipeEdge(activeFlow);
+  const outputPipeEdge = getOutputInputEdge(activeFlow);
 
   if (state.selectedNodeId === OUTPUT_NODE_ID) {
     if (outputPipeEdge) {
@@ -336,22 +266,6 @@ const getAutoConnectionSource = (
         sourcePortName: outputPipeEdge.sourcePort,
         downstreamEdge: outputPipeEdge,
       };
-    }
-
-    if (!isFlowOutputDetached(activeFlow)) {
-      const sourceNodeId = getLastImplicitPipeSourceNodeId(state.nodes);
-      if (sourceNodeId) {
-        return {
-          sourceNodeId,
-          sourcePortName: 'output',
-          downstreamEdge: {
-            sourceNodeId,
-            sourcePort: 'output',
-            targetNodeId: OUTPUT_NODE_ID,
-            targetPort: 'pipe',
-          },
-        };
-      }
     }
 
     return null;
@@ -365,7 +279,7 @@ const getAutoConnectionSource = (
   return {
     sourceNodeId: selectedNode.id,
     sourcePortName: 'output',
-    downstreamEdge: getDownstreamPipeTarget(activeFlow, state.nodes, selectedNode.id),
+    downstreamEdge: getDownstreamPipeTarget(activeFlow, selectedNode.id),
   };
 };
 
@@ -437,6 +351,7 @@ export function createNodeCommand(
 export const createSceneNode = (opts: {
   width: number;
   height: number;
+  startFrame?: number;
   maxFrames?: number;
   fps?: number;
 }): SceneNode => ({
@@ -448,6 +363,7 @@ export const createSceneNode = (opts: {
   height: opts.height,
   bitDepth: 16,
   colorSpace: ColorManagementDefaults.WORKING_SPACE,
+  startFrame: opts.startFrame ?? 0,
   maxFrames: opts.maxFrames ?? 0,
   fps: opts.fps ?? 30,
 });
@@ -465,6 +381,7 @@ export const createMediaSourceNode = (opts: {
   videoColorMetadata?: MediaSourceNode['videoColorMetadata'];
   duration?: number;
   frameCount?: number;
+  startFrame?: number;
   transform?: ImageTransform;
 }): MediaSourceNode => {
   const mediaColorManagement =
@@ -494,7 +411,7 @@ export const createMediaSourceNode = (opts: {
       ? {
           duration: opts.duration ?? 0,
           frameCount: opts.frameCount ?? Math.max(1, Math.ceil((opts.duration ?? 0) * 30)),
-          startFrame: 0,
+          startFrame: opts.startFrame ?? 0,
           beforeRangeBehavior: 'black',
           afterRangeBehavior: 'black',
           ...(opts.videoColorMetadata ? { videoColorMetadata: opts.videoColorMetadata } : {}),
@@ -508,11 +425,14 @@ export const createMediaSourceNode = (opts: {
 export const createSequenceNode = (opts: {
   name: string;
   frames: string[];
+  plates?: ImageSequencePlate[];
+  activePlateId?: string;
   sourceFileName?: string;
   width: number;
   height: number;
   colorSpace?: ImageSequenceNode['colorSpace'];
   mediaColorManagement?: ImageSequenceNode['mediaColorManagement'];
+  startFrame?: number;
   scaleX?: number;
   scaleY?: number;
 }): ImageSequenceNode => {
@@ -530,6 +450,8 @@ export const createSequenceNode = (opts: {
     name: opts.name,
     enabled: true,
     frames: opts.frames,
+    ...(opts.plates ? { plates: opts.plates } : {}),
+    ...(opts.activePlateId ? { activePlateId: opts.activePlateId } : {}),
     sourceFileName: opts.sourceFileName,
     width: opts.width,
     height: opts.height,
@@ -545,7 +467,7 @@ export const createSequenceNode = (opts: {
     colorSpace: sourceColorSpace,
     mediaColorManagement,
     fps: 30,
-    startFrame: 0,
+    startFrame: opts.startFrame ?? 0,
     beforeRangeBehavior: 'black',
     afterRangeBehavior: 'black',
   };
@@ -659,16 +581,6 @@ export function insertNodeCommand(
   newNodes: AnyNode[],
   name: string,
 ): GraphCommandResult {
-  // When nothing is selected, create the node as floating (detached)
-  // so it does not participate in the implicit pipeline.
-  // This check must happen before any sub-commands so that both
-  // insertSourceWithMergeCommand and the fallback path use the
-  // detached node consistently.
-  if (!state.selectedNodeId) {
-    finalNewNode = { ...finalNewNode, detachedFromPipe: true } as AnyNode;
-    newNodes = newNodes.map((node) => (node.id === finalNewNode.id ? finalNewNode : node));
-  }
-
   const autoConnectedResult = createAutoConnectedInsertCommand(state, finalNewNode, newNodes, name);
   if (autoConnectedResult) return autoConnectedResult;
 
@@ -705,24 +617,26 @@ export function insertSourceWithMergeCommand(
   const selectedNode = state.selectedNodeId
     ? state.nodes.find((node) => node.id === state.selectedNodeId)
     : null;
+  const flowId = state.activeFlowId ?? state.rootFlowId;
+  const activeFlow = getRootFlow(state.flows, flowId);
 
   const shouldCreateMerge =
     !!selectedNode &&
-    !(selectedNode as { detachedFromPipe?: boolean }).detachedFromPipe &&
+    isNodeConnectedToOutput(activeFlow, selectedNode.id) &&
     state.nodes.some(
-      (node) =>
-        isSourceNodeType(node.type) && !(node as { detachedFromPipe?: boolean }).detachedFromPipe,
+      (node) => isSourceNodeType(node.type) && isNodeConnectedToOutput(activeFlow, node.id),
     ) &&
-    // Trigger merge when selected node either is a source, has pipe input, or
-    // participates in the implicit pipeline — same behavior regardless of type
     (nodeFlags(selectedNode.type).isSource ||
-      usesImplicitPipelineInput(selectedNode.type) ||
+      usesPipelineInput(selectedNode.type) ||
       !!selectedNode.inputs?.pipe);
 
   if (!shouldCreateMerge) {
-    // No merge needed — just insert
+    const shouldConnectFirstSource = !!flowId && !!activeFlow && !getOutputInputEdge(activeFlow);
+    const rebuilt = shouldConnectFirstSource
+      ? rebuildFlow(state.flows, flowId, newNodes, newNode.id)
+      : null;
     return {
-      documentPatch: { nodes: newNodes },
+      documentPatch: rebuilt ? { nodes: rebuilt.nodes, flows: rebuilt.flows } : { nodes: newNodes },
       selectionPatch: {
         selectedNodeId: newNode.id,
         selectedNodeIds: [newNode.id],
@@ -748,20 +662,15 @@ export function insertSourceWithMergeCommand(
   } as AnyNode;
 
   const insertAt = newNodes.indexOf(newNode);
-  const detachedSourceNode = { ...newNode, detachedFromPipe: true } as AnyNode;
   const nodesWithMerge = [...newNodes];
   nodesWithMerge.splice(insertAt + 1, 0, mergeNode);
-  let nextNodes = nodesWithMerge.map((node) =>
-    node.id === detachedSourceNode.id ? detachedSourceNode : node,
-  );
+  let nextNodes = nodesWithMerge;
 
   // Patch flows: merge output replaces the selected node's position in the
   // downstream pipeline. The selected node's own output feeds into merge.pipe.
-  const flowId = state.activeFlowId ?? state.rootFlowId;
   let nextFlows: Record<FlowId, Flow> | undefined;
   if (flowId) {
-    const activeFlow = getRootFlow(state.flows, flowId);
-    const downstreamTarget = getDownstreamPipeTarget(activeFlow, state.nodes, selectedNode.id);
+    const downstreamTarget = getDownstreamPipeTarget(activeFlow, selectedNode.id);
 
     if (downstreamTarget && downstreamTarget.targetNodeId !== OUTPUT_NODE_ID) {
       // Connect merge output to the downstream non-output node
@@ -828,65 +737,14 @@ export function insertSourceWithMergeCommand(
 // ---------------------------------------------------------------------------
 
 export function extractMergeChannelsCommand(state: GraphCommandState): GraphCommandResult | null {
-  const { nodes, selectedNodeId } = state;
+  const { nodes } = state;
   const flowId = state.activeFlowId ?? state.rootFlowId;
-  const activeFlow = flowId ? state.flows[flowId] : null;
-  const outputPipeEdge = getOutputPipeEdge(activeFlow);
-  const selectedIndex = selectedNodeId ? nodes.findIndex((node) => node.id === selectedNodeId) : -1;
-  const selectedNode = selectedIndex >= 0 ? nodes[selectedIndex] : null;
+  const connection = getAutoConnectionSource(state);
+  if (!connection) return null;
 
-  let sourceNodeId: string | null = null;
-  let sourcePortName = 'output';
-  let targetNodeId: string | null = null;
-  const targetPortName = 'pipe';
-  let insertIndex = selectedIndex;
-
-  if (selectedNodeId === OUTPUT_NODE_ID) {
-    if (outputPipeEdge) {
-      sourceNodeId = outputPipeEdge.sourceNodeId;
-      sourcePortName = outputPipeEdge.sourcePort;
-    } else if (!isFlowOutputDetached(activeFlow)) {
-      sourceNodeId = getLastImplicitPipeSourceNodeId(nodes);
-    }
-    targetNodeId = OUTPUT_NODE_ID;
-    insertIndex = sourceNodeId
-      ? nodes.findIndex((node) => node.id === sourceNodeId)
-      : nodes.length - 1;
-  } else if (selectedNode) {
-    const explicitPipeSource = selectedNode.inputs?.pipe;
-    if (explicitPipeSource) {
-      sourceNodeId = explicitPipeSource;
-      sourcePortName = selectedNode.inputSourcePorts?.pipe ?? 'output';
-      targetNodeId = selectedNode.id;
-      insertIndex = selectedIndex - 1;
-    } else if (
-      usesImplicitPipelineInput(selectedNode.type) &&
-      !(selectedNode as { detachedFromPipe?: boolean }).detachedFromPipe
-    ) {
-      sourceNodeId = getPreviousImplicitPipeSourceNodeId(nodes, selectedIndex);
-      targetNodeId = selectedNode.id;
-      insertIndex = selectedIndex - 1;
-    } else if (
-      participatesInImplicitPipeline(selectedNode.type) &&
-      !(selectedNode as { detachedFromPipe?: boolean }).detachedFromPipe
-    ) {
-      sourceNodeId = selectedNode.id;
-      const nextTargetNodeId = getNextImplicitPipeTargetNodeId(nodes, selectedIndex);
-      if (nextTargetNodeId) {
-        targetNodeId = nextTargetNodeId;
-        insertIndex = selectedIndex;
-      } else if (
-        outputPipeEdge?.sourceNodeId === selectedNode.id ||
-        (!outputPipeEdge && !isFlowOutputDetached(activeFlow))
-      ) {
-        sourcePortName = outputPipeEdge?.sourcePort ?? sourcePortName;
-        targetNodeId = OUTPUT_NODE_ID;
-        insertIndex = selectedIndex;
-      }
-    }
-  }
-
-  if (!sourceNodeId) return null;
+  const { sourceNodeId, sourcePortName, downstreamEdge } = connection;
+  const sourceIndex = nodes.findIndex((node) => node.id === sourceNodeId);
+  if (sourceIndex === -1) return null;
 
   const extract = createDetachedNodeCommand({ nodes }, NodeType.EXTRACT_CHANNELS);
   if (!extract) return null;
@@ -902,32 +760,37 @@ export function extractMergeChannelsCommand(state: GraphCommandState): GraphComm
     mergeNode = assignNodeInput(mergeNode, portName, extractNode.id, portName);
   }
 
-  const insertionIndex = Math.max(-1, insertIndex);
   const newNodes = [...nodes];
-  newNodes.splice(insertionIndex + 1, 0, extractNode, mergeNode);
+  newNodes.splice(sourceIndex + 1, 0, extractNode, mergeNode);
 
-  if (targetNodeId && targetNodeId !== OUTPUT_NODE_ID) {
-    const targetIndex = newNodes.findIndex((node) => node.id === targetNodeId);
+  if (downstreamEdge && downstreamEdge.targetNodeId !== OUTPUT_NODE_ID) {
+    const targetIndex = newNodes.findIndex((node) => node.id === downstreamEdge.targetNodeId);
     if (targetIndex !== -1) {
-      newNodes[targetIndex] = assignNodeInput(newNodes[targetIndex], targetPortName, mergeNode.id);
+      newNodes[targetIndex] = assignNodeInput(
+        newNodes[targetIndex],
+        downstreamEdge.targetPort,
+        mergeNode.id,
+      );
     }
   }
 
   // Rebuild flows
   let nextFlows: Record<FlowId, Flow> | undefined;
+  let syncedNodes = newNodes;
   if (flowId) {
-    const { flows } = rebuildFlow(
+    const rebuilt = rebuildFlow(
       state.flows,
       flowId,
       newNodes,
-      targetNodeId === OUTPUT_NODE_ID ? mergeNode.id : undefined,
+      downstreamEdge?.targetNodeId === OUTPUT_NODE_ID ? mergeNode.id : undefined,
     );
-    nextFlows = flows;
+    nextFlows = rebuilt.flows;
+    syncedNodes = rebuilt.nodes;
   }
 
   return {
     documentPatch: {
-      nodes: newNodes,
+      nodes: syncedNodes,
       ...(nextFlows ? { flows: nextFlows } : {}),
     },
     selectionPatch: {
@@ -990,13 +853,6 @@ export function connectNodeCommand(
   const node = state.nodes.find((l) => l.id === nodeId);
   if (!node && nodeId !== OUTPUT_NODE_ID) return null;
 
-  const finalFlows =
-    nodeId === OUTPUT_NODE_ID || portName === 'pipe'
-      ? (updateFlowNode(nextFlows, flowId, nodeId, {
-          detachedFromPipe: false,
-        } as Partial<AnyNode>) ?? nextFlows)
-      : nextFlows;
-
   // Keep the nodes array in sync with flows: set the connected input
   const nextNodes = state.nodes.map((n) => {
     if (n.id !== nodeId) return n;
@@ -1011,12 +867,11 @@ export function connectNodeCommand(
       ...n,
       inputs,
       inputSourcePorts: Object.keys(inputSourcePorts).length > 0 ? inputSourcePorts : undefined,
-      ...(portName === 'pipe' ? { detachedFromPipe: false } : {}),
     } as AnyNode;
   });
 
   return {
-    documentPatch: { flows: finalFlows, nodes: nextNodes },
+    documentPatch: { flows: nextFlows, nodes: nextNodes },
     selectionPatch: {
       selectedNodeId: state.selectedNodeId,
       selectedNodeIds: state.selectedNodeIds,
@@ -1046,7 +901,7 @@ export function disconnectNodeCommand(
   const node = state.nodes.find((l) => l.id === nodeId);
   const flow = flowId ? state.flows[flowId] : null;
   if (nodeId === OUTPUT_NODE_ID) {
-    const edge = getOutputPipeEdge(flow);
+    const edge = getOutputInputEdge(flow);
     if (!edge || edge.targetPort !== portName) return null;
   } else if (!node?.inputs?.[portName]) {
     return null;
@@ -1054,13 +909,6 @@ export function disconnectNodeCommand(
 
   const nextFlows = removeFlowNodeInput(state.flows, flowId, nodeId, portName);
   if (!nextFlows) return null;
-
-  const finalFlows =
-    nodeId === OUTPUT_NODE_ID || portName === 'pipe'
-      ? (updateFlowNode(nextFlows, flowId, nodeId, {
-          detachedFromPipe: true,
-        } as Partial<AnyNode>) ?? nextFlows)
-      : nextFlows;
 
   // Keep the nodes array in sync with flows: remove the disconnected input
   const nextNodes = state.nodes.map((n) => {
@@ -1074,12 +922,11 @@ export function disconnectNodeCommand(
       inputs: Object.keys(newInputs).length > 0 ? newInputs : undefined,
       inputSourcePorts:
         Object.keys(newInputSourcePorts).length > 0 ? newInputSourcePorts : undefined,
-      ...(portName === 'pipe' ? { detachedFromPipe: true } : {}),
     } as AnyNode;
   });
 
   return {
-    documentPatch: { flows: finalFlows, nodes: nextNodes },
+    documentPatch: { flows: nextFlows, nodes: nextNodes },
     selectionPatch: {
       selectedNodeId: state.selectedNodeId ?? null,
       selectedNodeIds: state.selectedNodeIds ?? [],
@@ -1316,7 +1163,6 @@ const remapNodeInputs = (
 ): {
   inputs?: Record<string, string>;
   inputSourcePorts?: Record<string, string>;
-  droppedPorts: Set<string>;
 } => {
   const sourceInputs = { ...(node.inputs ?? {}) };
   const sourcePorts = { ...(node.inputSourcePorts ?? {}) };
@@ -1333,12 +1179,10 @@ const remapNodeInputs = (
 
   const inputs: Record<string, string> = {};
   const inputSourcePorts: Record<string, string> = {};
-  const droppedPorts = new Set<string>();
 
   for (const [portName, sourceNodeId] of Object.entries(sourceInputs)) {
     const mappedSourceNodeId = nodeIdMap.get(sourceNodeId);
     if (!mappedSourceNodeId) {
-      droppedPorts.add(portName);
       continue;
     }
 
@@ -1352,7 +1196,6 @@ const remapNodeInputs = (
   return {
     inputs: Object.keys(inputs).length > 0 ? inputs : undefined,
     inputSourcePorts: Object.keys(inputSourcePorts).length > 0 ? inputSourcePorts : undefined,
-    droppedPorts,
   };
 };
 
@@ -1409,7 +1252,7 @@ const cloneNodeForPaste = ({
   edges?: FlowEdge[];
 }): AnyNode => {
   const mappedId = nodeIdMap.get(node.id) ?? node.id;
-  const { inputs, inputSourcePorts, droppedPorts } = remapNodeInputs(node, nodeIdMap, edges);
+  const { inputs, inputSourcePorts } = remapNodeInputs(node, nodeIdMap, edges);
   const baseNode = deepClone({
     ...node,
     id: mappedId,
@@ -1430,10 +1273,6 @@ const cloneNodeForPaste = ({
             ...remapInputNodeFields(baseNode as InputNode, nodeIdMap),
           } as AnyNode)
         : baseNode;
-
-  if (droppedPorts.has('pipe')) {
-    return { ...nextNode, detachedFromPipe: true } as AnyNode;
-  }
 
   return nextNode;
 };
@@ -1646,11 +1485,6 @@ const remapFlowPositions = (
   return nextPositions;
 };
 
-const detachPastedPipelineNode = (node: AnyNode): AnyNode =>
-  participatesInImplicitPipeline(node.type)
-    ? ({ ...node, detachedFromPipe: true } as AnyNode)
-    : node;
-
 export function pasteNodesCommand(
   state: GraphCommandState,
   payload: NodeClipboardPayload,
@@ -1666,25 +1500,14 @@ export function pasteNodesCommand(
   const nodeIdMap = buildNodeIdMap(payload, state);
   const flowIdMap = buildFlowIdMap(payload, state);
   const nameAssigner = createUniqueItemNameAssigner(state.nodes.map((node) => node.name));
-  const pasteHasSelectionAnchor = !!state.selectedNodeId;
   const clonedNodes = sourceNodes.map((node) =>
-    pasteHasSelectionAnchor
-      ? cloneNodeForPaste({
-          node,
-          nodeIdMap,
-          flowIdMap,
-          nameAssigner,
-          edges: payload.edges,
-        })
-      : detachPastedPipelineNode(
-          cloneNodeForPaste({
-            node,
-            nodeIdMap,
-            flowIdMap,
-            nameAssigner,
-            edges: payload.edges,
-          }),
-        ),
+    cloneNodeForPaste({
+      node,
+      nodeIdMap,
+      flowIdMap,
+      nameAssigner,
+      edges: payload.edges,
+    }),
   );
 
   const insertIndex = getPasteInsertIndex(state.nodes, state.selectedNodeId);
@@ -1984,59 +1807,11 @@ export function groupNodesCommand(state: GraphCommandState): GraphCommandResult 
   const inputNodeIdByExternalSource = new Map<string, string>();
   const exposedTargetPorts = new Set<string>();
 
-  const firstSelectedNode = selectedNodes[0];
-  const shouldExposeImplicitPipeInput =
-    firstSelectedNode &&
-    !isSourceNodeType(firstSelectedNode.type) &&
-    usesImplicitPipelineInput(firstSelectedNode.type) &&
-    !(firstSelectedNode as { detachedFromPipe?: boolean }).detachedFromPipe;
-
-  const implicitPipeSourceNode = shouldExposeImplicitPipeInput
-    ? state.nodes
-        .slice(0, groupIndex)
-        .reverse()
-        .find(
-          (node) =>
-            node.type !== NodeType.SCENE &&
-            !groupableIdSet.has(node.id) &&
-            !(node as { detachedFromPipe?: boolean }).detachedFromPipe,
-        )
-    : null;
-
-  if (firstSelectedNode && shouldExposeImplicitPipeInput) {
-    const inputId = getUniqueGroupInputId(firstSelectedNode.id, 'pipe', usedGroupInputIds);
-    const entryNodeId = getInputNodeId(groupNodeBase.id, inputId);
-    groupInputNodeId = entryNodeId;
-    if (implicitPipeSourceNode) {
-      inputNodeIdByExternalSource.set(implicitPipeSourceNode.id, entryNodeId);
-      groupInputs[inputId] = implicitPipeSourceNode.id;
-      parentEdges.push({
-        id: `edge_${implicitPipeSourceNode.id}_${groupNodeBase.id}_${inputId}`,
-        sourceNodeId: implicitPipeSourceNode.id,
-        sourcePort: 'output',
-        targetNodeId: groupNodeBase.id,
-        targetPort: inputId,
-      });
-    }
-    childInputNodes.push(createInputNode(groupNodeBase.id, inputId, 'Main'));
-    externalInputs.push({
-      id: inputId,
-      label: 'Main',
-      entryNodeId,
-      targetNodeId: firstSelectedNode.id,
-      targetPort: 'pipe',
-    });
-    exposedTargetPorts.add(`${firstSelectedNode.id}:pipe`);
-    childInputEdges.push({
-      id: `edge_${entryNodeId}_${firstSelectedNode.id}_pipe`,
-      sourceNodeId: entryNodeId,
-      sourcePort: 'output',
-      targetNodeId: firstSelectedNode.id,
-      targetPort: 'pipe',
-    });
-  }
-
-  for (const edge of activeFlow.edges) {
+  const orderedEdges = [...activeFlow.edges].sort(
+    (left, right) =>
+      Number(right.targetPort === PIPE_INPUT_PORT) - Number(left.targetPort === PIPE_INPUT_PORT),
+  );
+  for (const edge of orderedEdges) {
     const sourceIsGrouped = groupableIdSet.has(edge.sourceNodeId);
     const targetIsGrouped = groupableIdSet.has(edge.targetNodeId);
 
@@ -2046,27 +1821,28 @@ export function groupNodesCommand(state: GraphCommandState): GraphCommandResult 
     }
 
     if (!sourceIsGrouped && targetIsGrouped) {
-      const isImplicitPipeEntryEdge =
-        edge.targetPort === 'pipe' &&
-        edge.sourceNodeId === implicitPipeSourceNode?.id &&
-        edge.targetNodeId === firstSelectedNode?.id;
-
-      if (isImplicitPipeEntryEdge) continue;
-
       const inputId = getUniqueGroupInputId(edge.targetNodeId, edge.targetPort, usedGroupInputIds);
       const targetNodeName =
         selectedNodes.find((node) => node.id === edge.targetNodeId)?.name ?? edge.targetNodeId;
       const existingEntryNodeId = inputNodeIdByExternalSource.get(edge.sourceNodeId);
       const entryNodeId = existingEntryNodeId ?? getInputNodeId(groupNodeBase.id, inputId);
+      if (edge.targetPort === PIPE_INPUT_PORT && !groupInputNodeId) {
+        groupInputNodeId = entryNodeId;
+      }
       if (!existingEntryNodeId) {
         inputNodeIdByExternalSource.set(edge.sourceNodeId, entryNodeId);
         childInputNodes.push(
-          createInputNode(groupNodeBase.id, inputId, `${targetNodeName} ${edge.targetPort}`),
+          createInputNode(
+            groupNodeBase.id,
+            inputId,
+            edge.targetPort === PIPE_INPUT_PORT ? 'Main' : `${targetNodeName} ${edge.targetPort}`,
+          ),
         );
       }
       externalInputs.push({
         id: inputId,
-        label: `${targetNodeName} ${edge.targetPort}`,
+        label:
+          edge.targetPort === PIPE_INPUT_PORT ? 'Main' : `${targetNodeName} ${edge.targetPort}`,
         entryNodeId,
         targetNodeId: edge.targetNodeId,
         targetPort: edge.targetPort,

@@ -8,11 +8,29 @@ const mockRegistry = new Map([
   [
     NodeType.EXTRACT_CHANNELS,
     {
-      processingDomain: 'data',
+      processingDomain: 'scene_linear',
       outputPorts: [
-        { name: 'a', dataSemantic: 'alpha', label: 'A', description: '' },
-        { name: 'r', dataSemantic: 'alpha', label: 'R', description: '' },
-        { name: 'g', label: 'G', description: '' },
+        {
+          name: 'output',
+          label: 'RGBA',
+          processingDomain: 'scene_linear',
+          description: '',
+        },
+        { name: 'a', dataSemantic: 'alpha', channel: 'a', label: 'A', description: '' },
+        {
+          name: 'r',
+          processingDomain: 'data',
+          channel: 'r',
+          label: 'R',
+          description: '',
+        },
+        {
+          name: 'g',
+          processingDomain: 'data',
+          channel: 'g',
+          label: 'G',
+          description: '',
+        },
       ],
     },
   ],
@@ -43,7 +61,25 @@ const flow = (nodes: AnyNode[], edges: Flow['edges'], outputNodeId = 'output'): 
 });
 
 describe('render output domain', () => {
-  it('resolves a registry-declared alpha output as technical data', () => {
+  it('treats the selected Extract Channels node primary output as normal color', () => {
+    const extract = {
+      id: 'extract',
+      type: NodeType.EXTRACT_CHANNELS,
+      name: 'Extract Channels',
+      enabled: true,
+    } as AnyNode;
+
+    expect(
+      resolveRenderOutputDomain({
+        nodes: [extract],
+        flow: null,
+        viewerNodeId: extract.id,
+        nodeRegistry: mockRegistry,
+      }),
+    ).toEqual({ kind: 'color' });
+  });
+
+  it('treats a named channel connected to the normal output pipe as sparse RGBA color', () => {
     const extract = {
       id: 'extract',
       type: NodeType.EXTRACT_CHANNELS,
@@ -76,14 +112,13 @@ describe('render output domain', () => {
         nodeRegistry: mockRegistry,
       }),
     ).toEqual({
-      kind: 'data',
+      kind: 'color',
       sourceNodeId: 'extract',
       sourcePort: 'a',
-      semantic: 'alpha',
     });
   });
 
-  it('inherits a technical domain through pipe-connected adjustments', () => {
+  it('keeps a named channel as sparse RGBA through pipe-connected adjustments', () => {
     const extract = {
       id: 'extract',
       type: NodeType.EXTRACT_CHANNELS,
@@ -117,6 +152,89 @@ describe('render output domain', () => {
         {
           id: 'grade-output',
           sourceNodeId: adjustment.id,
+          sourcePort: 'output',
+          targetNodeId: output.id,
+          targetPort: 'pipe',
+        },
+      ],
+    );
+
+    expect(
+      resolveRenderOutputDomain({
+        nodes: activeFlow.nodes,
+        flow: activeFlow,
+        nodeRegistry: mockRegistry,
+      }),
+    ).toEqual({
+      kind: 'color',
+      sourceNodeId: 'extract',
+      sourcePort: 'a',
+    });
+  });
+
+  it('ignores stale node input projections when the canonical edge is absent', () => {
+    const extract = {
+      id: 'extract',
+      type: NodeType.EXTRACT_CHANNELS,
+      name: 'Extract Channels',
+      enabled: true,
+    } as unknown as AnyNode;
+    const adjustment = {
+      id: 'grade',
+      type: NodeType.GRADE,
+      name: 'Grade',
+      enabled: true,
+      inputs: { pipe: extract.id },
+      inputSourcePorts: { pipe: 'r' },
+    } as unknown as AnyNode;
+    const output = {
+      id: 'output',
+      type: NodeType.OUTPUT,
+      name: 'Output',
+      enabled: true,
+    } as AnyNode;
+    const activeFlow = flow(
+      [extract, adjustment, output],
+      [
+        {
+          id: 'grade-output',
+          sourceNodeId: adjustment.id,
+          sourcePort: 'output',
+          targetNodeId: output.id,
+          targetPort: 'pipe',
+        },
+      ],
+    );
+
+    expect(
+      resolveRenderOutputDomain({
+        nodes: activeFlow.nodes,
+        flow: activeFlow,
+        nodeRegistry: mockRegistry,
+      }),
+    ).toEqual({ kind: 'color' });
+  });
+
+  it('does not reinterpret generic technical data as color at the output pipe', () => {
+    const dataMedia = {
+      id: 'data',
+      type: NodeType.MEDIA_SOURCE,
+      name: 'Depth',
+      enabled: true,
+      mediaColorManagement: createUserMediaColorManagement('Raw', { isData: true }),
+    } as AnyNode;
+    const output = {
+      id: 'output',
+      type: NodeType.OUTPUT,
+      name: 'Output',
+      enabled: true,
+    } as AnyNode;
+    const activeFlow = flow(
+      [dataMedia, output],
+      [
+        {
+          id: 'data-output',
+          sourceNodeId: dataMedia.id,
           sourcePort: 'output',
           targetNodeId: output.id,
           targetPort: 'pipe',

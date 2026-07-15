@@ -39,6 +39,7 @@ interface AssetViewerProps {
   media: AssetViewerMedia | null;
   className?: string;
   onOpenProject?: () => void;
+  autoDetectDisplayView?: boolean;
 }
 
 const formatDuration = (seconds: number): string => {
@@ -64,7 +65,12 @@ const resolveFrameAssetIds = (media: AssetViewerMedia | null): string[] => {
   return [media.assetId];
 };
 
-export function AssetViewer({ media, className = '', onOpenProject }: AssetViewerProps) {
+export function AssetViewer({
+  media,
+  className = '',
+  onOpenProject,
+  autoDetectDisplayView = false,
+}: AssetViewerProps) {
   const frameAssetIds = useMemo(() => resolveFrameAssetIds(media), [media]);
   const mediaKind = media?.mediaKind ?? 'image';
   const isSequence = mediaKind === 'image_sequence' && frameAssetIds.length > 1;
@@ -196,6 +202,7 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
               fps={media.fps}
               mediaColorManagement={media.mediaColorManagement}
               className="h-full"
+              autoDetectDisplayView={autoDetectDisplayView}
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center px-6 text-center text-xs text-rose-200">
@@ -209,6 +216,7 @@ export function AssetViewer({ media, className = '', onOpenProject }: AssetViewe
             height={media.height}
             mediaColorManagement={media.mediaColorManagement}
             className="h-full w-full"
+            autoDetectDisplayView={autoDetectDisplayView}
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-gray-500">

@@ -5,7 +5,6 @@ import {
   RotoAlphaMode,
   type AnyNode,
   type DisplayViewSelection,
-  type PaintNode,
   type ProjectColorManagement,
   type RenderOutputDomain,
   type RotoNode,
@@ -14,8 +13,6 @@ import {
 } from '@blackboard/types';
 import type { RendererMaskLayer } from '@blackboard/renderer';
 import { getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
-import { paintNodeHasVisibleContentAtFrame } from '@/nodes/builtin/paint/paintRaster';
-import { getPaintTextureCommittedState } from '@/nodes/builtin/paint/paintTextureKeys';
 import { renderViewportFrameWithSharedPipeline } from '@/renderer/pipeline';
 import type { TextTextureEntry } from './useViewportTextTextures';
 import type { TextureCache } from '@/utils/textureCache';
@@ -59,9 +56,6 @@ interface UseViewportRenderLoopParams {
   threeStuff: ThreeStuff;
   textureCacheRef: RefObject<Pick<TextureCache, 'get'>>;
   textTexturesRef: RefObject<Map<string, TextTextureEntry>>;
-  paintTexturesRef: RefObject<
-    Map<string, { colorTexture: THREE.Texture; alphaTexture: THREE.Texture; committedKey: string }>
-  >;
   rotoMaskTexturesRef: RefObject<
     Map<
       string,
@@ -83,45 +77,6 @@ interface UseViewportRenderLoopResult {
   /** Display-referred output captured for compare-mode compositing. */
   displayOutputBufferRef: RefObject<THREE.WebGLRenderTarget | null>;
 }
-
-const arePaintTexturesReadyForFrame = (
-  nodes: AnyNode[],
-  frame: number,
-  sceneNode: SceneNode,
-  paintTexturesRef: RefObject<
-    Map<string, { colorTexture: THREE.Texture; alphaTexture: THREE.Texture; committedKey: string }>
-  >,
-): boolean => {
-  const paintNodes = nodes.filter((node) => node.type === NodeType.PAINT) as PaintNode[];
-
-  for (const node of paintNodes) {
-    const expectedState = getPaintTextureCommittedState({
-      node,
-      nodes,
-      frame,
-      width: sceneNode.width,
-      height: sceneNode.height,
-    });
-    if (!expectedState.requiresDynamicCloneSource) {
-      continue;
-    }
-    const entry = paintTexturesRef.current.get(node.id);
-    const hasVisibleContent = paintNodeHasVisibleContentAtFrame(node, frame);
-
-    if (hasVisibleContent) {
-      if (!entry || entry.committedKey !== expectedState.committedKey) {
-        return false;
-      }
-      continue;
-    }
-
-    if (entry) {
-      return false;
-    }
-  }
-
-  return true;
-};
 
 /**
  * Manages the GPU render loop: kicks off pipeline rendering via
@@ -149,7 +104,6 @@ export function useViewportRenderLoop({
   threeStuff,
   textureCacheRef,
   textTexturesRef,
-  paintTexturesRef,
   rotoMaskTexturesRef,
   freezeImageWhileEditing,
   deferProjectThumbnailCapture,
@@ -237,10 +191,6 @@ export function useViewportRenderLoop({
       return;
     }
 
-    if (!arePaintTexturesReadyForFrame(nodes, visualFrame, sceneNode, paintTexturesRef)) {
-      return;
-    }
-
     const renderStartedAt = performance.now();
     const result = renderViewportFrameWithSharedPipeline({
       resources: {
@@ -289,15 +239,6 @@ export function useViewportRenderLoop({
         return undefined;
       },
       getTextTexture: (node) => textTexturesRef.current.get(node.id),
-      getPaintTextures: (nodeId) => {
-        const entry = paintTexturesRef.current.get(nodeId);
-        return entry
-          ? {
-              color: entry.colorTexture,
-              alpha: entry.alphaTexture,
-            }
-          : undefined;
-      },
       getRotoMaskLayers: (nodeId) => rotoMaskTexturesRef.current.get(nodeId)?.maskLayers,
       getRotoAlphaMode: (nodeId) => {
         const rotoNode = nodes.find(
@@ -350,7 +291,6 @@ export function useViewportRenderLoop({
     signalFrameRendered,
     reportRenderDuration,
     canvasRef,
-    paintTexturesRef,
     rotoMaskTexturesRef,
     textTexturesRef,
     textureCacheRef,

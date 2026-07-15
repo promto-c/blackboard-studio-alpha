@@ -12,7 +12,7 @@ export function createPlaybackActions(
 
   const clampFrame = (frame: number) => {
     const current = get();
-    return Math.max(0, Math.min(current.maxFrames, frame));
+    return Math.max(current.timelineStartFrame, Math.min(current.maxFrames, frame));
   };
 
   return {
@@ -69,11 +69,6 @@ export function createPlaybackActions(
       }
       set(() => ({ isFrameScrubbing }));
     },
-    setMaxFrames: (frames: number) =>
-      deps.commitMutation(() => ({
-        patch: { maxFrames: frames },
-        persist: 'debounced',
-      })),
     setFps: (fps: number) =>
       deps.commitMutation(() => ({
         patch: { fps },

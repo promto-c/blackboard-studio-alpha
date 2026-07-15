@@ -1,4 +1,9 @@
-import type { AnyNode, ColorProcessingDomain, DataChannelSemantic } from '@blackboard/types';
+import type {
+  AnyNode,
+  ColorProcessingDomain,
+  DataChannelSemantic,
+  RgbaChannel,
+} from '@blackboard/types';
 import type { RendererNodeEntry } from './types';
 
 const SEMANTIC_DOMAINS: Record<DataChannelSemantic, ColorProcessingDomain> = {
@@ -21,16 +26,36 @@ export const getDataSemanticProcessingDomain = (
 export const isTechnicalProcessingDomain = (domain: ColorProcessingDomain): boolean =>
   domain === 'data' || domain === 'alpha' || domain === 'vector' || domain === 'depth';
 
+export const resolveRendererNodeOutputPort = (
+  definition: RendererNodeEntry,
+  node: AnyNode,
+  outputPortName: string,
+) => {
+  const outputPorts =
+    typeof definition.outputPorts === 'function'
+      ? definition.outputPorts(node)
+      : definition.outputPorts;
+  return outputPorts?.find((port) => port.name === outputPortName);
+};
+
+export const resolveRendererNodeInputPort = (
+  definition: RendererNodeEntry,
+  node: AnyNode,
+  inputPortName: string,
+) => {
+  const inputPorts =
+    typeof definition.inputPorts === 'function'
+      ? definition.inputPorts(node)
+      : definition.inputPorts;
+  return inputPorts?.find((port) => port.name === inputPortName);
+};
+
 export const resolveRendererNodeProcessingDomain = (
   definition: RendererNodeEntry,
   node: AnyNode,
   outputPortName = 'output',
 ): ColorProcessingDomain => {
-  const outputPorts =
-    typeof definition.outputPorts === 'function'
-      ? definition.outputPorts(node)
-      : definition.outputPorts;
-  const outputPort = outputPorts?.find((port) => port.name === outputPortName);
+  const outputPort = resolveRendererNodeOutputPort(definition, node, outputPortName);
   if (outputPort?.processingDomain) return outputPort.processingDomain;
   if (outputPort?.dataSemantic) {
     return getDataSemanticProcessingDomain(outputPort.dataSemantic);
@@ -51,11 +76,7 @@ export const resolveRendererNodeInputDomain = (
       ? definition.primaryInputDomain(node)
       : definition.primaryInputDomain;
   }
-  const inputPorts =
-    typeof definition.inputPorts === 'function'
-      ? definition.inputPorts(node)
-      : definition.inputPorts;
-  const inputPort = inputPorts?.find((port) => port.name === inputPortName);
+  const inputPort = resolveRendererNodeInputPort(definition, node, inputPortName);
   if (inputPort?.processingDomain) return inputPort.processingDomain;
   if (inputPort?.dataSemantic) return getDataSemanticProcessingDomain(inputPort.dataSemantic);
   if (inputPortName === 'pipe') {
@@ -67,8 +88,17 @@ export const resolveRendererNodeInputDomain = (
 export const areProcessingDomainsCompatible = (
   source: ColorProcessingDomain,
   target: ColorProcessingDomain | null,
+  channels?: {
+    sourceChannel?: RgbaChannel;
+    targetChannel?: RgbaChannel;
+  },
 ): boolean => {
   if (!target || source === target) return true;
+  // Channel-aware ports are explicit numeric packing boundaries. A scalar
+  // output expands into its named RGBA component when entering an image port;
+  // an image feeding a scalar input is sampled from that input's component.
+  if (channels?.sourceChannel && !isTechnicalProcessingDomain(target)) return true;
+  if (channels?.targetChannel && !isTechnicalProcessingDomain(source)) return true;
   if (
     (source === 'scene_linear' && target === 'log') ||
     (source === 'log' && target === 'scene_linear')
@@ -106,13 +136,22 @@ export const assertRendererProcessingDomainsSupported = (
         sourcePortName,
       );
       const targetDomain = resolveRendererNodeInputDomain(definition, node, inputPortName);
+      const sourcePort = resolveRendererNodeOutputPort(
+        sourceDefinition,
+        sourceNode,
+        sourcePortName,
+      );
+      const targetPort = resolveRendererNodeInputPort(definition, node, inputPortName);
       const canReinterpretColorDomain =
         inputPortName === 'pipe' &&
         definition.primaryInputDomainPolicy === 'reinterpret' &&
         !isTechnicalProcessingDomain(sourceDomain);
       if (
         !canReinterpretColorDomain &&
-        !areProcessingDomainsCompatible(sourceDomain, targetDomain)
+        !areProcessingDomainsCompatible(sourceDomain, targetDomain, {
+          sourceChannel: sourcePort?.channel,
+          targetChannel: targetPort?.channel,
+        })
       ) {
         throw new Error(
           `Cannot connect "${sourceDomain}" output from ${sourceNode.name || sourceNode.type} ` +

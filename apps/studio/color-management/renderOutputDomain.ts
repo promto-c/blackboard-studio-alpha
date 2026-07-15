@@ -1,14 +1,19 @@
 import type { AnyNode, Flow, RenderOutputDomain, RenderSettings } from '@blackboard/types';
 import {
   isTechnicalProcessingDomain,
+  resolveRendererNodeInputDomain,
+  resolveRendererNodeOutputPort,
   resolveRendererNodeProcessingDomain,
   type NodeRegistryLike,
 } from '@blackboard/renderer';
-import { getOutputPipeEdge, OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import { getInputEdge, getOutputInputEdge, PIPE_INPUT_PORT } from '@/utils/flowTopology';
 
 interface RenderOutputEndpoint {
   nodeId: string;
   port: string;
+  /** The endpoint is entering an ordinary RGBA image port. */
+  expandsComponentToColor?: boolean;
 }
 
 const getOutputEndpoint = (
@@ -19,30 +24,19 @@ const getOutputEndpoint = (
     return { nodeId: viewerNodeId, port: 'output' };
   }
 
-  const outputEdge = getOutputPipeEdge(flow);
+  const outputEdge = getOutputInputEdge(flow);
   return outputEdge
-    ? { nodeId: outputEdge.sourceNodeId, port: outputEdge.sourcePort || 'output' }
+    ? {
+        nodeId: outputEdge.sourceNodeId,
+        port: outputEdge.sourcePort || 'output',
+        expandsComponentToColor: true,
+      }
     : null;
-};
-
-const getNodeOutputPort = (node: AnyNode, portName: string, nodeRegistry: NodeRegistryLike) => {
-  const outputPorts = nodeRegistry.get(node.type)?.outputPorts;
-  const resolved = typeof outputPorts === 'function' ? outputPorts(node) : outputPorts;
-  return resolved?.find((port) => port.name === portName);
 };
 
 const getPipeInputEndpoint = (node: AnyNode, flow: Flow | null): RenderOutputEndpoint | null => {
-  const edge = flow?.edges.find(
-    (candidate) => candidate.targetNodeId === node.id && candidate.targetPort === 'pipe',
-  );
-  if (edge) {
-    return { nodeId: edge.sourceNodeId, port: edge.sourcePort || 'output' };
-  }
-
-  const sourceNodeId = node.inputs?.pipe;
-  return sourceNodeId
-    ? { nodeId: sourceNodeId, port: node.inputSourcePorts?.pipe || 'output' }
-    : null;
+  const edge = getInputEdge(flow, node.id, PIPE_INPUT_PORT);
+  return edge ? { nodeId: edge.sourceNodeId, port: edge.sourcePort || 'output' } : null;
 };
 
 const resolveEndpointDomain = (
@@ -57,7 +51,16 @@ const resolveEndpointDomain = (
   visitedNodeIds.add(node.id);
 
   const definition = nodeRegistry.get(node.type);
-  const outputPort = getNodeOutputPort(node, endpoint.port, nodeRegistry);
+  const outputPort = definition
+    ? resolveRendererNodeOutputPort(definition, node, endpoint.port)
+    : undefined;
+  if (endpoint.expandsComponentToColor && outputPort?.channel) {
+    return {
+      kind: 'color',
+      sourceNodeId: node.id,
+      sourcePort: endpoint.port,
+    };
+  }
   const processingDomain = definition
     ? resolveRendererNodeProcessingDomain(definition, node, endpoint.port)
     : 'scene_linear';
@@ -73,7 +76,19 @@ const resolveEndpointDomain = (
   if (endpoint.port === 'output') {
     const pipeInput = getPipeInputEndpoint(node, flow);
     if (pipeInput) {
-      return resolveEndpointDomain(nodesById, flow, pipeInput, visitedNodeIds, nodeRegistry);
+      const inputDomain = definition
+        ? resolveRendererNodeInputDomain(definition, node, 'pipe')
+        : processingDomain;
+      return resolveEndpointDomain(
+        nodesById,
+        flow,
+        {
+          ...pipeInput,
+          expandsComponentToColor: !inputDomain || !isTechnicalProcessingDomain(inputDomain),
+        },
+        visitedNodeIds,
+        nodeRegistry,
+      );
     }
   }
 

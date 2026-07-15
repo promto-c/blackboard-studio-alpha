@@ -1,7 +1,12 @@
 import React from 'react';
 import * as THREE from 'three';
-import { NodeType, type AnyNode } from '@blackboard/types';
-import { isPromiseLike, type ResolveOutputContext } from '@blackboard/renderer';
+import { NodeType, type AnyNode, type RgbaChannel } from '@blackboard/types';
+import {
+  isPromiseLike,
+  RendererShader,
+  resolveRendererNodeOutputPort,
+  type ResolveOutputContext,
+} from '@blackboard/renderer';
 import { NodeDefinition } from '../../NodeDefinition';
 import * as Icons from '@blackboard/icons';
 import { ExtractChannelsTool, MergeChannelsTool } from './ChannelTools';
@@ -16,16 +21,49 @@ function ChannelIcon({ className }: { className?: string }) {
 }
 
 const channelPorts = [
-  { name: 'r', label: 'R', processingDomain: 'data' as const, description: 'Red channel.' },
-  { name: 'g', label: 'G', processingDomain: 'data' as const, description: 'Green channel.' },
-  { name: 'b', label: 'B', processingDomain: 'data' as const, description: 'Blue channel.' },
+  {
+    name: 'r',
+    label: 'R',
+    channel: 'r' as const,
+    processingDomain: 'data' as const,
+    color: '#c96f78',
+    description: 'Red channel.',
+  },
+  {
+    name: 'g',
+    label: 'G',
+    channel: 'g' as const,
+    processingDomain: 'data' as const,
+    color: '#70ad87',
+    description: 'Green channel.',
+  },
+  {
+    name: 'b',
+    label: 'B',
+    channel: 'b' as const,
+    processingDomain: 'data' as const,
+    color: '#7293c2',
+    description: 'Blue channel.',
+  },
   {
     name: 'a',
     label: 'A',
+    channel: 'a' as const,
     dataSemantic: 'alpha' as const,
     processingDomain: 'alpha' as const,
+    color: '#9da5b2',
     description: 'Alpha channel.',
   },
+];
+
+const extractOutputPorts = [
+  {
+    name: 'output',
+    label: 'RGBA',
+    processingDomain: 'scene_linear' as const,
+    description: 'Unchanged scene-linear RGBA pass-through used for node viewing and chaining.',
+  },
+  ...channelPorts,
 ];
 
 export const extractChannelsNode: NodeDefinition = {
@@ -33,8 +71,8 @@ export const extractChannelsNode: NodeDefinition = {
   name: 'Extract Channels',
   category: 'Utility',
   renderMode: 'utility',
-  processingDomain: 'data',
-  description: 'Split one texture into isolated R, G, B, and A outputs.',
+  processingDomain: 'scene_linear',
+  description: 'Pass through RGBA and expose isolated R, G, B, and A technical outputs.',
   IconComponent: ChannelIcon,
   ToolComponent: ExtractChannelsTool,
   AdjustmentComponent: NoChannelAdjustments,
@@ -48,7 +86,7 @@ export const extractChannelsNode: NodeDefinition = {
       description: 'Texture to split into isolated channel outputs.',
     },
   ],
-  outputPorts: channelPorts,
+  outputPorts: extractOutputPorts,
   renderOutput: (
     node: AnyNode,
     target: THREE.WebGLRenderTarget,
@@ -63,10 +101,21 @@ export const extractChannelsNode: NodeDefinition = {
       : _inputTexture;
 
     const doRender = (sourceTexture: THREE.Texture | undefined): boolean => {
-      const material = context.getMaterial(`${node.id}_extract_channels`, ChannelShader.EXTRACT, {
-        u_tDiffuse: { value: sourceTexture ?? context.getTransparentInputTexture() },
-        u_channel: { value: context.getChannelIndex(portName, 'r') },
-      });
+      const inputTexture = sourceTexture ?? context.getTransparentInputTexture();
+      const channelPort = channelPorts.find((port) => port.name === portName);
+      const resolvedPortName = channelPort?.name ?? 'output';
+      const material = channelPort
+        ? context.getMaterial(
+            `${node.id}_extract_channels_${resolvedPortName}`,
+            ChannelShader.EXTRACT,
+            {
+              u_tDiffuse: { value: inputTexture },
+              u_channel: { value: context.getChannelIndex(resolvedPortName, 'r') },
+            },
+          )
+        : context.getMaterial(`${node.id}_extract_channels_output`, RendererShader.TEXTURE, {
+            u_tDiffuse: { value: inputTexture },
+          });
       context.applyNoBlending(material);
       context.clearRenderTargetTransparent(target);
       (context.quad as THREE.Mesh).material = material;
@@ -108,12 +157,22 @@ export const mergeChannelsNode: NodeDefinition = {
     context: ResolveOutputContext,
   ): boolean | Promise<boolean> => {
     const inputs = (node as { inputs?: Record<string, string> }).inputs ?? {};
-    const chPorts = ['r', 'g', 'b', 'a'];
+    const chPorts: RgbaChannel[] = ['r', 'g', 'b', 'a'];
+    const sourcePorts = chPorts.map((port) => context.getInputSourcePort(node, port));
+    const sourceChannels = chPorts.map((targetChannel, index): RgbaChannel => {
+      const sourceNodeId = inputs[targetChannel];
+      const sourceNode = context.nodes.find((candidate) => candidate.id === sourceNodeId);
+      if (!sourceNode) return targetChannel;
+      const sourceDefinition = context.nodeRegistry.get(sourceNode.type);
+      const sourcePort = sourceDefinition
+        ? resolveRendererNodeOutputPort(sourceDefinition, sourceNode, sourcePorts[index])
+        : undefined;
+      return sourcePort?.channel ?? targetChannel;
+    });
 
-    const resolveChannel = (port: string) => {
+    const resolveChannel = (port: RgbaChannel, index: number) => {
       const sourceNodeId = inputs[port];
-      const sourcePort = context.getInputSourcePort(node, port, port);
-      return sourceNodeId ? context.resolveOutput(sourceNodeId, sourcePort) : undefined;
+      return sourceNodeId ? context.resolveOutput(sourceNodeId, sourcePorts[index]) : undefined;
     };
 
     const renderMerge = (textures: (THREE.Texture | undefined)[]): boolean => {
@@ -122,9 +181,8 @@ export const mergeChannelsNode: NodeDefinition = {
         uniforms[`u_t${port.toUpperCase()}`] = {
           value: textures[idx] ?? context.getTransparentInputTexture(),
         };
-        const sourcePort = context.getInputSourcePort(node, port, port);
         uniforms[`u_sourceChannel${port.toUpperCase()}`] = {
-          value: context.getChannelIndex(sourcePort, port),
+          value: context.getChannelIndex(sourceChannels[idx], port),
         };
       });
       const material = context.getMaterial(

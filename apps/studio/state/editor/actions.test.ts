@@ -17,6 +17,7 @@ const createSceneNode = (): SceneNode => ({
   height: 1080,
   bitDepth: 8,
   colorSpace: ColorManagementDefaults.WORKING_SPACE,
+  startFrame: 0,
   maxFrames: 0,
   fps: 30,
 });
@@ -56,6 +57,13 @@ describe('buildProjectInitState', () => {
     expect(persistedState.nodePositionsByFlow?.[ROOT_FLOW_ID]).toEqual(nodePositions);
     expect(persistedState.history[0]).toEqual(historyEntry);
     expect(persistedState.historyIndex).toBe(0);
+    expect(persistedState.flows[ROOT_FLOW_ID].edges).toContainEqual(
+      expect.objectContaining({
+        sourceNodeId: 'image-1',
+        targetNodeId: OUTPUT_NODE_ID,
+        targetPort: 'pipe',
+      }),
+    );
   });
 
   it('copies the selected color config reference into new project state', () => {

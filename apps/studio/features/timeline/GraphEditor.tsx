@@ -34,6 +34,7 @@ interface GraphEditorProps {
 }
 
 function GraphEditor({ width, height, view, setView, activePropertyPath }: GraphEditorProps) {
+  const timelineStartFrame = useEditorSelector((s) => s.timelineStartFrame);
   const maxFrames = useEditorSelector((s) => s.maxFrames);
   const currentFrame = useEditorSelector((s) => s.currentFrame);
   const { updateKeyframe, setKeyframe } = useEditorActions();
@@ -61,32 +62,32 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
     if (!activeProperty) return [];
     if (typeof activeProperty.prop === 'number') {
       return [
-        { frame: -1000, value: activeProperty.prop },
+        { frame: timelineStartFrame - 1000, value: activeProperty.prop },
         { frame: maxFrames + 1000, value: activeProperty.prop },
       ] as Keyframe[];
     }
     return getSortedKeyframes(activeProperty.prop);
-  }, [activeProperty, maxFrames]);
+  }, [activeProperty, maxFrames, timelineStartFrame]);
 
   // --- Coordinate Transforms ---
   const dataToView = useCallback(
     (data: { frame: number; value: number }) => {
       return {
-        x: data.frame * view.zoomX + view.panX,
+        x: (data.frame - timelineStartFrame) * view.zoomX + view.panX,
         y: -data.value * view.zoomY + view.panY,
       };
     },
-    [view],
+    [timelineStartFrame, view],
   );
 
   const viewToData = useCallback(
     (viewCoords: { x: number; y: number }) => {
       return {
-        frame: (viewCoords.x - view.panX) / view.zoomX,
+        frame: timelineStartFrame + (viewCoords.x - view.panX) / view.zoomX,
         value: (viewCoords.y - view.panY) / -view.zoomY,
       };
     },
-    [view],
+    [timelineStartFrame, view],
   );
 
   // --- Event Handlers ---
@@ -175,11 +176,11 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
         activePropertyPath,
         dataPos.value,
         true,
-        Math.round(dataPos.frame),
+        Math.max(timelineStartFrame, Math.min(maxFrames, Math.round(dataPos.frame))),
         true,
       );
     },
-    [viewToData, setKeyframe, selectedNode, activePropertyPath],
+    [viewToData, setKeyframe, selectedNode, activePropertyPath, timelineStartFrame, maxFrames],
   );
 
   useEffect(() => {
@@ -227,7 +228,10 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
 
       switch (dragInfo.type) {
         case 'keyframe':
-          updates.frame = Math.round(dataPos.frame);
+          updates.frame = Math.max(
+            timelineStartFrame,
+            Math.min(maxFrames, Math.round(dataPos.frame)),
+          );
           updates.value = dataPos.value;
           break;
         case 'inTangent':
@@ -245,7 +249,16 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
       }
       updateKeyframe(selectedNode.id, activePropertyPath, kf.frame, updates, false);
     },
-    [dragInfo, viewToData, updateKeyframe, selectedNode, activePropertyPath, keyframes],
+    [
+      dragInfo,
+      viewToData,
+      updateKeyframe,
+      selectedNode,
+      activePropertyPath,
+      keyframes,
+      timelineStartFrame,
+      maxFrames,
+    ],
   );
 
   const handleMouseUp = useCallback(() => {
@@ -277,7 +290,7 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
 
     const horizontal = [];
     for (let v = valueStart; v < maxData.value; v += valueStep) {
-      const y = dataToView({ frame: 0, value: v }).y;
+      const y = dataToView({ frame: timelineStartFrame, value: v }).y;
       horizontal.push({ y, value: v });
     }
 
@@ -288,7 +301,7 @@ function GraphEditor({ width, height, view, setView, activePropertyPath }: Graph
     }
 
     return { horizontal, vertical };
-  }, [viewToData, dataToView, width, height]);
+  }, [viewToData, dataToView, width, height, timelineStartFrame]);
 
   const curvePath = useMemo(() => {
     if (keyframes.length < 2) return '';

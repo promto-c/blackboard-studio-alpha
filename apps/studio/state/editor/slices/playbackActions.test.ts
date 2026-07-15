@@ -78,4 +78,18 @@ describe('playback actions', () => {
     expect(actions.goToRecentFrame()).toBe(false);
     expect(getState().currentFrame).toBe(5);
   });
+
+  it('clamps seeks to an absolute timeline range', () => {
+    const { actions, getState } = createHarness({
+      currentFrame: 1001,
+      timelineStartFrame: 1001,
+      maxFrames: 1240,
+    });
+
+    actions.seekFrame(0);
+    expect(getState().currentFrame).toBe(1001);
+
+    actions.seekFrame(2000);
+    expect(getState().currentFrame).toBe(1240);
+  });
 });

@@ -11,10 +11,53 @@ import {
   ViewerSlotAssignments,
   VIEWER_SLOTS,
 } from '@blackboard/types';
-import { getOutputPipeEdge, isFlowOutputDetached, OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { isSourceNodeType, usesImplicitPipelineInput } from '@/utils/nodePredicates';
+import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
+import { isSourceNodeType } from '@/utils/nodePredicates';
+import { getOutputInputEdge } from '@/utils/flowTopology';
 
 export const VIEWER_SLOT_ORDER: ViewerSlot[] = [...VIEWER_SLOTS];
+
+export interface ViewerCompareRouteState {
+  isActive: boolean;
+  slotA: ViewerSlot | null;
+  slotB: ViewerSlot | null;
+}
+
+export interface ResolvedViewerCompareRoute {
+  slotA: ViewerSlot;
+  slotB: ViewerSlot;
+  nodeIdA: string;
+  nodeIdB: string;
+}
+
+export interface ResolvedViewerRouting {
+  targetNodeIds: readonly string[];
+  compare: ResolvedViewerCompareRoute | null;
+}
+
+/** Resolves the viewer targets that are actually visible, including both sides of Compare. */
+export const resolveViewerRouting = (
+  viewerNodeId: string | null | undefined,
+  viewerSlots: ViewerSlotAssignments | undefined,
+  compareView: ViewerCompareRouteState,
+): ResolvedViewerRouting => {
+  const { slotA, slotB } = compareView;
+  if (compareView.isActive && slotA && slotB) {
+    const nodeIdA = viewerSlots?.[slotA];
+    const nodeIdB = viewerSlots?.[slotB];
+    if (nodeIdA && nodeIdB) {
+      return {
+        targetNodeIds: nodeIdA === nodeIdB ? [nodeIdA] : [nodeIdA, nodeIdB],
+        compare: { slotA, slotB, nodeIdA, nodeIdB },
+      };
+    }
+  }
+
+  return {
+    targetNodeIds: viewerNodeId ? [viewerNodeId] : [],
+    compare: null,
+  };
+};
 
 const getValidNodeIds = (nodes: AnyNode[]) => new Set(nodes.map((node) => node.id));
 
@@ -23,16 +66,6 @@ const getValidViewerTargetIds = (nodes: AnyNode[]) => {
   validTargetIds.add(OUTPUT_NODE_ID);
   return validTargetIds;
 };
-
-const withoutDetachedFromPipe = (node: AnyNode): AnyNode => {
-  const { detachedFromPipe: _detachedFromPipe, ...rest } = node as AnyNode & {
-    detachedFromPipe?: boolean;
-  };
-  return rest as AnyNode;
-};
-
-const isDetachedFromPipe = (node: AnyNode): boolean =>
-  (node as { detachedFromPipe?: boolean }).detachedFromPipe === true;
 
 const getNodeOutputSize = (node: AnyNode): { width: number; height: number } | null => {
   const sourceNode = node as AnyNode & { width?: unknown; height?: unknown };
@@ -125,18 +158,8 @@ const getFlowInputEdgesForNode = (flow: Flow | null, nodeId: string): FlowEdge[]
 const getNodeInputEdges = (
   node: AnyNode,
   flow: Flow | null,
-): Array<Pick<FlowEdge, 'sourceNodeId' | 'sourcePort' | 'targetPort'>> => {
-  const flowEdges = getFlowInputEdgesForNode(flow, node.id);
-  if (flowEdges.length > 0) {
-    return flowEdges;
-  }
-
-  return Object.entries(node.inputs ?? {}).map(([targetPort, sourceNodeId]) => ({
-    sourceNodeId,
-    sourcePort: node.inputSourcePorts?.[targetPort] ?? 'output',
-    targetPort,
-  }));
-};
+): Array<Pick<FlowEdge, 'sourceNodeId' | 'sourcePort' | 'targetPort'>> =>
+  getFlowInputEdgesForNode(flow, node.id);
 
 const getNodeInputSourceForPort = (
   node: AnyNode,
@@ -184,22 +207,18 @@ const resolveRenderBranchNodes = (
   flow: Flow | null,
   targetNodeId: string,
 ): AnyNode[] => {
-  const usesCanonicalFlow = flow !== null;
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
   const orderedNodes: AnyNode[] = [];
   const includedIds = new Set<string>();
   const visitingIds = new Set<string>();
 
   const sceneNodes = nodes.filter((node) => node.type === NodeType.SCENE);
 
-  const addNode = (node: AnyNode, options: { forceVisible?: boolean } = {}) => {
+  const addNode = (node: AnyNode) => {
     if (node.type === NodeType.SCENE || node.type === NodeType.OUTPUT) return;
     if (includedIds.has(node.id)) return;
     const projectedNode = projectNodeInputsFromFlow(node, flow);
-    orderedNodes.push(
-      options.forceVisible ? withoutDetachedFromPipe(projectedNode) : projectedNode,
-    );
+    orderedNodes.push(projectedNode);
     includedIds.add(node.id);
   };
 
@@ -214,41 +233,17 @@ const resolveRenderBranchNodes = (
     }
   };
 
-  const includeImplicitPrefixThrough = (targetIndex: number) => {
-    for (let index = 0; index <= targetIndex; index += 1) {
-      const node = nodes[index];
-      if (!node || node.type === NodeType.SCENE || node.type === NodeType.OUTPUT) continue;
-
-      const explicitPipeSourceNodeId = getNodeInputSourceForPort(node, flow, 'pipe');
-      if (explicitPipeSourceNodeId) {
-        includeNodeOutput(explicitPipeSourceNodeId);
-      }
-
-      includeExplicitInputDependencies(node, 'pipe');
-      addNode(node);
-    }
-  };
-
   function includeNodeOutput(nodeId: string) {
     const node = nodesById.get(nodeId);
     if (!node || includedIds.has(node.id) || visitingIds.has(node.id)) return;
 
-    const nodeIndex = indexById.get(node.id);
-    if (nodeIndex === undefined) return;
-
     visitingIds.add(node.id);
-    const explicitPipeSourceNodeId = getNodeInputSourceForPort(node, flow, 'pipe');
+    const pipeSourceNodeId = getNodeInputSourceForPort(node, flow, 'pipe');
 
-    if (explicitPipeSourceNodeId) {
-      includeNodeOutput(explicitPipeSourceNodeId);
+    if (pipeSourceNodeId) {
+      includeNodeOutput(pipeSourceNodeId);
       includeExplicitInputDependencies(node, 'pipe');
       addNode(node);
-    } else if (
-      !usesCanonicalFlow &&
-      usesImplicitPipelineInput(node.type) &&
-      !isDetachedFromPipe(node)
-    ) {
-      includeImplicitPrefixThrough(nodeIndex);
     } else {
       includeExplicitInputDependencies(node);
       addNode(node);
@@ -260,23 +255,14 @@ const resolveRenderBranchNodes = (
   const targetNode = nodesById.get(targetNodeId);
   if (!targetNode) return nodes;
 
-  const explicitPipeSourceNodeId = getNodeInputSourceForPort(targetNode, flow, 'pipe');
-  if (explicitPipeSourceNodeId) {
-    includeNodeOutput(explicitPipeSourceNodeId);
+  const pipeSourceNodeId = getNodeInputSourceForPort(targetNode, flow, 'pipe');
+  if (pipeSourceNodeId) {
+    includeNodeOutput(pipeSourceNodeId);
     includeExplicitInputDependencies(targetNode, 'pipe');
-    addNode(targetNode, { forceVisible: isDetachedFromPipe(targetNode) });
+    addNode(targetNode);
   } else {
-    const targetIndex = indexById.get(targetNode.id);
-    if (targetIndex === undefined) return nodes;
-    if (isDetachedFromPipe(targetNode)) {
-      includeExplicitInputDependencies(targetNode);
-      addNode(targetNode, { forceVisible: true });
-    } else if (!usesCanonicalFlow && usesImplicitPipelineInput(targetNode.type)) {
-      includeImplicitPrefixThrough(targetIndex);
-    } else {
-      includeExplicitInputDependencies(targetNode);
-      addNode(targetNode);
-    }
+    includeExplicitInputDependencies(targetNode);
+    addNode(targetNode);
   }
 
   return resolveRenderFormatNodes([...sceneNodes, ...orderedNodes]);
@@ -307,10 +293,7 @@ export const getNodeInputRenderNodes = (
   const sourceNode = sourceIndex >= 0 ? nodes[sourceIndex] : null;
   if (sourceNode && isSourceNodeType(sourceNode.type)) {
     const sceneNodes = nodes.slice(0, sourceIndex).filter((node) => node.type === NodeType.SCENE);
-    const renderSourceNode = isDetachedFromPipe(sourceNode)
-      ? withoutDetachedFromPipe(sourceNode)
-      : sourceNode;
-    return resolveRenderFormatNodes([...sceneNodes, renderSourceNode]);
+    return resolveRenderFormatNodes([...sceneNodes, projectNodeInputsFromFlow(sourceNode, flow)]);
   }
 
   return resolveRenderBranchNodes(nodes, flow, sourceNodeId);
@@ -343,10 +326,7 @@ export const getViewerRenderNodes = (
     }
 
     const sceneNodes = nodes.slice(0, viewerIndex).filter((node) => node.type === NodeType.SCENE);
-    const renderViewerNode = (viewerNode as { detachedFromPipe?: boolean }).detachedFromPipe
-      ? withoutDetachedFromPipe(viewerNode)
-      : viewerNode;
-    return resolveRenderFormatNodes([...sceneNodes, renderViewerNode]);
+    return resolveRenderFormatNodes([...sceneNodes, projectNodeInputsFromFlow(viewerNode, flow)]);
   }
 
   return resolveRenderBranchNodes(nodes, flow, renderTargetNodeId);
@@ -360,11 +340,9 @@ export const getScene3DProjectionRenderNodes = (
 ): AnyNode[] => getViewerRenderNodes(nodes, scene3DNodeId, flow);
 
 export const getOutputRenderNodes = (nodes: AnyNode[], flow: Flow | null): AnyNode[] => {
-  const outputEdge = getOutputPipeEdge(flow);
+  const outputEdge = getOutputInputEdge(flow);
   if (!outputEdge) {
-    return resolveRenderFormatNodes(
-      isFlowOutputDetached(flow) ? nodes.filter((node) => node.type === NodeType.SCENE) : nodes,
-    );
+    return resolveRenderFormatNodes(nodes.filter((node) => node.type === NodeType.SCENE));
   }
 
   const sourceIndex = nodes.findIndex((node) => node.id === outputEdge.sourceNodeId);

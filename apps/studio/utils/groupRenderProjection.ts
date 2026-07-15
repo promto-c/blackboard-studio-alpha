@@ -1,5 +1,6 @@
 import { NodeType, type AnyNode, type Flow, type GroupNode } from '@blackboard/types';
 import { getOrderedNodesFromFlow } from '@/state/editor/flowModel';
+import { collectUpstreamNodeIds, getOutputInputEdge } from '@/utils/flowTopology';
 
 const rewriteNodeInputs = (node: AnyNode, replacements: ReadonlyMap<string, string>): AnyNode => {
   if (!node.inputs) return node;
@@ -56,11 +57,14 @@ type SourceContext = {
 
 const getFlowNodesThroughNode = (flow: Flow, nodeId: string): SourceContext | null => {
   const orderedNodes = getOrderedNodesFromFlow(flow);
-  const nodeIndex = orderedNodes.findIndex((node) => node.id === nodeId);
-  if (nodeIndex < 0) return null;
+  if (!orderedNodes.some((node) => node.id === nodeId)) return null;
+  const includedNodeIds = new Set(collectUpstreamNodeIds(flow.edges, nodeId));
+  includedNodeIds.add(nodeId);
 
   return {
-    nodes: orderedNodes.slice(0, nodeIndex + 1),
+    nodes: orderedNodes.filter(
+      (node) => node.type === NodeType.SCENE || includedNodeIds.has(node.id),
+    ),
     outputNodeId: nodeId,
   };
 };
@@ -76,24 +80,6 @@ const findSourceContextInFlows = (
   return null;
 };
 
-const findPreviousPipelineNodeId = (flow: Flow, nodeId: string): string | null => {
-  const orderedNodes = getOrderedNodesFromFlow(flow);
-  const nodeIndex = orderedNodes.findIndex((node) => node.id === nodeId);
-  if (nodeIndex <= 0) return null;
-
-  for (let index = nodeIndex - 1; index >= 0; index -= 1) {
-    const node = orderedNodes[index];
-    if (
-      node.type !== NodeType.SCENE &&
-      !(node as { detachedFromPipe?: boolean }).detachedFromPipe
-    ) {
-      return node.id;
-    }
-  }
-
-  return null;
-};
-
 const findParentSourceForEntryNode = (
   entryNode: AnyNode,
   flows: Record<string, Flow>,
@@ -105,29 +91,9 @@ const findParentSourceForEntryNode = (
       const externalInput = groupNode.externalInputs?.find(
         (input) => input.entryNodeId === entryNode.id,
       );
-      if (!externalInput && groupNode.inputNodeId !== entryNode.id) continue;
-
-      if (externalInput) {
-        const sourceNodeId = groupNode.inputs?.[externalInput.id];
-        return sourceNodeId ? findSourceContextInFlows(sourceNodeId, flows) : null;
-      }
-
-      const previousNodeId = findPreviousPipelineNodeId(flow, groupNode.id);
-      return previousNodeId ? getFlowNodesThroughNode(flow, previousNodeId) : null;
-    }
-  }
-  return null;
-};
-
-const findPreviousProjectedSourceId = (nodes: AnyNode[]): string | null => {
-  for (let index = nodes.length - 1; index >= 0; index -= 1) {
-    const node = nodes[index];
-    if (
-      node.type !== NodeType.SCENE &&
-      node.type !== NodeType.INPUT &&
-      !(node as { detachedFromPipe?: boolean }).detachedFromPipe
-    ) {
-      return node.id;
+      if (!externalInput) continue;
+      const sourceNodeId = groupNode.inputs?.[externalInput.id];
+      return sourceNodeId ? findSourceContextInFlows(sourceNodeId, flows) : null;
     }
   }
   return null;
@@ -197,15 +163,6 @@ const projectGroupNodesForRender = (
     }
 
     const entryReplacements = new Map<string, string>();
-    const exposedInputNodeIds = new Set(
-      (groupNode.externalInputs ?? []).map((input) => input.entryNodeId),
-    );
-    if (groupNode.inputNodeId && !exposedInputNodeIds.has(groupNode.inputNodeId)) {
-      const previousSourceId = findPreviousProjectedSourceId(projectedNodes);
-      if (previousSourceId) {
-        entryReplacements.set(groupNode.inputNodeId, previousSourceId);
-      }
-    }
     for (const input of groupNode.externalInputs ?? []) {
       const sourceNodeId = groupNode.inputs?.[input.id];
       if (sourceNodeId) {
@@ -225,9 +182,11 @@ const projectGroupNodesForRender = (
     const childProjection = projectGroupNodesForRender(childNodes, flows, depth + 1);
     pushProjectedNodes(childProjection.nodes);
 
-    const outputNodeId = groupNode.outputNodeId
-      ? (childProjection.outputReplacements.get(groupNode.outputNodeId) ?? groupNode.outputNodeId)
-      : childProjection.nodes.at(-1)?.id;
+    const canonicalOutputNodeId =
+      groupNode.outputNodeId ?? getOutputInputEdge(childFlow)?.sourceNodeId ?? null;
+    const outputNodeId = canonicalOutputNodeId
+      ? (childProjection.outputReplacements.get(canonicalOutputNodeId) ?? canonicalOutputNodeId)
+      : null;
     if (outputNodeId) {
       outputReplacements.set(groupNode.id, outputNodeId);
     }

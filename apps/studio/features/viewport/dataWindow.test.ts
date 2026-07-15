@@ -181,6 +181,7 @@ describe('getDataWindowRect', () => {
         duration: 100,
         colorSpace: 'sRGB',
         bitDepth: 16,
+        startFrame: 0,
         maxFrames: 100,
       } as AnyNode,
       {
@@ -241,7 +242,7 @@ describe('getDataWindowRect', () => {
     });
   });
 
-  it('uses explicit pipe inputs when projecting transform data windows', () => {
+  it('uses connected pipe inputs when projecting transform data windows', () => {
     const nodes: AnyNode[] = [
       {
         id: 'scene',
@@ -254,6 +255,7 @@ describe('getDataWindowRect', () => {
         duration: 100,
         colorSpace: 'sRGB',
         bitDepth: 16,
+        startFrame: 0,
         maxFrames: 100,
       } as AnyNode,
       {

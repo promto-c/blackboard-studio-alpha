@@ -35,22 +35,18 @@ export function PipelineRail({
   listRef,
   itemRefs,
   stacks,
-  passThroughStacks,
   layoutVersion,
 }: {
   listRef: React.RefObject<HTMLDivElement | null>;
   itemRefs: React.RefObject<Map<string, HTMLDivElement>>;
   stacks: AnyNode[][];
-  passThroughStacks: AnyNode[][];
   layoutVersion: number;
 }) {
   const [segments, setSegments] = useState<RailSegment[]>([]);
-  const [passThroughSegments, setPassThroughSegments] = useState<RailSegment[]>([]);
 
   const updateSegments = useCallback(() => {
     if (!listRef.current) {
       setSegments([]);
-      setPassThroughSegments([]);
       return;
     }
 
@@ -68,14 +64,6 @@ export function PipelineRail({
         })
         .sort((a, b) => a.top - b.top);
     const rowRects = getRowRects(stacks);
-    const nextPassThroughSegments = getRowRects(passThroughStacks)
-      .map((rect) => ({
-        top: rect.top,
-        height: rect.bottom - rect.top,
-      }))
-      .filter((segment) => segment.height > 0);
-
-    setPassThroughSegments(nextPassThroughSegments);
 
     if (rowRects.length < 2) {
       setSegments([]);
@@ -94,7 +82,7 @@ export function PipelineRail({
         })
         .filter((segment) => segment.height > 0),
     );
-  }, [itemRefs, listRef, passThroughStacks, stacks]);
+  }, [itemRefs, listRef, stacks]);
 
   useLayoutEffect(() => {
     updateSegments();
@@ -103,16 +91,13 @@ export function PipelineRail({
     return () => window.cancelAnimationFrame(animationFrameId);
   }, [layoutVersion, updateSegments]);
 
-  if (segments.length === 0 && passThroughSegments.length === 0) return null;
+  if (segments.length === 0) return null;
 
   return (
     <div
       className={`pointer-events-none absolute top-0 bottom-0 ${PIPELINE_RAIL_CLASS}`}
       aria-hidden="true"
     >
-      {passThroughSegments.map((segment, index) => (
-        <RailSegmentView key={`pass-through-${segment.top}-${index}`} segment={segment} />
-      ))}
       {segments.map((segment, index) => (
         <RailSegmentView key={`${segment.top}-${index}`} segment={segment} />
       ))}

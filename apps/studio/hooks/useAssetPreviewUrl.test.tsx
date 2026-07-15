@@ -19,6 +19,13 @@ vi.mock('@/state/editorContext', () => ({
     selector({ colorManagement: mockColorManagement as ProjectColorManagement }),
 }));
 
+vi.mock('@/state/ocioContext', () => ({
+  useOcio: () => ({
+    defaultDisplay: 'sRGB',
+    getViews: () => [],
+  }),
+}));
+
 vi.mock('@/services/assetPreview', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/assetPreview')>();
   return { ...actual, requestAssetPreview: requestAssetPreviewMock };

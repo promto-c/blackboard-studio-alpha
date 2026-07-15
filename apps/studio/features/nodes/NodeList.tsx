@@ -19,16 +19,16 @@ import NodeIcon from './NodeIcon';
 import { nodeFlags } from '@/nodes/helpers';
 import { getActiveNodeJobMap, NodeProgressBackground } from './NodeProgressBackground';
 import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
-import { participatesInImplicitPipeline } from '@/utils/nodePredicates';
 import { PipelineRail } from './NodeListRail';
 import { NodeInputConnectionChips } from './NodeInputConnectionChips';
 import { DirectMergeInlineNode } from './DirectMergeInlineNode';
 import { usePointerDrag } from '@/hooks/usePointerDrag';
 import { NodeListDragController } from './NodeListDragController';
 import { computePreviewEntry, findPreviewInsertIndex } from './previewPlaceholder';
+import { collectUpstreamNodeIds, getPrimaryPipelineNodeIds } from '@/utils/flowTopology';
 
 const SPACING = 4; // Reduced spacing from 8 to 4 for compactness
-const DETACHED_ROW_RAIL_GUTTER_CLASS = 'right-8';
+const FLOATING_ROW_RAIL_GUTTER_CLASS = 'right-8';
 
 /** Render the thumbnail for a media node stack based on the current thumbnail mode. */
 function renderMediaThumbnail(
@@ -96,6 +96,10 @@ function NodeList({
   const backgroundJobs = useEditorSelector((s) => s.backgroundJobs);
   const previewNodeType = useEditorSelector((s) => s.previewNodeType);
   const activeTab = useEditorSelector((s) => s.activeTab);
+  const activeFlow = useEditorSelector((s) => {
+    const flowId = s.activeFlowId ?? s.rootFlowId;
+    return flowId ? s.flows[flowId] : null;
+  });
   const {
     selectNode,
     toggleNodeSelection,
@@ -259,6 +263,7 @@ function NodeList({
 
   const directMergeBySourceId = useMemo<Map<string, AnyNode>>(() => {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const primaryPipelineNodeIds = new Set(getPrimaryPipelineNodeIds(activeFlow));
     const next = new Map<string, AnyNode>();
 
     for (const node of nodes) {
@@ -266,14 +271,14 @@ function NodeList({
       const sourceNodeId = node.inputs?.source;
       if (!sourceNodeId) continue;
       const sourceNode = nodeById.get(sourceNodeId);
-      if (!sourceNode || !(sourceNode as { detachedFromPipe?: boolean }).detachedFromPipe) {
+      if (!sourceNode || primaryPipelineNodeIds.has(sourceNodeId)) {
         continue;
       }
       next.set(sourceNodeId, node);
     }
 
     return next;
-  }, [nodes]);
+  }, [activeFlow, nodes]);
 
   const hiddenMergeIds = useMemo(() => {
     const next = new Set<string>();
@@ -286,8 +291,15 @@ function NodeList({
   // ── Preview placeholder stacks ──────────────────────────────────────
   // Show a ghost row(s) when hovering over a tool button.
   const previewEntry = useMemo(
-    () => computePreviewEntry(previewNodeType, localStacks),
-    [previewNodeType, localStacks],
+    () =>
+      computePreviewEntry(
+        previewNodeType,
+        localStacks,
+        activeFlow
+          ? collectUpstreamNodeIds(activeFlow.edges, activeFlow.outputNodeId)
+          : new Set<string>(),
+      ),
+    [activeFlow, previewNodeType, localStacks],
   );
 
   const previewStacks = useMemo<AnyNode[][]>(() => {
@@ -316,7 +328,6 @@ function NodeList({
     const stacks: AnyNode[][] = [[previewNode]];
 
     if (previewEntry.isMerge) {
-      const newSource = { ...previewNode, detachedFromPipe: true } as AnyNode;
       const mergeNode: AnyNode = {
         id: `__preview__merge`,
         type: NodeType.MERGE,
@@ -325,7 +336,6 @@ function NodeList({
         opacity: 100,
         operator: BlendMode.OVER,
       } as AnyNode;
-      stacks[0] = [newSource];
       stacks.push([mergeNode]);
     }
 
@@ -348,23 +358,19 @@ function NodeList({
     [hiddenMergeIds, initialStacks],
   );
 
+  const primaryPipelineNodeIds = useMemo(
+    () => new Set(getPrimaryPipelineNodeIds(activeFlow)),
+    [activeFlow],
+  );
+
   const visiblePipelineStacks = useMemo(
     () =>
       stacksInFlowOrder.filter(
         (stack) =>
-          participatesInImplicitPipeline(stack[0].type) &&
-          (!stack[0].detachedFromPipe || directMergeBySourceId.has(stack[0].id)) &&
+          (primaryPipelineNodeIds.has(stack[0].id) || directMergeBySourceId.has(stack[0].id)) &&
           !hiddenMergeIds.has(stack[0].id),
       ),
-    [directMergeBySourceId, hiddenMergeIds, stacksInFlowOrder],
-  );
-
-  const passThroughStacks = useMemo(
-    () =>
-      displayedStacks.filter(
-        (stack) => stack[0].detachedFromPipe && !directMergeBySourceId.has(stack[0].id),
-      ),
-    [directMergeBySourceId, displayedStacks],
+    [directMergeBySourceId, hiddenMergeIds, primaryPipelineNodeIds, stacksInFlowOrder],
   );
 
   const resizeObserver = useMemo(
@@ -550,7 +556,6 @@ function NodeList({
         listRef={listRef}
         itemRefs={itemRefs}
         stacks={visiblePipelineStacks}
-        passThroughStacks={passThroughStacks}
         layoutVersion={layoutVersion}
       />
       {displayedStacks.map((stack) => {
@@ -575,10 +580,12 @@ function NodeList({
 
         const isConnectionHoverTarget =
           !isPreview && stack.some((node) => hoveredConnectionNodeIdSet.has(node.id));
+        const isFloating =
+          !isPreview && !primaryPipelineNodeIds.has(baseNode.id) && !directMergeNode;
         const rowPositionClass = isPreview
           ? 'absolute left-0 right-0'
-          : baseNode.detachedFromPipe && !directMergeNode
-            ? `absolute left-0 ${DETACHED_ROW_RAIL_GUTTER_CLASS}`
+          : isFloating
+            ? `absolute left-0 ${FLOATING_ROW_RAIL_GUTTER_CLASS}`
             : 'absolute left-0 right-0';
 
         return (

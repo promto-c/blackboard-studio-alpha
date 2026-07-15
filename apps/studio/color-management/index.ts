@@ -86,8 +86,10 @@ export {
   resolveCurrentViewerDisplayView,
   type ViewerColorManagement,
 } from './viewerIntent';
-export { getAutoDetectedView } from './autoDetectView';
-export type { AutoDetectViewResult } from './autoDetectView';
+export { getAutoDetectedView, getAutoDetectedViewForColorSpace } from './autoDetectView';
+export type { AutoDetectViewResult, GetOcioViews } from './autoDetectView';
+export { resolveMediaPreviewColorManagement } from './mediaPreview';
+export type { ResolveMediaPreviewColorManagementOptions } from './mediaPreview';
 export type {
   DisplayOutputPresetKind,
   DisplayOutputPresetOption,

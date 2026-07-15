@@ -32,7 +32,7 @@ import {
   getSequenceProjectName,
   collectImageEntriesFromDirectoryHandle,
   buildImageEntriesFromFiles,
-  persistSequenceAssets,
+  prepareImageSequenceImport,
   collectNodeAssetIds,
 } from '@/state/editor/utils';
 import { getImportedImageColorManagement, getMediaFileKind } from '@/utils/mediaFiles';
@@ -49,6 +49,7 @@ import {
 import type { GetState, SetState } from '@/state/editor/slices/types';
 import { getOrderedNodesFromFlow, getRootFlow } from '@/state/editor/flowModel';
 import type { ProjectBranchRecord } from '@/state/persist';
+import { findSceneTimelineRange } from '@/utils/timelineRange';
 
 // ---------------------------------------------------------------------------
 // Type for the deps needed by project management methods
@@ -78,10 +79,10 @@ const setupNewProject = (
   projectName: string,
   nodes: AnyNode[],
   selectedId: string,
-  maxFrames = 0,
   options?: NewProjectCreationOptions,
 ) => {
   const fps = 30;
+  const timelineRange = findSceneTimelineRange(nodes);
   const { historyEntry, persistedState } = buildProjectInitState({
     nodes,
     selectedNodeId: selectedId,
@@ -96,13 +97,18 @@ const setupNewProject = (
     activeProjectBranchId: branchIndex.activeBranchId,
     projectBranches: branchIndex.branches,
     colorManagement: persistedState.colorManagement,
-    nodes,
+    flows: persistedState.flows,
+    rootFlowId: persistedState.rootFlowId,
+    activeFlowId: persistedState.activeFlowId,
     nodePositionsByFlow: persistedState.nodePositionsByFlow ?? {},
     selectedNodeId: selectedId,
+    selectedNodeIds: [selectedId],
     activeTab: EditorTab.Flow,
     history: [historyEntry],
     historyIndex: 0,
-    maxFrames,
+    currentFrame: timelineRange.startFrame,
+    timelineStartFrame: timelineRange.startFrame,
+    maxFrames: timelineRange.endFrame,
     fps,
   }));
   const index = getProjectIndex();
@@ -200,7 +206,6 @@ export const createNewProjectService = async (
       projectName,
       [newSceneNode, mediaNode],
       mediaNode.id,
-      0,
       options,
     );
   } else if (mediaKind === 'video') {
@@ -208,11 +213,11 @@ export const createNewProjectService = async (
     const mediaColorManagement = createBrowserDecodedVideoColorManagement();
     const assetId = await saveAsset(file);
     const fps = 30;
-    const totalFrames = Math.floor(duration * fps);
+    const frameCount = Math.max(1, Math.ceil(duration * fps));
     const newSceneNode = createSceneNode({
       width,
       height,
-      maxFrames: totalFrames,
+      maxFrames: frameCount - 1,
       fps,
     });
     const mediaNode = createMediaSourceNode({
@@ -223,7 +228,7 @@ export const createNewProjectService = async (
       width,
       height,
       duration,
-      frameCount: Math.max(1, Math.ceil(duration * fps)),
+      frameCount,
       videoColorMetadata: color,
       colorSpace: getMediaSourceColorSpace(mediaColorManagement),
       mediaColorManagement,
@@ -234,7 +239,6 @@ export const createNewProjectService = async (
       projectName,
       [newSceneNode, mediaNode],
       mediaNode.id,
-      totalFrames,
       options,
     );
   }
@@ -250,21 +254,30 @@ export const createNewProjectFromFilesService = async (
   if (imageEntries.length === 0) return;
 
   const firstEntry = imageEntries[0];
-  const { width, height } = await readImageDimensions(firstEntry.file);
-  const mediaColorManagement = await getImportedImageColorManagement(firstEntry.file);
-  const assetIds = await persistSequenceAssets(imageEntries, 'copy');
+  const sequenceImport = await prepareImageSequenceImport(imageEntries, 'copy');
+  const activePlate = sequenceImport.plates[0];
+  if (!activePlate) return;
 
   const newProjectId = `proj_${Date.now()}`;
   const projectName = getSequenceProjectName(firstEntry.relativePath);
 
-  const newSceneNode = createSceneNode({ width, height, maxFrames: assetIds.length - 1 });
+  const newSceneNode = createSceneNode({
+    width: activePlate.width,
+    height: activePlate.height,
+    startFrame: sequenceImport.timelineRange.startFrame,
+    maxFrames: sequenceImport.timelineRange.endFrame,
+  });
   const sequenceNode = createSequenceNode({
     name: projectName,
-    frames: assetIds,
-    width,
-    height,
-    colorSpace: getMediaSourceColorSpace(mediaColorManagement),
-    mediaColorManagement,
+    frames: activePlate.frames,
+    plates: sequenceImport.plates,
+    activePlateId: activePlate.id,
+    sourceFileName: activePlate.sourceFileName,
+    width: activePlate.width,
+    height: activePlate.height,
+    colorSpace: activePlate.colorSpace,
+    mediaColorManagement: activePlate.mediaColorManagement,
+    startFrame: activePlate.startFrame,
   });
 
   setupNewProject(
@@ -273,7 +286,6 @@ export const createNewProjectFromFilesService = async (
     projectName,
     [newSceneNode, sequenceNode],
     sequenceNode.id,
-    assetIds.length - 1,
     options,
   );
 };
@@ -289,21 +301,34 @@ export const createNewProjectFromDirectoryService = async (
   if (imageEntries.length === 0) return;
 
   const firstEntry = imageEntries[0];
-  const { width, height } = await readImageDimensions(firstEntry.file);
-  const mediaColorManagement = await getImportedImageColorManagement(firstEntry.file);
-  const assetIds = await persistSequenceAssets(imageEntries, importMode, directoryHandle);
+  const sequenceImport = await prepareImageSequenceImport(
+    imageEntries,
+    importMode,
+    directoryHandle,
+  );
+  const activePlate = sequenceImport.plates[0];
+  if (!activePlate) return;
 
   const newProjectId = `proj_${Date.now()}`;
   const projectName = directoryHandle.name || getSequenceProjectName(firstEntry.relativePath);
 
-  const newSceneNode = createSceneNode({ width, height, maxFrames: assetIds.length - 1 });
+  const newSceneNode = createSceneNode({
+    width: activePlate.width,
+    height: activePlate.height,
+    startFrame: sequenceImport.timelineRange.startFrame,
+    maxFrames: sequenceImport.timelineRange.endFrame,
+  });
   const sequenceNode = createSequenceNode({
     name: projectName,
-    frames: assetIds,
-    width,
-    height,
-    colorSpace: getMediaSourceColorSpace(mediaColorManagement),
-    mediaColorManagement,
+    frames: activePlate.frames,
+    plates: sequenceImport.plates,
+    activePlateId: activePlate.id,
+    sourceFileName: activePlate.sourceFileName,
+    width: activePlate.width,
+    height: activePlate.height,
+    colorSpace: activePlate.colorSpace,
+    mediaColorManagement: activePlate.mediaColorManagement,
+    startFrame: activePlate.startFrame,
   });
 
   setupNewProject(
@@ -312,7 +337,6 @@ export const createNewProjectFromDirectoryService = async (
     projectName,
     [newSceneNode, sequenceNode],
     sequenceNode.id,
-    assetIds.length - 1,
     options,
   );
 };
@@ -328,7 +352,7 @@ export const createNewProjectFromDimensionsService = (
   const newProjectId = `proj_${Date.now()}`;
   const newSceneNode = createSceneNode({ width, height, maxFrames: 120 });
   const newNodes: AnyNode[] = [newSceneNode];
-  setupNewProject(set, newProjectId, name, newNodes, newSceneNode.id, 120, options);
+  setupNewProject(set, newProjectId, name, newNodes, newSceneNode.id, options);
 };
 
 // ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ const fpsOptions: { value: number; label: string }[] = [
 
 function SceneAdjustments({ node: anyNode }: { node: AnyNode }) {
   const sceneNode = anyNode as SceneNode;
-  const { updateNode, setMaxFrames } = useEditorActions();
+  const { updateNode } = useEditorActions();
   const { openPreferences } = usePreferencesNavigation();
 
   const handleUpdate = (updates: Partial<SceneNode>) => {
@@ -64,15 +64,29 @@ function SceneAdjustments({ node: anyNode }: { node: AnyNode }) {
             </div>
           </SettingRow>
 
-          <SettingRow label="Timeline Duration">
-            <NumberInput
-              value={sceneNode.maxFrames}
-              onValueChange={(maxFrames) => setMaxFrames(maxFrames)}
-              normalizeValue={Math.round}
-              min="0"
-              step="1"
-              aria-label="Timeline duration in frames"
-            />
+          <SettingRow label="Frame Range">
+            <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+              <NumberInput
+                value={sceneNode.startFrame}
+                onValueChange={(startFrame) => handleUpdate({ startFrame })}
+                normalizeValue={Math.round}
+                min="0"
+                max={sceneNode.maxFrames}
+                step="1"
+                aria-label="Timeline start frame"
+              />
+              <span aria-hidden="true" className="text-[10px] font-medium text-gray-600">
+                –
+              </span>
+              <NumberInput
+                value={sceneNode.maxFrames}
+                onValueChange={(maxFrames) => handleUpdate({ maxFrames })}
+                normalizeValue={Math.round}
+                min={sceneNode.startFrame}
+                step="1"
+                aria-label="Timeline end frame"
+              />
+            </div>
           </SettingRow>
 
           <SettingRow label="Frame Rate">

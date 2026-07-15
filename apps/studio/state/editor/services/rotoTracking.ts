@@ -545,7 +545,7 @@ export const trackRotoSelectionService = async (
   ) => void,
 ) => {
   const projectContext = getProjectBranchContext();
-  const { nodes, currentFrame, maxFrames, fps, colorManagement } = get();
+  const { nodes, currentFrame, timelineStartFrame, maxFrames, fps, colorManagement } = get();
   const trackingSource = resolveSourcePixelSource(nodes, rotoNodeId, sourceId, colorManagement);
   if (!trackingSource) return;
   const trackingFps = fps || 30;
@@ -564,7 +564,7 @@ export const trackRotoSelectionService = async (
     const endFrame =
       direction === 'forward'
         ? Math.min(maxFrames, currentFrame + frameCount)
-        : Math.max(0, currentFrame - frameCount);
+        : Math.max(timelineStartFrame, currentFrame - frameCount);
     const currentNodes = [...nodes];
     const rotoIndex = currentNodes.findIndex((node: AnyNode) => node.id === rotoNodeId);
     const materializedTarget = materializeRotoTrackingTarget(rotoNode, sourcePathIds, target);

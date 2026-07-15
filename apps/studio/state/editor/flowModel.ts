@@ -277,21 +277,6 @@ export const updateFlowNode = (
   return changed ? { ...flows, [flowId]: { ...flow, nodes } } : null;
 };
 
-export const getOutputPipeEdge = (flow: Flow | null): FlowEdge | null => {
-  if (!flow) return null;
-  return (
-    flow.edges.find(
-      (edge) => edge.targetNodeId === flow.outputNodeId && edge.targetPort === 'pipe',
-    ) ?? null
-  );
-};
-
-export const isFlowOutputDetached = (flow: Flow | null): boolean => {
-  if (!flow) return false;
-  const outputNode = flow.nodes.find((node) => node.id === flow.outputNodeId);
-  return !!(outputNode as { detachedFromPipe?: boolean } | undefined)?.detachedFromPipe;
-};
-
 export const getOrderedNodesFromFlow = (flow: Flow | null): AnyNode[] => {
   if (!flow) {
     return [];

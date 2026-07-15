@@ -22,6 +22,7 @@ export const sceneNode: NodeDefinition = {
     height: 1080,
     bitDepth: 8,
     colorSpace: ColorManagementDefaults.WORKING_SPACE,
+    startFrame: 0,
     maxFrames: 120,
     fps: 30,
   }),
@@ -37,6 +38,8 @@ export const sceneNode: NodeDefinition = {
       label = `Set Color Space to ${updated.colorSpace}`;
     } else if ('fps' in changes) {
       label = `Set FPS to ${updated.fps}`;
+    } else if ('startFrame' in changes || 'maxFrames' in changes) {
+      label = `Set Frame Range to ${updated.startFrame}-${updated.maxFrames}`;
     }
 
     return { changes, label };
