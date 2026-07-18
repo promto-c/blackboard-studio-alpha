@@ -5,6 +5,7 @@ import {
   renderNodeInputRegionToPngBlob,
 } from '@/utils/nodeInputFrame';
 import {
+  getComfyConnectedInputSourcePort,
   getComfyRenderedInputName,
   renderComfyConnectedInputToPngBlob,
 } from './comfyInputRendering';
@@ -63,5 +64,41 @@ describe('Comfy connected input rendering', () => {
       regionInputAlphaMode: 'preserve',
     });
     expect(renderNodeInputFrameToPngBlob).not.toHaveBeenCalled();
+  });
+
+  it('keeps the connected technical output port when rendering an alpha input', async () => {
+    const flows = {
+      flow: {
+        id: 'flow',
+        name: 'Flow',
+        nodes: [],
+        edges: [
+          {
+            id: 'edge',
+            sourceNodeId: 'source-1',
+            sourcePort: 'a',
+            targetNodeId: 'comfy-1',
+            targetPort: 'comfy-input:workflow:66:alpha',
+          },
+        ],
+        stacks: [],
+        outputNodeId: 'output',
+      },
+    };
+    const sourcePort = getComfyConnectedInputSourcePort({
+      flows,
+      targetNodeId: 'comfy-1',
+      targetPort: 'comfy-input:workflow:66:alpha',
+      sourceNodeId: 'source-1',
+    });
+
+    expect(sourcePort).toBe('a');
+    await renderComfyConnectedInputToPngBlob({ ...baseOptions, flows, sourcePort });
+    expect(renderNodeInputFrameToPngBlob).toHaveBeenCalledWith({
+      ...baseOptions,
+      flows,
+      sourcePort: 'a',
+      finalColorSpace: 'srgb',
+    });
   });
 });

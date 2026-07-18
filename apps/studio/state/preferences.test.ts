@@ -106,39 +106,43 @@ describe('paint brush preferences', () => {
   });
 });
 
-describe('Roto interactive preview preferences', () => {
+describe('interactive preview performance preferences', () => {
   afterEach(() => {
     localStorage.clear();
   });
 
   it('defaults to a 1280px proxy and clamps persisted values', () => {
     expect(createDefaultPreferences()).toMatchObject({
-      rotoInteractivePreviewMaxDimension: 1280,
-      rotoFrameChangePreviewEnabled: true,
-      rotoPreviewRefineDelayMs: 120,
-      rotoPlaybackPreviewMode: 'auto',
+      previewMaxDimension: 1280,
+      previewOptimizeWhileEditing: true,
+      previewOptimizeFrameChanges: true,
+      previewRefineDelayMs: 120,
+      previewPlaybackMode: 'auto',
+      previewSampleLimit: 16,
     });
 
     localStorage.setItem(
       'blackboard-studio-preferences',
-      JSON.stringify({ rotoInteractivePreviewMaxDimension: 9999 }),
+      JSON.stringify({ previewMaxDimension: 9999 }),
     );
 
-    expect(loadPreferences().rotoInteractivePreviewMaxDimension).toBe(2160);
+    expect(loadPreferences().previewMaxDimension).toBe(2160);
   });
 
   it('normalizes temporal preview preferences', () => {
     localStorage.setItem(
       'blackboard-studio-preferences',
       JSON.stringify({
-        rotoPreviewRefineDelayMs: 9999,
-        rotoPlaybackPreviewMode: 'turbo',
+        previewRefineDelayMs: 9999,
+        previewPlaybackMode: 'turbo',
+        previewSampleLimit: 999,
       }),
     );
 
     expect(loadPreferences()).toMatchObject({
-      rotoPreviewRefineDelayMs: 500,
-      rotoPlaybackPreviewMode: 'auto',
+      previewRefineDelayMs: 500,
+      previewPlaybackMode: 'auto',
+      previewSampleLimit: 128,
     });
   });
 });

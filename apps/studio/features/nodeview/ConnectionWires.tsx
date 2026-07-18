@@ -1,6 +1,7 @@
 import React from 'react';
 import type { FlowEdge } from '@blackboard/types';
 import { getInputPortKey, getOutputPortKey } from './nodePortKeys';
+import { makeWireBezierPath } from './wireGeometry';
 
 interface DragPreview {
   sourceNodeId: string;
@@ -14,24 +15,18 @@ interface ConnectionWiresProps {
   portPositions: Map<string, { x: number; y: number }>;
   selectedConnection: FlowEdge | null;
   onSelectConnection: (connection: FlowEdge | null) => void;
-  onCutConnection?: (connection: FlowEdge) => boolean;
   dragPreview: DragPreview | null;
   portColors: ReadonlyMap<string, string>;
   highlightedConnectionKeys?: ReadonlySet<string>;
   flowingConnectionKeys?: ReadonlySet<string>;
+  cutPreviewConnectionIds?: ReadonlySet<string>;
+  isCutGestureArmed?: boolean;
 }
 
 const DEFAULT_WIRE_COLOR = '#555';
 
 const getUpstreamWireColor = (normalWireColor: string): string =>
   `color-mix(in oklch, rgb(var(--color-primary-400)) 42%, ${normalWireColor})`;
-
-function makeBezierPath(src: { x: number; y: number }, tgt: { x: number; y: number }): string {
-  const dy = Math.abs(tgt.y - src.y);
-  const cpOffset = Math.max(40, dy * 0.4);
-
-  return `M ${src.x} ${src.y} C ${src.x} ${src.y + cpOffset}, ${tgt.x} ${tgt.y - cpOffset}, ${tgt.x} ${tgt.y}`;
-}
 
 const isConnectionEqual = (a: FlowEdge, b: FlowEdge): boolean => a.id === b.id;
 
@@ -40,31 +35,15 @@ function ConnectionWires({
   portPositions,
   selectedConnection,
   onSelectConnection,
-  onCutConnection,
   dragPreview,
   portColors,
   highlightedConnectionKeys,
   flowingConnectionKeys,
+  cutPreviewConnectionIds,
+  isCutGestureArmed = false,
 }: ConnectionWiresProps) {
-  const [hoveredConnection, setHoveredConnection] = React.useState<FlowEdge | null>(null);
-  const [isCutModifierPressed, setIsCutModifierPressed] = React.useState(false);
+  const [hoveredConnectionId, setHoveredConnectionId] = React.useState<string | null>(null);
   const gradientNamespace = React.useId().replaceAll(':', '');
-
-  React.useEffect(() => {
-    const updateCutModifier = (event: KeyboardEvent) => {
-      setIsCutModifierPressed(event.ctrlKey || event.metaKey);
-    };
-    const resetCutModifier = () => setIsCutModifierPressed(false);
-
-    window.addEventListener('keydown', updateCutModifier);
-    window.addEventListener('keyup', updateCutModifier);
-    window.addEventListener('blur', resetCutModifier);
-    return () => {
-      window.removeEventListener('keydown', updateCutModifier);
-      window.removeEventListener('keyup', updateCutModifier);
-      window.removeEventListener('blur', resetCutModifier);
-    };
-  }, []);
 
   return (
     <svg
@@ -82,10 +61,10 @@ function ConnectionWires({
 
         const isSelected =
           selectedConnection !== null && isConnectionEqual(conn, selectedConnection);
-        const isHovered = hoveredConnection !== null && isConnectionEqual(conn, hoveredConnection);
-        const isCuttable = !!onCutConnection;
-        const isCutHover = isCuttable && isHovered && isCutModifierPressed;
-        const d = makeBezierPath(src, tgt);
+        const isPendingCut =
+          (cutPreviewConnectionIds?.has(conn.id) ?? false) ||
+          (isCutGestureArmed && hoveredConnectionId === conn.id);
+        const d = makeWireBezierPath(src, tgt);
         const isUpstreamHighlighted = highlightedConnectionKeys?.has(conn.id) ?? false;
         const isViewFlowing = flowingConnectionKeys?.has(conn.id) ?? false;
         const sourceColor = portColors.get(srcKey);
@@ -112,28 +91,25 @@ function ConnectionWires({
                 </linearGradient>
               </defs>
             ) : null}
-            {/* Invisible wider path for selection and ctrl/meta-drag cutting. */}
+            {/* Invisible wider path for connection selection. */}
             <path
               data-connection-wire="true"
+              data-connection-id={conn.id}
               d={d}
               fill="none"
               stroke="transparent"
               strokeWidth={12}
-              style={{ pointerEvents: 'stroke', cursor: isCutHover ? 'crosshair' : 'pointer' }}
+              style={{
+                pointerEvents: 'stroke',
+                cursor: isCutGestureArmed ? 'crosshair' : 'pointer',
+              }}
               onClick={(e) => {
                 e.stopPropagation();
-                if ((e.ctrlKey || e.metaKey) && isCuttable) {
-                  onCutConnection?.(conn);
-                  return;
-                }
+                if (e.ctrlKey || e.metaKey) return;
                 onSelectConnection(isSelected ? null : conn);
               }}
-              onPointerEnter={(e) => {
-                setHoveredConnection(conn);
-                setIsCutModifierPressed(e.ctrlKey || e.metaKey);
-              }}
-              onPointerMove={(e) => setIsCutModifierPressed(e.ctrlKey || e.metaKey)}
-              onPointerLeave={() => setHoveredConnection(null)}
+              onPointerEnter={() => setHoveredConnectionId(conn.id)}
+              onPointerLeave={() => setHoveredConnectionId(null)}
             />
             {/* Visible wire */}
             <path
@@ -143,7 +119,7 @@ function ConnectionWires({
               d={d}
               fill="none"
               stroke={
-                isCutHover
+                isPendingCut
                   ? '#f87171'
                   : (channelStroke ??
                     (!isViewFlowing && isSelected
@@ -153,22 +129,24 @@ function ConnectionWires({
                         : DEFAULT_WIRE_COLOR))
               }
               strokeWidth={
-                isCutHover || isSelected || isUpstreamHighlighted || isViewFlowing ? 2.25 : 1.5
+                isPendingCut || isSelected || isUpstreamHighlighted || isViewFlowing ? 2.25 : 1.5
               }
-              strokeDasharray={isCutHover ? '5 3' : undefined}
+              strokeDasharray={isPendingCut ? '5 3' : undefined}
               style={{ pointerEvents: 'none' }}
             />
-            {(isSelected || isCutHover || isUpstreamHighlighted) && (
+            {(isSelected || isPendingCut || isUpstreamHighlighted) && (
               <path
                 d={d}
                 fill="none"
-                stroke={isCutHover ? '#f87171' : (channelStroke ?? 'rgb(var(--color-primary-400))')}
+                stroke={
+                  isPendingCut ? '#f87171' : (channelStroke ?? 'rgb(var(--color-primary-400))')
+                }
                 strokeWidth={6}
-                opacity={isCutHover ? 0.2 : isSelected ? 0.15 : 0.1}
+                opacity={isPendingCut ? 0.24 : isSelected ? 0.15 : 0.1}
                 style={{ pointerEvents: 'none' }}
               />
             )}
-            {isViewFlowing && !isCutHover ? (
+            {isViewFlowing && !isPendingCut ? (
               <path
                 data-view-flow-path="true"
                 className="node-view-flow-wire"
@@ -193,7 +171,7 @@ function ConnectionWires({
           if (!src) return null;
 
           const tgt = { x: dragPreview.cursorX, y: dragPreview.cursorY };
-          const d = makeBezierPath(src, tgt);
+          const d = makeWireBezierPath(src, tgt);
 
           return (
             <path

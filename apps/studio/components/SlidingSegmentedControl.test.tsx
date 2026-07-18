@@ -5,6 +5,27 @@ import * as Icons from '@blackboard/icons';
 import { SlidingSegmentedControl } from './SlidingSegmentedControl';
 
 describe('SlidingSegmentedControl', () => {
+  it('applies the pill silhouette to the track, selection, and segments', () => {
+    const { container } = render(
+      <SlidingSegmentedControl
+        options={[
+          { value: 'wipe', label: 'Wipe', Icon: Icons.CompareWipe },
+          { value: 'split', label: 'Split', Icon: Icons.CompareSplit },
+        ]}
+        value="wipe"
+        onChange={vi.fn()}
+        shape="pill"
+        ariaLabel="Compare mode"
+      />,
+    );
+
+    const control = container.querySelector<HTMLElement>('.bb-sliding-segmented-control');
+    expect(control?.style.borderRadius).toBe('9999px');
+    expect(control?.style.getPropertyValue('--bb-sliding-segment-radius')).toBe('9999px');
+    expect(screen.getByRole('button', { name: 'Wipe' }).style.borderRadius).toBe('9999px');
+    expect(screen.getByRole('button', { name: 'Split' }).style.borderRadius).toBe('9999px');
+  });
+
   it('prevents selecting a disabled segment', () => {
     const onChange = vi.fn();
 

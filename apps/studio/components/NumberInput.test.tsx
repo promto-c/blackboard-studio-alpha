@@ -9,18 +9,22 @@ function NumberInputHarness({
   onApply,
   onInteractionStart,
   onInteractionEnd,
+  min = 0,
+  max = 20,
 }: {
   onApply: (value: number, source: NumberInputChangeSource) => void;
   onInteractionStart?: () => void;
   onInteractionEnd?: () => void;
+  min?: number;
+  max?: number;
 }) {
   const [value, setValue] = useState(10);
   return (
     <NumberInput
       aria-label="Value"
       value={value}
-      min={0}
-      max={20}
+      min={min}
+      max={max}
       step={0.5}
       onInteractionStart={onInteractionStart}
       onInteractionEnd={onInteractionEnd}
@@ -57,14 +61,15 @@ describe('NumberInput', () => {
     expect(onApply).not.toHaveBeenCalled();
   });
 
-  it('applies keyboard and focused-wheel steps immediately', () => {
+  it('applies keyboard and focused-wheel steps at the selection caret', () => {
     const onApply = vi.fn();
     render(<NumberInputHarness onApply={onApply} />);
     const input = screen.getByRole('spinbutton', { name: 'Value' });
 
     act(() => input.focus());
+    (input as HTMLInputElement).select();
     fireEvent.keyDown(input, { key: 'ArrowUp' });
-    expect(onApply).toHaveBeenLastCalledWith(10.5, 'keyboard');
+    expect(onApply).toHaveBeenLastCalledWith(11, 'keyboard');
 
     const wheelEvent = new WheelEvent('wheel', {
       bubbles: true,
@@ -74,6 +79,132 @@ describe('NumberInput', () => {
     fireEvent(input, wheelEvent);
     expect(onApply).toHaveBeenLastCalledWith(10, 'wheel');
     expect(wheelEvent.defaultPrevented).toBe(true);
+  });
+
+  it('steps the digit immediately left of the active text caret', () => {
+    const onApply = vi.fn();
+    render(<NumberInputHarness max={100} onApply={onApply} />);
+    const input = screen.getByRole('spinbutton', { name: 'Value' }) as HTMLInputElement;
+
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: '12.345' } });
+
+    input.setSelectionRange(4, 4);
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(onApply).toHaveBeenLastCalledWith(12.445, 'keyboard');
+    expect(input.value).toBe('12.445');
+    expect(input.selectionStart).toBe(4);
+
+    fireEvent.change(input, { target: { value: '12.345' } });
+    input.setSelectionRange(4, 4);
+    const wheelEvent = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: 1,
+    });
+    fireEvent(input, wheelEvent);
+
+    expect(onApply).toHaveBeenLastCalledWith(12.245, 'wheel');
+    expect(input.value).toBe('12.245');
+    expect(input.selectionStart).toBe(4);
+    expect(wheelEvent.defaultPrevented).toBe(true);
+  });
+
+  it('handles caret boundaries, punctuation, and negative signs', () => {
+    const onApply = vi.fn();
+    render(<NumberInputHarness min={-100} max={100} onApply={onApply} />);
+    const input = screen.getByRole('spinbutton', { name: 'Value' }) as HTMLInputElement;
+
+    act(() => input.focus());
+
+    fireEvent.change(input, { target: { value: '12.345' } });
+    input.setSelectionRange(0, 0);
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(onApply).toHaveBeenLastCalledWith(22.345, 'keyboard');
+
+    fireEvent.change(input, { target: { value: '12.345' } });
+    input.setSelectionRange(6, 6);
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(onApply).toHaveBeenLastCalledWith(12.346, 'keyboard');
+
+    fireEvent.change(input, { target: { value: '12.345' } });
+    input.setSelectionRange(3, 3);
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(onApply).toHaveBeenLastCalledWith(13.345, 'keyboard');
+
+    fireEvent.change(input, { target: { value: '-12.345' } });
+    input.setSelectionRange(3, 3);
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(onApply).toHaveBeenLastCalledWith(-11.345, 'keyboard');
+  });
+
+  it('always uses the right edge as the caret when text is selected', () => {
+    const onApply = vi.fn();
+    render(<NumberInputHarness max={100} onApply={onApply} />);
+    const input = screen.getByRole('spinbutton', { name: 'Value' }) as HTMLInputElement;
+
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: '12.345' } });
+    input.setSelectionRange(1, 4, 'forward');
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(onApply).toHaveBeenLastCalledWith(12.445, 'keyboard');
+    expect(input.selectionDirection).toBe('forward');
+
+    fireEvent.change(input, { target: { value: '12.345' } });
+    input.setSelectionRange(1, 4, 'backward');
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(onApply).toHaveBeenLastCalledWith(12.445, 'keyboard');
+    expect(input.selectionDirection).toBe('backward');
+  });
+
+  it('preserves the caret precision when a fractional step produces trailing zeroes', () => {
+    const onApply = vi.fn();
+    render(<NumberInput aria-label="Precise value" value={1.01} onValueChange={onApply} />);
+    const input = screen.getByRole('spinbutton', { name: 'Precise value' }) as HTMLInputElement;
+
+    act(() => input.focus());
+    input.setSelectionRange(4, 4);
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+    expect(onApply).toHaveBeenLastCalledWith(1, 'keyboard');
+    expect(input.value).toBe('1.00');
+    expect(input.selectionStart).toBe(4);
+  });
+
+  it('extends decimal precision when ArrowRight moves beyond the value', () => {
+    const onApply = vi.fn();
+    render(<NumberInput aria-label="Extend precision" value={10.12} onValueChange={onApply} />);
+    const input = screen.getByRole('spinbutton', { name: 'Extend precision' }) as HTMLInputElement;
+
+    act(() => input.focus());
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.keyDown(input, { key: 'ArrowRight' });
+    expect(input.value).toBe('10.120');
+    expect(input.selectionStart).toBe(6);
+    expect(onApply).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: 'ArrowRight' });
+    expect(input.value).toBe('10.1200');
+    expect(input.selectionStart).toBe(7);
+    expect(onApply).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(input.value).toBe('10.1201');
+    expect(onApply).toHaveBeenLastCalledWith(10.1201, 'keyboard');
+  });
+
+  it('starts decimal precision when ArrowRight moves beyond an integer', () => {
+    const onApply = vi.fn();
+    render(<NumberInput aria-label="Integer precision" value={10} onValueChange={onApply} />);
+    const input = screen.getByRole('spinbutton', { name: 'Integer precision' }) as HTMLInputElement;
+
+    act(() => input.focus());
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.keyDown(input, { key: 'ArrowRight' });
+
+    expect(input.value).toBe('10.0');
+    expect(input.selectionStart).toBe(4);
+    expect(onApply).not.toHaveBeenCalled();
   });
 
   it('renders a unit suffix inside the field without changing the numeric value', () => {

@@ -699,7 +699,7 @@ const FlowTab = ({
           </div>
           <ScrollArea
             rootClassName="flex-1 min-h-0"
-            className="h-full overflow-y-auto px-3 pb-3 space-y-2"
+            className="h-full space-y-2 overflow-y-auto pb-3"
           >
             {renderProperties()}
             {renderItemsPanel()}

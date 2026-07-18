@@ -1,10 +1,12 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import * as Icons from '@blackboard/icons';
 import {
   SlidingSegmentedControl,
   type SlidingSegmentedControlOption,
 } from '@/components/SlidingSegmentedControl';
 import { useViewportCompare } from './useViewportCompare';
+import { CompareSlotFluidCanvas } from './CompareSlotFluidCanvas';
+import type { CompareSizingMode } from '@/state/editor/compareView';
 
 const MODE_OPTIONS: SlidingSegmentedControlOption<'wipe' | 'split'>[] = [
   { value: 'wipe', label: 'Wipe', Icon: Icons.CompareWipe, title: 'Wipe Compare' },
@@ -21,7 +23,34 @@ const ORIENTATION_OPTIONS: SlidingSegmentedControlOption<'vertical' | 'horizonta
   },
 ];
 
+const SIZING_OPTIONS: SlidingSegmentedControlOption<CompareSizingMode>[] = [
+  {
+    value: 'fit',
+    label: 'Fit',
+    Icon: Icons.Rectangle,
+    title: 'Fit — show the entire display window with letterboxing',
+  },
+  {
+    value: 'fill',
+    label: 'Fill',
+    Icon: Icons.ArrowsPointingOut,
+    title: 'Fill — cover each pane while preserving aspect ratio',
+  },
+  {
+    value: 'none',
+    label: 'None',
+    Icon: Icons.Pixelate,
+    title: 'None — show native pixels at 100% without automatic scaling',
+  },
+];
+
 const REFERENCE_OPTIONS: SlidingSegmentedControlOption<'canvas' | 'viewport' | 'cursor'>[] = [
+  {
+    value: 'cursor',
+    label: 'Cursor',
+    Icon: Icons.CursorArrow,
+    title: 'Follows cursor',
+  },
   {
     value: 'canvas',
     label: 'Canvas',
@@ -34,12 +63,6 @@ const REFERENCE_OPTIONS: SlidingSegmentedControlOption<'canvas' | 'viewport' | '
     Icon: Icons.ComputerDesktop,
     title: 'Screen space (fixed position)',
   },
-  {
-    value: 'cursor',
-    label: 'Cursor',
-    Icon: Icons.CursorArrow,
-    title: 'Follows cursor',
-  },
 ];
 
 export function ViewportCompareBar({ embedded }: { embedded?: boolean } = {}) {
@@ -47,31 +70,50 @@ export function ViewportCompareBar({ embedded }: { embedded?: boolean } = {}) {
     compareView,
     swapCompareSlots,
     setCompareMode,
+    setCompareSizingMode,
     setCompareWipeOrientation,
     setCompareWipeReference,
   } = useViewportCompare();
 
   const barRef = useRef<HTMLDivElement>(null);
+  const [fluidHovered, setFluidHovered] = useState(false);
 
   if (!compareView.isActive) return null;
 
   const barContent = (
     <div className="glass-component flex items-center gap-2 bg-gray-900/60 backdrop-blur-xl border border-white/10 rounded-full shadow-xl ring-1 ring-inset ring-white/20 px-3 py-1.5">
-      {/* Slot badge — the whole area is clickable to swap */}
       <button
         type="button"
+        className="compare-slot-swap"
+        data-swapped={compareView.sidesSwapped ? 'true' : 'false'}
         onClick={swapCompareSlots}
-        title="Swap Sides"
-        className="group relative flex h-7 min-w-[62px] items-center justify-center overflow-hidden rounded-full border border-white/15 bg-gradient-to-r from-primary-500/70 via-slate-700/65 to-amber-500/70 px-2.5 text-[11px] font-bold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_4px_12px_rgba(0,0,0,0.22)] ring-1 ring-inset ring-white/10 transition hover:border-white/25 hover:brightness-110"
+        onPointerEnter={() => setFluidHovered(true)}
+        onPointerLeave={() => setFluidHovered(false)}
+        onFocus={() => setFluidHovered(true)}
+        onBlur={() => setFluidHovered(false)}
+        aria-label={`Swap comparison sides: viewer slot ${compareView.sidesSwapped ? compareView.slotB : compareView.slotA} with viewer slot ${compareView.sidesSwapped ? compareView.slotA : compareView.slotB}`}
+        title="Swap Comparison Sides"
       >
-        <span className="pointer-events-none absolute inset-px rounded-full bg-gradient-to-b from-white/14 to-transparent" />
-        <span className="relative flex items-center gap-1.5">
-          <span>{compareView.slotA}</span>
-          <span className="relative flex min-w-3 items-center justify-center text-[9px] font-black uppercase text-white/75">
-            <span className="group-hover:invisible">vs</span>
-            <Icons.ArrowsRightLeft className="invisible absolute h-3 w-3 text-white/85 group-hover:visible" />
-          </span>
-          <span>{compareView.slotB}</span>
+        <span aria-hidden="true" className="compare-slot-swap__chamber">
+          <CompareSlotFluidCanvas hovered={fluidHovered} swapped={compareView.sidesSwapped} />
+          <span className="compare-slot-swap__caustic" />
+          <span className="compare-slot-swap__specular" />
+        </span>
+        <span
+          className="compare-slot-swap__slot compare-slot-swap__slot--base"
+          title={`Viewer Slot ${compareView.slotA} · Base`}
+        >
+          {compareView.slotA}
+        </span>
+        <span className="compare-slot-swap__action" aria-hidden="true">
+          <span className="compare-slot-swap__versus">vs</span>
+          <Icons.ArrowsRightLeft className="compare-slot-swap__icon" />
+        </span>
+        <span
+          className="compare-slot-swap__slot compare-slot-swap__slot--comparison"
+          title={`Viewer Slot ${compareView.slotB} · Comparison`}
+        >
+          {compareView.slotB}
         </span>
       </button>
 
@@ -85,6 +127,7 @@ export function ViewportCompareBar({ embedded }: { embedded?: boolean } = {}) {
         activeWidth={68}
         inactiveWidth={28}
         height={28}
+        shape="pill"
         iconClassName="h-3.5 w-3.5"
         labelMaxWidthClassName="max-w-12"
       />
@@ -97,8 +140,24 @@ export function ViewportCompareBar({ embedded }: { embedded?: boolean } = {}) {
         activeWidth={80}
         inactiveWidth={28}
         height={28}
+        shape="pill"
         iconClassName="h-3.5 w-3.5"
         labelMaxWidthClassName="max-w-16"
+      />
+
+      <div className="w-px h-5 bg-white/10 mx-1" />
+
+      <SlidingSegmentedControl
+        options={SIZING_OPTIONS}
+        value={compareView.sizingMode}
+        onChange={setCompareSizingMode}
+        activeWidth={58}
+        inactiveWidth={28}
+        height={28}
+        shape="pill"
+        iconClassName="h-3.5 w-3.5"
+        labelMaxWidthClassName="max-w-10"
+        ariaLabel="Compare pane sizing"
       />
 
       {/* Wipe-mode only: reference selector */}
@@ -112,6 +171,7 @@ export function ViewportCompareBar({ embedded }: { embedded?: boolean } = {}) {
             activeWidth={88}
             inactiveWidth={28}
             height={28}
+            shape="pill"
             iconClassName="h-3.5 w-3.5"
             labelMaxWidthClassName="max-w-16"
           />

@@ -129,14 +129,14 @@ const REFORMAT_NODE: AnyNode = {
 
 const FLOATING_IMAGE_B: AnyNode = { ...IMAGE_B };
 
-const GRADE_B: AnyNode = {
+const GRADE_B = {
   id: 'grade_b',
   type: NodeType.GRADE,
   name: 'Grade B',
   enabled: true,
   stacked: true,
   grade: createDefaultGrade(),
-};
+} as AnyNode;
 
 const MERGE_B: AnyNode = {
   id: 'merge_b',
@@ -245,6 +245,23 @@ describe('viewerSlots utils', () => {
     });
   });
 
+  it('normalizes reversed Compare slots so the lower slot remains the base', () => {
+    expect(
+      resolveViewerRouting(
+        'img_b',
+        { 1: 'img_a', 3: 'img_b' },
+        {
+          isActive: true,
+          slotA: 3,
+          slotB: 1,
+        },
+      ),
+    ).toEqual({
+      targetNodeIds: ['img_a', 'img_b'],
+      compare: { slotA: 1, slotB: 3, nodeIdA: 'img_a', nodeIdB: 'img_b' },
+    });
+  });
+
   it('falls back to the regular viewer target when Compare routing is incomplete', () => {
     expect(
       resolveViewerRouting(
@@ -307,6 +324,67 @@ describe('viewerSlots utils', () => {
     expect(getOutputRenderNodes([SCENE_NODE, keepSceneImage], keepSceneFlow)).toEqual([
       SCENE_NODE,
       keepSceneImage,
+    ]);
+  });
+
+  it('derives the display window from an active Comfy output using match-output mode', () => {
+    const comfyWithMatchedOutput = {
+      ...COMFY_SOURCE,
+      width: 640,
+      height: 480,
+      transform: { x: 50, y: -25, scaleX: 2, scaleY: 1.5, fitMode: ImageFitMode.CUSTOM },
+      activeGeneratedOutputId: 'comfy-output-a',
+      generatedOutputs: [
+        {
+          id: 'comfy-output-a',
+          src: 'generated-a',
+          width: 2048,
+          height: 2490,
+          createdAt: 1,
+          useOutputSizeAsScene: true,
+        },
+      ],
+    } as AnyNode;
+    const flow = flowWithEdges(
+      [SCENE_NODE, comfyWithMatchedOutput],
+      [edge(comfyWithMatchedOutput.id, OUTPUT_NODE_ID)],
+    );
+
+    expect(getOutputRenderNodes([SCENE_NODE, comfyWithMatchedOutput], flow)).toEqual([
+      { ...SCENE_NODE, width: 2048, height: 2490 },
+      {
+        ...comfyWithMatchedOutput,
+        transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
+      },
+    ]);
+  });
+
+  it('uses a match-output display window as the source format of a downstream reformat', () => {
+    const matchOutputImage: AnyNode = {
+      ...SMALL_IMAGE,
+      id: 'img_match_output_reformat',
+      width: 2048,
+      height: 2490,
+      useOutputSizeAsScene: true,
+    };
+    const nodes = [SCENE_NODE, matchOutputImage, REFORMAT_NODE];
+    const flow = flowWithEdges(nodes, [
+      edge(matchOutputImage.id, REFORMAT_NODE.id),
+      edge(REFORMAT_NODE.id, OUTPUT_NODE_ID),
+    ]);
+
+    expect(getOutputRenderNodes(nodes, flow)).toEqual([
+      { ...SCENE_NODE, width: 503, height: 1033 },
+      {
+        ...matchOutputImage,
+        transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
+      },
+      {
+        ...REFORMAT_NODE,
+        inputs: { pipe: matchOutputImage.id },
+        sourceWidth: 2048,
+        sourceHeight: 2490,
+      },
     ]);
   });
 

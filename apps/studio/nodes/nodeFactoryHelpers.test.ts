@@ -22,6 +22,7 @@ describe('createUniformGetter', () => {
         fps: 24,
         scene: { width: 1920, height: 1080 },
         nodes: [],
+        quality: { mode: 'full', resolutionScale: 1, sampleLimit: 128 },
         transformColorPickingToSceneLinear,
       },
     );

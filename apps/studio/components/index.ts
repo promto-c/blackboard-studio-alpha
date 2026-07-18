@@ -90,6 +90,12 @@ export {
   ExecuteButtonMenuTrigger,
   ExecuteMenuItem,
 } from './ExecuteButton';
+export {
+  ExplicitFieldPicker,
+  type ExplicitFieldPickerField,
+  type ExplicitFieldPickerProps,
+} from './ExplicitFieldPicker';
+export { NodeFieldControl, type NodeFieldControlProps } from './NodeFieldControl';
 export { SettingsPanelFrame } from './SettingsPanelFrame';
 // SegmentedControl is the unified component supporting both options-based and children-based APIs.
 // SlidingSegmentedControl is the animated variant built on top.

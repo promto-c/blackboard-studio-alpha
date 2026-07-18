@@ -3,6 +3,7 @@ import { getInitialState } from '@/state/editor/initialState';
 import { createViewerActions } from './viewerActions';
 import type { EditorState, SetState } from './types';
 import type { EditorMutationInput } from '@/state/editor/commitMutation';
+import type { AnyNode } from '@blackboard/types';
 
 const createHarness = () => {
   let state: EditorState = {
@@ -18,6 +19,9 @@ const createHarness = () => {
     actions,
     commitMutation,
     getState: () => state,
+    setState: (patch: Partial<EditorState>) => {
+      state = { ...state, ...patch };
+    },
   };
 };
 
@@ -83,6 +87,83 @@ describe('viewer actions', () => {
     expect(mutation.patch.colorManagement).not.toBe(colorManagement);
     expect(mutation.patch.colorManagement?.context).not.toBe(colorManagement.context);
     expect(mutation.history).toBeUndefined();
+  });
+
+  it('always enters Compare with the lower-numbered slot as the base', () => {
+    const harness = createHarness();
+    harness.setState({
+      nodes: [{ id: 'node-a' }, { id: 'node-b' }] as AnyNode[],
+      viewerSlots: { 1: 'node-a', 3: 'node-b' },
+    });
+
+    expect(harness.actions.enterCompareMode(3, 1)).toBe(true);
+    expect(harness.getState()).toMatchObject({
+      compareView: {
+        isActive: true,
+        slotA: 1,
+        slotB: 3,
+        sidesSwapped: false,
+      },
+      viewerNodeId: 'node-a',
+      activeViewerSlot: 1,
+    });
+
+    harness.actions.swapCompareSlots();
+    expect(harness.getState().compareView).toMatchObject({
+      slotA: 1,
+      slotB: 3,
+      sidesSwapped: true,
+    });
+
+    harness.actions.swapCompareSlots();
+    expect(harness.getState().compareView.sidesSwapped).toBe(false);
+  });
+
+  it.each([
+    [1, 'node-a'],
+    [2, 'node-b'],
+    [3, 'node-c'],
+    [4, 'node-d'],
+  ] as const)(
+    'exits Compare directly to viewer slot %i without toggling that slot off',
+    (slot, nodeId) => {
+      const harness = createHarness();
+      harness.setState({
+        nodes: [
+          { id: 'node-a' },
+          { id: 'node-b' },
+          { id: 'node-c' },
+          { id: 'node-d' },
+        ] as AnyNode[],
+        viewerSlots: { 1: 'node-a', 2: 'node-b', 3: 'node-c', 4: 'node-d' },
+      });
+      harness.actions.enterCompareMode(1, 2);
+
+      expect(harness.actions.activateViewerSlot(slot)).toBe(true);
+      expect(harness.getState()).toMatchObject({
+        compareView: {
+          isActive: false,
+          slotA: null,
+          slotB: null,
+        },
+        viewerNodeId: nodeId,
+        activeViewerSlot: slot,
+      });
+    },
+  );
+
+  it('keeps Compare sizing as view-only state', () => {
+    const harness = createHarness();
+    const initialRequestId = harness.getState().compareView.sizingRequestId;
+
+    harness.actions.setCompareSizingMode('none');
+
+    expect(harness.getState().compareView.sizingMode).toBe('none');
+    expect(harness.getState().compareView.sizingRequestId).toBe(initialRequestId + 1);
+
+    harness.actions.setCompareSizingMode('none');
+    expect(harness.getState().compareView.sizingRequestId).toBe(initialRequestId + 2);
+    expect(harness.commitMutation).not.toHaveBeenCalled();
   });
 
   it('records project OCIO config changes in undo history when requested', () => {

@@ -15,6 +15,7 @@ import type {
   RenderOutputContract,
 } from './NodeDefinition';
 import { type AnyNode, NodeType, type ComfyNode } from '@blackboard/types';
+import { resolveNodeExposableFields } from './exposableFields';
 
 // ---------------------------------------------------------------------------
 // Default NodeFlags — all false unless the node definition says otherwise.
@@ -27,7 +28,6 @@ const DEFAULT_FLAGS: Required<NodeFlags> = {
   isVideoFile: false,
   isDraggable: true,
   isSceneLike: false,
-  showDataWindow: false,
   showInputDataWindow: false,
   isProtected: false,
   hasThumbnail: false,
@@ -83,6 +83,12 @@ export function getInputPorts(node: AnyNode): InputPortDescriptor[] {
   const inputPorts = nodeRegistry.get(node.type)?.inputPorts;
   if (!inputPorts) return [];
   return typeof inputPorts === 'function' ? inputPorts(node) : inputPorts;
+}
+
+/** Resolve registry-declared and automatically discovered inspector fields. */
+export function getNodeExposableFields(node: AnyNode) {
+  const definition = nodeRegistry.get(node.type);
+  return definition ? resolveNodeExposableFields(node, definition) : [];
 }
 
 /**

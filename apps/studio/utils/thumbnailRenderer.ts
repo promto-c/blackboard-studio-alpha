@@ -116,15 +116,15 @@ export interface ThumbnailRenderOptions {
   signal?: AbortSignal;
 }
 
-export async function renderStackToBlob(
-  stack: AnyNode[],
+export async function renderNodesToBlob(
+  nodes: AnyNode[],
   sceneNode: SceneNode,
   projectColorManagement: ProjectColorManagement,
   frame = 0,
   maxDimension = THUMBNAIL_MAX_DIMENSION,
   options: ThumbnailRenderOptions = {},
 ): Promise<Blob> {
-  if (stack.length === 0 || !hasRenderableSource(stack[0])) {
+  if (nodes.length === 0 || !hasRenderableSource(nodes[0])) {
     return getTransparentPlaceholderBlob();
   }
 
@@ -136,7 +136,7 @@ export async function renderStackToBlob(
       const blurRadiusScale = maxDimension / maxSceneDimension;
       const output = resolveProjectDisplayOutput(projectColorManagement.viewer);
       const { canvas, dispose } = await renderWithSharedPipeline({
-        nodes: stack,
+        nodes,
         sceneNode,
         projectColorManagement,
         frame,
@@ -164,19 +164,19 @@ export async function renderStackToBlob(
   );
 }
 
-export async function renderStackToDataURL(
-  stack: AnyNode[],
+export async function renderNodesToDataURL(
+  nodes: AnyNode[],
   sceneNode: SceneNode,
   projectColorManagement: ProjectColorManagement,
   frame = 0,
   maxDimension = THUMBNAIL_MAX_DIMENSION,
   options: ThumbnailRenderOptions = {},
 ): Promise<string> {
-  if (stack.length === 0 || !hasRenderableSource(stack[0])) {
+  if (nodes.length === 0 || !hasRenderableSource(nodes[0])) {
     return TRANSPARENT_PLACEHOLDER;
   }
   return blobToDataUrl(
-    await renderStackToBlob(stack, sceneNode, projectColorManagement, frame, maxDimension, options),
+    await renderNodesToBlob(nodes, sceneNode, projectColorManagement, frame, maxDimension, options),
   );
 }
 
@@ -245,7 +245,7 @@ export const renderMediaAssetToDataURL = (
   maxDimension = 512,
 ): Promise<string> => {
   const { nodes, sceneNode } = createMediaPreviewGraph(media, projectColorManagement, maxDimension);
-  return renderStackToDataURL(nodes, sceneNode, projectColorManagement, 0, maxDimension);
+  return renderNodesToDataURL(nodes, sceneNode, projectColorManagement, 0, maxDimension);
 };
 
 export const renderMediaAssetToBlob = (
@@ -255,5 +255,5 @@ export const renderMediaAssetToBlob = (
   options: ThumbnailRenderOptions = {},
 ): Promise<Blob> => {
   const { nodes, sceneNode } = createMediaPreviewGraph(media, projectColorManagement, maxDimension);
-  return renderStackToBlob(nodes, sceneNode, projectColorManagement, 0, maxDimension, options);
+  return renderNodesToBlob(nodes, sceneNode, projectColorManagement, 0, maxDimension, options);
 };

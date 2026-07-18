@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ViewerSlotBadges } from './ViewerSlotBadges';
 
 describe('ViewerSlotBadges', () => {
-  it('emphasizes both viewer slots participating in Compare', () => {
+  it('distinguishes the lower Compare slot as the base', () => {
     const markup = renderToStaticMarkup(
       <>
         <ViewerSlotBadges
@@ -21,8 +21,9 @@ describe('ViewerSlotBadges', () => {
       </>,
     );
 
-    expect(markup.match(/data-viewer-slot-state="compare"/g)).toHaveLength(2);
-    expect(markup).toContain('Viewer Slot 1 · Compare');
-    expect(markup).toContain('Viewer Slot 2 · Compare');
+    expect(markup.match(/data-viewer-slot-state="base"/g)).toHaveLength(1);
+    expect(markup.match(/data-viewer-slot-state="comparison"/g)).toHaveLength(1);
+    expect(markup).toContain('Viewer Slot 1 · Compare Base');
+    expect(markup).toContain('Viewer Slot 2 · Comparison');
   });
 });

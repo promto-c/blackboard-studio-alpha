@@ -19,6 +19,7 @@ const stripSessionState = (
     history: _history,
     historyIndex: _historyIndex,
     viewerSettings: _viewerSettings,
+    viewportWorkingArea: _viewportWorkingArea,
     ...state
   } = entry.state;
   return {
@@ -68,6 +69,7 @@ export const buildPersistedProjectState = (
     viewerNodeId: state.viewerNodeId,
     viewerSlots: state.viewerSlots,
     activeViewerSlot: state.activeViewerSlot,
+    viewportWorkingArea: state.viewportWorkingArea,
     renderSettings: state.renderSettings,
     fps: state.fps,
     currentFrame: state.currentFrame,

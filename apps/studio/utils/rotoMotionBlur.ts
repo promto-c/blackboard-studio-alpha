@@ -13,6 +13,7 @@ export const DEFAULT_ROTO_MOTION_BLUR: ResolvedRotoMotionBlurSettings = {
 
 const MIN_SAMPLES = 2;
 const MAX_SAMPLES = 128;
+const CANVAS_ALPHA_LEVELS = 2 ** 8 - 1;
 
 const isRotoMotionBlurPhase = (value: unknown): value is RotoMotionBlurPhase =>
   value === 'start' || value === 'centered' || value === 'end';
@@ -65,6 +66,37 @@ export const getRotoMotionBlurSampleWeights = (sampleCount: number): number[] =>
   return Array.from({ length: safeSampleCount }, (_, index) =>
     index === 0 || index === safeSampleCount - 1 ? sampleStepWeight * 0.5 : sampleStepWeight,
   );
+};
+
+/**
+ * Converts temporal alpha contributions to the exact precision of an 8-bit Canvas texture.
+ *
+ * Canvas quantizes every `globalAlpha` draw independently. Directly drawing normalized floating
+ * weights therefore loses total coverage for sample counts whose weights are not exact multiples
+ * of 1/255. Cumulative error diffusion keeps each prefix close to the continuous integral while
+ * making the final discrete sum equal its nearest representable alpha value.
+ */
+export const quantizeRotoMotionBlurContributions = (contributions: readonly number[]): number[] => {
+  if (contributions.length === 0) return [];
+
+  const sanitized = contributions.map((contribution) =>
+    Number.isFinite(contribution) ? Math.min(1, Math.max(0, contribution)) : 0,
+  );
+  const exactTotal = sanitized.reduce((total, contribution) => total + contribution, 0);
+  const targetUnits = Math.min(CANVAS_ALPHA_LEVELS, Math.round(exactTotal * CANVAS_ALPHA_LEVELS));
+  let exactCumulativeUnits = 0;
+  let assignedUnits = 0;
+
+  return sanitized.map((contribution, index) => {
+    exactCumulativeUnits += contribution * CANVAS_ALPHA_LEVELS;
+    const nextAssignedUnits =
+      index === sanitized.length - 1
+        ? targetUnits
+        : Math.min(targetUnits, Math.round(exactCumulativeUnits));
+    const contributionUnits = Math.max(0, nextAssignedUnits - assignedUnits);
+    assignedUnits += contributionUnits;
+    return contributionUnits / CANVAS_ALPHA_LEVELS;
+  });
 };
 
 const getShutterIntervalStart = (shutter: number, phase: RotoMotionBlurPhase): number => {

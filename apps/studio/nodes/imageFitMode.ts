@@ -1,4 +1,4 @@
-import { ImageFitMode } from '@blackboard/types';
+import { ImageFitMode, type ImageTransform } from '@blackboard/types';
 
 export const IMAGE_FIT_MODE_OPTIONS: Array<{ value: ImageFitMode; label: string }> = [
   { value: ImageFitMode.FILL, label: 'Fill' },
@@ -12,6 +12,15 @@ export const isCustomImageFitMode = (fitMode: ImageFitMode): boolean =>
 
 export const isAutoImageFitMode = (fitMode: ImageFitMode): boolean =>
   fitMode === ImageFitMode.FILL || fitMode === ImageFitMode.FIT || fitMode === ImageFitMode.STRETCH;
+
+/**
+ * Build the transform update for a user-selected fit mode. None means native-size placement, so it
+ * also clears every scale/offset value (including keyframed values) back to the neutral transform.
+ */
+export const getImageFitModeTransformUpdate = (
+  fitMode: ImageFitMode,
+): Partial<ImageTransform> & Pick<ImageTransform, 'fitMode'> =>
+  fitMode === ImageFitMode.NONE ? { fitMode, x: 0, y: 0, scaleX: 1, scaleY: 1 } : { fitMode };
 
 export const shouldApplyImageFitPreset = ({
   fitMode,

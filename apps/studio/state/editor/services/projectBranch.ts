@@ -38,6 +38,7 @@ import { cherryPickAgentNodeChanges } from '@/utils/agentBranchMerge';
 import type { GetState, SetState } from '@/state/editor/slices/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import { clampToTimelineRange, getSceneTimelineRange } from '@/utils/timelineRange';
+import { normalizeViewportWorkingArea } from '@/features/viewport/workingArea';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -243,6 +244,7 @@ export const loadProjectStateIntoEditor = async ({
     viewerNodeId: nextViewerNodeId,
     viewerSlots: nextViewerSlots,
     activeViewerSlot: nextActiveViewerSlot,
+    viewportWorkingArea: normalizeViewportWorkingArea(projectState.viewportWorkingArea),
     renderSettings: {
       ...initialState.renderSettings,
       ...(projectState.renderSettings || {}),

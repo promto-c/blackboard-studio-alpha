@@ -96,6 +96,9 @@ function NodeList({
   const backgroundJobs = useEditorSelector((s) => s.backgroundJobs);
   const previewNodeType = useEditorSelector((s) => s.previewNodeType);
   const activeTab = useEditorSelector((s) => s.activeTab);
+  const isCompareActive = useEditorSelector((s) => s.compareView.isActive);
+  const compareSlotA = useEditorSelector((s) => s.compareView.slotA);
+  const compareSlotB = useEditorSelector((s) => s.compareView.slotB);
   const activeFlow = useEditorSelector((s) => {
     const flowId = s.activeFlowId ?? s.rootFlowId;
     return flowId ? s.flows[flowId] : null;
@@ -112,6 +115,11 @@ function NodeList({
     openGroupNode,
   } = useEditorActions();
   const { thumbnailMode } = usePreferences();
+  const compareViewerSlots = useMemo(
+    () =>
+      new Set(isCompareActive && compareSlotA && compareSlotB ? [compareSlotA, compareSlotB] : []),
+    [compareSlotA, compareSlotB, isCompareActive],
+  );
 
   // Use shared pointer drag hook for consistent DnD plumbing (immediate-start mode)
   const { handleRowPointerDown: hookHandlePointerDown } = usePointerDrag({
@@ -507,7 +515,7 @@ function NodeList({
     [selectNode],
   );
   const getNodeActions = useCallback(
-    (node: AnyNode, isBase: boolean, isDraggable: boolean): NodeAction[] => {
+    (node: AnyNode, isDeletable: boolean): NodeAction[] => {
       const nodeIndexInAll = nodes.findIndex((candidate) => candidate.id === node.id);
       const stackingAction = createStackingAction(node, nodeIndexInAll > 0, toggleNodeStacking);
       const executionAction = createExecutionAction(node, handleExecuteNode);
@@ -515,11 +523,11 @@ function NodeList({
       return [
         ...(stackingAction ? [stackingAction] : []),
         ...(executionAction ? [executionAction] : []),
-        ...(isBase && isDraggable
+        ...(isDeletable
           ? [
               {
                 id: 'delete',
-                label: 'Delete Stack',
+                label: 'Delete Node',
                 icon: <Icons.Trash className="h-4 w-4" />,
                 iconClassName:
                   'w-6 h-6 flex items-center justify-center rounded text-gray-500 hover:text-red-400 hover:bg-gray-600/50 transition-colors',
@@ -571,9 +579,7 @@ function NodeList({
           (directMergeNode.id === selectedNodeId || selectedNodeIdSet.has(directMergeNode.id));
         const showMediaThumbnail =
           !isPreview && thumbnailMode !== 'off' && !!nodeFlags(baseNode.type).hasThumbnail;
-        const directMergeActions = directMergeNode
-          ? getNodeActions(directMergeNode, true, true)
-          : [];
+        const directMergeActions = directMergeNode ? getNodeActions(directMergeNode, true) : [];
 
         const isBottomUp = direction === 'bottom-up';
         const stackContent = isBottomUp ? stack.slice().reverse() : stack;
@@ -659,7 +665,7 @@ function NodeList({
                       node.id === selectedNodeId || selectedNodeIdSet.has(node.id);
                     const isPendingSourceCandidate =
                       !!pendingConnection && pendingConnection.nodeId !== node.id;
-                    const nodeActions = getNodeActions(node, isBase, isDraggable);
+                    const nodeActions = getNodeActions(node, !isScene);
 
                     return (
                       <div
@@ -722,6 +728,7 @@ function NodeList({
                               nodeId={node.id}
                               viewerNodeId={viewerNodeId}
                               viewerSlots={viewerSlots}
+                              compareViewerSlots={compareViewerSlots}
                             />
                             <ConnectionBadge
                               node={node}

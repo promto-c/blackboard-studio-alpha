@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ChevronDown } from '@blackboard/icons';
 
-interface CollapsibleSectionProps {
+export interface CollapsibleSectionProps {
   title: React.ReactNode;
   children: React.ReactNode;
   action?: React.ReactNode;
@@ -28,14 +28,14 @@ function CollapsibleSection({
 
   return (
     <div
-      className={`overflow-hidden border-b transition-colors last:border-b-0 ${
+      className={`bb-collapsible-section w-full min-w-0 overflow-hidden border-b transition-colors last:border-b-0 [&+.bb-collapsible-section]:!mt-0 ${
         isSelected
           ? 'border-primary-500/35 bg-primary-900/10'
           : 'border-white/10 bg-transparent hover:bg-white/[0.02]'
       }`}
     >
       <div
-        className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors ${
+        className={`flex w-full items-center justify-between gap-1.5 px-2 py-1.5 text-left transition-colors ${
           isSelected ? 'bg-primary-900/5' : 'hover:bg-white/[0.03]'
         }`}
       >
@@ -43,7 +43,7 @@ function CollapsibleSection({
           type="button"
           aria-expanded={isOpen}
           onClick={handleToggle}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
         >
           <ChevronDown
             className={`h-3.5 w-3.5 flex-shrink-0 transform text-gray-500 transition-transform duration-200 ${
@@ -62,7 +62,7 @@ function CollapsibleSection({
           <div className="shrink-0">{isOpen ? action : (collapsedAction ?? action)}</div>
         )}
       </div>
-      {isOpen && <div className="px-3 pb-3 pt-0.5">{children}</div>}
+      {isOpen && <div className="p-4">{children}</div>}
     </div>
   );
 }

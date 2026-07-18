@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { AnyNode, NodeType, RotoNode } from '@blackboard/types';
 import { nodeRegistry } from '@/nodes/registry';
-import { isStackedAdjustmentNode } from '@/utils/nodePredicates';
+import { isStackedNode } from '@/utils/nodePredicates';
 
 export type NodeInspectorLevel = 'node' | 'shape' | 'layer';
 
@@ -39,14 +39,14 @@ export function useNodeInspectorState({
     }
 
     let baseIndex = selectedIndex;
-    while (baseIndex > 0 && isStackedAdjustmentNode(nodes[baseIndex])) {
+    while (baseIndex > 0 && isStackedNode(nodes[baseIndex])) {
       baseIndex -= 1;
     }
 
     const stack: AnyNode[] = [];
     for (let index = baseIndex; index < nodes.length; index += 1) {
       const node = nodes[index];
-      if (index === baseIndex || isStackedAdjustmentNode(node)) {
+      if (index === baseIndex || isStackedNode(node)) {
         stack.push(node);
         continue;
       }

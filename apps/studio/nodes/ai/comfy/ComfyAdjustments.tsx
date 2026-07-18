@@ -43,6 +43,7 @@ import {
   supportsComfyWorkflowControlRunMode,
 } from './comfyControls';
 import {
+  getComfyWorkflowInputAlphaMode,
   getComfyWorkflowInputCandidates,
   getSelectedComfyWorkflowInputCandidates,
 } from './comfyInputs';
@@ -121,6 +122,7 @@ import {
 } from './comfyOutputCandidates';
 import { ComfyInputUploadCache, getComfyInputBlobFingerprint } from './comfyInputUploadCache';
 import {
+  getComfyConnectedInputSourcePort,
   getComfyRenderedInputName,
   renderComfyConnectedInputToPngBlob,
 } from './comfyInputRendering';
@@ -1627,14 +1629,23 @@ export function ComfyAdjustmentsPanel({
         throw new Error('Scene node not found for Comfy input rendering.');
       }
 
-      const regionAlphaMode =
+      const regionAlphaMode = getComfyWorkflowInputAlphaMode(
+        candidate,
         selectedRegion?.regionInputAlphaMode ??
-        node.viewportPromptRegionDefaults?.regionInputAlphaMode ??
-        'opaque';
+          node.viewportPromptRegionDefaults?.regionInputAlphaMode ??
+          'opaque',
+      );
+      const sourcePort = getComfyConnectedInputSourcePort({
+        flows,
+        targetNodeId: node.id,
+        targetPort: portName,
+        sourceNodeId,
+      });
       const blob = await renderComfyConnectedInputToPngBlob({
         nodes: allNodes,
         flows,
         sourceNodeId,
+        sourcePort,
         sceneNode,
         projectColorManagement,
         frame: currentFrame,
@@ -1658,10 +1669,12 @@ export function ComfyAdjustmentsPanel({
     if (!isImageFileLike(blob, inputImage.name)) {
       throw new Error(`${inputImage.name} is not an image asset ComfyUI can load.`);
     }
-    const regionAlphaMode =
+    const regionAlphaMode = getComfyWorkflowInputAlphaMode(
+      candidate,
       selectedRegion?.regionInputAlphaMode ??
-      node.viewportPromptRegionDefaults?.regionInputAlphaMode ??
-      'opaque';
+        node.viewportPromptRegionDefaults?.regionInputAlphaMode ??
+        'opaque',
+    );
     return {
       blob:
         selectedRegion && sceneNode

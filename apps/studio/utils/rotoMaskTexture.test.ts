@@ -83,7 +83,7 @@ describe('Roto mask texture resources', () => {
     vi.restoreAllMocks();
   });
 
-  it('precomposites every weighted motion sample into one target-sized texture', () => {
+  it('precomposites a precision-conserving temporal mask into one target-sized texture', () => {
     const { context, drawnAlphas } = createCanvasContext();
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context);
 
@@ -102,7 +102,10 @@ describe('Roto mask texture resources', () => {
     expect(context.setTransform).toHaveBeenLastCalledWith(0.025, 0, 0, 0.025, 0, 0);
     expect(context.fill).toHaveBeenCalledTimes(64);
     expect(context.globalCompositeOperation).toBe('lighter');
-    expect(drawnAlphas.reduce((sum, alpha) => sum + alpha, 0)).toBeCloseTo(1);
+    expect(drawnAlphas.reduce((sum, alpha) => sum + alpha, 0)).toBeCloseTo(1, 12);
+    drawnAlphas.forEach((alpha) => {
+      expect(alpha * 255).toBeCloseTo(Math.round(alpha * 255), 12);
+    });
     expect(drawnAlphas[0]).toBeCloseTo(drawnAlphas[1] / 2);
     expect(drawnAlphas.at(-1)).toBeCloseTo(drawnAlphas.at(-2)! / 2);
 

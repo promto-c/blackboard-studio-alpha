@@ -181,7 +181,7 @@ export const AGENT_TOOL_CAPABILITIES: AgentToolCapability[] = [
         },
         nodeId: {
           type: 'string',
-          description: 'Optional node ID whose stack should be rendered.',
+          description: 'Optional node ID whose canonical upstream graph branch should be rendered.',
         },
         frame: {
           type: 'number',

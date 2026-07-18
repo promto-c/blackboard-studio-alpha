@@ -28,18 +28,6 @@ const getPrimaryPipelineEdgeIds = (flow: Flow): ReadonlySet<string> => {
   return edgeIds;
 };
 
-const getPipelineMemberIds = (flow: Flow): ReadonlySet<string> => {
-  const primaryNodeIds = new Set(getPrimaryPipelineNodeIds(flow));
-  const memberIds = new Set(primaryNodeIds);
-
-  for (const stack of flow.stacks) {
-    if (!primaryNodeIds.has(stack.rootNodeId)) continue;
-    for (const nodeId of stack.nodeIds) memberIds.add(nodeId);
-  }
-
-  return memberIds;
-};
-
 const createPipelineEdge = (sourceNodeId: string, targetNodeId: string): FlowEdge => ({
   id: getFlowEdgeId(sourceNodeId, targetNodeId, PIPE_INPUT_PORT),
   sourceNodeId,
@@ -55,15 +43,12 @@ const createPipelineEdge = (sourceNodeId: string, targetNodeId: string): FlowEdg
  * flow exists, its edges are the complete and only source of connection truth.
  */
 export const connectDefaultPipeline = (flow: Flow, orderedNodes: readonly AnyNode[]): Flow => {
-  const nodesById = new Map(orderedNodes.map((node) => [node.id, node]));
-  const rootNodes = flow.stacks
-    .map((stack) => nodesById.get(stack.rootNodeId))
-    .filter((node): node is AnyNode => !!node && participatesInPipeline(node.type));
+  const pipelineNodes = orderedNodes.filter((node) => participatesInPipeline(node.type));
 
   const edges: FlowEdge[] = [...flow.edges];
   let previousNodeId: string | null = null;
 
-  for (const node of rootNodes) {
+  for (const node of pipelineNodes) {
     if (
       previousNodeId &&
       acceptsPipelineInput(node) &&
@@ -94,13 +79,9 @@ export const connectDefaultPipeline = (flow: Flow, orderedNodes: readonly AnyNod
 };
 
 /**
- * Reorders the existing primary pipeline to match the flow's current stack
- * order. Only nodes that were already connected to the output participate;
+ * Reorders the existing primary pipeline to match the current list order.
+ * Only nodes that were already connected to the output participate;
  * disconnected nodes and branch inputs remain untouched.
- *
- * Stack membership is expanded from the previous flow before roots are
- * resolved in the next flow. This lets stack/unstack operations collapse and
- * restore real pipe edges without treating a stack as connection topology.
  */
 export const rewirePrimaryPipeline = (
   previousFlow: Flow,
@@ -110,17 +91,13 @@ export const rewirePrimaryPipeline = (
   const previousOutputEdge = getInputEdge(previousFlow, previousFlow.outputNodeId, PIPE_INPUT_PORT);
   if (!previousOutputEdge) return nextFlow;
 
-  const pipelineMemberIds = getPipelineMemberIds(previousFlow);
-  const nextPipelineStacks = nextFlow.stacks.filter((stack) =>
-    stack.nodeIds.some((nodeId) => pipelineMemberIds.has(nodeId)),
+  const pipelineNodeIds = new Set(getPrimaryPipelineNodeIds(previousFlow));
+  const nextPipelineNodes = orderedNodes.filter(
+    (node) => pipelineNodeIds.has(node.id) && participatesInPipeline(node.type),
   );
-  const nodesById = new Map(orderedNodes.map((node) => [node.id, node]));
-  const nextPipelineRoots = nextPipelineStacks
-    .map((stack) => nodesById.get(stack.rootNodeId))
-    .filter((node): node is AnyNode => !!node && participatesInPipeline(node.type));
 
   const primaryEdgeIds = getPrimaryPipelineEdgeIds(previousFlow);
-  const primaryTargetIds = new Set(nextPipelineRoots.map((node) => node.id));
+  const primaryTargetIds = new Set(nextPipelineNodes.map((node) => node.id));
   primaryTargetIds.add(nextFlow.outputNodeId);
 
   const edges = nextFlow.edges.filter(
@@ -130,7 +107,7 @@ export const rewirePrimaryPipeline = (
   );
 
   let pipelineTailId: string | null = null;
-  for (const node of nextPipelineRoots) {
+  for (const node of nextPipelineNodes) {
     if (pipelineTailId && acceptsPipelineInput(node)) {
       edges.push(createPipelineEdge(pipelineTailId, node.id));
     }

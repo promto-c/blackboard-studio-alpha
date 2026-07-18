@@ -29,6 +29,7 @@ export function useViewportCompare() {
     exitCompareMode,
     swapCompareSlots,
     setCompareMode,
+    setCompareSizingMode,
     setCompareWipeOrientation,
     setCompareWipeReference,
   } = useEditorActions();
@@ -94,16 +95,6 @@ export function useViewportCompare() {
 
         // Only respond to assigned slots
         if (!isAssigned) return;
-
-        // If compare is already active and a single new slot key is pressed,
-        // exit compare and let the existing hotkey system activate that slot.
-        if (compareView.isActive && heldSlotsRef.current.size === 0) {
-          clearPendingCompareChord();
-          heldSlotsRef.current.add(slotNumber);
-          event.preventDefault();
-          exitCompareMode();
-          return; // Let the existing hotkey system activate the slot
-        }
 
         // Add to held slots
         heldSlotsRef.current.add(slotNumber);
@@ -193,9 +184,10 @@ export function useViewportCompare() {
 
   // Cleanup on unmount
   useEffect(() => {
+    const heldSlots = heldSlotsRef.current;
     return () => {
       clearPendingCompareChord();
-      heldSlotsRef.current.clear();
+      heldSlots.clear();
       hasEnteredCompareFromComboRef.current = false;
     };
   }, [clearPendingCompareChord]);
@@ -224,6 +216,7 @@ export function useViewportCompare() {
     exitCompareMode,
     swapCompareSlots,
     setCompareMode,
+    setCompareSizingMode,
     setCompareWipeOrientation,
     setCompareWipeReference,
   };

@@ -10,6 +10,9 @@ import {
 } from '@blackboard/types';
 import { createDefaultProjectColorManagement } from '@/color-management';
 import { useViewportCompareRender } from './useViewportCompareRender';
+import { calculateComparePaneLayout } from './comparePresentation';
+
+type CompareRenderProps = Parameters<typeof useViewportCompareRender>[0];
 
 const { renderViewportFrameMock } = vi.hoisted(() => ({
   renderViewportFrameMock: vi.fn(),
@@ -51,9 +54,11 @@ const displayView: DisplayViewSelection = {
   view: 'ACES 2.0 - SDR 100 nits (Rec.709)',
 };
 
-const activeCompareView = {
+const activeCompareView: CompareRenderProps['compareView'] = {
   isActive: true,
+  sidesSwapped: false,
   mode: 'wipe' as const,
+  sizingMode: 'fit' as const,
   dividerPosition: 0.5,
   wipe: {
     orientation: 'vertical' as const,
@@ -61,9 +66,23 @@ const activeCompareView = {
   },
 };
 
+const getPaneLayout = (
+  viewportSize: CompareRenderProps['viewportSize'],
+  interactiveRect: CompareRenderProps['interactiveViewportRect'],
+  compareView: CompareRenderProps['compareView'],
+) =>
+  calculateComparePaneLayout({
+    viewportSize,
+    interactiveRect,
+    mode: compareView.mode,
+    orientation: compareView.wipe.orientation,
+    sidesSwapped: compareView.sidesSwapped,
+  });
+
 const createRenderer = () => {
   const size = new THREE.Vector2(1920, 1080);
   let target: THREE.WebGLRenderTarget | null = null;
+  let scissorTest = false;
   return {
     getSize: vi.fn((output: THREE.Vector2) => output.copy(size)),
     setSize: vi.fn((width: number, height: number) => size.set(width, height)),
@@ -71,41 +90,60 @@ const createRenderer = () => {
     setRenderTarget: vi.fn((next: THREE.WebGLRenderTarget | null) => {
       target = next;
     }),
+    getScissorTest: vi.fn(() => scissorTest),
+    setScissorTest: vi.fn((next: boolean) => {
+      scissorTest = next;
+    }),
+    getViewport: vi.fn((output: THREE.Vector4) => output.set(0, 0, size.x, size.y)),
+    getScissor: vi.fn((output: THREE.Vector4) => output.set(0, 0, size.x, size.y)),
+    setViewport: vi.fn(),
+    setScissor: vi.fn(),
+    clear: vi.fn(),
     render: vi.fn(),
   } as unknown as THREE.WebGLRenderer;
 };
 
-const createTarget = () => {
-  const target = new THREE.WebGLRenderTarget(16, 9);
+const createTarget = (width = 16, height = 9) => {
+  const target = new THREE.WebGLRenderTarget(width, height);
   vi.spyOn(target, 'dispose');
   return target;
 };
 
-const createHookProps = (gl: THREE.WebGLRenderer, slotATarget: THREE.WebGLRenderTarget) => ({
-  gl,
-  viewportSize: { width: 1280, height: 720 },
-  interactiveViewportRect: { x: 0, y: 0, width: 1280, height: 720 },
-  compareView: activeCompareView,
-  viewportNodesA: [slotANode],
-  viewportNodesB: [slotBNode],
-  sceneNode,
-  visualFrame: 0,
-  viewerSettings,
-  displayView,
-  projectColorManagement: createDefaultProjectColorManagement(),
-  outputDomain: { kind: 'color' } as const,
-  alphaOverlayStyle: { color: [0, 0, 0] as [number, number, number], opacity: 0, bgDarken: 0 },
-  hasRenderableNodes: true,
-  isRenderReady: true,
-  mediaUpdateTrigger: 0,
-  slotADisplayOutputRef: { current: slotATarget },
-  textureCacheRef: { current: { get: () => undefined } },
-  textTexturesRef: { current: new Map() },
-  paintTexturesRef: { current: new Map() },
-  rotoMaskTexturesRef: { current: new Map() },
-  zoom: 1,
-  pan: { x: 0, y: 0 },
-});
+const createHookProps = (
+  gl: THREE.WebGLRenderer,
+  slotATarget: THREE.WebGLRenderTarget,
+): CompareRenderProps => {
+  const viewportSize = { width: 1280, height: 720 };
+  const interactiveViewportRect = { x: 0, y: 0, width: 1280, height: 720 };
+  return {
+    gl,
+    viewportSize,
+    interactiveViewportRect,
+    compareView: activeCompareView,
+    paneLayout: getPaneLayout(viewportSize, interactiveViewportRect, activeCompareView),
+    viewportInterpolation: 'linear',
+    viewportNodesA: [slotANode],
+    viewportNodesB: [slotBNode],
+    sceneNodeA: sceneNode,
+    sceneNodeB: sceneNode,
+    visualFrame: 0,
+    viewerSettings,
+    displayView,
+    projectColorManagement: createDefaultProjectColorManagement(),
+    outputDomain: { kind: 'color' } as const,
+    renderQuality: { mode: 'full' as const, resolutionScale: 1, sampleLimit: 128 },
+    alphaOverlayStyle: { color: [0, 0, 0] as [number, number, number], opacity: 0, bgDarken: 0 },
+    hasRenderableNodes: true,
+    isRenderReady: true,
+    mediaUpdateTrigger: 0,
+    slotADisplayOutputRef: { current: slotATarget },
+    textureCacheRef: { current: { get: () => undefined } },
+    textTexturesRef: { current: new Map() },
+    rotoMaskTexturesRef: { current: new Map() },
+    zoom: 1,
+    pan: { x: 0, y: 0 },
+  };
+};
 
 describe('useViewportCompareRender', () => {
   const allocatedTargets: THREE.WebGLRenderTarget[] = [];
@@ -113,7 +151,7 @@ describe('useViewportCompareRender', () => {
   beforeEach(() => {
     allocatedTargets.length = 0;
     renderViewportFrameMock.mockReset();
-    renderViewportFrameMock.mockImplementation(({ resources }) => {
+    renderViewportFrameMock.mockImplementation(({ resources, sceneNode: renderSceneNode }) => {
       const renderTargets =
         resources.renderTargets.length > 0
           ? resources.renderTargets
@@ -124,7 +162,7 @@ describe('useViewportCompareRender', () => {
 
       let displayOutputTarget = resources.utilityTargets.get('__viewer:display-output');
       if (!displayOutputTarget) {
-        displayOutputTarget = createTarget();
+        displayOutputTarget = createTarget(renderSceneNode.width, renderSceneNode.height);
         resources.utilityTargets.set('__viewer:display-output', displayOutputTarget);
         allocatedTargets.push(displayOutputTarget);
       }
@@ -142,7 +180,7 @@ describe('useViewportCompareRender', () => {
     const slotATarget = createTarget();
     const initialProps = createHookProps(gl, slotATarget);
     const { rerender } = renderHook(
-      (props: ReturnType<typeof createHookProps>) => useViewportCompareRender(props),
+      (props: CompareRenderProps) => useViewportCompareRender(props),
       { initialProps },
     );
 
@@ -167,12 +205,257 @@ describe('useViewportCompareRender', () => {
     expect(slotATarget.dispose).not.toHaveBeenCalled();
   });
 
+  it('swaps the visible texture sides without changing the canonical base target', () => {
+    const gl = createRenderer();
+    const slotATarget = createTarget();
+    const initialProps = createHookProps(gl, slotATarget);
+    const { result, rerender } = renderHook(
+      (props: CompareRenderProps) => useViewportCompareRender(props),
+      { initialProps },
+    );
+
+    const slotBTexture = allocatedTargets.at(-1)?.texture;
+    rerender({
+      ...initialProps,
+      compareView: { ...activeCompareView, sidesSwapped: true },
+    });
+
+    const [compositeScene] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const compositeQuad = compositeScene.children[0] as THREE.Mesh;
+    const compositeMaterial = compositeQuad.material as THREE.ShaderMaterial;
+    expect(compositeMaterial.uniforms.u_tSlotA.value).toBe(slotBTexture);
+    expect(compositeMaterial.uniforms.u_tSlotB.value).toBe(slotATarget.texture);
+    expect(result.current.finalCompBufferRef.current?.texture).toBe(slotBTexture);
+    expect(slotATarget.dispose).not.toHaveBeenCalled();
+  });
+
+  it('anchors a canvas-referenced wipe to the leading displayed side after swapping', () => {
+    const gl = createRenderer();
+    const slotATarget = createTarget(sceneNode.width, sceneNode.height);
+    const portraitScene = {
+      ...sceneNode,
+      id: 'portrait-scene',
+      width: 1080,
+      height: 1920,
+    } as SceneNode;
+    const baseProps = createHookProps(gl, slotATarget);
+    const compareView = {
+      ...activeCompareView,
+      sidesSwapped: true,
+      dividerPosition: 0.25,
+    };
+    const initialProps: CompareRenderProps = {
+      ...baseProps,
+      compareView,
+      paneLayout: getPaneLayout(
+        baseProps.viewportSize,
+        baseProps.interactiveViewportRect,
+        compareView,
+      ),
+      sceneNodeB: portraitScene,
+      viewportNodesB: [portraitScene],
+    };
+
+    renderHook((props: CompareRenderProps) => useViewportCompareRender(props), { initialProps });
+
+    const [compositeScene] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const material = (compositeScene.children[0] as THREE.Mesh).material as THREE.ShaderMaterial;
+    expect(material.uniforms.u_divider.value).toBeCloseTo(488.125 / 1280);
+  });
+
+  it('renders and presents each slot using its own display-window dimensions', () => {
+    const gl = createRenderer();
+    const slotATarget = createTarget(sceneNode.width, sceneNode.height);
+    const portraitScene = {
+      ...sceneNode,
+      id: 'portrait-scene',
+      width: 1080,
+      height: 1920,
+    } as SceneNode;
+    const initialProps = {
+      ...createHookProps(gl, slotATarget),
+      sceneNodeB: portraitScene,
+      viewportNodesB: [portraitScene],
+    };
+
+    const { rerender } = renderHook(
+      (props: CompareRenderProps) => useViewportCompareRender(props),
+      { initialProps },
+    );
+
+    expect(renderViewportFrameMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sceneNode: portraitScene }),
+    );
+
+    const [compositeScene] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const material = (compositeScene.children[0] as THREE.Mesh).material as THREE.ShaderMaterial;
+    expect(material.uniforms.u_slotAFrameSize.value.toArray()).toEqual([1920, 1080]);
+    expect(material.uniforms.u_slotBFrameSize.value.x).toBeCloseTo(607.5);
+    expect(material.uniforms.u_slotBFrameSize.value.y).toBe(1080);
+
+    rerender({
+      ...initialProps,
+      compareView: { ...activeCompareView, sizingMode: 'fill' },
+    });
+
+    expect(material.uniforms.u_slotBFrameSize.value.x).toBe(1920);
+    expect(material.uniforms.u_slotBFrameSize.value.y).toBeCloseTo(1920 ** 2 / 1080);
+  });
+
+  it('uses the viewport interpolation preference for wipe and split sampling', () => {
+    const gl = createRenderer();
+    const slotATarget = createTarget(sceneNode.width, sceneNode.height);
+    const initialProps = {
+      ...createHookProps(gl, slotATarget),
+      viewportInterpolation: 'nearest' as const,
+    };
+    const { rerender } = renderHook(
+      (props: CompareRenderProps) => useViewportCompareRender(props),
+      { initialProps },
+    );
+
+    const [wipeScene] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const wipeMaterial = (wipeScene.children[0] as THREE.Mesh).material as THREE.ShaderMaterial;
+    expect(wipeMaterial.uniforms.u_interpolation.value).toBe(1);
+    expect(wipeMaterial.uniforms.u_slotATextureSize.value.toArray()).toEqual([1920, 1080]);
+    expect(wipeMaterial.uniforms.u_slotBTextureSize.value.toArray()).toEqual([1920, 1080]);
+    expect(wipeMaterial.fragmentShader).toContain('floor(contentUv * safeTextureSize)');
+
+    const splitCompareView = { ...activeCompareView, mode: 'split' as const };
+    rerender({
+      ...initialProps,
+      compareView: splitCompareView,
+      paneLayout: getPaneLayout(
+        initialProps.viewportSize,
+        initialProps.interactiveViewportRect,
+        splitCompareView,
+      ),
+    });
+
+    const [splitScene] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const splitMaterial = (splitScene.children[0] as THREE.Mesh)
+      .material as THREE.RawShaderMaterial;
+    expect(splitMaterial.uniforms.u_interpolation.value).toBe(1);
+    expect(splitMaterial.uniforms.u_textureSize.value.toArray()).toEqual([1920, 1080]);
+    expect(splitMaterial.fragmentShader).toContain('floor(v_uv * safeTextureSize)');
+
+    rerender({
+      ...initialProps,
+      viewportInterpolation: 'linear',
+      compareView: splitCompareView,
+      paneLayout: getPaneLayout(
+        initialProps.viewportSize,
+        initialProps.interactiveViewportRect,
+        splitCompareView,
+      ),
+    });
+    expect(splitMaterial.uniforms.u_interpolation.value).toBe(0);
+  });
+
+  it('keeps a cursor-referenced wipe aligned in viewport space for mismatched displays', () => {
+    const gl = createRenderer();
+    const slotATarget = createTarget(sceneNode.width, sceneNode.height);
+    const portraitScene = {
+      ...sceneNode,
+      id: 'portrait-scene',
+      width: 1080,
+      height: 1920,
+    } as SceneNode;
+    const baseProps = createHookProps(gl, slotATarget);
+    const interactiveViewportRect = { x: 160, y: 90, width: 960, height: 540 };
+    const compareView = {
+      ...activeCompareView,
+      dividerPosition: 0.25,
+      wipe: { ...activeCompareView.wipe, reference: 'cursor' as const },
+    };
+    const initialProps: CompareRenderProps = {
+      ...baseProps,
+      interactiveViewportRect,
+      compareView,
+      paneLayout: getPaneLayout(baseProps.viewportSize, interactiveViewportRect, compareView),
+      sceneNodeB: portraitScene,
+      viewportNodesB: [portraitScene],
+    };
+
+    renderHook((props: CompareRenderProps) => useViewportCompareRender(props), { initialProps });
+
+    const [compositeScene] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const material = (compositeScene.children[0] as THREE.Mesh).material as THREE.ShaderMaterial;
+    expect(material.uniforms.u_divider.value).toBeCloseTo(0.3125);
+    expect(vi.mocked(gl.setSize)).toHaveBeenLastCalledWith(1280, 720);
+  });
+
+  it('uses independent native geometry for Fit and Fill in split panes', () => {
+    const gl = createRenderer();
+    const slotATarget = createTarget(sceneNode.width, sceneNode.height);
+    const portraitScene = {
+      ...sceneNode,
+      id: 'portrait-scene',
+      width: 1080,
+      height: 1920,
+    } as SceneNode;
+    const baseProps = createHookProps(gl, slotATarget);
+    const compareView = { ...activeCompareView, mode: 'split' as const };
+    const initialProps = {
+      ...baseProps,
+      compareView,
+      paneLayout: getPaneLayout(
+        baseProps.viewportSize,
+        baseProps.interactiveViewportRect,
+        compareView,
+      ),
+      sceneNodeB: portraitScene,
+      viewportNodesB: [portraitScene],
+      zoom: 1 / 3,
+    };
+
+    const { rerender } = renderHook(
+      (props: CompareRenderProps) => useViewportCompareRender(props),
+      { initialProps },
+    );
+
+    const [fitScene, fitCamera] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const splitQuad = fitScene.children[0] as THREE.Mesh;
+    const camera = fitCamera as THREE.OrthographicCamera;
+    expect(splitQuad.scale.toArray()).toEqual([1080, 1920, 1]);
+    expect(camera.left).toBeCloseTo(-2560 / 3);
+    expect(camera.right).toBeCloseTo(2560 / 3);
+    expect(camera.top).toBeCloseTo(960);
+    expect(camera.bottom).toBeCloseTo(-960);
+
+    rerender({
+      ...initialProps,
+      compareView: { ...activeCompareView, mode: 'split', sizingMode: 'fill' },
+      zoom: 2 / 3,
+    });
+
+    const [, fillCamera] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const filledCamera = fillCamera as THREE.OrthographicCamera;
+    expect(filledCamera.left).toBeCloseTo(-540);
+    expect(filledCamera.right).toBeCloseTo(540);
+    expect(filledCamera.top).toBeCloseTo(607.5);
+    expect(filledCamera.bottom).toBeCloseTo(-607.5);
+
+    rerender({
+      ...initialProps,
+      compareView: { ...activeCompareView, mode: 'split', sizingMode: 'none' },
+      zoom: 1,
+    });
+
+    const [, nativeCamera] = vi.mocked(gl.render).mock.calls.at(-1)!;
+    const oneToOneCamera = nativeCamera as THREE.OrthographicCamera;
+    expect(oneToOneCamera.left).toBeCloseTo(-320);
+    expect(oneToOneCamera.right).toBeCloseTo(320);
+    expect(oneToOneCamera.top).toBeCloseTo(360);
+    expect(oneToOneCamera.bottom).toBeCloseTo(-360);
+  });
+
   it('retains warm resources while pending and recreates a clean pool after exit', () => {
     const gl = createRenderer();
     const slotATarget = createTarget();
     const initialProps = createHookProps(gl, slotATarget);
     const { rerender, unmount } = renderHook(
-      (props: ReturnType<typeof createHookProps>) => useViewportCompareRender(props),
+      (props: CompareRenderProps) => useViewportCompareRender(props),
       { initialProps },
     );
 
@@ -200,10 +483,9 @@ describe('useViewportCompareRender', () => {
     const gl = createRenderer();
     const slotATarget = createTarget();
     const initialProps = createHookProps(gl, slotATarget);
-    const { unmount } = renderHook(
-      (props: ReturnType<typeof createHookProps>) => useViewportCompareRender(props),
-      { initialProps },
-    );
+    const { unmount } = renderHook((props: CompareRenderProps) => useViewportCompareRender(props), {
+      initialProps,
+    });
 
     unmount();
 

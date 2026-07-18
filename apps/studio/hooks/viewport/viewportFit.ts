@@ -17,6 +17,8 @@ export interface ViewportFitTarget {
   pan: Pan;
 }
 
+export type ViewportFitMode = 'fit' | 'fill' | 'none';
+
 export interface PivotedViewportPanParams {
   viewportSize: ViewportSize;
   pivot: { x: number; y: number };
@@ -54,10 +56,14 @@ export const calculateViewportFitTarget = ({
   viewportSize,
   sceneSize,
   insets = EMPTY_VIEWPORT_INSETS,
+  mode = 'fit',
+  paddingScale = FIT_PADDING_SCALE,
 }: {
   viewportSize: ViewportSize;
   sceneSize: ViewportSize;
   insets?: Partial<ViewportInsets>;
+  mode?: ViewportFitMode;
+  paddingScale?: number;
 }): ViewportFitTarget => {
   const normalizedInsets = normalizeViewportInsets(insets);
   const pan = getViewportFitPan(normalizedInsets);
@@ -80,12 +86,17 @@ export const calculateViewportFitTarget = ({
     viewportSize.height - normalizedInsets.top - normalizedInsets.bottom,
   );
 
-  return {
-    zoom:
-      Math.min(availableWidth / sceneSize.width, availableHeight / sceneSize.height) *
-      FIT_PADDING_SCALE,
-    pan,
-  };
+  const widthScale = availableWidth / sceneSize.width;
+  const heightScale = availableHeight / sceneSize.height;
+  const baseScale =
+    mode === 'none'
+      ? 1
+      : mode === 'fill'
+        ? Math.max(widthScale, heightScale)
+        : Math.min(widthScale, heightScale);
+  const safePaddingScale = Number.isFinite(paddingScale) ? Math.max(0, paddingScale) : 1;
+
+  return { zoom: baseScale * safePaddingScale, pan };
 };
 
 export const calculatePivotedViewportPan = ({

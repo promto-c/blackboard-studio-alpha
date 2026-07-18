@@ -150,4 +150,43 @@ describe('getGlassSurfaceLighting', () => {
     delete document.documentElement.dataset.componentStyle;
     vi.restoreAllMocks();
   });
+
+  it('maps cursor lighting onto the compare glass capsule', () => {
+    document.documentElement.dataset.componentStyle = 'glass';
+    const compareButton = document.createElement('button');
+    compareButton.className = 'compare-slot-swap';
+    document.body.append(compareButton);
+
+    vi.spyOn(compareButton, 'getBoundingClientRect').mockReturnValue({
+      bottom: 30,
+      height: 30,
+      left: 0,
+      right: 76,
+      top: 0,
+      width: 76,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0);
+      return 1;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+
+    const cleanup = initComponentSurfaceLighting();
+    compareButton.dispatchEvent(
+      new MouseEvent('pointermove', { bubbles: true, clientX: 72, clientY: 4 }),
+    );
+
+    expect(compareButton.style.getPropertyValue('--bb-light-x')).toBe('94.7%');
+    expect(Number(compareButton.style.getPropertyValue('--bb-rim-right-alpha'))).toBeGreaterThan(
+      Number(compareButton.style.getPropertyValue('--bb-rim-left-alpha')),
+    );
+
+    cleanup();
+    compareButton.remove();
+    delete document.documentElement.dataset.componentStyle;
+    vi.restoreAllMocks();
+  });
 });

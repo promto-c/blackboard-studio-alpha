@@ -172,7 +172,7 @@ export function ComfyCropSvgOverlay(props: ViewportOverlayProps) {
                     ? 'rgba(125, 211, 252, 0.7)'
                     : 'rgba(203, 213, 225, 0.55)'
               }
-              strokeWidth={Math.max(1, 2 / zoom)}
+              strokeWidth={2 / zoom}
               strokeDasharray={`${6 / zoom} ${4 / zoom}`}
             />
             {isSelected && (

@@ -19,6 +19,8 @@ export interface SlidingSegmentedControlProps<T extends string> {
   inactiveWidth?: number;
   gap?: number;
   padding?: number;
+  /** Visual silhouette for the track and its segments. */
+  shape?: 'rounded' | 'pill';
   selectionRadius?: React.CSSProperties['borderRadius'];
   height?: React.CSSProperties['height'];
   className?: string;
@@ -38,6 +40,7 @@ const DEFAULT_GAP = 2;
 const DEFAULT_PADDING = 6;
 const DEFAULT_HEIGHT = 28;
 const CONTROL_BORDER_WIDTH = 1;
+const PILL_RADIUS = 9999;
 
 export const SlidingSegmentedControl = <T extends string>({
   options,
@@ -47,6 +50,7 @@ export const SlidingSegmentedControl = <T extends string>({
   inactiveWidth = DEFAULT_INACTIVE_WIDTH,
   gap = DEFAULT_GAP,
   padding = DEFAULT_PADDING,
+  shape = 'rounded',
   selectionRadius,
   height = DEFAULT_HEIGHT,
   className = '',
@@ -68,6 +72,8 @@ export const SlidingSegmentedControl = <T extends string>({
     options.length > 0 ? (innerWidth - padding - itemGapTotal) / options.length : 0;
   const hasAccessories = React.Children.count(children) > 0;
   const controlClassName = `bb-sliding-segmented-control bb-segmented-control-compact relative${className ? ` ${className}` : ''}`;
+  const controlRadius = shape === 'pill' ? PILL_RADIUS : undefined;
+  const resolvedSelectionRadius = selectionRadius ?? controlRadius;
 
   return (
     <SegmentedControl
@@ -79,9 +85,12 @@ export const SlidingSegmentedControl = <T extends string>({
           height,
           gap: `${gap}px`,
           padding: `${padding / 2}px`,
+          borderRadius: controlRadius,
           '--bb-sliding-segment-inset': `${padding / 2}px`,
           '--bb-sliding-segment-radius':
-            typeof selectionRadius === 'number' ? `${selectionRadius}px` : selectionRadius,
+            typeof resolvedSelectionRadius === 'number'
+              ? `${resolvedSelectionRadius}px`
+              : resolvedSelectionRadius,
         } as React.CSSProperties
       }
     >
@@ -107,7 +116,7 @@ export const SlidingSegmentedControl = <T extends string>({
                 ? 'text-white'
                 : 'text-gray-500 hover:text-gray-300 disabled:hover:text-gray-700'
             }${itemClassName ? ` ${itemClassName}` : ''}`}
-            style={{ flex: '0 0 auto', width: itemWidth }}
+            style={{ flex: '0 0 auto', width: itemWidth, borderRadius: controlRadius }}
             title={title ?? label}
             aria-label={ariaLabel ?? label}
           >

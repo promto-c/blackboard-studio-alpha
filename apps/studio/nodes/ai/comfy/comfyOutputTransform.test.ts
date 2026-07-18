@@ -119,6 +119,47 @@ describe('Comfy output transform', () => {
     expect(transform).toMatchObject({ x: 18, y: -12, scaleX: 1.5, scaleY: 1.25 });
   });
 
+  it('ignores stale per-output scale and offsets when fit mode is none', () => {
+    const transform = getComfyOutputTransform({
+      node: makeComfyNode(),
+      output: {
+        width: 960,
+        height: 540,
+        transform: { x: 18, y: -12, scaleX: 1.5, scaleY: 1.25, fitMode: ImageFitMode.NONE },
+      },
+      sceneNode,
+    });
+
+    expect(transform).toEqual({
+      x: 0,
+      y: 0,
+      scaleX: 1,
+      scaleY: 1,
+      fitMode: ImageFitMode.NONE,
+    });
+  });
+
+  it('ignores custom per-output transforms when matching the scene to the output', () => {
+    const transform = getComfyOutputTransform({
+      node: makeComfyNode(),
+      output: {
+        width: 960,
+        height: 540,
+        transform: {
+          x: 180,
+          y: -120,
+          scaleX: 1.5,
+          scaleY: 1.25,
+          fitMode: ImageFitMode.CUSTOM,
+        },
+        useOutputSizeAsScene: true,
+      },
+      sceneNode,
+    });
+
+    expect(transform).toMatchObject({ x: 0, y: 0, scaleX: 1, scaleY: 1 });
+  });
+
   describe('region position offset', () => {
     const regionNode = (
       regionId: string,

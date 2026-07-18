@@ -1,7 +1,7 @@
 import { AnyNode } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
 import { nodeRegistry } from '@/nodes/registry';
-import { isNodeStacked, isStackAdjustmentType } from '@/utils/nodePredicates';
+import { isNodeStacked, isStackableNode } from '@/utils/nodePredicates';
 import type { NodeAction } from './NodeActionMenu';
 
 export function createStackingAction(
@@ -9,11 +9,8 @@ export function createStackingAction(
   canStackOntoPreviousStack: boolean,
   onToggleStacking: (nodeId: string) => void,
 ): NodeAction | null {
-  if (!isStackAdjustmentType(node.type)) {
-    return null;
-  }
-
   const isStacked = isNodeStacked(node);
+  if (!isStacked && !isStackableNode(node)) return null;
   const canToggleStacking = isStacked || canStackOntoPreviousStack;
 
   return {

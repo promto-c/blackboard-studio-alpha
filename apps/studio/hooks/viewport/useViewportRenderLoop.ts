@@ -11,12 +11,12 @@ import {
   type SceneNode,
   type ViewerSettings,
 } from '@blackboard/types';
-import type { RendererMaskLayer } from '@blackboard/renderer';
+import type { RendererMaskLayer, RenderQuality, RenderRegion } from '@blackboard/renderer';
 import { getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
 import { renderViewportFrameWithSharedPipeline } from '@/renderer/pipeline';
 import type { TextTextureEntry } from './useViewportTextTextures';
 import type { TextureCache } from '@/utils/textureCache';
-import { renderStackToDataURL } from '@/utils/thumbnailRenderer';
+import { renderNodesToDataURL } from '@/utils/thumbnailRenderer';
 
 const THUMBNAIL_CAPTURE_DELAY_MS = 1000;
 
@@ -47,6 +47,8 @@ interface UseViewportRenderLoopParams {
   displayView: DisplayViewSelection;
   projectColorManagement: ProjectColorManagement;
   outputDomain: RenderOutputDomain;
+  renderQuality: RenderQuality;
+  workingArea?: RenderRegion | null;
   alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
   hasRenderableNodes: boolean;
   isRenderReady: boolean;
@@ -96,6 +98,8 @@ export function useViewportRenderLoop({
   displayView,
   projectColorManagement,
   outputDomain,
+  renderQuality,
+  workingArea,
   alphaOverlayStyle,
   hasRenderableNodes,
   isRenderReady,
@@ -124,6 +128,7 @@ export function useViewportRenderLoop({
     displayView: typeof displayView;
     projectColorManagement: typeof projectColorManagement;
     outputDomain: typeof outputDomain;
+    renderQuality: typeof renderQuality;
     alphaOverlayStyle: typeof alphaOverlayStyle;
     sceneNode: typeof sceneNode;
     mediaUpdateTrigger: number;
@@ -131,6 +136,7 @@ export function useViewportRenderLoop({
     captureDisplayOutput: boolean;
     rendererSurfaceWidth: number;
     rendererSurfaceHeight: number;
+    workingArea: RenderRegion | null | undefined;
   } | null>(null);
 
   // --- Main GPU render ---
@@ -178,6 +184,7 @@ export function useViewportRenderLoop({
       prev.displayView === displayView &&
       prev.projectColorManagement === projectColorManagement &&
       prev.outputDomain === outputDomain &&
+      prev.renderQuality === renderQuality &&
       prev.alphaOverlayStyle === alphaOverlayStyle &&
       prev.sceneNode === sceneNode &&
       prev.mediaUpdateTrigger === mediaUpdateTrigger &&
@@ -185,6 +192,7 @@ export function useViewportRenderLoop({
       prev.captureDisplayOutput === captureDisplayOutput &&
       prev.rendererSurfaceWidth === rendererSurfaceSize.width &&
       prev.rendererSurfaceHeight === rendererSurfaceSize.height &&
+      prev.workingArea === workingArea &&
       (prev.nodes === nodes || freezeImageWhileEditing)
     ) {
       signalFrameRendered();
@@ -210,6 +218,8 @@ export function useViewportRenderLoop({
       displayView,
       projectColorManagement,
       outputDomain,
+      quality: renderQuality,
+      workingArea,
       alphaOverlayStyle,
       captureDisplayOutput,
       presentToCanvas: !captureDisplayOutput,
@@ -260,6 +270,7 @@ export function useViewportRenderLoop({
       displayView,
       projectColorManagement,
       outputDomain,
+      renderQuality,
       alphaOverlayStyle,
       sceneNode,
       mediaUpdateTrigger,
@@ -267,6 +278,7 @@ export function useViewportRenderLoop({
       captureDisplayOutput,
       rendererSurfaceWidth: rendererSurfaceSize.width,
       rendererSurfaceHeight: rendererSurfaceSize.height,
+      workingArea,
     };
     reportRenderDuration?.(performance.now() - renderStartedAt);
     signalFrameRendered();
@@ -282,6 +294,8 @@ export function useViewportRenderLoop({
     displayView,
     projectColorManagement,
     outputDomain,
+    renderQuality,
+    workingArea,
     alphaOverlayStyle,
     hasRenderableNodes,
     isRenderReady,
@@ -314,7 +328,7 @@ export function useViewportRenderLoop({
       }
 
       const thumbnailNodes = nodes.filter((node) => !nodeFlags(node.type).isSceneLike);
-      void renderStackToDataURL(thumbnailNodes, sceneNode, projectColorManagement, visualFrame)
+      void renderNodesToDataURL(thumbnailNodes, sceneNode, projectColorManagement, visualFrame)
         .then((thumbnailUrl) => {
           if (thumbnailCaptureIdRef.current !== captureId) {
             return;

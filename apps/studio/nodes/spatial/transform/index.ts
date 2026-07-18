@@ -18,6 +18,7 @@ import { CropAdjustments, ReformatAdjustments, TransformAdjustments } from './Sp
 import { CropTool, ReformatTool, TransformTool } from './SpatialTools';
 import SpatialOverlay from './SpatialOverlay';
 import { SpatialShader } from './spatialShaders';
+import { getReformatRenderWindowUniforms } from './spatialRenderWindows';
 
 const DEFAULT_FORMAT = { width: 1920, height: 1080 };
 const DEFAULT_RESAMPLING: SpatialResamplingFilter = 'linear';
@@ -103,7 +104,7 @@ export const transformNode: NodeDefinition = {
   ToolComponent: TransformTool,
   AdjustmentComponent: TransformAdjustments,
   ViewportOverlayComponent: SpatialOverlay,
-  flags: { showDataWindow: true, showInputDataWindow: true },
+  flags: { showInputDataWindow: true },
   animation: transformAnimation,
   getInitialNodeProps: () => ({
     transform: {
@@ -124,9 +125,11 @@ export const transformNode: NodeDefinition = {
   getUniforms: (node: AnyNode, context): ShaderUniformMap => {
     const transformNode = node as TransformNode;
     const transform = transformNode.transform;
+    const storageWidth = context.storageWindow?.width ?? context.scene.width;
+    const storageHeight = context.storageWindow?.height ?? context.scene.height;
 
     return {
-      u_scene_res: { value: [context.scene.width, context.scene.height] },
+      u_scene_res: { value: [storageWidth, storageHeight] },
       u_translate: {
         value: [
           getValueAtFrame(transform.translateX, context.frame),
@@ -161,7 +164,6 @@ export const cropNode: NodeDefinition = {
   IconComponent: Icons.Rectangle,
   ToolComponent: CropTool,
   AdjustmentComponent: CropAdjustments,
-  flags: { showDataWindow: true },
   animation: cropAnimation,
   getInitialNodeProps: () => ({
     crop: {
@@ -175,15 +177,19 @@ export const cropNode: NodeDefinition = {
   getUniforms: (node: AnyNode, context): ShaderUniformMap => {
     const cropNode = node as CropNode;
     const crop = cropNode.crop;
+    const horizontalPadding = Math.max(0, -(context.storageWindow?.x ?? 0));
+    const verticalPadding = Math.max(0, -(context.storageWindow?.y ?? 0));
+    const storageWidth = context.storageWindow?.width ?? context.scene.width;
+    const storageHeight = context.storageWindow?.height ?? context.scene.height;
 
     return {
-      u_scene_res: { value: [context.scene.width, context.scene.height] },
+      u_scene_res: { value: [storageWidth, storageHeight] },
       u_crop: {
         value: [
-          getValueAtFrame(crop.left, context.frame),
-          getValueAtFrame(crop.right, context.frame),
-          getValueAtFrame(crop.top, context.frame),
-          getValueAtFrame(crop.bottom, context.frame),
+          horizontalPadding + getValueAtFrame(crop.left, context.frame),
+          horizontalPadding + getValueAtFrame(crop.right, context.frame),
+          verticalPadding + getValueAtFrame(crop.top, context.frame),
+          verticalPadding + getValueAtFrame(crop.bottom, context.frame),
         ],
       },
     };
@@ -225,12 +231,14 @@ export const reformatNode: NodeDefinition = {
   getShader: () => SpatialShader.REFORMAT,
   getUniforms: (node: AnyNode, context): ShaderUniformMap => {
     const reformatNode = node as ReformatNode;
-    const sourceWidth = reformatNode.sourceWidth ?? context.scene.width;
-    const sourceHeight = reformatNode.sourceHeight ?? context.scene.height;
+    const { sourceSize, targetSize, sourceStorageSize, targetStorageSize } =
+      getReformatRenderWindowUniforms(reformatNode, context);
 
     return {
-      u_scene_res: { value: [sourceWidth, sourceHeight] },
-      u_target_res: { value: [reformatNode.width, reformatNode.height] },
+      u_scene_res: { value: sourceSize },
+      u_target_res: { value: targetSize },
+      u_source_storage_res: { value: sourceStorageSize },
+      u_target_storage_res: { value: targetStorageSize },
       u_mode: { value: modeToUniform(reformatNode.resizeMode) },
       u_filter: { value: resamplingToUniform(reformatNode.resampling) },
     };

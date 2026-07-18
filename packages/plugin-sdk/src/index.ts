@@ -264,6 +264,27 @@ export interface HotkeyBinding<TArgs = unknown> {
 // NodeDefinition (a.k.a. NodeExtension)
 // ---------------------------------------------------------------------------
 
+export type NodeExposableFieldControl =
+  | 'number'
+  | 'slider'
+  | 'text'
+  | 'toggle'
+  | 'color'
+  | 'select';
+
+export interface NodeExposableFieldDescriptor {
+  path: string;
+  label: string;
+  section?: string;
+  description?: string;
+  control: NodeExposableFieldControl;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: Array<{ label: string; value: string | number }>;
+  animatable?: boolean;
+}
+
 export interface NodeDefinition {
   type: string;
   name: string;
@@ -279,6 +300,9 @@ export interface NodeDefinition {
   IconComponent: React.ComponentType<{ className?: string }>;
   ToolComponent?: React.ComponentType;
   AdjustmentComponent: React.ComponentType<{ node: unknown }>;
+  exposableFields?:
+    | NodeExposableFieldDescriptor[]
+    | ((node: unknown) => NodeExposableFieldDescriptor[]);
   ViewportToolsComponent?: React.ComponentType<{ node: unknown }>;
 
   /** Optional SVG overlay component rendered in the viewport for this node. */

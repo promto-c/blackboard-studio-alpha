@@ -1,6 +1,6 @@
 import type { ComfyNode, GeneratedOutput } from '@blackboard/types';
 import { createAutoFitTransform } from '@/nodes/sourceNodeBehavior';
-import { isAutoImageFitMode } from '@/nodes/imageFitMode';
+import { getImageFitModeTransformUpdate, isCustomImageFitMode } from '@/nodes/imageFitMode';
 import { hasPositiveSize } from '@/utils/guards';
 
 type OutputRect = { x: number; y: number; width: number; height: number };
@@ -66,7 +66,11 @@ export const getComfyOutputTransform = ({
         : sceneNode;
 
   if (!hasPositiveSize(output) || !hasPositiveSize(effectiveScene)) {
-    return output.transform ?? node.transform;
+    const storedTransform = output.transform ?? node.transform;
+    return {
+      ...storedTransform,
+      ...getImageFitModeTransformUpdate(storedTransform.fitMode),
+    };
   }
 
   // Auto-fit using the effective scene (region dimensions when output is in a region)
@@ -82,7 +86,7 @@ export const getComfyOutputTransform = ({
   // adjusted scale. Auto-fit returns plain computed numbers, but the output
   // may have keyframe arrays or user-set values that should take effect.
   let effectiveTransform = transform;
-  if (output.transform && !isAutoImageFitMode(fitMode)) {
+  if (output.transform && !output.useOutputSizeAsScene && isCustomImageFitMode(fitMode)) {
     effectiveTransform = {
       ...transform,
       x: output.transform.x ?? transform.x,

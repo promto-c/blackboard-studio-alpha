@@ -11,17 +11,23 @@ import {
 import { nodeRegistry } from '@/nodes/registry';
 import { setKeyframeValue } from '@/nodes/animation';
 import { nodeFlags } from '@/nodes/helpers';
-import { setImmutable, getImmutable, clampKeyframeTangents } from '@blackboard/renderer';
+import {
+  setImmutable,
+  getImmutable,
+  clampKeyframeTangents,
+  setKeyframeOnValue,
+} from '@blackboard/renderer';
 import {
   buildNodeStacks,
   hasPreviousStackTarget,
   getStackedGroup,
   getStackedGroupEndIndex,
 } from '@/utils/nodeStacks';
-import { isNodeStacked, isStackAdjustmentType } from '@/utils/nodePredicates';
+import { isNodeStacked, isStackableNode, setNodeStackedPresentation } from '@/utils/nodePredicates';
 import {
   getRootFlow,
   replaceFlowNodes,
+  replaceFlowStackPresentation,
   updateFlowNode,
   OUTPUT_NODE_ID,
 } from '@/state/editor/flowModel';
@@ -34,6 +40,7 @@ import {
   extractMergeChannelsCommand,
   connectNodeCommand,
   disconnectNodeCommand,
+  disconnectNodeInputsCommand,
   deleteNodeCommand,
   deleteSelectedNodesCommand,
   groupNodesCommand,
@@ -52,7 +59,7 @@ import {
 } from '@/color-management/outputTechnicalChannels';
 import { rewirePrimaryPipeline } from '@/utils/pipelineGraph';
 
-const rebuildActivePipeline = (
+const rebuildActivePipelineOrder = (
   state: Readonly<EditorState>,
   orderedNodes: AnyNode[],
 ): Record<FlowId, Flow> | null => {
@@ -65,6 +72,14 @@ const rebuildActivePipeline = (
     ...rebuiltFlows,
     [flowId]: rewirePrimaryPipeline(previousFlow, rebuiltFlows[flowId], orderedNodes),
   };
+};
+
+const updateActiveStackPresentation = (
+  state: Readonly<EditorState>,
+  orderedNodes: AnyNode[],
+): Record<FlowId, Flow> | null => {
+  const flowId = state.activeFlowId ?? state.rootFlowId;
+  return replaceFlowStackPresentation(state.flows, flowId, orderedNodes);
 };
 
 export function createNodeActions(
@@ -351,6 +366,70 @@ export function createNodeActions(
       });
     },
 
+    updateGroupChildField: (
+      groupNodeId: string,
+      targetNodeId: string,
+      propertyPath: string,
+      value: unknown,
+      preserveAnimation = false,
+      withHistory = true,
+    ) => {
+      deps.commitMutation((state) => {
+        const activeFlow = getRootFlow(state.flows, state.activeFlowId);
+        const groupNode = activeFlow?.nodes.find(
+          (node): node is GroupNode => node.id === groupNodeId && node.type === NodeType.GROUP,
+        );
+        if (!activeFlow || !groupNode?.childFlowId) return { patch: {} };
+
+        const childFlow = state.flows[groupNode.childFlowId];
+        const targetIndex = childFlow?.nodes.findIndex((node) => node.id === targetNodeId) ?? -1;
+        if (!childFlow || targetIndex < 0) return { patch: {} };
+
+        const targetNode = childFlow.nodes[targetIndex];
+        const currentValue = getImmutable(targetNode, propertyPath);
+        if (currentValue === undefined) return { patch: {} };
+
+        const nextValue =
+          preserveAnimation && typeof value === 'number' && Array.isArray(currentValue)
+            ? setKeyframeOnValue(currentValue as AnimatableNumber, state.currentFrame, value)
+            : value;
+        const pathRoot = propertyPath.match(/^[^.[\]]+/)?.[0];
+        const updatedTargetNode = setImmutable(targetNode, propertyPath, nextValue) as AnyNode;
+        let nextTargetNode = updatedTargetNode;
+        let historyLabel = 'Update Group Prop';
+        const hook = nodeRegistry.get(targetNode.type)?.onNodeUpdate;
+        if (hook && pathRoot) {
+          const sceneNode = state.nodes.find((candidate) => nodeFlags(candidate.type).isSceneLike);
+          const hookResult = hook(
+            targetNode,
+            { [pathRoot]: (updatedTargetNode as unknown as Record<string, unknown>)[pathRoot] },
+            { sceneNode },
+          );
+          nextTargetNode = { ...updatedTargetNode, ...hookResult.changes } as AnyNode;
+          historyLabel = hookResult.label ?? historyLabel;
+        }
+        const nextChildNodes = [...childFlow.nodes];
+        nextChildNodes[targetIndex] = nextTargetNode;
+        const nextFlows = {
+          ...state.flows,
+          [childFlow.id]: { ...childFlow, nodes: nextChildNodes },
+        };
+
+        return withHistory
+          ? {
+              patch: { flows: nextFlows },
+              history: {
+                label: historyLabel,
+                state: { flows: nextFlows, selectedNodeId: groupNode.id },
+              },
+            }
+          : {
+              patch: { flows: nextFlows },
+              persist: 'debounced' as const,
+            };
+      });
+    },
+
     removeGroupInput: (groupNodeId: string, inputId: string) => {
       deps.commitMutation((state) => {
         const activeFlow = getRootFlow(state.flows, state.activeFlowId);
@@ -523,22 +602,20 @@ export function createNodeActions(
         const layerIndex = state.nodes.findIndex((l) => l.id === nodeId);
         if (layerIndex === -1) return { patch: {} };
         const node = state.nodes[layerIndex];
-        const isAdjustment = isStackAdjustmentType(node.type);
-        if (!isAdjustment) return { patch: {} };
-        const nextStacked = !isNodeStacked(node);
+        const currentlyStacked = isNodeStacked(node);
+        if (!currentlyStacked && !isStackableNode(node)) return { patch: {} };
+        const nextStacked = !currentlyStacked;
         if (nextStacked && !hasPreviousStackTarget(state.nodes, nodeId)) return { patch: {} };
-        const newNodes = state.nodes.map((l) =>
-          l.id === nodeId ? ({ ...l, stacked: nextStacked } as AnyNode) : l,
+        const newNodes = state.nodes.map((candidate) =>
+          candidate.id === nodeId ? setNodeStackedPresentation(candidate, nextStacked) : candidate,
         );
-        const newNode = newNodes.find((l) => l.id === nodeId) as
-          | (AnyNode & { stacked?: boolean })
-          | undefined;
-        const flows = rebuildActivePipeline(state, newNodes);
+        const newNode = newNodes.find((candidate) => candidate.id === nodeId);
+        const flows = updateActiveStackPresentation(state, newNodes);
         if (!flows) return { patch: {} };
         return {
           patch: { flows },
           history: {
-            label: `${newNode?.stacked ? 'Stack' : 'Unstack'} ${newNode?.name}`,
+            label: `${nextStacked ? 'Stack' : 'Unstack'} ${newNode?.name}`,
             state: { flows },
           },
         };
@@ -551,7 +628,7 @@ export function createNodeActions(
       if (sourceIndex === -1 || nodeId === targetStackId) return false;
 
       const sourceNode = state.nodes[sourceIndex];
-      if (!isStackAdjustmentType(sourceNode.type)) {
+      if (!isStackableNode(sourceNode)) {
         return false;
       }
 
@@ -564,7 +641,7 @@ export function createNodeActions(
 
       let result = false;
       deps.commitMutation((currentState) => {
-        const nodes = [...state.nodes];
+        const nodes = [...currentState.nodes];
         const groupToMove = nodes.slice(sourceIndex, sourceIndex + sourceStack.length);
         nodes.splice(sourceIndex, groupToMove.length);
 
@@ -574,21 +651,21 @@ export function createNodeActions(
         const insertionIndex = getStackedGroupEndIndex(nodes, targetIndex);
 
         const stackedGroup = groupToMove.map((node, index) =>
-          index === 0 ? ({ ...node, stacked: true } as AnyNode) : node,
+          index === 0 ? setNodeStackedPresentation(node, true) : node,
         );
         nodes.splice(insertionIndex + 1, 0, ...stackedGroup);
 
-        const flows = rebuildActivePipeline(currentState, nodes);
+        const flows = updateActiveStackPresentation(currentState, nodes);
         if (!flows) return { patch: {} };
         result = true;
         return {
-          patch: { flows, selectedNodeId: state.selectedNodeId },
+          patch: { flows, selectedNodeId: currentState.selectedNodeId },
           history: {
             label: `Stack ${sourceNode.name}`,
             state: {
               flows,
-              selectedNodeId: state.selectedNodeId,
-              nodePositionsByFlow: state.nodePositionsByFlow,
+              selectedNodeId: currentState.selectedNodeId,
+              nodePositionsByFlow: currentState.nodePositionsByFlow,
             },
           },
         };
@@ -639,7 +716,7 @@ export function createNodeActions(
 
         newNodes.splice(insertionIndex, 0, ...allItemsToMove);
 
-        const flows = rebuildActivePipeline(state, newNodes);
+        const flows = rebuildActivePipelineOrder(state, newNodes);
         if (!flows) return { patch: {} };
 
         return {
@@ -680,6 +757,13 @@ export function createNodeActions(
     disconnectNodeInput: (nodeId: string, portName: string) => {
       const state = buildGraphCommandState(get());
       const result = disconnectNodeCommand(state, nodeId, portName);
+      if (!result) return;
+      executeGraphCommand(deps.commitMutation, result);
+    },
+
+    disconnectNodeInputs: (targets: readonly { nodeId: string; portName: string }[]) => {
+      const state = buildGraphCommandState(get());
+      const result = disconnectNodeInputsCommand(state, targets);
       if (!result) return;
       executeGraphCommand(deps.commitMutation, result);
     },

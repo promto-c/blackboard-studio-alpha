@@ -3,6 +3,7 @@ import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { ImageTransformSettings, type LinkedScaleUpdate } from './ImageTransformSettings';
 import type { SourceTransformNode } from './sourceNodeBehavior';
+import { getImageFitModeTransformUpdate } from './imageFitMode';
 
 const formatSize = (width: number, height: number): string =>
   width > 0 && height > 0 ? `${Math.round(width)} x ${Math.round(height)}` : 'No output';
@@ -23,7 +24,7 @@ function SourceTransformControls({ node }: { node: SourceTransformNode }) {
 
   const handleFitModeChange = (mode: ImageFitMode) => {
     if (useOutputSizeAsScene) return;
-    updateNode(node.id, { transform: { fitMode: mode } }, true);
+    updateNode(node.id, { transform: getImageFitModeTransformUpdate(mode) }, true);
   };
 
   const handleOutputSizeSceneChange = (checked: boolean) => {

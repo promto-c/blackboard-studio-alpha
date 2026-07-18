@@ -19,6 +19,7 @@ import { getAsset } from '@/state/assetStorage';
 import { createExrTexture } from '@/utils/exr';
 import { getBlobName, isExrFileLike, isHdrFileLike } from '@/utils/mediaFiles';
 import { colorManagementService } from '@/color-management';
+import { getDataWindowProjection } from '@/features/viewport/dataWindow';
 import { createRotoMaskTextureBundle } from '@/utils/rotoMaskTexture';
 import {
   disposeScene3DProjectionRuntimes,
@@ -73,6 +74,14 @@ export const renderWithSharedPipeline = async (options: RenderPipelineOptions) =
     colorManagementService.getProjectRendererColorManagement(projectColorManagement);
   const frame = options.frame ?? 0;
   const { nodes } = options;
+  const dataWindowNodes = [...nodes];
+  const dataWindowNodeIds = new Set(nodes.map((node) => node.id));
+  for (const node of options.captureSourceNodes ?? []) {
+    if (!dataWindowNodeIds.has(node.id)) {
+      dataWindowNodes.push(node);
+      dataWindowNodeIds.add(node.id);
+    }
+  }
   const rotoMasks = createRotoMaskTextureBundle(nodes, options.sceneNode, frame, {
     width: options.width,
     height: options.height,
@@ -96,6 +105,7 @@ export const renderWithSharedPipeline = async (options: RenderPipelineOptions) =
       colorManagement: rendererColorManagement,
       nodes,
       nodeRegistry,
+      dataWindowPlan: getDataWindowProjection(options.sceneNode, dataWindowNodes, frame),
       getAsset,
       getRotoMaskLayers: (nodeId) => rotoMasks.layers.get(nodeId),
       getRotoAlphaMode: (nodeId) => rotoAlphaModeMap.get(nodeId) ?? 0,
@@ -132,5 +142,6 @@ export const renderViewportFrameWithSharedPipeline = (options: ViewportPipelineO
     colorManagement:
       colorManagementService.getProjectRendererColorManagement(projectColorManagement),
     nodeRegistry,
+    dataWindowPlan: getDataWindowProjection(options.sceneNode, options.nodes, options.frame),
   });
 };

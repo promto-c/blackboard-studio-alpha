@@ -8,18 +8,16 @@ import type {
   RotoMotionCueScope,
   RotoMotionCueMode,
 } from '@blackboard/types';
-import { clampRotoMotionBlurSamples } from '@/utils/rotoMotionBlur';
 import {
-  clampRotoInteractivePreviewSize,
-  RotoInteractivePreviewSize,
-} from '@/utils/rotoPreviewQuality';
-export { RotoInteractivePreviewSize };
-import {
-  clampRotoPreviewRefineDelay,
-  RotoPreviewRefineDelay,
-  type RotoPlaybackPreviewMode,
-} from '@/utils/rotoTemporalPreview';
-export { RotoPreviewRefineDelay };
+  clampPreviewMaxDimension,
+  clampPreviewRefineDelay,
+  clampPreviewSampleLimit,
+  PreviewMaxDimension,
+  PreviewRefineDelay,
+  PreviewSampleLimit,
+  type PreviewPlaybackMode,
+} from '@/utils/previewPerformance';
+export { PreviewMaxDimension, PreviewRefineDelay, PreviewSampleLimit };
 import {
   DEFAULT_ROTO_POINT_WEIGHT_MODE,
   isRotoPointWeightMode,
@@ -62,7 +60,6 @@ const RotoTrailFrames = {
   MAX: 8,
   DEFAULT: 3,
 } as const;
-const ROTO_MOTION_BLUR_INTERACTIVE_DEFAULT_SAMPLES = 16;
 export const RotoTrackingDriftTolerance = {
   MIN: 1,
   MAX: 50,
@@ -95,7 +92,7 @@ export const DEFAULT_AUTO_CHECKPOINT_ENABLED = true;
 
 export const DEFAULT_PAINT_BRUSH_SETTINGS: PaintBrushSettings = {
   size: 24,
-  spacing: 20,
+  spacing: 10,
   softness: 30,
   stabilization: 30,
   opacity: 100,
@@ -160,12 +157,12 @@ export interface Preferences {
   rotoMotionPathVisible: boolean;
   rotoMotionBlurPathVisible: boolean;
   rotoMotionTrailFrames: number;
-  rotoMotionBlurInteractivePreviewEnabled: boolean;
-  rotoFrameChangePreviewEnabled: boolean;
-  rotoPreviewRefineDelayMs: number;
-  rotoPlaybackPreviewMode: RotoPlaybackPreviewMode;
-  rotoInteractivePreviewMaxDimension: number;
-  rotoMotionBlurInteractivePreviewSamples: number;
+  previewOptimizeWhileEditing: boolean;
+  previewOptimizeFrameChanges: boolean;
+  previewRefineDelayMs: number;
+  previewPlaybackMode: PreviewPlaybackMode;
+  previewMaxDimension: number;
+  previewSampleLimit: number;
   rotoPointWeightMode: RotoPointWeightMode;
   rotoTrackingBackgroundEnabled: boolean;
   rotoTrackingDriftTolerance: number | null;
@@ -536,27 +533,15 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
   rotoMotionPathVisible: boolField(true),
   rotoMotionBlurPathVisible: boolField(true),
   rotoMotionTrailFrames: customField(RotoTrailFrames.DEFAULT, (v) => clampRotoTrailFrames(v)),
-  rotoMotionBlurInteractivePreviewEnabled: boolField(true),
-  rotoFrameChangePreviewEnabled: boolField(true),
-  rotoPreviewRefineDelayMs: customField(
-    RotoPreviewRefineDelay.DEFAULT,
-    clampRotoPreviewRefineDelay,
-  ),
-  rotoPlaybackPreviewMode: enumField(
-    'auto' as RotoPlaybackPreviewMode,
+  previewOptimizeWhileEditing: boolField(true),
+  previewOptimizeFrameChanges: boolField(true),
+  previewRefineDelayMs: customField(PreviewRefineDelay.DEFAULT, clampPreviewRefineDelay),
+  previewPlaybackMode: enumField(
+    'auto' as PreviewPlaybackMode,
     ['auto', 'optimized', 'full'] as const,
   ),
-  rotoInteractivePreviewMaxDimension: customField(
-    RotoInteractivePreviewSize.DEFAULT,
-    clampRotoInteractivePreviewSize,
-  ),
-  rotoMotionBlurInteractivePreviewSamples: customField(
-    ROTO_MOTION_BLUR_INTERACTIVE_DEFAULT_SAMPLES,
-    (v) =>
-      clampRotoMotionBlurSamples(
-        typeof v === 'number' ? v : ROTO_MOTION_BLUR_INTERACTIVE_DEFAULT_SAMPLES,
-      ),
-  ),
+  previewMaxDimension: customField(PreviewMaxDimension.DEFAULT, clampPreviewMaxDimension),
+  previewSampleLimit: customField(PreviewSampleLimit.DEFAULT, clampPreviewSampleLimit),
   rotoPointWeightMode: customField(DEFAULT_ROTO_POINT_WEIGHT_MODE, (v) =>
     isRotoPointWeightMode(v) ? v : DEFAULT_ROTO_POINT_WEIGHT_MODE,
   ),

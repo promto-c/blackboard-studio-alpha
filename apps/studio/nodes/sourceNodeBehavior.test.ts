@@ -42,6 +42,25 @@ describe('source node transform behavior', () => {
     expect(transform).toMatchObject({ x: 0, y: 0, scaleX: 2, scaleY: 2 });
   });
 
+  it('resolves none to a neutral transform before output dimensions are available', () => {
+    const transform = createAutoFitTransform({
+      node: makeSourceNode({
+        transform: { x: 20, y: -10, scaleX: 2, scaleY: 3, fitMode: ImageFitMode.NONE },
+      }),
+      imageSize: { width: 0, height: 0 },
+      sceneNode,
+      fitMode: ImageFitMode.NONE,
+    });
+
+    expect(transform).toEqual({
+      x: 0,
+      y: 0,
+      scaleX: 1,
+      scaleY: 1,
+      fitMode: ImageFitMode.NONE,
+    });
+  });
+
   it('preserves manual scale when fit mode is custom', () => {
     const node = makeSourceNode({
       transform: { x: 12, y: -8, scaleX: 1.4, scaleY: 1.2, fitMode: ImageFitMode.FIT },
@@ -70,5 +89,25 @@ describe('source node transform behavior', () => {
     const update = createSourceTransformUpdate(node, { width: 960, height: 540 }, { sceneNode });
 
     expect(update).toBeNull();
+  });
+
+  it('resets scale and offsets when fit mode changes to none without a scene', () => {
+    const node = makeSourceNode({
+      transform: { x: 24, y: -16, scaleX: 2.5, scaleY: 0.75, fitMode: ImageFitMode.CUSTOM },
+    });
+
+    const update = createSourceTransformUpdate(
+      node,
+      { transform: { fitMode: ImageFitMode.NONE } },
+      {},
+    );
+
+    expect(update?.changes.transform).toEqual({
+      x: 0,
+      y: 0,
+      scaleX: 1,
+      scaleY: 1,
+      fitMode: ImageFitMode.NONE,
+    });
   });
 });

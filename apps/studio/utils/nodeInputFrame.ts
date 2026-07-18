@@ -11,6 +11,8 @@ interface RenderNodeInputOptions {
   nodes: AnyNode[];
   flows: Record<string, Flow>;
   sourceNodeId: string;
+  /** Exact graph output to render when the connection uses a named technical port. */
+  sourcePort?: string;
   sceneNode: SceneNode;
   projectColorManagement: ProjectColorManagement;
   frame: number;
@@ -113,8 +115,22 @@ export const renderNodeInputFrameToFloat = async (
   options: RenderNodeInputOptions,
 ): Promise<FloatInput> => {
   const renderNodes = getRenderedSourceNodes(options.nodes, options.flows, options.sourceNodeId);
+  const captureId = 'node-input-source';
+  const captureSourcePort =
+    options.sourcePort && options.sourcePort !== 'output' ? options.sourcePort : null;
   const result = await renderWithSharedPipeline({
     captureFinalOutput: true,
+    ...(captureSourcePort
+      ? {
+          captureOutputs: [
+            {
+              id: captureId,
+              nodeId: options.sourceNodeId,
+              sourcePort: captureSourcePort,
+            },
+          ],
+        }
+      : {}),
     preserveAlpha: true,
     nodes: renderNodes,
     sceneNode: options.sceneNode,
@@ -129,11 +145,14 @@ export const renderNodeInputFrameToFloat = async (
   });
 
   try {
-    if (!result.finalOutputTarget) {
+    const outputTarget = captureSourcePort
+      ? result.capturedOutputTargets.get(captureId)
+      : result.finalOutputTarget;
+    if (!outputTarget) {
       throw new Error('Could not capture rendered input frame.');
     }
 
-    return readRenderTargetToFloatInput(result, result.finalOutputTarget);
+    return readRenderTargetToFloatInput(result, outputTarget);
   } finally {
     result.dispose();
   }

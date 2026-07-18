@@ -20,7 +20,7 @@ import {
   type ComfyWorkflowControlCandidate,
 } from './comfyControls';
 import { isJsonObject } from '@/utils/guards';
-import { normalizeComfyType } from '@/utils/comfyUtils';
+import { isComfyMaskWorkflowInput, normalizeComfyType } from '@/utils/comfyUtils';
 import { collectComfyGraphExposedFields } from '@/services/comfy/client';
 import { isDataChannel } from '@/color-management';
 
@@ -153,7 +153,9 @@ const numericInputScore = (
 };
 
 const isMaskWorkflowInputCandidate = (candidate: ComfyWorkflowInputCandidate): boolean =>
-  isDataChannel(candidate.inputName) || isDataChannel(candidate.nodeType);
+  isComfyMaskWorkflowInput(candidate) ||
+  isDataChannel(candidate.inputName) ||
+  isDataChannel(candidate.nodeType);
 
 export const getComfyViewportBindingTargetOptions = (
   workflow: ComfyWorkflow | null | undefined,

@@ -9,6 +9,8 @@ import {
   type CacheStatus,
   type ImageSequenceNode,
   type MediaSourceNode,
+  type SceneNode,
+  type ViewportWorkingArea,
 } from '@blackboard/types';
 import { createExrTexture } from '@/utils/exr';
 import {
@@ -33,6 +35,13 @@ import {
   resolveMediaFrame,
 } from '@/nodes/helpers';
 import { getSourceFrameRange } from '@/nodes/sourceFrameRange';
+import {
+  getWorkingAreaSignature,
+  resolveViewportAssetReadRegion,
+  resolveWorkingAreaPixelRect,
+  type PixelRect,
+} from '@/features/viewport/workingArea';
+import { createViewportRegionBitmapTexture } from './viewportRegionTexture';
 
 export type ViewportCacheNodeEntry = CacheNodeEntry;
 export type ViewportCacheStatus = CacheStatus;
@@ -63,6 +72,8 @@ interface VideoFrameRequestOptions {
 export interface UseViewportMediaCacheOptions {
   nodes: AnyNode[];
   retentionNodes?: AnyNode[];
+  sceneNode?: SceneNode;
+  workingArea?: ViewportWorkingArea;
   currentFrame: number;
   selectedNode?: AnyNode;
   timelineStartFrame?: number;
@@ -77,12 +88,6 @@ const getNumericUniformValue = (node: AnyNode, uniformName: string | undefined):
     ?.value;
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 };
-
-const isTemporalInputPort = (port: ReturnType<typeof getInputPorts>[number]): boolean =>
-  typeof port.frameOffset === 'number' ||
-  typeof port.absoluteFrame === 'number' ||
-  !!port.frameOffsetUniform ||
-  !!port.absoluteFrameUniform;
 
 const isTextureBearingInputPort = (port: ReturnType<typeof getInputPorts>[number]): boolean =>
   port.type === 'texture' || port.type === 'mask' || port.type === 'data';
@@ -240,9 +245,59 @@ const disposeVideoDecodeSession = (session: VideoDecodeSession) => {
   URL.revokeObjectURL(session.objectUrl);
 };
 
+const createVideoFrameTexture = (
+  video: HTMLVideoElement,
+  region: PixelRect | null,
+): THREE.CanvasTexture | null => {
+  const canvas = document.createElement('canvas');
+  canvas.width = region?.width ?? video.videoWidth;
+  canvas.height = region?.height ?? video.videoHeight;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+
+  if (region) {
+    context.drawImage(
+      video,
+      region.x,
+      region.y,
+      region.width,
+      region.height,
+      0,
+      0,
+      region.width,
+      region.height,
+    );
+  } else {
+    context.drawImage(video, 0, 0);
+  }
+
+  const texture = configureRawStraightAlphaTexture(new THREE.CanvasTexture(canvas));
+  if (region) {
+    texture.userData.blackboardSourceRegion = {
+      ...region,
+      fullWidth: video.videoWidth,
+      fullHeight: video.videoHeight,
+      coordinateSpace: 'top-left',
+    };
+  }
+  return texture;
+};
+
+const disposeUncachedTexture = (texture: THREE.Texture): void => {
+  const image = texture.image as unknown;
+  texture.dispose();
+  if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) image.close();
+  if (typeof HTMLCanvasElement !== 'undefined' && image instanceof HTMLCanvasElement) {
+    image.width = 0;
+    image.height = 0;
+  }
+};
+
 export const useViewportMediaCache = ({
   nodes,
   retentionNodes = nodes,
+  sceneNode,
+  workingArea,
   currentFrame,
   selectedNode,
   timelineStartFrame = 0,
@@ -273,6 +328,11 @@ export const useViewportMediaCache = ({
   const [mediaUpdateTrigger, setMediaUpdateTrigger] = useState(0);
   const currentFrameRef = useRef(currentFrame);
   const autoPrefetchDirectionRef = useRef<PrefetchDirection>(1);
+  const readRegionSignature = getWorkingAreaSignature(
+    resolveWorkingAreaPixelRect(workingArea, sceneNode),
+  );
+  const previousReadRegionSignatureRef = useRef(readRegionSignature);
+  const cacheGenerationRef = useRef(0);
 
   // Keep FPS in a ref to access it inside the cached loadAsset function without re-creating it
   const fpsRef = useRef(fps);
@@ -293,6 +353,30 @@ export const useViewportMediaCache = ({
   const bumpMediaUpdateTrigger = useCallback(() => {
     setMediaUpdateTrigger((value) => value + 1);
   }, []);
+
+  const getAssetReadRegion = useCallback(
+    (assetId: string): PixelRect | null =>
+      resolveViewportAssetReadRegion({
+        assetId,
+        nodes,
+        scene: sceneNode,
+        frame: currentFrameRef.current,
+        workingArea,
+      }),
+    [nodes, sceneNode, workingArea],
+  );
+
+  useEffect(() => {
+    if (previousReadRegionSignatureRef.current === readRegionSignature) return;
+    previousReadRegionSignatureRef.current = readRegionSignature;
+    cacheGenerationRef.current += 1;
+    textureCacheRef.current.clear();
+    pendingLoadsRef.current.clear();
+    pendingVideoFrameLoadsRef.current.clear();
+    pendingVideoFramesRef.current.clear();
+    pendingVideoFrameKeysBySrcRef.current.clear();
+    bumpMediaUpdateTrigger();
+  }, [bumpMediaUpdateTrigger, readRegionSignature]);
 
   // Update cache limit if preference changes
   useEffect(() => {
@@ -378,21 +462,15 @@ export const useViewportMediaCache = ({
       const frameKey = getVideoFrameKey(src, frame);
 
       if (!cache.get(frameKey)) {
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(video, 0, 0);
-          const frameTex = configureRawStraightAlphaTexture(new THREE.CanvasTexture(canvas));
-
+        const frameTex = createVideoFrameTexture(video, getAssetReadRegion(src));
+        if (frameTex) {
           cache.add(frameKey, frameTex, undefined, undefined, frame);
         }
       }
 
       return frame;
     },
-    [getVideoFrameKey],
+    [getAssetReadRegion, getVideoFrameKey],
   );
 
   const setPendingVideoFrames = useCallback(
@@ -514,6 +592,7 @@ export const useViewportMediaCache = ({
       }
 
       const pendingLoad = (async () => {
+        const cacheGeneration = cacheGenerationRef.current;
         let objectUrl: string | null = null;
         try {
           const blob = await getAsset(src);
@@ -548,6 +627,17 @@ export const useViewportMediaCache = ({
 
             video.addEventListener('seeked', onSeeked);
 
+            if (cacheGeneration !== cacheGenerationRef.current) {
+              texture.dispose();
+              video.pause();
+              video.removeAttribute('src');
+              video.load();
+              video.remove();
+              URL.revokeObjectURL(createdUrl);
+              objectUrl = null;
+              return;
+            }
+
             cache.add(src, texture, video, createdUrl);
 
             // Seek to the start to guarantee the first frame is fully decoded
@@ -560,23 +650,52 @@ export const useViewportMediaCache = ({
             video.currentTime = 0;
           } else if (isExrFileLike(assetBlob, getBlobName(assetBlob))) {
             const texture = await createExrTexture(assetBlob, { cacheKey: src });
+            if (cacheGeneration !== cacheGenerationRef.current) {
+              disposeUncachedTexture(texture);
+              return;
+            }
             cache.add(src, texture, undefined, undefined, frameIndex);
             bumpMediaUpdateTrigger();
           } else {
-            const createdUrl = URL.createObjectURL(blob);
-            objectUrl = createdUrl;
-            const texture = await new Promise<THREE.Texture>((resolve, reject) => {
-              textureLoaderRef.current.load(
-                createdUrl,
-                (tex) => {
-                  configureRawStraightAlphaTexture(tex);
-                  resolve(tex);
-                },
-                undefined,
-                (error) => reject(error),
-              );
-            });
-            cache.add(src, texture, undefined, createdUrl, frameIndex);
+            const region = getAssetReadRegion(src);
+            let texture: THREE.Texture | null = null;
+            if (region && typeof createImageBitmap === 'function') {
+              try {
+                texture = await createViewportRegionBitmapTexture({
+                  blob,
+                  region,
+                  fullSize: {
+                    width: sceneNode?.width ?? region.width,
+                    height: sceneNode?.height ?? region.height,
+                  },
+                });
+              } catch (error) {
+                console.warn('Region decode failed; using the full-frame image reader.', error);
+              }
+            }
+
+            if (!texture) {
+              const createdUrl = URL.createObjectURL(blob);
+              objectUrl = createdUrl;
+              texture = await new Promise<THREE.Texture>((resolve, reject) => {
+                textureLoaderRef.current.load(
+                  createdUrl,
+                  (tex) => {
+                    configureRawStraightAlphaTexture(tex);
+                    resolve(tex);
+                  },
+                  undefined,
+                  (error) => reject(error),
+                );
+              });
+            }
+            if (cacheGeneration !== cacheGenerationRef.current) {
+              disposeUncachedTexture(texture);
+              if (objectUrl) URL.revokeObjectURL(objectUrl);
+              objectUrl = null;
+              return;
+            }
+            cache.add(src, texture, undefined, objectUrl ?? undefined, frameIndex);
             bumpMediaUpdateTrigger();
           }
         } catch (error) {
@@ -585,7 +704,9 @@ export const useViewportMediaCache = ({
           }
           console.error('Failed to load asset into viewport cache:', src, error);
         } finally {
-          pendingLoadsRef.current.delete(src);
+          if (pendingLoadsRef.current.get(src) === pendingLoad) {
+            pendingLoadsRef.current.delete(src);
+          }
           bumpMediaUpdateTrigger();
         }
       })();
@@ -594,7 +715,7 @@ export const useViewportMediaCache = ({
       bumpMediaUpdateTrigger();
       await pendingLoad;
     },
-    [bumpMediaUpdateTrigger, captureVideoFrame],
+    [bumpMediaUpdateTrigger, captureVideoFrame, getAssetReadRegion, sceneNode],
   );
 
   const requestVideoFrame = useCallback(
@@ -639,6 +760,7 @@ export const useViewportMediaCache = ({
       nextVideoDecodeWindowIdRef.current += 1;
 
       const pendingLoad = (async () => {
+        const cacheGeneration = cacheGenerationRef.current;
         try {
           let session = videoDecodeSessionsRef.current.get(src);
           if (!session || session.disposed) {
@@ -717,14 +839,12 @@ export const useViewportMediaCache = ({
 
               if (textureCacheRef.current.has(targetKey)) continue;
 
-              const canvas = document.createElement('canvas');
-              canvas.width = video.videoWidth;
-              canvas.height = video.videoHeight;
-              const ctx = canvas.getContext('2d');
-              if (!ctx) return;
-
-              ctx.drawImage(video, 0, 0);
-              const frameTex = configureRawStraightAlphaTexture(new THREE.CanvasTexture(canvas));
+              const frameTex = createVideoFrameTexture(video, getAssetReadRegion(src));
+              if (!frameTex) return;
+              if (cacheGeneration !== cacheGenerationRef.current) {
+                disposeUncachedTexture(frameTex);
+                return;
+              }
               textureCacheRef.current.add(targetKey, frameTex, undefined, undefined, targetFrame);
               bumpMediaUpdateTrigger();
             }
@@ -767,6 +887,7 @@ export const useViewportMediaCache = ({
       backgroundPrefetchFrameWindow,
       bumpMediaUpdateTrigger,
       cancelStaleQueuedVideoWindowsForSrc,
+      getAssetReadRegion,
       getVideoFrameKey,
       isCurrentFrameInPendingVideoArea,
       promoteQueuedVideoWindow,
@@ -860,18 +981,14 @@ export const useViewportMediaCache = ({
 
   useEffect(() => {
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
-    let previousMediaNode: AnyNode | null = null;
 
     nodes.forEach((node) => {
-      const fallbackSourceNode = previousMediaNode;
       const inputs = (node as { inputs?: Record<string, string> }).inputs;
 
       getInputPorts(node).forEach((port) => {
         if (!isTextureBearingInputPort(port)) return;
 
-        const sourceNode =
-          (inputs?.[port.name] ? nodesById.get(inputs[port.name]) : undefined) ??
-          (fallbackSourceNode && isTemporalInputPort(port) ? fallbackSourceNode : undefined);
+        const sourceNode = inputs?.[port.name] ? nodesById.get(inputs[port.name]) : undefined;
         if (!sourceNode) return;
         const absoluteUniformValue = getNumericUniformValue(node, port.absoluteFrameUniform);
         const relativeUniformValue = getNumericUniformValue(node, port.frameOffsetUniform);
@@ -909,10 +1026,6 @@ export const useViewportMediaCache = ({
 
         loadAsset(sequenceNode.frames[frameIndex], frameIndex);
       });
-
-      if (nodeFlags(node.type).isMediaNode) {
-        previousMediaNode = node;
-      }
     });
   }, [currentFrame, getSequenceFrameIndex, loadAsset, nodes, requestVideoFrame]);
 

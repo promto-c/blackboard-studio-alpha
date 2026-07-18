@@ -8,32 +8,67 @@ import {
 } from '@/utils/rotoMotionBlur';
 import { type RotoPointWeightMode } from '@/utils/rotoPointWeights';
 import { createRotoMaskLayers } from '@/utils/rotoMaskTexture';
-import { resolveViewportRotoMaskRasterSize } from '@/utils/rotoPreviewQuality';
+import { resolvePreviewRasterSize } from '@/utils/previewPerformance';
 
 interface RotoMaskEntry {
   width: number;
   height: number;
   node: RotoNode;
   frame: number;
-  interactive: boolean;
+  optimized: boolean;
   motionBlurSampleCount: number;
   pointWeightMode: RotoPointWeightMode;
-  textureCache: Map<string, THREE.CanvasTexture>;
+  textureCaches: Map<string, Map<string, THREE.CanvasTexture>>;
   maskLayers: RendererMaskLayer[];
   dispose: () => void;
 }
+
+const MAX_ROTO_RASTER_CACHE_VARIANTS = 3;
+
+const getRotoTextureCache = (entry: RotoMaskEntry | undefined, width: number, height: number) => {
+  const textureCaches = entry?.textureCaches ?? new Map();
+  const sizeKey = `${width}x${height}`;
+  const cached = textureCaches.get(sizeKey);
+
+  if (cached) {
+    // Refresh insertion order so the least recently used raster size is evicted.
+    textureCaches.delete(sizeKey);
+    textureCaches.set(sizeKey, cached);
+    return { textureCaches, textureCache: cached };
+  }
+
+  if (textureCaches.size >= MAX_ROTO_RASTER_CACHE_VARIANTS) {
+    const oldest = textureCaches.entries().next().value as
+      | [string, Map<string, THREE.CanvasTexture>]
+      | undefined;
+    if (oldest) {
+      oldest[1].forEach((texture) => texture.dispose());
+      textureCaches.delete(oldest[0]);
+    }
+  }
+
+  const textureCache = new Map<string, THREE.CanvasTexture>();
+  textureCaches.set(sizeKey, textureCache);
+  return { textureCaches, textureCache };
+};
+
+const disposeRotoTextureCaches = (textureCaches: Map<string, Map<string, THREE.CanvasTexture>>) => {
+  textureCaches.forEach((textureCache) => {
+    textureCache.forEach((texture) => texture.dispose());
+  });
+  textureCaches.clear();
+};
 
 interface UseViewportRotoMasksOptions {
   nodes: AnyNode[];
   sceneNode?: SceneNode;
   viewportSize: { width: number; height: number };
   currentFrame: number;
-  interactiveMotionBlurPreviewEnabled: boolean;
-  interactiveMotionBlurPreviewActive: boolean;
-  interactiveNodeId: string | null;
-  interactiveMaxDimension: number;
-  interactiveMotionBlurPreviewSamples: number;
-  temporalPreviewActive?: boolean;
+  optimizedPreviewActive: boolean;
+  editingPreviewActive: boolean;
+  editingNodeId: string | null;
+  maxDimension: number;
+  sampleLimit: number;
   rotoPointWeightMode: RotoPointWeightMode;
   suspendMaskUpdatesWhileEditing: boolean;
   reportPrepareDuration?: (durationMs: number) => void;
@@ -45,12 +80,11 @@ export const useViewportRotoMasks = ({
   sceneNode,
   viewportSize,
   currentFrame,
-  interactiveMotionBlurPreviewEnabled,
-  interactiveMotionBlurPreviewActive,
-  interactiveNodeId,
-  interactiveMaxDimension,
-  interactiveMotionBlurPreviewSamples,
-  temporalPreviewActive = false,
+  optimizedPreviewActive,
+  editingPreviewActive,
+  editingNodeId,
+  maxDimension,
+  sampleLimit,
   rotoPointWeightMode,
   suspendMaskUpdatesWhileEditing,
   reportPrepareDuration,
@@ -69,16 +103,13 @@ export const useViewportRotoMasks = ({
     let requiresMediaUpdate = false;
 
     rotoNodes.forEach((node) => {
-      const isInteractiveNode =
-        interactiveMotionBlurPreviewEnabled &&
-        interactiveMotionBlurPreviewActive &&
-        node.id === interactiveNodeId;
-      const isProxyNode = isInteractiveNode || temporalPreviewActive;
-      const rasterSize = resolveViewportRotoMaskRasterSize(
+      const isEditingNode = editingPreviewActive && node.id === editingNodeId;
+      const isProxyNode = optimizedPreviewActive && (!editingPreviewActive || isEditingNode);
+      const rasterSize = resolvePreviewRasterSize(
         sceneNode,
         viewportSize,
         isProxyNode,
-        interactiveMaxDimension,
+        maxDimension,
       );
       const motionBlur = resolveRotoMotionBlurSettings(node.motionBlur);
       const motionBlurEnabled = motionBlur.enabled && motionBlur.shutter > 0;
@@ -86,7 +117,7 @@ export const useViewportRotoMasks = ({
         ? resolveRotoMotionBlurPreviewSamples(motionBlur.samples, {
             interactivePreviewEnabled: isProxyNode,
             interactivePreviewActive: isProxyNode,
-            interactivePreviewSamples: interactiveMotionBlurPreviewSamples,
+            interactivePreviewSamples: sampleLimit,
           })
         : 1;
       const entry = rotoMaskTexturesRef.current.get(node.id);
@@ -94,7 +125,7 @@ export const useViewportRotoMasks = ({
         !entry || entry.width !== rasterSize.width || entry.height !== rasterSize.height;
       // When the viewer is ignoring alpha entirely, keep the last matte texture
       // until the interaction ends instead of burning time on invisible updates.
-      const shouldReuseFrozenMask = suspendMaskUpdatesWhileEditing && isInteractiveNode && !!entry;
+      const shouldReuseFrozenMask = suspendMaskUpdatesWhileEditing && isEditingNode && !!entry;
 
       if (shouldReuseFrozenMask) {
         nextMasks.set(node.id, entry);
@@ -106,7 +137,7 @@ export const useViewportRotoMasks = ({
         !needsResize &&
         entry.node === node &&
         entry.frame === currentFrame &&
-        entry.interactive === isProxyNode &&
+        entry.optimized === isProxyNode &&
         entry.motionBlurSampleCount === descriptorSampleCount &&
         entry.pointWeightMode === rotoPointWeightMode;
       if (canReuse) {
@@ -118,17 +149,17 @@ export const useViewportRotoMasks = ({
         entry &&
         entry.node === node &&
         entry.frame === currentFrame &&
-        (entry.interactive !== isProxyNode ||
+        (entry.optimized !== isProxyNode ||
           entry.motionBlurSampleCount !== descriptorSampleCount ||
           entry.pointWeightMode !== rotoPointWeightMode)
       ) {
         requiresMediaUpdate = true;
       }
-      const textureCache =
-        entry && !needsResize ? entry.textureCache : new Map<string, THREE.CanvasTexture>();
-      if (entry && needsResize) {
-        entry.dispose();
-      }
+      const { textureCaches, textureCache } = getRotoTextureCache(
+        entry,
+        rasterSize.width,
+        rasterSize.height,
+      );
       const maskLayers = createRotoMaskLayers(node, sceneNode, currentFrame, {
         width: rasterSize.width,
         height: rasterSize.height,
@@ -144,12 +175,12 @@ export const useViewportRotoMasks = ({
         height: rasterSize.height,
         node,
         frame: currentFrame,
-        interactive: isProxyNode,
+        optimized: isProxyNode,
         motionBlurSampleCount: descriptorSampleCount,
         pointWeightMode: rotoPointWeightMode,
-        textureCache,
+        textureCaches,
         maskLayers,
-        dispose: () => textureCache.forEach((texture) => texture.dispose()),
+        dispose: () => disposeRotoTextureCaches(textureCaches),
       };
       nextMasks.set(node.id, nextEntry);
     });
@@ -168,12 +199,11 @@ export const useViewportRotoMasks = ({
     currentFrame,
     sceneNode,
     viewportSize,
-    interactiveMotionBlurPreviewEnabled,
-    interactiveMotionBlurPreviewActive,
-    interactiveNodeId,
-    interactiveMaxDimension,
-    interactiveMotionBlurPreviewSamples,
-    temporalPreviewActive,
+    optimizedPreviewActive,
+    editingPreviewActive,
+    editingNodeId,
+    maxDimension,
+    sampleLimit,
     rotoPointWeightMode,
     suspendMaskUpdatesWhileEditing,
     reportPrepareDuration,

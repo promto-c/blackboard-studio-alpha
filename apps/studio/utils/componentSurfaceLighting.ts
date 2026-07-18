@@ -1,5 +1,5 @@
 const GLASS_SURFACE_SELECTOR =
-  '.bb-control-button, .bb-dropdown-surface, .bb-control-input, .bb-control-well, .bb-segmented-surface-button';
+  '.bb-control-button, .bb-dropdown-surface, .bb-control-input, .bb-control-well, .bb-segmented-surface-button, .compare-slot-swap';
 
 type GlassEdge = 'top' | 'right' | 'bottom' | 'left';
 

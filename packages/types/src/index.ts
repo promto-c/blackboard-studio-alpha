@@ -18,8 +18,11 @@ export const NodeType = {
   IMAGE_SEQUENCE: 'image_sequence',
   TEXT: 'text',
   MERGE: 'merge',
+  MASKED_MERGE: 'masked_merge',
   EXTRACT_CHANNELS: 'extract_channels',
   MERGE_CHANNELS: 'merge_channels',
+  PREMULTIPLY: 'premultiply',
+  UNPREMULTIPLY: 'unpremultiply',
   GRADE: 'grade',
   BLUR: 'blur',
   REFORMAT: 'reformat',
@@ -34,6 +37,7 @@ export const NodeType = {
   ROTO: 'roto',
   PAINT: 'paint',
   KEYER: 'keyer',
+  MATTE_CONTROL: 'matte_control',
   WARP: 'warp',
   COMFY: 'comfy',
   ONNX_MODEL: 'onnx_model',
@@ -41,6 +45,7 @@ export const NodeType = {
   OCIO_NAMED_TRANSFORM: 'ocio_named_transform',
   OCIO_FILE_TRANSFORM: 'ocio_file_transform',
   OCIO_LOOK_TRANSFORM: 'ocio_look_transform',
+  FEATURE_MATCH: 'feature_match',
   NOTE: 'note',
 } as const;
 
@@ -686,7 +691,6 @@ export interface BaseNode {
   enabled: boolean;
   inputs?: NodeInputs;
   inputSourcePorts?: NodeInputSourcePorts;
-  stacked?: boolean;
 }
 
 export interface SceneNode extends BaseNode {
@@ -723,6 +727,13 @@ export interface GroupExternalInput {
   targetPort: string;
 }
 
+/** A child-node property surfaced directly in a Group node's inspector. */
+export interface GroupExposedField {
+  id: string;
+  targetNodeId: NodeId;
+  targetPath: string;
+}
+
 export interface GroupNode extends BaseNode {
   kind?: typeof NodeKind.GROUP;
   type: typeof NodeType.GROUP;
@@ -730,6 +741,7 @@ export interface GroupNode extends BaseNode {
   inputNodeId?: NodeId | null;
   outputNodeId?: NodeId | null;
   externalInputs?: GroupExternalInput[];
+  exposedFields?: GroupExposedField[];
 }
 
 export interface InputNode extends BaseNode {
@@ -821,10 +833,28 @@ export interface TextNode extends EffectNode {
   operator: BlendMode;
 }
 
-export interface MergeNode extends EffectNode {
-  type: typeof NodeType.MERGE;
+export interface MergeSettings {
   opacity: AnimatableNumber;
   operator: BlendMode;
+}
+
+export interface MergeNode extends EffectNode, MergeSettings {
+  type: typeof NodeType.MERGE;
+}
+
+export const AlphaMergeOperation = {
+  REPLACE: 'replace',
+  UNION: 'union',
+  SUBTRACT: 'subtract',
+  INTERSECT: 'intersect',
+} as const;
+
+export type AlphaMergeOperation = (typeof AlphaMergeOperation)[keyof typeof AlphaMergeOperation];
+
+export interface MaskedMergeNode extends EffectNode {
+  type: typeof NodeType.MASKED_MERGE;
+  mix: AnimatableNumber;
+  alphaOperation: AlphaMergeOperation;
 }
 
 export interface Scene3DNode extends EffectNode {
@@ -839,6 +869,16 @@ export interface ExtractChannelsNode extends EffectNode {
 
 export interface MergeChannelsNode extends EffectNode {
   type: typeof NodeType.MERGE_CHANNELS;
+}
+
+export interface PremultiplyNode extends EffectNode {
+  type: typeof NodeType.PREMULTIPLY;
+  uniforms: Record<string, AnyUniform>;
+}
+
+export interface UnpremultiplyNode extends EffectNode {
+  type: typeof NodeType.UNPREMULTIPLY;
+  uniforms: Record<string, AnyUniform>;
 }
 
 export interface GradeNode extends EffectNode {
@@ -1215,6 +1255,19 @@ export interface KeyerNode extends EffectNode {
   matteOverlayWhileAdjusting: boolean;
 }
 
+export interface MatteControlSettings {
+  erodeDilate: AnimatableNumber;
+  edgeBlur: AnimatableNumber;
+  clampBlack: AnimatableNumber;
+  clampWhite: AnimatableNumber;
+  invert: boolean;
+}
+
+export interface MatteControlNode extends EffectNode {
+  type: typeof NodeType.MATTE_CONTROL;
+  matteControl: MatteControlSettings;
+}
+
 export interface WarpPin {
   id: string;
   position: { x: number; y: number };
@@ -1226,6 +1279,35 @@ export interface WarpNode extends EffectNode {
   pins: WarpPin[];
   radius: AnimatableNumber;
   strength: AnimatableNumber;
+}
+
+export interface FeatureMatchSettings {
+  model: MatchMoveSolveModel;
+  ransacThreshold: number;
+  maxFeatures: number;
+  minFeatureDistance: number;
+  featureQuality: number;
+  patchSize: number;
+  maxTrackError: number;
+}
+
+export interface FeatureMatchResult {
+  status: 'idle' | 'solved' | 'failed';
+  message?: string;
+  matrix: number[][]; // 3x3 row-major transform (source→reference mapping)
+  invMatrix: number[][]; // 3x3 row-major inverse (reference→source for warp)
+  model: MatchMoveSolveModel;
+  inliers: number;
+  totalPoints: number;
+  residual: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
+}
+
+export interface FeatureMatchNode extends EffectNode {
+  type: typeof NodeType.FEATURE_MATCH;
+  settings: FeatureMatchSettings;
+  result: FeatureMatchResult;
 }
 
 export type MatchMoveMode = 'track_2d' | 'planar' | 'camera_3d';
@@ -1371,6 +1453,8 @@ export interface ComfyWorkflowInputCandidate {
   nodeId: string;
   nodeType: string;
   inputName: string;
+  /** ComfyUI socket type (for example IMAGE, MASK, or VIDEO). */
+  inputType?: string;
   label: string;
   scope?: ComfyWorkflowCandidateScope;
   promptTargets?: Array<{ nodeId: string; inputName: string }>;
@@ -1734,9 +1818,12 @@ export type AnyEffectNode =
   | ImageSequenceNode
   | TextNode
   | MergeNode
+  | MaskedMergeNode
   | Scene3DNode
   | ExtractChannelsNode
   | MergeChannelsNode
+  | PremultiplyNode
+  | UnpremultiplyNode
   | GradeNode
   | BlurNode
   | ReformatNode
@@ -1750,6 +1837,7 @@ export type AnyEffectNode =
   | RotoNode
   | PaintNode
   | KeyerNode
+  | MatteControlNode
   | WarpNode
   | MatchMoveNode
   | ComfyNode
@@ -1758,6 +1846,7 @@ export type AnyEffectNode =
   | OcioNamedTransformNode
   | OcioFileTransformNode
   | OcioLookTransformNode
+  | FeatureMatchNode
   | NoteNode;
 
 export type AnyNode = SceneNode | OutputNode | GroupNode | InputNode | AnyEffectNode;
@@ -1773,6 +1862,7 @@ export interface FlowEdge {
 export interface FlowStack {
   id: RelationshipId;
   rootNodeId: NodeId;
+  /** Ordered node ids compacted into one card in graph/list presentation. */
   nodeIds: NodeId[];
 }
 
@@ -1796,6 +1886,23 @@ export interface ViewerSettings {
   lastCustomGain: number;
   lastCustomGamma: number;
   lastCustomSaturation: number;
+}
+
+/** A rectangle stored relative to the project display window. */
+export interface NormalizedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Session-level Region of Interest used to limit interactive viewport work.
+ * It is deliberately separate from graph crop nodes and export settings.
+ */
+export interface ViewportWorkingArea {
+  enabled: boolean;
+  rect: NormalizedRect;
 }
 
 export type OpenExrOutputPresetId = 'acescg_half' | 'aces2065_1_float';
@@ -1926,6 +2033,7 @@ export type EditorStateSlice = Partial<{
   viewerSlots: ViewerSlotAssignments;
   activeViewerSlot: ViewerSlot | null;
   viewerSettings: ViewerSettings;
+  viewportWorkingArea: ViewportWorkingArea;
   renderSettings: RenderSettings;
   isPlaying: boolean;
   currentFrame: number;

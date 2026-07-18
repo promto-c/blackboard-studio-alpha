@@ -25,8 +25,10 @@ export interface ViewportSvgOverlaysProps {
 
   /** Display window bounding rect (null when not available). */
   displayWindowRect: { x: number; y: number; width: number; height: number } | null;
-  /** Data window rect for the selected node (null when not available). */
+  /** The single data window to show for the selected node. */
   dataWindowRect: DataWindowRect | null;
+  /** Strong for node-handled output bboxes; soft for inherited input bboxes. */
+  dataWindowStyle: 'handled' | 'inherited';
   /** Selected node (undefined when nothing selected). */
   selectedNode: AnyNode | undefined;
 
@@ -48,6 +50,7 @@ export function ViewportSvgOverlays({
   visualFrame,
   displayWindowRect,
   dataWindowRect,
+  dataWindowStyle,
   stabilizationMatrix,
 }: ViewportSvgOverlaysProps) {
   /** Transform absolute scene corners through the stabilization matrix. */
@@ -97,14 +100,18 @@ export function ViewportSvgOverlays({
         />
       )}
 
-      {/* Data Window border (amber/dashed) */}
-      {viewerSettings.showOverlays && dataWindowRect && dataWindowRect.width > 150 && (
-        <DataWindowBorderPolygon
-          rect={dataWindowRect}
-          stabilizeBboxCorners={stabilizeBboxCorners}
-          zoom={zoom}
-        />
-      )}
+      {/* Single selected-node data window: strong when handled, soft when inherited. */}
+      {viewerSettings.showOverlays &&
+        dataWindowRect &&
+        dataWindowRect.width > 0 &&
+        dataWindowRect.height > 0 && (
+          <DataWindowBorderPolygon
+            rect={dataWindowRect}
+            stabilizeBboxCorners={stabilizeBboxCorners}
+            zoom={zoom}
+            style={dataWindowStyle}
+          />
+        )}
 
       {/* Direct SVG overlays (absolute scene coordinates, outside <g>) */}
       {selectedNode && (
@@ -158,6 +165,7 @@ function DataWindowBorderPolygon({
   rect,
   stabilizeBboxCorners,
   zoom,
+  style,
 }: {
   rect: DataWindowRect;
   stabilizeBboxCorners: (
@@ -167,18 +175,23 @@ function DataWindowBorderPolygon({
     h: number,
   ) => { x: number; y: number }[] | null;
   zoom: number;
+  style: 'handled' | 'inherited';
 }) {
   const pts = stabilizeBboxCorners(rect.x, rect.y, rect.width, rect.height)
     ?.map((p) => `${p.x},${p.y}`)
     .join(' ');
   if (!pts) return null;
+  const isInherited = style === 'inherited';
   return (
     <polygon
+      data-data-window={style}
       points={pts}
       fill="none"
-      stroke="rgb(251 191 36 / 0.8)"
+      stroke={isInherited ? 'rgb(251 191 36 / 0.32)' : 'rgb(251 191 36 / 0.8)'}
       strokeWidth={2 / zoom}
       strokeDasharray={`${6 / zoom} ${4 / zoom}`}
-    />
+    >
+      <title>Data window</title>
+    </polygon>
   );
 }

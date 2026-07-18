@@ -1,4 +1,9 @@
-import { getValueAtFrame } from '@blackboard/renderer';
+import {
+  getValueAtFrame,
+  type RendererDataWindowPlan,
+  type RendererNodeDataWindow,
+  type RenderWindowRect,
+} from '@blackboard/renderer';
 import type {
   AnimatableNumber,
   AnyNode,
@@ -48,10 +53,11 @@ export interface DataWindowRect {
   nativeHeight: number;
 }
 
-export interface DataWindowProjection {
+export interface DataWindowProjection extends RendererDataWindowPlan {
   inputs: Map<string, DataWindowRect>;
   outputs: Map<string, DataWindowRect>;
-  displayWindow: Pick<SceneNode, 'width' | 'height'>;
+  /** Nodes that explicitly create, combine, or spatially modify their output data window. */
+  handledDataWindowNodeIds: Set<string>;
 }
 
 type Bounds = Pick<DataWindowRect, 'x' | 'y' | 'width' | 'height'>;
@@ -70,6 +76,34 @@ const fullDisplayWindow = (displayWindow: Pick<SceneNode, 'width' | 'height'>): 
     { x: 0, y: 0, width: displayWindow.width, height: displayWindow.height },
     { x: 0, y: 0, width: displayWindow.width, height: displayWindow.height },
   );
+
+const emptyDataWindow = (): DataWindowRect =>
+  toRect({ x: 0, y: 0, width: 0, height: 0 }, { x: 0, y: 0, width: 0, height: 0 });
+
+const getWindowKey = (window: Pick<SceneNode, 'width' | 'height'>): string =>
+  `${window.width}x${window.height}`;
+
+const getCenteredStorageWindow = (
+  displayWindow: Pick<SceneNode, 'width' | 'height'>,
+  bounds: Bounds,
+): RenderWindowRect => {
+  const horizontalPadding = Math.max(
+    0,
+    Math.ceil(-bounds.x),
+    Math.ceil(bounds.x + bounds.width - displayWindow.width),
+  );
+  const verticalPadding = Math.max(
+    0,
+    Math.ceil(-bounds.y),
+    Math.ceil(bounds.y + bounds.height - displayWindow.height),
+  );
+  return {
+    x: horizontalPadding === 0 ? 0 : -horizontalPadding,
+    y: verticalPadding === 0 ? 0 : -verticalPadding,
+    width: displayWindow.width + horizontalPadding * 2,
+    height: displayWindow.height + verticalPadding * 2,
+  };
+};
 
 const normalizeBounds = (bounds: Bounds): Bounds => {
   const x = bounds.width < 0 ? bounds.x + bounds.width : bounds.x;
@@ -112,10 +146,10 @@ const isSourceDataWindowNode = (node: unknown): node is SourceDataWindowNode => 
     | undefined;
   return (
     !!transform &&
-    isFiniteNumber(transform.x) &&
-    isFiniteNumber(transform.y) &&
-    isFiniteNumber(transform.scaleX) &&
-    isFiniteNumber(transform.scaleY)
+    (isFiniteNumber(transform.x) || Array.isArray(transform.x)) &&
+    (isFiniteNumber(transform.y) || Array.isArray(transform.y)) &&
+    (isFiniteNumber(transform.scaleX) || Array.isArray(transform.scaleX)) &&
+    (isFiniteNumber(transform.scaleY) || Array.isArray(transform.scaleY))
   );
 };
 
@@ -378,61 +412,141 @@ export const getDataWindowProjection = (
 ): DataWindowProjection => {
   const inputs = new Map<string, DataWindowRect>();
   const outputs = new Map<string, DataWindowRect>();
-  let displayWindow = getInitialDisplayWindow(sceneNode, nodes);
-  let currentPipe: DataWindowRect | null = null;
+  const handledDataWindowNodeIds = new Set<string>();
+  const initialDisplayWindow = getInitialDisplayWindow(sceneNode, nodes);
+  let displayWindow = initialDisplayWindow;
+  const provisionalNodeWindows = new Map<
+    string,
+    Omit<RendererNodeDataWindow, 'inputStorageWindow' | 'outputStorageWindow'>
+  >();
 
   for (const node of nodes) {
     if (node.enabled === false || node.type === NodeType.SCENE || node.type === NodeType.OUTPUT) {
       continue;
     }
 
-    const input =
-      getExplicitPipeInput(node, outputs) ?? currentPipe ?? fullDisplayWindow(displayWindow);
+    const explicitPipeInput = getExplicitPipeInput(node, outputs);
+    const input = explicitPipeInput ?? emptyDataWindow();
+    const inputDisplayWindow = { ...displayWindow };
     inputs.set(node.id, input);
 
     let output: DataWindowRect;
+    let handlesDataWindow = false;
     if (isComfyDataWindowNode(node)) {
+      handlesDataWindow = true;
       const comfyRect = getComfyDataWindowRect(displayWindow, node, frame);
       if (comfyRect) {
-        output = comfyRect;
-        const compositedBounds = unionBounds(currentPipe, comfyRect) ?? comfyRect;
-        currentPipe = toRect(compositedBounds, compositedBounds);
+        const compositedBounds = unionBounds(explicitPipeInput, comfyRect) ?? comfyRect;
+        output = toRect(compositedBounds, comfyRect);
       } else if (
         (node.generatedOutputs ?? []).some((generatedOutput) => !generatedOutput.deletedAt)
       ) {
         output = input;
-        currentPipe = output;
       } else if (isSourceDataWindowNode(node)) {
         const sourceRect = getSourceDataWindowRect(displayWindow, node, frame);
-        output = sourceRect;
-        const compositedBounds = unionBounds(currentPipe, sourceRect) ?? sourceRect;
-        currentPipe = toRect(compositedBounds, compositedBounds);
+        const compositedBounds = unionBounds(explicitPipeInput, sourceRect) ?? sourceRect;
+        output = toRect(compositedBounds, sourceRect);
       } else {
         output = input;
-        currentPipe = output;
       }
     } else if (isSourceDataWindowNode(node)) {
+      handlesDataWindow = true;
       const sourceRect = getSourceDataWindowRect(displayWindow, node, frame);
-      output = sourceRect;
-      const compositedBounds = unionBounds(currentPipe, sourceRect) ?? sourceRect;
-      currentPipe = toRect(compositedBounds, compositedBounds);
+      const compositedBounds = unionBounds(explicitPipeInput, sourceRect) ?? sourceRect;
+      output = toRect(compositedBounds, sourceRect);
     } else if (isCropDataWindowNode(node)) {
+      handlesDataWindow = true;
       output = getCropDataWindowRect(displayWindow, node, frame, input);
-      currentPipe = output;
     } else if (isTransformDataWindowNode(node)) {
+      handlesDataWindow = true;
       output = getTransformDataWindowRect(displayWindow, node, frame, input);
-      currentPipe = output;
     } else if (isReformatDataWindowNode(node)) {
+      handlesDataWindow = true;
       output = getReformatDataWindowRect(displayWindow, node, input);
       displayWindow = { width: node.width, height: node.height };
-      currentPipe = output;
+    } else if (
+      node.type === NodeType.MERGE ||
+      node.type === NodeType.MASKED_MERGE ||
+      node.type === NodeType.MERGE_CHANNELS
+    ) {
+      handlesDataWindow = true;
+      const connectedBounds = Object.values(node.inputs ?? {}).reduce<Bounds | null>(
+        (bounds, inputNodeId) => unionBounds(bounds, outputs.get(inputNodeId) ?? null),
+        null,
+      );
+      const mergedBounds = unionBounds(input, connectedBounds) ?? input;
+      output = toRect(mergedBounds, mergedBounds);
     } else {
       output = input;
-      currentPipe = output;
     }
 
     outputs.set(node.id, output);
+    if (handlesDataWindow) handledDataWindowNodeIds.add(node.id);
+    provisionalNodeWindows.set(node.id, {
+      inputDisplayWindow,
+      outputDisplayWindow: { ...displayWindow },
+      inputDataWindow: input,
+      outputDataWindow: output,
+    });
   }
 
-  return { inputs, outputs, displayWindow };
+  const segmentBounds = new Map<string, Bounds>();
+  const includeSegmentBounds = (window: Pick<SceneNode, 'width' | 'height'>, bounds: Bounds) => {
+    const key = getWindowKey(window);
+    const displayBounds = { x: 0, y: 0, width: window.width, height: window.height };
+    const renderableBounds = bounds.width > 0 && bounds.height > 0 ? bounds : null;
+    segmentBounds.set(
+      key,
+      unionBounds(unionBounds(segmentBounds.get(key) ?? null, displayBounds), renderableBounds) ??
+        displayBounds,
+    );
+  };
+
+  provisionalNodeWindows.forEach((window) => {
+    includeSegmentBounds(window.inputDisplayWindow, window.inputDataWindow);
+    includeSegmentBounds(window.outputDisplayWindow, window.outputDataWindow);
+  });
+
+  const storageWindows = new Map<string, RenderWindowRect>();
+  provisionalNodeWindows.forEach((window) => {
+    for (const display of [window.inputDisplayWindow, window.outputDisplayWindow]) {
+      const key = getWindowKey(display);
+      if (!storageWindows.has(key)) {
+        const bounds = segmentBounds.get(key) ?? {
+          x: 0,
+          y: 0,
+          width: display.width,
+          height: display.height,
+        };
+        storageWindows.set(key, getCenteredStorageWindow(display, bounds));
+      }
+    }
+  });
+
+  const nodeWindows = new Map<string, RendererNodeDataWindow>();
+  provisionalNodeWindows.forEach((window, nodeId) => {
+    nodeWindows.set(nodeId, {
+      ...window,
+      inputStorageWindow:
+        storageWindows.get(getWindowKey(window.inputDisplayWindow)) ??
+        getCenteredStorageWindow(window.inputDisplayWindow, window.inputDataWindow),
+      outputStorageWindow:
+        storageWindows.get(getWindowKey(window.outputDisplayWindow)) ??
+        getCenteredStorageWindow(window.outputDisplayWindow, window.outputDataWindow),
+    });
+  });
+
+  const storageWindow =
+    storageWindows.get(getWindowKey(displayWindow)) ??
+    getCenteredStorageWindow(displayWindow, fullDisplayWindow(displayWindow));
+
+  return {
+    inputs,
+    outputs,
+    handledDataWindowNodeIds,
+    nodeWindows,
+    initialDisplayWindow,
+    displayWindow,
+    storageWindow,
+  };
 };

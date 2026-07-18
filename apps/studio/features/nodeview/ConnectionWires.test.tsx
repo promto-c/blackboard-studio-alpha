@@ -1,4 +1,7 @@
+// @vitest-environment jsdom
+
 import React from 'react';
+import { fireEvent, render } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import ConnectionWires from './ConnectionWires';
@@ -116,5 +119,46 @@ describe('ConnectionWires channel colors', () => {
 
     expect(markup).toContain('stroke="#555"');
     expect(markup).toContain('stroke="rgb(var(--color-primary-300))"');
+  });
+
+  it('previews wires crossed by the cut gesture', () => {
+    const markup = renderToStaticMarkup(
+      <ConnectionWires
+        connections={[connection]}
+        portPositions={positions}
+        selectedConnection={null}
+        onSelectConnection={vi.fn()}
+        dragPreview={null}
+        portColors={new Map()}
+        cutPreviewConnectionIds={new Set([connection.id])}
+        isCutGestureArmed
+      />,
+    );
+
+    expect(markup).toContain('cursor:crosshair');
+    expect(markup).toContain('stroke="#f87171"');
+    expect(markup).toContain('stroke-dasharray="5 3"');
+  });
+
+  it('previews a hovered wire while the cut modifier is armed', () => {
+    const view = render(
+      <ConnectionWires
+        connections={[connection]}
+        portPositions={positions}
+        selectedConnection={null}
+        onSelectConnection={vi.fn()}
+        dragPreview={null}
+        portColors={new Map()}
+        isCutGestureArmed
+      />,
+    );
+    const hitTarget = view.container.querySelector<SVGPathElement>('[data-connection-wire]');
+    expect(hitTarget?.getAttribute('data-connection-id')).toBe(connection.id);
+
+    fireEvent.pointerEnter(hitTarget!);
+
+    const visibleWire = view.container.querySelector<SVGPathElement>('[data-wire-role="visible"]');
+    expect(visibleWire?.getAttribute('stroke')).toBe('#f87171');
+    expect(visibleWire?.getAttribute('stroke-dasharray')).toBe('5 3');
   });
 });

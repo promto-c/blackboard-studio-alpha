@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
+import { AlphaMergeOperation, NodeType } from '@blackboard/types';
 import { ColorManagementDefaults, createUserMediaColorManagement } from '@/color-management';
-import { createMediaSourceNode, createSequenceNode } from './graphCommands';
+import { createMediaSourceNode, createNodeCommand, createSequenceNode } from './graphCommands';
+
+describe('graph command node defaults', () => {
+  it('creates Masked Merge with Replace at a full mix', () => {
+    const result = createNodeCommand({ nodes: [], selectedNodeId: null }, NodeType.MASKED_MERGE);
+
+    expect(result?.finalNewNode).toMatchObject({
+      type: NodeType.MASKED_MERGE,
+      mix: 100,
+      alphaOperation: AlphaMergeOperation.REPLACE,
+    });
+  });
+});
 
 describe('graph command media color defaults', () => {
   it('stores structured color assignment metadata on image sources', () => {

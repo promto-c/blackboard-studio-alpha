@@ -245,7 +245,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     });
 
     return {
-      ...createViewportUIActions(set, get),
+      ...createViewportUIActions(set, get, { debouncedSave }),
       ...createViewerActions(set, get, { commitMutation }),
       ...createPlaybackActions(set, get, renderLockRef, { commitMutation }),
       ...createSelectionActions(set, get),

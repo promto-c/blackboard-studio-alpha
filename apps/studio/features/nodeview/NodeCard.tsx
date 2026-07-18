@@ -135,7 +135,7 @@ export function OutputPortDot({
 // --- Helpers ---
 
 function nodeHasBlendInfo(node: AnyNode): boolean {
-  return node.type === NodeType.MERGE;
+  return nodeRegistry.get(node.type)?.renderMode === 'merge';
 }
 
 function getOpacityDisplay(node: AnyNode): string {
@@ -202,6 +202,7 @@ type PortSpec = {
   isReserved?: boolean;
 };
 type OutputPortSpec = {
+  nodeId: string;
   portName: string;
   label: string;
   processingDomain: ColorProcessingDomain;
@@ -212,14 +213,18 @@ const getReservedPortLabel = (portName: string): string => `${portName} (reserve
 
 export function buildStackInputPorts(stack: AnyNode[]) {
   const inputPorts: PortSpec[] = [];
+  const stackNodeIds = new Set(stack.map((node) => node.id));
 
   for (const [nodeIndex, node] of stack.entries()) {
     const declaredPorts = getInputPorts(node);
     const declaredPortNames = new Set(declaredPorts.map((port) => port.name));
+    const pipeSourceNodeId = node.inputs?.pipe;
+    const hasInternalPipe =
+      nodeIndex > 0 && !!pipeSourceNodeId && stackNodeIds.has(pipeSourceNodeId);
 
     // Most processing nodes have a canonical primary pipe. Nodes such as Merge
     // declare it explicitly so its label and ordering remain registry-owned.
-    if (nodeIndex === 0 && usesPipelineInput(node.type) && !declaredPortNames.has('pipe')) {
+    if (!hasInternalPipe && usesPipelineInput(node.type) && !declaredPortNames.has('pipe')) {
       inputPorts.push({
         nodeId: node.id,
         portName: 'pipe',
@@ -229,9 +234,9 @@ export function buildStackInputPorts(stack: AnyNode[]) {
     }
 
     for (const port of declaredPorts) {
-      // A stacked child consumes the previous stack result internally; only
-      // the base node exposes a primary pipe on the outer card.
-      if (port.name === 'pipe' && nodeIndex > 0) continue;
+      // Hide only connections that are actually internal to the compact card.
+      // Externally connected children retain their canonical graph port.
+      if (port.name === 'pipe' && hasInternalPipe) continue;
       inputPorts.push({
         nodeId: node.id,
         portName: port.name,
@@ -260,6 +265,7 @@ function getOutputPortsForNode(node: AnyNode): OutputPortSpec[] {
   if (!outputPorts) {
     return [
       {
+        nodeId: node.id,
         portName: 'output',
         label: 'out',
         processingDomain: getNodeOutputProcessingDomain(node),
@@ -268,12 +274,18 @@ function getOutputPortsForNode(node: AnyNode): OutputPortSpec[] {
   }
   const resolved = typeof outputPorts === 'function' ? outputPorts(node) : outputPorts;
   return resolved.map((port) => ({
+    nodeId: node.id,
     portName: port.name,
     label: port.label,
     processingDomain: getNodeOutputProcessingDomain(node, port.name),
     color: port.color,
   }));
 }
+
+export const buildStackOutputPorts = (stack: AnyNode[]): OutputPortSpec[] => {
+  const outputNode = stack.at(-1);
+  return outputNode ? getOutputPortsForNode(outputNode) : [];
+};
 
 // --- Shared Layout Pieces ---
 
@@ -364,12 +376,15 @@ function InputPorts({
 
 type OutputPortProps = {
   ports: OutputPortSpec[];
-  nodeId: string;
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
-  onOutputPortMouseDown?: (e: React.MouseEvent, sourcePortName: string) => void;
+  onOutputPortMouseDown?: (
+    e: React.MouseEvent,
+    sourceNodeId: string,
+    sourcePortName: string,
+  ) => void;
 };
 
-function OutputPort({ ports, nodeId, registerPortRef, onOutputPortMouseDown }: OutputPortProps) {
+function OutputPort({ ports, registerPortRef, onOutputPortMouseDown }: OutputPortProps) {
   return (
     <div
       className="absolute left-0 right-0 flex justify-center gap-3 pointer-events-auto"
@@ -377,11 +392,11 @@ function OutputPort({ ports, nodeId, registerPortRef, onOutputPortMouseDown }: O
     >
       {ports.map((port) => (
         <OutputPortDot
-          key={port.portName}
-          portRef={(el) => registerPortRef(getOutputPortKey(nodeId, port.portName), el)}
+          key={`${port.nodeId}:${port.portName}`}
+          portRef={(el) => registerPortRef(getOutputPortKey(port.nodeId, port.portName), el)}
           onMouseDown={
             onOutputPortMouseDown
-              ? (event) => onOutputPortMouseDown(event, port.portName)
+              ? (event) => onOutputPortMouseDown(event, port.nodeId, port.portName)
               : undefined
           }
           label={port.label}
@@ -704,7 +719,11 @@ interface StackNodeCardProps {
   onToggleStacking: (nodeId: string) => void;
   canStackNode: (nodeId: string) => boolean;
   onDeleteNode: (nodeId: string) => void;
-  onOutputPortMouseDown: (e: React.MouseEvent, sourcePortName: string) => void;
+  onOutputPortMouseDown: (
+    e: React.MouseEvent,
+    sourceNodeId: string,
+    sourcePortName: string,
+  ) => void;
   registerPortRef: (key: string, el: HTMLDivElement | null) => void;
   activeNodeJobMap: Map<string, BackgroundJob>;
   onExecuteNode?: (nodeId: string) => void;
@@ -743,7 +762,7 @@ export function StackNodeCard({
   const noteNode =
     stack.length === 1 && baseNode.type === NodeType.NOTE ? (baseNode as NoteNode) : null;
   const stackInputPorts = buildStackInputPorts(stack);
-  const outputPorts = getOutputPortsForNode(baseNode);
+  const outputPorts = buildStackOutputPorts(stack);
   const selectedNodeIdSet = React.useMemo(() => new Set(selectedNodeIds), [selectedNodeIds]);
 
   if (noteNode) {
@@ -782,7 +801,6 @@ export function StackNodeCard({
 
       <OutputPort
         ports={outputPorts}
-        nodeId={baseNode.id}
         registerPortRef={registerPortRef}
         onOutputPortMouseDown={onOutputPortMouseDown}
       />

@@ -241,9 +241,7 @@ const PropertiesTab = ({
         {!isStackedInspector && !allSelectedAreRoto ? (
           <SubPanelHeader title={headerTitle} actions={headerActions} />
         ) : null}
-        <div
-          className={`flex flex-1 flex-col ${isStackedInspector ? 'p-1.5' : 'px-1.5 pt-1 pb-1.5'}`}
-        >
+        <div className={`flex flex-1 flex-col ${isStackedInspector ? 'p-1' : ''}`}>
           {allSelectedAreRoto ? (
             <RotoBatchAdjustments nodeIds={selectedNodeIds} />
           ) : (

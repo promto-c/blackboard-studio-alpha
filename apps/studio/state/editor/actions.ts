@@ -75,6 +75,7 @@ export const buildProjectInitState = ({
     viewerNodeId: null,
     viewerSlots: initialState.viewerSlots,
     activeViewerSlot: initialState.activeViewerSlot,
+    viewportWorkingArea: initialState.viewportWorkingArea,
     renderSettings: initialState.renderSettings,
     fps,
     nodePositionsByFlow,

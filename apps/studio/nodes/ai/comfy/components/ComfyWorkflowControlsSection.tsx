@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { Badge, Popover, ScrollArea } from '@blackboard/ui';
+import React, { useState } from 'react';
+import { Badge } from '@blackboard/ui';
 import type { ComfyWorkflow, ComfyWorkflowControl } from '@blackboard/types';
 import {
   CollapsibleSection,
@@ -8,9 +8,8 @@ import {
   ResetIconButton,
   Slider,
   StyledDropdown,
-  TextInput,
 } from '@blackboard/ui';
-import { AttentionPulse, CheckboxIndicator, ToggleSettingRow } from '@/components';
+import { AttentionPulse, ExplicitFieldPicker, ToggleSettingRow } from '@/components';
 import { getPromptSuggestions } from '@/utils/ai';
 import type { ResolvedAiTextRoute } from '@/utils/aiRouting';
 import * as Icons from '@blackboard/icons';
@@ -317,78 +316,35 @@ export function ComfyWorkflowControlsSection({
   onAdvancedControlIdChange,
   onWorkflowPropsKeyDown,
 }: ComfyWorkflowControlsSectionProps) {
-  const [isAddFieldPopoverOpen, setIsAddFieldPopoverOpen] = useState(false);
-  const [fieldSearchQuery, setFieldSearchQuery] = useState('');
-
-  // Reset search when popover opens/closes
-  const handlePopoverOpenChange = (open: boolean) => {
-    if (!open) {
-      setFieldSearchQuery('');
-    }
-    setIsAddFieldPopoverOpen(open);
-  };
-
-  // Candidates not currently shown in the props section
-  const availableCandidates = useMemo(
-    () => controlCandidates.filter((candidate) => !activeControlKeys.has(candidate.key)),
-    [controlCandidates, activeControlKeys],
+  const activeControlsByKey = new Map(
+    activeWorkflowControls.map((control) => [
+      getComfyControlKey(control.nodeId, control.inputName),
+      control,
+    ]),
   );
-
-  const normalizedSearchQuery = fieldSearchQuery.trim().toLowerCase();
-
-  // Filter helper: checks if a candidate matches the search query
-  const matchesSearch = useCallback(
-    (candidate: ComfyWorkflowControlCandidate): boolean => {
-      if (!normalizedSearchQuery) return true;
-      return (
-        candidate.label.toLowerCase().includes(normalizedSearchQuery) ||
-        candidate.classType?.toLowerCase().includes(normalizedSearchQuery) ||
-        candidate.inputName.toLowerCase().includes(normalizedSearchQuery) ||
-        candidate.key.toLowerCase().includes(normalizedSearchQuery) ||
-        String(candidate.nodeId).includes(normalizedSearchQuery)
-      );
-    },
-    [normalizedSearchQuery],
-  );
-
-  // Filter available candidates by search query
-  const filteredAvailableCandidates = useMemo(
-    () => availableCandidates.filter(matchesSearch),
-    [availableCandidates, matchesSearch],
-  );
-
-  // Group filtered candidates for the add-field popover
-  const groupedFilteredCandidates = useMemo(
-    () =>
-      filteredAvailableCandidates.reduce<Record<string, ComfyWorkflowControlCandidate[]>>(
-        (groups, candidate) => {
-          const group = candidate.classType || 'Other';
-          if (!groups[group]) groups[group] = [];
-          groups[group].push(candidate);
-          return groups;
-        },
-        {},
-      ),
-    [filteredAvailableCandidates],
-  );
-
-  // Filter active controls by search query for the "Shown fields" section
-  const filteredActiveControls = useMemo(
-    () =>
-      normalizedSearchQuery
-        ? activeWorkflowControls.filter((control) => {
-            const label = control.label?.toLowerCase() ?? '';
-            const classType = control.classType?.toLowerCase() ?? '';
-            const inputName = control.inputName?.toLowerCase() ?? '';
-            return (
-              label.includes(normalizedSearchQuery) ||
-              classType.includes(normalizedSearchQuery) ||
-              inputName.includes(normalizedSearchQuery)
-            );
-          })
-        : activeWorkflowControls,
-    [activeWorkflowControls, normalizedSearchQuery],
-  );
+  const candidateKeys = new Set(controlCandidates.map((candidate) => candidate.key));
+  const explicitFields = [
+    ...controlCandidates.map((candidate) => ({
+      id: candidate.key,
+      label: candidate.label,
+      selectedLabel: activeControlsByKey.get(candidate.key)?.label,
+      group: candidate.classType || 'Other',
+      detail: `#${candidate.nodeId}`,
+      searchText: `${candidate.inputName} ${candidate.key}`,
+    })),
+    ...activeWorkflowControls
+      .filter(
+        (control) => !candidateKeys.has(getComfyControlKey(control.nodeId, control.inputName)),
+      )
+      .map((control) => ({
+        id: getComfyControlKey(control.nodeId, control.inputName),
+        label: control.label,
+        selectedLabel: control.label,
+        group: control.classType || 'Unavailable field',
+        detail: `#${control.nodeId}`,
+        searchText: `${control.inputName} ${control.id}`,
+      })),
+  ];
 
   return (
     <CollapsibleSection
@@ -396,141 +352,13 @@ export function ComfyWorkflowControlsSection({
       defaultOpen
       action={
         selectedWorkflow ? (
-          <Popover
-            isOpen={isAddFieldPopoverOpen}
-            onOpenChange={handlePopoverOpenChange}
-            align="end"
-            sideOffset={4}
-            widthClass="w-80"
-            trigger={
-              <button
-                type="button"
-                className="inline-flex items-center gap-1.5 rounded-md border border-primary-300/20 bg-primary-300/10 px-2 py-1 text-[10px] font-medium text-primary-100 transition hover:border-primary-300/40 hover:bg-primary-300/15"
-              >
-                <Icons.Plus className="h-3.5 w-3.5" />
-                Fields
-              </button>
-            }
-          >
-            {(closePopover) => (
-              <div
-                className="space-y-2"
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') {
-                    event.stopPropagation();
-                    closePopover();
-                  }
-                }}
-              >
-                {/* Search input */}
-                <div className="relative px-1">
-                  <Icons.MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
-                  <TextInput
-                    value={fieldSearchQuery}
-                    onValueChange={setFieldSearchQuery}
-                    placeholder="Search fields..."
-                    autoFocus
-                    className="pl-7 pr-3"
-                    onPointerDown={(e) => e.stopPropagation()}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-2 px-1">
-                  <span className="text-xs font-medium text-gray-100">
-                    {activeControlKeys.size} shown
-                  </span>
-                  <span className="text-[10px] text-gray-500">
-                    {controlCandidates.length} editable
-                  </span>
-                </div>
-
-                {controlCandidates.length > 0 ? (
-                  <ScrollArea
-                    axis="y"
-                    viewportClassName="max-h-64"
-                    contentClassName="space-y-2 pr-1"
-                  >
-                    {/* Available (unshown) fields */}
-                    {Object.entries(groupedFilteredCandidates).length > 0 &&
-                    filteredAvailableCandidates.length > 0 ? (
-                      Object.entries(groupedFilteredCandidates).map(([classType, candidates]) => (
-                        <div key={classType}>
-                          <div className="mb-1 px-1 text-[10px] font-medium uppercase tracking-wider text-gray-500">
-                            {classType}
-                          </div>
-                          {candidates.map((candidate) => (
-                            <button
-                              key={candidate.key}
-                              type="button"
-                              onClick={() => {
-                                onToggleWorkflowField(candidate.key);
-                                // Don't close the popover so users can add multiple fields
-                              }}
-                              className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-gray-400 transition hover:bg-primary-300/10 hover:text-gray-100"
-                            >
-                              <CheckboxIndicator
-                                checked={false}
-                                uncheckedIcon={<Icons.Plus className="h-2.5 w-2.5" />}
-                              />
-                              <span className="min-w-0 flex-1 truncate">{candidate.label}</span>
-                              <span className="shrink-0 font-mono text-[10px] text-gray-600">
-                                #{candidate.nodeId}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      ))
-                    ) : normalizedSearchQuery ? (
-                      <div className="rounded-lg border border-dashed border-gray-700 px-3 py-4 text-center text-[11px] text-gray-500">
-                        No fields match "{fieldSearchQuery.trim()}"
-                      </div>
-                    ) : (
-                      <div className="rounded-lg border border-dashed border-gray-700 px-3 py-4 text-center text-[11px] text-gray-500">
-                        {activeControlKeys.size === controlCandidates.length
-                          ? 'All fields are shown'
-                          : 'No fields available'}
-                      </div>
-                    )}
-
-                    {/* Show filtered active fields at the bottom with hide icons */}
-                    {filteredActiveControls.length > 0 && (
-                      <>
-                        <div className="border-t border-white/10 pt-2">
-                          <div className="mb-1 px-1 text-[10px] font-medium uppercase tracking-wider text-gray-500">
-                            Shown fields
-                          </div>
-                          {filteredActiveControls.map((control) => {
-                            const controlKey = getComfyControlKey(
-                              control.nodeId,
-                              control.inputName,
-                            );
-                            return (
-                              <button
-                                key={controlKey}
-                                type="button"
-                                onClick={() => {
-                                  onToggleWorkflowField(controlKey);
-                                }}
-                                className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-gray-100 transition hover:bg-red-500/10 hover:text-red-200"
-                              >
-                                <CheckboxIndicator checked />
-                                <span className="min-w-0 flex-1 truncate">{control.label}</span>
-                                <Icons.EyeSlash className="h-3 w-3 shrink-0 text-gray-500" />
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </>
-                    )}
-                  </ScrollArea>
-                ) : (
-                  <div className="rounded-lg border border-dashed border-primary-300/15 bg-gray-950/60 p-3 text-xs leading-5 text-primary-100/60">
-                    This workflow does not expose editable primitive fields.
-                  </div>
-                )}
-              </div>
-            )}
-          </Popover>
+          <ExplicitFieldPicker
+            fields={explicitFields}
+            selectedFieldIds={activeControlKeys}
+            onToggleField={onToggleWorkflowField}
+            totalLabel={`${controlCandidates.length} editable`}
+            emptyMessage="This workflow does not expose editable primitive fields."
+          />
         ) : undefined
       }
     >

@@ -30,6 +30,10 @@ import type {
   RendererMaskLayer,
   RendererDifferenceMaskLayer,
   ResolveOutputContext,
+  RenderQuality,
+  ScratchRenderTargetOptions,
+  RenderRegion,
+  RendererDataWindowPlan,
 } from './types';
 import { RendererShader } from './glsl';
 import {
@@ -51,6 +55,27 @@ import {
 } from './webgl';
 
 type MediaNode = MediaSourceNode | ImageSequenceNode;
+
+export const FULL_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
+  mode: 'full',
+  resolutionScale: 1,
+  sampleLimit: 128,
+});
+
+export const resolveRenderQuality = (quality?: Partial<RenderQuality>): RenderQuality => {
+  if (quality?.mode !== 'preview') return { ...FULL_RENDER_QUALITY };
+  const requestedResolutionScale = quality.resolutionScale;
+  const requestedSampleLimit = quality.sampleLimit;
+  const resolutionScale =
+    typeof requestedResolutionScale === 'number' && Number.isFinite(requestedResolutionScale)
+      ? Math.min(1, Math.max(0.01, requestedResolutionScale))
+      : 1;
+  const sampleLimit =
+    typeof requestedSampleLimit === 'number' && Number.isFinite(requestedSampleLimit)
+      ? Math.min(128, Math.max(2, Math.round(requestedSampleLimit)))
+      : FULL_RENDER_QUALITY.sampleLimit;
+  return { mode: 'preview', resolutionScale, sampleLimit };
+};
 
 // ---------------------------------------------------------------------------
 // Node-specific shaders — handled by the generic shader/warp multipass paths
@@ -132,7 +157,7 @@ interface NodeBlendProps {
 /**
  * Extract blend-related properties (opacity and operator) from a node in a
  * type-safe way. Only node types that declare both `opacity` and `operator`
- * (MediaSource, ImageSequence, Text, Merge, Comfy, OnnxModel) return their
+ * (MediaSource, ImageSequence, Text, merge nodes, Comfy, OnnxModel) return their
  * stored values. All other node types return defaults (opacity=100, OVER).
  *
  * Replaces the `(node as any).opacity` / `(node as any).operator` pattern.
@@ -148,6 +173,8 @@ export interface RenderPipelineOptions {
   nodes: AnyNode[];
   sceneNode: SceneNode;
   frame?: number;
+  /** Optional preview budget. Omitted exports always render at full quality. */
+  quality?: Partial<RenderQuality>;
   width: number;
   height: number;
   blurRadiusScale?: number;
@@ -176,6 +203,8 @@ export interface RenderPipelineOptions {
   /** Preserve source alpha in final display conversion, even when viewport settings flatten it. */
   preserveAlpha?: boolean;
   nodeRegistry: NodeRegistryLike;
+  /** Explicit per-node display/data-window projection supplied by the host graph. */
+  dataWindowPlan?: RendererDataWindowPlan;
   getAsset: (id: string) => Promise<Blob | null>;
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
@@ -268,6 +297,25 @@ interface RenderFormatSize {
   height: number;
 }
 
+const getStorageSize = (window: { width: number; height: number }): RenderFormatSize => ({
+  width: Math.max(1, Math.ceil(window.width)),
+  height: Math.max(1, Math.ceil(window.height)),
+});
+
+const createDisplayStorageWindow = (size: RenderFormatSize) => ({
+  x: 0,
+  y: 0,
+  width: size.width,
+  height: size.height,
+});
+
+const getInitialStorageWindow = (
+  plan: RendererDataWindowPlan | undefined,
+  fallback: RenderFormatSize,
+) =>
+  plan?.nodeWindows.values().next().value?.inputStorageWindow ??
+  createDisplayStorageWindow(fallback);
+
 const renderTargetMatchesOptions = (
   target: THREE.WebGLRenderTarget,
   options: THREE.RenderTargetOptions,
@@ -329,6 +377,31 @@ const ensureRenderTargetSize = (
   if (target.width !== physicalSize.width || target.height !== physicalSize.height) {
     target.setSize(physicalSize.width, physicalSize.height);
   }
+};
+
+/** Resolve a top-left scene ROI to a bottom-left WebGL scissor rectangle. */
+export const resolveRenderRegionScissor = (
+  region: RenderRegion | null | undefined,
+  sceneSize: RenderFormatSize,
+  targetSize: RenderFormatSize,
+): RenderRegion | null => {
+  if (!region || sceneSize.width <= 0 || sceneSize.height <= 0) return null;
+  const left = Math.max(0, Math.min(sceneSize.width - 1, region.x));
+  const top = Math.max(0, Math.min(sceneSize.height - 1, region.y));
+  const right = Math.max(left + 1, Math.min(sceneSize.width, region.x + region.width));
+  const bottom = Math.max(top + 1, Math.min(sceneSize.height, region.y + region.height));
+  const scaleX = targetSize.width / sceneSize.width;
+  const scaleY = targetSize.height / sceneSize.height;
+  const x = Math.max(0, Math.floor(left * scaleX));
+  const topPx = Math.max(0, Math.floor(top * scaleY));
+  const rightPx = Math.min(targetSize.width, Math.ceil(right * scaleX));
+  const bottomPx = Math.min(targetSize.height, Math.ceil(bottom * scaleY));
+  return {
+    x,
+    y: targetSize.height - bottomPx,
+    width: Math.max(1, rightPx - x),
+    height: Math.max(1, bottomPx - topPx),
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -694,6 +767,7 @@ uniform float u_scaleY;
 uniform vec2 u_offset;
 uniform vec2 u_scene_res;
 uniform vec2 u_image_res;
+uniform vec4 u_image_region;
 uniform bool u_flipY;
 uniform int u_source_alpha_mode;
 uniform bool u_use_generated_color;
@@ -721,10 +795,16 @@ void main() {
     image_uv.y = 1.0 - image_uv.y;
   }
 
+  vec2 image_px = image_uv * u_image_res;
+  vec2 region_uv = (image_px - u_image_region.xy) / max(u_image_region.zw, vec2(1.0));
   vec4 src = vec4(0.0);
-  bool inside_image = image_uv.x >= 0.0 && image_uv.x <= 1.0 && image_uv.y >= 0.0 && image_uv.y <= 1.0;
+  bool inside_image =
+    image_uv.x >= 0.0 && image_uv.x <= 1.0 &&
+    image_uv.y >= 0.0 && image_uv.y <= 1.0 &&
+    region_uv.x >= 0.0 && region_uv.x <= 1.0 &&
+    region_uv.y >= 0.0 && region_uv.y <= 1.0;
   if (inside_image) {
-    src = texture(u_tDiffuse, image_uv);
+    src = texture(u_tDiffuse, region_uv);
     if (u_source_alpha_mode == 1) {
       src.a = 1.0;
     } else if (u_source_alpha_mode == 2) {
@@ -972,6 +1052,36 @@ const createDisplayViewOutputMaterial = ({
     ocioTransform: getOcioDisplayViewTransform(sceneColorSpace, displayView, colorManagement),
   });
 
+const DISPLAY_WINDOW_COPY_SHADER = `
+precision highp float;
+
+in vec2 v_uv;
+uniform sampler2D u_tDiffuse;
+uniform vec2 u_display_res;
+uniform vec2 u_storage_res;
+out vec4 fragColor;
+
+void main() {
+  vec2 storage_px = (v_uv - vec2(0.5)) * u_display_res + u_storage_res * 0.5;
+  vec2 source_uv = storage_px / max(u_storage_res, vec2(1.0));
+  bool inside = all(greaterThanEqual(source_uv, vec2(0.0))) && all(lessThanEqual(source_uv, vec2(1.0)));
+  fragColor = inside ? texture(u_tDiffuse, source_uv) : vec4(0.0);
+}
+`;
+
+const getDisplayWindowCopyMaterial = (
+  key: string,
+  texture: THREE.Texture,
+  displaySize: RenderFormatSize,
+  storageSize: RenderFormatSize,
+  getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial,
+): THREE.ShaderMaterial =>
+  getMaterial(key, DISPLAY_WINDOW_COPY_SHADER, {
+    u_tDiffuse: { value: texture },
+    u_display_res: { value: new THREE.Vector2(displaySize.width, displaySize.height) },
+    u_storage_res: { value: new THREE.Vector2(storageSize.width, storageSize.height) },
+  });
+
 const buildTextTexture = (
   node: TextNode,
   frame: number,
@@ -1080,12 +1190,6 @@ const getInputPortFrame = (node: AnyNode, port: RendererInputPort, frame: number
   return frame + (port.frameOffset ?? 0);
 };
 
-const isTemporalInputPort = (port: RendererInputPort): boolean =>
-  typeof port.frameOffset === 'number' ||
-  typeof port.absoluteFrame === 'number' ||
-  !!port.frameOffsetUniform ||
-  !!port.absoluteFrameUniform;
-
 const getVisiblePipelineNodes = (nodes: AnyNode[], nodeRegistry: NodeRegistryLike): AnyNode[] => {
   const visibleNodes: AnyNode[] = [];
 
@@ -1137,10 +1241,7 @@ const getRenderScale = (
   nodeRegistry: NodeRegistryLike,
 ): number => {
   const definition = nodeRegistry.get(node.type);
-  if (definition?.renderScale) {
-    return definition.renderScale(node, context);
-  }
-  return 1;
+  return definition?.renderScale ? definition.renderScale(node, context) : 1;
 };
 
 const withDiffuseUniform = (
@@ -1175,6 +1276,65 @@ const getSourceAlphaModeUniform = (node: unknown): number => {
   return SOURCE_ALPHA_MODE_UNIFORM.file;
 };
 
+type TextureSourceRegionCoordinateSpace = 'bottom-left' | 'top-left';
+
+interface TextureSourceRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fullWidth: number;
+  fullHeight: number;
+  coordinateSpace?: TextureSourceRegionCoordinateSpace;
+}
+
+const getTextureSourceRegion = (
+  texture: THREE.Texture,
+  fullWidth: number,
+  fullHeight: number,
+): TextureSourceRegion => {
+  const candidate = texture.userData?.blackboardSourceRegion as
+    | Partial<TextureSourceRegion>
+    | undefined;
+  if (
+    candidate &&
+    typeof candidate.x === 'number' &&
+    typeof candidate.y === 'number' &&
+    typeof candidate.width === 'number' &&
+    typeof candidate.height === 'number'
+  ) {
+    const width = Math.max(1, candidate.width);
+    const height = Math.max(1, candidate.height);
+    const resolvedFullWidth = candidate.fullWidth ?? fullWidth;
+    const resolvedFullHeight = candidate.fullHeight ?? fullHeight;
+    // Browser image/video crop APIs address rows from the top-left, while the
+    // compositor's image pixels and texture UVs address them from the bottom-left.
+    // Normalize metadata at this boundary so cropped and full-frame readers align.
+    const y =
+      candidate.coordinateSpace === 'top-left'
+        ? resolvedFullHeight - candidate.y - height
+        : candidate.y;
+    return {
+      x: candidate.x,
+      y: Math.max(0, y),
+      width,
+      height,
+      fullWidth: resolvedFullWidth,
+      fullHeight: resolvedFullHeight,
+    };
+  }
+  return { x: 0, y: 0, width: fullWidth, height: fullHeight, fullWidth, fullHeight };
+};
+
+const getTextureSourceRegionUniform = (
+  texture: THREE.Texture,
+  fullWidth: number,
+  fullHeight: number,
+): THREE.Vector4 => {
+  const region = getTextureSourceRegion(texture, fullWidth, fullHeight);
+  return new THREE.Vector4(region.x, region.y, region.width, region.height);
+};
+
 // ---------------------------------------------------------------------------
 // Scaled multipass renderer — downsamples before blur, upsamples after.
 // Avoids duplicating the downscale/upscale logic across all 4 multipass
@@ -1203,6 +1363,7 @@ function renderScaledMultipass(
   fullHeight: number,
   radiusScale: number,
   renderTargetOptions: THREE.RenderTargetOptions,
+  getScratchRenderTarget?: ResolveOutputContext['getScratchRenderTarget'],
 ): boolean {
   const shaders = getMultipassShaders(node, nodeRegistry);
   if (!shaders) return false;
@@ -1210,10 +1371,16 @@ function renderScaledMultipass(
   const blurUniforms = getEffectUniforms(node, renderContext, nodeRegistry);
   const radius = getNumericUniformValue(blurUniforms, 'u_radius', 0) * radiusScale;
   const renderScale = getRenderScale(node, renderContext, nodeRegistry);
-  const scratchTargets: THREE.WebGLRenderTarget[] = [];
-  const createScratchTarget = (width: number, height: number): THREE.WebGLRenderTarget => {
+  const scratchKeyPrefix = `multipass:${renderContext.quality.mode}`;
+  const ownedScratchTargets: THREE.WebGLRenderTarget[] = [];
+  const getScratchTarget = (
+    key: string,
+    width: number,
+    height: number,
+  ): THREE.WebGLRenderTarget => {
+    if (getScratchRenderTarget) return getScratchRenderTarget(key, { width, height });
     const target = new THREE.WebGLRenderTarget(width, height, renderTargetOptions);
-    scratchTargets.push(target);
+    ownedScratchTargets.push(target);
     return target;
   };
 
@@ -1223,7 +1390,7 @@ function renderScaledMultipass(
   try {
     if (renderScale >= 1) {
       // Full-resolution path
-      const tempRT = createScratchTarget(fullWidth, fullHeight);
+      const tempRT = getScratchTarget(`${scratchKeyPrefix}:a`, fullWidth, fullHeight);
 
       const hPass = getMaterial(hMatId, shaders.horizontal, {
         u_tDiffuse: { value: inputTexture },
@@ -1246,8 +1413,8 @@ function renderScaledMultipass(
       // Scaled path — downsample, blur at lower res, upsample
       const sW = Math.max(1, Math.round(fullWidth * renderScale));
       const sH = Math.max(1, Math.round(fullHeight * renderScale));
-      const scaledRT1 = createScratchTarget(sW, sH);
-      const scaledRT2 = createScratchTarget(sW, sH);
+      const scaledRT1 = getScratchTarget(`${scratchKeyPrefix}:a`, sW, sH);
+      const scaledRT2 = getScratchTarget(`${scratchKeyPrefix}:b`, sW, sH);
 
       // Downsample
       const downsampleMat = getMaterial(`${node.id}_ds`, RendererShader.TEXTURE, {
@@ -1289,7 +1456,7 @@ function renderScaledMultipass(
 
     return true;
   } finally {
-    scratchTargets.forEach((target) => target.dispose());
+    ownedScratchTargets.forEach((target) => target.dispose());
   }
 }
 
@@ -1451,25 +1618,16 @@ const collectInputPreloadTargets = (
   frame: number,
 ): InputPreloadTarget[] => {
   const targets: InputPreloadTarget[] = [];
-  let previousMediaNode: AnyNode | null = null;
 
   for (const node of visibleNodes) {
-    const fallbackSourceNode = previousMediaNode;
     const inputs = node.inputs;
     const inputPorts = getInputPortsForNode(node, nodeRegistry);
 
-    if (!inputs && !fallbackSourceNode) {
-      if (isMediaNodeWithRegistry(node, nodeRegistry)) {
-        previousMediaNode = node;
-      }
-      continue;
-    }
+    if (!inputs) continue;
 
     if (inputPorts.length > 0) {
       for (const port of inputPorts) {
-        const sourceId =
-          inputs?.[port.name] ??
-          (fallbackSourceNode && isTemporalInputPort(port) ? fallbackSourceNode.id : undefined);
+        const sourceId = inputs[port.name];
         if (sourceId) {
           const sourceNode = allNodes.find((l) => l.id === sourceId);
           if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
@@ -1489,10 +1647,6 @@ const collectInputPreloadTargets = (
         }
       }
     }
-
-    if (isMediaNodeWithRegistry(node, nodeRegistry)) {
-      previousMediaNode = node;
-    }
   }
   return targets;
 };
@@ -1505,17 +1659,14 @@ const resolveInputUniforms = (
   nodeRegistry: NodeRegistryLike,
   frame: number,
   getTextureForNodeId: (nodeId: string, targetFrame: number) => THREE.Texture | undefined,
-  fallbackSourceNode?: AnyNode | null,
 ): ShaderUniformMap => {
   const inputs = node.inputs;
   const inputPorts = getInputPortsForNode(node, nodeRegistry);
 
-  if (inputPorts.length > 0 && (inputs || fallbackSourceNode)) {
+  if (inputPorts.length > 0 && inputs) {
     const uniforms: ShaderUniformMap = {};
     for (const port of inputPorts) {
-      const sourceNodeId =
-        inputs?.[port.name] ??
-        (fallbackSourceNode && isTemporalInputPort(port) ? fallbackSourceNode.id : undefined);
+      const sourceNodeId = inputs[port.name];
       if (sourceNodeId && port.uniformName) {
         const texture = getTextureForNodeId(sourceNodeId, getInputPortFrame(node, port, frame));
         uniforms[port.uniformName] = { value: texture ?? getTransparentInputTexture() };
@@ -1560,13 +1711,12 @@ interface AdjustmentRenderOptions {
   colorManagement: RendererColorManagement;
   ocioTextures: Map<string, THREE.Texture>;
   ownedOcioTextures?: THREE.Texture[];
-  fallbackSourceNode?: AnyNode | null;
   getInputTextureForNode: (nodeId: string, targetFrame: number) => THREE.Texture | undefined;
+  resolveOutput?: RenderOutputTexture;
+  executionMode?: ResolveOutputContext['executionMode'];
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
-  getScratchRenderTarget?: (key: string) => THREE.WebGLRenderTarget;
-  /** Optional custom material ID for shader/warp render modes. */
-  shaderId?: string;
+  getScratchRenderTarget?: ResolveOutputContext['getScratchRenderTarget'];
 }
 
 const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePromise<boolean> => {
@@ -1589,12 +1739,12 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
     colorManagement,
     ocioTextures,
     ownedOcioTextures,
-    fallbackSourceNode,
     getInputTextureForNode,
+    resolveOutput,
+    executionMode = 'sync',
     getRotoMaskLayers,
     getRotoAlphaMode,
     getScratchRenderTarget,
-    shaderId,
   } = options;
   const renderMode = getRenderMode(node, nodeRegistry);
 
@@ -1609,7 +1759,7 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
     });
     const ocioTransform = transforms.length > 0 ? colorManagement.getTransform(transforms) : null;
     const material = createSceneLinearOutputMaterial({
-      materialKey: shaderId ?? `${node.id}_ocio_transform`,
+      materialKey: `${node.id}_ocio_transform`,
       inputTexture,
       ocioTransform,
       ocioTextures,
@@ -1640,13 +1790,7 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
       );
       Object.assign(
         uniforms,
-        resolveInputUniforms(
-          node,
-          nodeRegistry,
-          renderContext.frame,
-          getInputTextureForNode,
-          fallbackSourceNode,
-        ),
+        resolveInputUniforms(node, nodeRegistry, renderContext.frame, getInputTextureForNode),
       );
       const material = getMaterial(materialId, shader, uniforms);
       quad.material = material;
@@ -1655,7 +1799,7 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
     };
 
     if (processingDomain !== 'log') {
-      renderShaderPass(inputTexture, outputTarget, shaderId ?? node.id);
+      renderShaderPass(inputTexture, outputTarget, node.id);
       return true;
     }
 
@@ -1690,7 +1834,7 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
       renderer.setRenderTarget(logInputTarget);
       renderer.render(scene, camera);
 
-      renderShaderPass(logInputTarget.texture, logOutputTarget, shaderId ?? `${node.id}_log`);
+      renderShaderPass(logInputTarget.texture, logOutputTarget, `${node.id}_log`);
 
       const fromLogMaterial = createSceneLinearOutputMaterial({
         materialKey: `${node.id}_log_to_scene`,
@@ -1726,6 +1870,7 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
       height,
       blurRadiusScale,
       renderTargetOptions,
+      getScratchRenderTarget,
     );
   }
 
@@ -1733,19 +1878,23 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
   const renderOutputDef = nodeRegistry.get(node.type)?.renderOutput;
   if (renderOutputDef) {
     const roCtx: ResolveOutputContext = {
-      executionMode: 'sync',
+      executionMode,
       frame: renderContext.frame,
+      quality: renderContext.quality,
       nodes: renderContext.nodes as AnyNode[],
       sceneNode: {
         ...renderContext.scene,
         colorSpace: sceneColorSpace,
       } as SceneNode,
+      renderContext,
       renderer,
       scene,
       camera,
       quad,
       getMaterial,
-      resolveOutput: (nodeId) => getInputTextureForNode(nodeId, renderContext.frame) ?? undefined,
+      resolveOutput:
+        resolveOutput ??
+        ((nodeId) => getInputTextureForNode(nodeId, renderContext.frame) ?? undefined),
       transformColorPickingToSceneLinear: renderContext.transformColorPickingToSceneLinear,
       compositeBuffer: outputTarget,
       getMediaTexture: (n, f) => getInputTextureForNode(n.id, f) ?? undefined,
@@ -1760,33 +1909,11 @@ const renderAdjustmentNodeToTarget = (options: AdjustmentRenderOptions): MaybePr
       getScratchRenderTarget,
     };
     const roResult = renderOutputDef(node, outputTarget, inputTexture, roCtx);
-    if (roResult) {
-      if (isPromiseLike(roResult)) {
-        throw new Error(
-          'Asynchronous renderOutput is not supported in renderAdjustmentNodeToTarget',
-        );
-      }
-      return true;
-    }
+    if (isPromiseLike(roResult)) return roResult;
+    if (roResult) return true;
   }
 
   return false;
-};
-
-const collectAdjacentStackedNodes = (
-  visibleNodes: AnyNode[],
-  startIndex: number,
-  isStackedNode: (node: AnyNode) => boolean,
-): { stackedNodes: AnyNode[]; consumedCount: number } => {
-  const stackedNodes: AnyNode[] = [];
-  let consumedCount = 0;
-  for (let upperIndex = startIndex + 1; upperIndex < visibleNodes.length; upperIndex += 1) {
-    const upperNode = visibleNodes[upperIndex];
-    if (!isStackedNode(upperNode)) break;
-    stackedNodes.push(upperNode);
-    consumedCount += 1;
-  }
-  return { stackedNodes, consumedCount };
 };
 
 interface UtilityOutputRenderOptions {
@@ -1964,6 +2091,9 @@ interface NodeOutputResolveContext {
   frame: number;
   sceneNode: SceneNode;
   currentSceneSize: RenderFormatSize;
+  currentRenderSize: RenderFormatSize;
+  renderTargetScale: RenderFormatSize;
+  dataWindowPlan?: RendererDataWindowPlan;
   blurRadiusScale: number;
   renderTargetOptions: THREE.RenderTargetOptions;
   nodeRegistry: NodeRegistryLike;
@@ -1972,7 +2102,10 @@ interface NodeOutputResolveContext {
   colorManagement: RendererColorManagement;
   ocioTextures: Map<string, THREE.Texture>;
   ownedOcioTextures?: THREE.Texture[];
-  getUtilityOutputTarget: (key: string) => THREE.WebGLRenderTarget;
+  getUtilityOutputTarget: (
+    key: string,
+    size?: ScratchRenderTargetOptions,
+  ) => THREE.WebGLRenderTarget;
   utilityRenderStack: Set<string>;
   checkCache: (cacheKey: string) => boolean;
   markCache: (cacheKey: string) => void;
@@ -1984,12 +2117,16 @@ interface NodeOutputResolveContext {
     node: AnyNode,
     layers: RendererMediaCompositeLayer[],
     target: THREE.WebGLRenderTarget,
+    renderSize?: RenderFormatSize,
+    nodeRenderContext?: RenderContext,
   ) => MaybePromise<boolean>;
   renderFullFrameTextureToTarget: (
     node: AnyNode,
     texture: THREE.Texture,
     target: THREE.WebGLRenderTarget,
     textureSize?: { width: number; height: number },
+    renderSize?: RenderFormatSize,
+    nodeRenderContext?: RenderContext,
   ) => void;
   getCachedMediaTexture: (node: AnyNode, frame: number) => THREE.Texture | undefined;
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
@@ -2004,15 +2141,32 @@ function resolveNodeOutputTexture(
   resolveOutput: RenderOutputTexture,
 ): MaybePromise<THREE.Texture | undefined> {
   const cacheKey = `${nodeId}:${sourcePortName}`;
+  const node = ctx.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node?.enabled) return undefined;
+  const nodeWindow = ctx.dataWindowPlan?.nodeWindows.get(node.id);
+  const inputRenderSize = nodeWindow
+    ? getStorageSize(nodeWindow.inputStorageWindow)
+    : ctx.currentRenderSize;
+  const outputRenderSize = nodeWindow
+    ? getStorageSize(nodeWindow.outputStorageWindow)
+    : ctx.currentRenderSize;
+  const outputTargetSize = getScaledRenderTargetSize(outputRenderSize, ctx.renderTargetScale);
+  const nodeRenderContext: RenderContext = nodeWindow
+    ? {
+        ...ctx.renderContext,
+        scene: { ...nodeWindow.inputDisplayWindow },
+        storageWindow: { ...nodeWindow.inputStorageWindow },
+        outputStorageWindow: { ...nodeWindow.outputStorageWindow },
+        inputDataWindow: { ...nodeWindow.inputDataWindow },
+        outputDataWindow: { ...nodeWindow.outputDataWindow },
+      }
+    : ctx.renderContext;
   if (ctx.checkCache(cacheKey)) {
-    const existing = ctx.getUtilityOutputTarget(cacheKey);
+    const existing = ctx.getUtilityOutputTarget(cacheKey, outputTargetSize);
     return existing.texture;
   }
   if (ctx.utilityRenderStack.has(cacheKey)) return getTransparentInputTexture();
-
-  const node = ctx.nodes.find((candidate) => candidate.id === nodeId);
-  if (!node?.enabled) return undefined;
-  const target = ctx.getUtilityOutputTarget(cacheKey);
+  const target = ctx.getUtilityOutputTarget(cacheKey, outputTargetSize);
   ctx.utilityRenderStack.add(cacheKey);
 
   const tryReturn = (
@@ -2037,8 +2191,10 @@ function resolveNodeOutputTexture(
           const roCtx: ResolveOutputContext = {
             executionMode: ctx.onAsyncInSync ? 'sync' : 'async',
             frame: ctx.frame,
+            quality: ctx.renderContext.quality,
             nodes: ctx.nodes,
             sceneNode: ctx.sceneNode,
+            renderContext: nodeRenderContext,
             renderer: ctx.renderer,
             scene: ctx.scene,
             camera: ctx.camera,
@@ -2058,7 +2214,8 @@ function resolveNodeOutputTexture(
             getChannelIndex: (ch, fallback) =>
               getChannelIndex(ch, (fallback || 'r') as ChannelPort),
             getTransparentInputTexture,
-            getScratchRenderTarget: (key) => ctx.getUtilityOutputTarget(`__scratch:${key}`),
+            getScratchRenderTarget: (key, size) =>
+              ctx.getUtilityOutputTarget(`__scratch:${key}`, size),
           };
           const roResult = renderOutputDef(node, target, undefined, roCtx, sourcePortName);
           if (roResult) {
@@ -2078,7 +2235,13 @@ function resolveNodeOutputTexture(
         ctx.nodes,
       );
       if (compositeLayers.length > 0) {
-        const renderedComposite = ctx.renderCompositeMediaToTarget(node, compositeLayers, target);
+        const renderedComposite = ctx.renderCompositeMediaToTarget(
+          node,
+          compositeLayers,
+          target,
+          outputRenderSize,
+          nodeRenderContext,
+        );
         const compositeResult = isPromiseLike(renderedComposite)
           ? renderedComposite.then((ok) => (ok ? target.texture : undefined))
           : renderedComposite
@@ -2089,7 +2252,14 @@ function resolveNodeOutputTexture(
       const mediaTexture = ctx.getMediaTexture(node, ctx.frame);
       const renderMedia = (tex: THREE.Texture | null | undefined): THREE.Texture | undefined => {
         if (!tex) return undefined;
-        ctx.renderFullFrameTextureToTarget(node, tex, target);
+        ctx.renderFullFrameTextureToTarget(
+          node,
+          tex,
+          target,
+          undefined,
+          outputRenderSize,
+          nodeRenderContext,
+        );
         return target.texture;
       };
       const result = isPromiseLike(mediaTexture)
@@ -2101,7 +2271,14 @@ function resolveNodeOutputTexture(
     if (getRenderMode(node, ctx.nodeRegistry) === 'text') {
       const textTexture = ctx.getTextTexture(node as TextNode);
       if (!textTexture) return undefined;
-      ctx.renderFullFrameTextureToTarget(node, textTexture.texture, target, textTexture);
+      ctx.renderFullFrameTextureToTarget(
+        node,
+        textTexture.texture,
+        target,
+        textTexture,
+        outputRenderSize,
+        nodeRenderContext,
+      );
       ctx.markCache(cacheKey);
       return target.texture;
     }
@@ -2153,8 +2330,10 @@ function resolveNodeOutputTexture(
           const roCtx: ResolveOutputContext = {
             executionMode: ctx.onAsyncInSync ? 'sync' : 'async',
             frame: ctx.frame,
+            quality: ctx.renderContext.quality,
             nodes: ctx.nodes,
             sceneNode: ctx.sceneNode,
+            renderContext: nodeRenderContext,
             renderer: ctx.renderer,
             scene: ctx.scene,
             camera: ctx.camera,
@@ -2174,7 +2353,8 @@ function resolveNodeOutputTexture(
             getChannelIndex: (ch, fallback) =>
               getChannelIndex(ch, (fallback || 'r') as ChannelPort),
             getTransparentInputTexture,
-            getScratchRenderTarget: (key) => ctx.getUtilityOutputTarget(`__scratch:${key}`),
+            getScratchRenderTarget: (key, size) =>
+              ctx.getUtilityOutputTarget(`__scratch:${key}`, size),
           };
           const roResult = renderOutputDef(node, target, inputTex, roCtx, sourcePortName);
           if (roResult) {
@@ -2204,19 +2384,18 @@ function resolveNodeOutputTexture(
             quad: ctx.quad,
             getMaterial: ctx.getMaterial,
             nodeRegistry: ctx.nodeRegistry,
-            renderContext: ctx.renderContext,
+            renderContext: nodeRenderContext,
             node,
             inputTexture: inputTex,
             outputTarget: target,
-            width: ctx.currentSceneSize.width,
-            height: ctx.currentSceneSize.height,
+            width: inputRenderSize.width,
+            height: inputRenderSize.height,
             blurRadiusScale: ctx.blurRadiusScale,
             renderTargetOptions: ctx.renderTargetOptions,
             sceneColorSpace: ctx.sceneNode.colorSpace,
             colorManagement: ctx.colorManagement,
             ocioTextures: ctx.ocioTextures,
             ownedOcioTextures: ctx.ownedOcioTextures,
-            fallbackSourceNode: null,
             getInputTextureForNode: (nodeId, targetFrame) => {
               const sourceNode = ctx.nodes.find((l) => l.id === nodeId);
               if (sourceNode && isMediaNodeWithRegistry(sourceNode, ctx.nodeRegistry)) {
@@ -2224,9 +2403,12 @@ function resolveNodeOutputTexture(
               }
               return undefined;
             },
+            resolveOutput,
+            executionMode: ctx.onAsyncInSync ? 'sync' : 'async',
             getRotoMaskLayers: ctx.getRotoMaskLayers,
             getRotoAlphaMode: ctx.getRotoAlphaMode,
-            getScratchRenderTarget: (key) => ctx.getUtilityOutputTarget(`__scratch:${key}`),
+            getScratchRenderTarget: (key, size) =>
+              ctx.getUtilityOutputTarget(`__scratch:${key}`, size),
           }) as MaybePromise<boolean>;
           const adjThen = (ok: boolean): THREE.Texture | undefined =>
             ok ? target.texture : undefined;
@@ -2271,19 +2453,23 @@ export const renderWithSharedPipeline = async (
   assertRendererProcessingDomainsSupported(resolutionNodes, (nodeType) =>
     nodeRegistry.get(nodeType),
   );
-  const { isStackedExportAdjustmentNode, isExportAdjustmentType } =
-    createNodePredicates(nodeRegistry);
+  const { isPrimaryInputNodeType } = createNodePredicates(nodeRegistry);
   const finalSceneSize = { width: options.sceneNode.width, height: options.sceneNode.height };
   const outputRenderScale = {
     width: options.width / Math.max(1, finalSceneSize.width),
     height: options.height / Math.max(1, finalSceneSize.height),
   };
   let currentSceneSize = getInitialSceneSize(options.nodes, nodeRegistry, finalSceneSize);
+  let currentStorageWindow = getInitialStorageWindow(options.dataWindowPlan, currentSceneSize);
+  let currentStorageSize = getStorageSize(currentStorageWindow);
   const renderContext: RenderContext = {
     frame,
     fps: options.sceneNode.fps || 30,
     scene: { ...currentSceneSize },
+    storageWindow: { ...currentStorageWindow },
+    outputStorageWindow: { ...currentStorageWindow },
     nodes: options.nodes,
+    quality: resolveRenderQuality(options.quality),
     transformColorPickingToSceneLinear: (color) =>
       options.colorManagement.transformRgb(
         options.colorManagement.colorPickingColorSpace,
@@ -2291,9 +2477,16 @@ export const renderWithSharedPipeline = async (
         color,
       ),
   };
-  const setCurrentSceneSize = (size: RenderFormatSize) => {
-    currentSceneSize = size;
-    renderContext.scene = { ...size };
+  const setCurrentRenderWindows = (
+    displaySize: RenderFormatSize,
+    storageWindow = createDisplayStorageWindow(displaySize),
+  ) => {
+    currentSceneSize = displaySize;
+    currentStorageWindow = storageWindow;
+    currentStorageSize = getStorageSize(storageWindow);
+    renderContext.scene = { ...displaySize };
+    renderContext.storageWindow = { ...storageWindow };
+    renderContext.outputStorageWindow = { ...storageWindow };
   };
 
   const canvas = options.canvas ?? options.renderer?.domElement ?? document.createElement('canvas');
@@ -2324,13 +2517,8 @@ export const renderWithSharedPipeline = async (
     options.sceneNode,
     options.outputDomain,
   );
-  const initialTargetSize = getScaledRenderTargetSize(currentSceneSize, outputRenderScale);
+  const initialTargetSize = getScaledRenderTargetSize(currentStorageSize, outputRenderScale);
   const renderTargets = [
-    new THREE.WebGLRenderTarget(
-      initialTargetSize.width,
-      initialTargetSize.height,
-      renderTargetOptions,
-    ),
     new THREE.WebGLRenderTarget(
       initialTargetSize.width,
       initialTargetSize.height,
@@ -2594,36 +2782,32 @@ export const renderWithSharedPipeline = async (
     );
 
     let [readBuffer, writeBuffer] = renderTargets;
-    const auxBuffer = renderTargets[2];
     const ensureTargetForSceneSize = (
       target: THREE.WebGLRenderTarget,
-      size: RenderFormatSize = currentSceneSize,
+      size: RenderFormatSize = currentStorageSize,
     ) => ensureRenderTargetSize(target, size, outputRenderScale);
     const getCurrentPhysicalSize = () =>
-      getScaledRenderTargetSize(currentSceneSize, outputRenderScale);
+      getScaledRenderTargetSize(currentStorageSize, outputRenderScale);
     const swapMainBuffers = () => {
       [readBuffer, writeBuffer] = [writeBuffer, readBuffer];
-    };
-    const copyTargetToWriteBuffer = (sourceTarget: THREE.WebGLRenderTarget) => {
-      ensureTargetForSceneSize(writeBuffer);
-      const copyMaterial = getMaterial('copy_to_main_write', RendererShader.TEXTURE, {
-        u_tDiffuse: { value: sourceTarget.texture },
-      });
-      applyNoBlending(copyMaterial);
-      quad.material = copyMaterial;
-      renderer.setRenderTarget(writeBuffer);
-      renderer.render(scene, camera);
     };
     const utilityOutputTargets = new Map<string, THREE.WebGLRenderTarget>();
     const utilityRenderStack = new Set<string>();
 
-    const getUtilityOutputTarget = (key: string): THREE.WebGLRenderTarget => {
+    const getUtilityOutputTarget = (
+      key: string,
+      size?: ScratchRenderTargetOptions,
+    ): THREE.WebGLRenderTarget => {
       const existing = utilityOutputTargets.get(key);
       if (existing) {
-        ensureTargetForSceneSize(existing);
+        if (size) {
+          ensureRenderTargetSize(existing, size, { width: 1, height: 1 });
+        } else {
+          ensureTargetForSceneSize(existing);
+        }
         return existing;
       }
-      const targetSize = getScaledRenderTargetSize(currentSceneSize, outputRenderScale);
+      const targetSize = size ?? getScaledRenderTargetSize(currentStorageSize, outputRenderScale);
       const target = new THREE.WebGLRenderTarget(
         targetSize.width,
         targetSize.height,
@@ -2638,6 +2822,9 @@ export const renderWithSharedPipeline = async (
       node: AnyNode,
       texture: THREE.Texture,
       target: THREE.WebGLRenderTarget,
+      _textureSize?: { width: number; height: number },
+      renderSize: RenderFormatSize = currentStorageSize,
+      nodeRenderContext: RenderContext = renderContext,
     ) => {
       let width = currentSceneSize.width;
       let height = currentSceneSize.height;
@@ -2683,18 +2870,19 @@ export const renderWithSharedPipeline = async (
           u_scaleY: { value: scaleY },
           u_offset: { value: offset },
           u_scene_res: {
-            value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+            value: new THREE.Vector2(renderSize.width, renderSize.height),
           },
           u_image_res: { value: new THREE.Vector2(width, height) },
+          u_image_region: { value: getTextureSourceRegionUniform(texture, width, height) },
           u_source_alpha_mode: { value: getSourceAlphaModeUniform(node) },
           u_flipY: { value: false },
-          ...getGeneratedColorUniforms(node, renderContext, nodeRegistry),
+          ...getGeneratedColorUniforms(node, nodeRenderContext, nodeRegistry),
           ...createOcioUniforms(ocioTransform, ocioTextures, ownedTextures),
         },
       );
       applyNoBlending(material);
       quad.material = material;
-      ensureTargetForSceneSize(target);
+      ensureTargetForSceneSize(target, renderSize);
       clearRenderTargetTransparent(renderer, target);
       renderer.setRenderTarget(target);
       renderer.render(scene, camera);
@@ -2704,11 +2892,20 @@ export const renderWithSharedPipeline = async (
       node: AnyNode,
       layers: RendererMediaCompositeLayer[],
       target: THREE.WebGLRenderTarget,
+      renderSize: RenderFormatSize = currentStorageSize,
+      nodeRenderContext: RenderContext = renderContext,
     ): Promise<boolean> => {
       if (layers.length === 0) return false;
 
-      const layerRead = getUtilityOutputTarget(`${node.id}:media-composite:read`);
-      const layerWrite = getUtilityOutputTarget(`${node.id}:media-composite:write`);
+      const compositeTargetSize = getScaledRenderTargetSize(renderSize, outputRenderScale);
+      const layerRead = getUtilityOutputTarget(
+        `${node.id}:media-composite:read`,
+        compositeTargetSize,
+      );
+      const layerWrite = getUtilityOutputTarget(
+        `${node.id}:media-composite:write`,
+        compositeTargetSize,
+      );
       let readTarget = layerRead;
       let writeTarget = layerWrite;
       let renderedAnyLayer = false;
@@ -2740,13 +2937,13 @@ export const renderWithSharedPipeline = async (
                 quad,
                 getMaterial,
                 getTarget: (key) => getUtilityOutputTarget(key),
-                ensureTarget: (maskTarget) => ensureTargetForSceneSize(maskTarget),
+                ensureTarget: (maskTarget) => ensureTargetForSceneSize(maskTarget, renderSize),
                 resourceKey: `${node.id}:media-composite:difference-mask`,
                 outputTexture: texture,
                 referenceTexture: differenceReferenceTexture,
                 layer,
                 mask: differenceMask,
-                sceneSize: currentSceneSize,
+                sceneSize: renderSize,
                 frame,
               })
             : null;
@@ -2771,9 +2968,12 @@ export const renderWithSharedPipeline = async (
               ),
             },
             u_scene_res: {
-              value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+              value: new THREE.Vector2(renderSize.width, renderSize.height),
             },
             u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
+            u_image_region: {
+              value: getTextureSourceRegionUniform(texture, layer.width, layer.height),
+            },
             u_source_alpha_mode: { value: getSourceAlphaModeUniform(layer) },
             u_flipY: { value: false },
             ...(useDifferenceMask && differenceMask && renderedDifferenceMask
@@ -2783,13 +2983,13 @@ export const renderWithSharedPipeline = async (
                   u_difference_preview_mode: { value: 0 },
                 }
               : {}),
-            ...getGeneratedColorUniforms(node, renderContext, nodeRegistry),
+            ...getGeneratedColorUniforms(node, nodeRenderContext, nodeRegistry),
             ...createOcioUniforms(ocioTransform, ocioTextures, ownedTextures),
           },
         );
         applyNoBlending(material);
         quad.material = material;
-        ensureTargetForSceneSize(writeTarget);
+        ensureTargetForSceneSize(writeTarget, renderSize);
         renderer.setRenderTarget(writeTarget);
         renderer.render(scene, camera);
         renderedAnyLayer = true;
@@ -2803,7 +3003,7 @@ export const renderWithSharedPipeline = async (
       });
       applyNoBlending(copyMaterial);
       quad.material = copyMaterial;
-      ensureTargetForSceneSize(target);
+      ensureTargetForSceneSize(target, renderSize);
       renderer.setRenderTarget(target);
       renderer.render(scene, camera);
       return true;
@@ -2823,6 +3023,9 @@ export const renderWithSharedPipeline = async (
         frame,
         sceneNode: options.sceneNode,
         currentSceneSize,
+        currentRenderSize: currentStorageSize,
+        renderTargetScale: outputRenderScale,
+        dataWindowPlan: options.dataWindowPlan,
         blurRadiusScale,
         renderTargetOptions,
         nodeRegistry,
@@ -2891,30 +3094,28 @@ export const renderWithSharedPipeline = async (
         getTransparentInputTexture()
       );
     };
-    const renderStraightOverToMain = (
-      material: THREE.ShaderMaterial,
-      target: THREE.WebGLRenderTarget = writeBuffer,
-    ) => {
+    const renderStraightOverToMain = (material: THREE.ShaderMaterial) => {
       applyNoBlending(material);
       quad.material = material;
-      renderer.setRenderTarget(target);
+      renderer.setRenderTarget(writeBuffer);
       renderer.render(scene, camera);
-      if (target !== writeBuffer) {
-        copyTargetToWriteBuffer(target);
-      }
       swapMainBuffers();
     };
     ensureTargetForSceneSize(readBuffer);
     ensureTargetForSceneSize(writeBuffer);
-    ensureTargetForSceneSize(auxBuffer);
     clearRenderTargetTransparent(renderer, readBuffer);
 
-    let previousMediaNode: AnyNode | null = null;
     for (let i = 0; i < visibleNodes.length; i += 1) {
       const baseNode = visibleNodes[i];
+      const nodeWindow = options.dataWindowPlan?.nodeWindows.get(baseNode.id);
+      if (nodeWindow) {
+        setCurrentRenderWindows(nodeWindow.inputDisplayWindow, nodeWindow.inputStorageWindow);
+        renderContext.outputStorageWindow = { ...nodeWindow.outputStorageWindow };
+        renderContext.inputDataWindow = { ...nodeWindow.inputDataWindow };
+        renderContext.outputDataWindow = { ...nodeWindow.outputDataWindow };
+      }
       ensureTargetForSceneSize(readBuffer);
       ensureTargetForSceneSize(writeBuffer);
-      ensureTargetForSceneSize(auxBuffer);
 
       const baseMode = getRenderMode(baseNode, nodeRegistry);
 
@@ -2937,9 +3138,6 @@ export const renderWithSharedPipeline = async (
           swapMainBuffers();
         }
       } else if (baseMode === 'media' || baseMode === 'text') {
-        if (isMediaNodeWithRegistry(baseNode, nodeRegistry)) {
-          previousMediaNode = baseNode;
-        }
         let texture: THREE.Texture | null = null;
         let width = 0;
         let height = 0;
@@ -2967,8 +3165,8 @@ export const renderWithSharedPipeline = async (
             );
             if (!renderedComposite) continue;
             texture = compositeTarget.texture;
-            width = currentSceneSize.width;
-            height = currentSceneSize.height;
+            width = currentStorageSize.width;
+            height = currentStorageSize.height;
           } else {
             texture = await loadTextureForMediaNode(baseNode);
             if (!texture) {
@@ -3006,152 +3204,55 @@ export const renderWithSharedPipeline = async (
           isDynamicTexture = true;
         }
 
-        const { stackedNodes, consumedCount } = collectAdjacentStackedNodes(
-          visibleNodes,
-          i,
-          isStackedExportAdjustmentNode,
-        );
-
         let finalComposite: THREE.ShaderMaterial;
-        let straightOverTarget = writeBuffer;
-        if (stackedNodes.length > 0) {
-          let stackRead = writeBuffer;
-          let stackWrite = auxBuffer;
-
-          clearRenderTargetTransparent(renderer, stackRead);
-          const basePass = getMaterial(
-            `${baseNode.id}_stack_base`,
-            buildOcioTransformedTextureShader(baseOcioTransform, false),
+        const { operator } = getNodeBlendProps(baseNode);
+        if (operator === BlendMode.OVER) {
+          finalComposite = getMaterial(
+            `${baseNode.id}_comp_straight_over`,
+            buildOcioTransformedTextureShader(baseOcioTransform, true),
             {
+              u_tBackdrop: { value: readBuffer.texture },
               u_tDiffuse: { value: texture },
-              u_opacity: { value: 1 },
+              u_opacity: { value: opacity / 100 },
               u_scaleX: { value: scaleX },
               u_scaleY: { value: scaleY },
               u_offset: { value: offset },
               u_scene_res: {
-                value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+                value: new THREE.Vector2(currentStorageSize.width, currentStorageSize.height),
               },
               u_image_res: { value: new THREE.Vector2(width, height) },
+              u_image_region: { value: getTextureSourceRegionUniform(texture, width, height) },
               u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
               u_flipY: { value: false },
               ...getGeneratedColorUniforms(baseNode, renderContext, nodeRegistry),
               ...createOcioUniforms(baseOcioTransform, ocioTextures, ownedTextures),
             },
           );
-          quad.material = basePass;
-          renderer.render(scene, camera);
-
-          for (const stackedNode of stackedNodes) {
-            const physicalSize = getCurrentPhysicalSize();
-            const shouldSwap = await renderAdjustmentNodeToTarget({
-              renderer,
-              scene,
-              camera,
-              quad,
-              getMaterial,
-              nodeRegistry,
-              renderContext,
-              node: stackedNode,
-              inputTexture: stackRead.texture,
-              outputTarget: stackWrite,
-              width: physicalSize.width,
-              height: physicalSize.height,
-              blurRadiusScale,
-              renderTargetOptions,
-              sceneColorSpace: options.sceneNode.colorSpace,
-              colorManagement: options.colorManagement,
-              ocioTextures,
-              ownedOcioTextures: ownedTextures,
-              fallbackSourceNode: baseNode,
-              getInputTextureForNode: (nodeId, targetFrame) => {
-                const sourceNode = options.nodes.find((l) => l.id === nodeId);
-                if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
-                  const key = getMediaTextureKeyFromRegistry(sourceNode, targetFrame, nodeRegistry);
-                  return key ? loadedTextures.get(key) : undefined;
-                }
-                return undefined;
-              },
-              getRotoMaskLayers: options.getRotoMaskLayers,
-              getRotoAlphaMode: options.getRotoAlphaMode,
-              getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
-            });
-
-            if (shouldSwap) {
-              [stackRead, stackWrite] = [stackWrite, stackRead];
-            }
-          }
-
-          const { operator } = getNodeBlendProps(baseNode);
-          if (operator === BlendMode.OVER) {
-            straightOverTarget = stackRead === writeBuffer ? auxBuffer : writeBuffer;
-            finalComposite = getMaterial(
-              `${baseNode.id}_stack_comp_straight_over`,
-              RendererShader.STRAIGHT_TEXTURE_OVER,
-              {
-                u_tBackdrop: { value: readBuffer.texture },
-                u_tDiffuse: { value: stackRead.texture },
-                u_opacity: { value: opacity / 100 },
-              },
-            );
-          } else {
-            finalComposite = getMaterial(
-              `${baseNode.id}_stack_comp`,
-              RendererShader.TEXTURE_OPACITY,
-              {
-                u_tDiffuse: { value: stackRead.texture },
-                u_opacity: { value: opacity / 100 },
-              },
-            );
-          }
         } else {
-          const { operator } = getNodeBlendProps(baseNode);
-          if (operator === BlendMode.OVER) {
-            finalComposite = getMaterial(
-              `${baseNode.id}_comp_straight_over`,
-              buildOcioTransformedTextureShader(baseOcioTransform, true),
-              {
-                u_tBackdrop: { value: readBuffer.texture },
-                u_tDiffuse: { value: texture },
-                u_opacity: { value: opacity / 100 },
-                u_scaleX: { value: scaleX },
-                u_scaleY: { value: scaleY },
-                u_offset: { value: offset },
-                u_scene_res: {
-                  value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
-                },
-                u_image_res: { value: new THREE.Vector2(width, height) },
-                u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
-                u_flipY: { value: false },
-                ...getGeneratedColorUniforms(baseNode, renderContext, nodeRegistry),
-                ...createOcioUniforms(baseOcioTransform, ocioTextures, ownedTextures),
+          finalComposite = getMaterial(
+            `${baseNode.id}_comp`,
+            buildOcioTransformedTextureShader(baseOcioTransform, false),
+            {
+              u_tDiffuse: { value: texture },
+              u_opacity: { value: opacity / 100 },
+              u_scaleX: { value: scaleX },
+              u_scaleY: { value: scaleY },
+              u_offset: { value: offset },
+              u_scene_res: {
+                value: new THREE.Vector2(currentStorageSize.width, currentStorageSize.height),
               },
-            );
-          } else {
-            finalComposite = getMaterial(
-              `${baseNode.id}_comp`,
-              buildOcioTransformedTextureShader(baseOcioTransform, false),
-              {
-                u_tDiffuse: { value: texture },
-                u_opacity: { value: opacity / 100 },
-                u_scaleX: { value: scaleX },
-                u_scaleY: { value: scaleY },
-                u_offset: { value: offset },
-                u_scene_res: {
-                  value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
-                },
-                u_image_res: { value: new THREE.Vector2(width, height) },
-                u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
-                u_flipY: { value: false },
-                ...getGeneratedColorUniforms(baseNode, renderContext, nodeRegistry),
-                ...createOcioUniforms(baseOcioTransform, ocioTextures, ownedTextures),
-              },
-            );
-          }
+              u_image_res: { value: new THREE.Vector2(width, height) },
+              u_image_region: { value: getTextureSourceRegionUniform(texture, width, height) },
+              u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
+              u_flipY: { value: false },
+              ...getGeneratedColorUniforms(baseNode, renderContext, nodeRegistry),
+              ...createOcioUniforms(baseOcioTransform, ocioTextures, ownedTextures),
+            },
+          );
         }
 
-        const { operator } = getNodeBlendProps(baseNode);
         if (operator === BlendMode.OVER) {
-          renderStraightOverToMain(finalComposite, straightOverTarget);
+          renderStraightOverToMain(finalComposite);
         } else {
           quad.material = finalComposite;
           applyBlendMode(finalComposite, operator);
@@ -3162,7 +3263,6 @@ export const renderWithSharedPipeline = async (
         if (isDynamicTexture) {
           texture?.dispose();
         }
-        i += consumedCount;
       } else if (baseMode === 'merge') {
         await renderMergeNodeToTarget({
           renderer,
@@ -3176,10 +3276,7 @@ export const renderWithSharedPipeline = async (
           outputTarget: readBuffer,
           renderNodeOutputTexture,
         });
-      } else if (
-        isExportAdjustmentType(baseNode.type) &&
-        !isStackedExportAdjustmentNode(baseNode)
-      ) {
+      } else if (isPrimaryInputNodeType(baseNode.type)) {
         const adjustmentInputTexture = await getPipeInputTexture(baseNode);
         const outputSceneSizeOverride = getNodeOutputSceneSize(
           baseNode,
@@ -3187,7 +3284,10 @@ export const renderWithSharedPipeline = async (
           renderContext,
         );
         const outputSceneSize = outputSceneSizeOverride ?? currentSceneSize;
-        ensureTargetForSceneSize(writeBuffer, outputSceneSize);
+        const outputStorageWindow =
+          nodeWindow?.outputStorageWindow ?? createDisplayStorageWindow(outputSceneSize);
+        const outputStorageSize = getStorageSize(outputStorageWindow);
+        ensureTargetForSceneSize(writeBuffer, outputStorageSize);
         const physicalSize = getCurrentPhysicalSize();
         const rendered = await renderAdjustmentNodeToTarget({
           renderer,
@@ -3208,7 +3308,6 @@ export const renderWithSharedPipeline = async (
           colorManagement: options.colorManagement,
           ocioTextures,
           ownedOcioTextures: ownedTextures,
-          fallbackSourceNode: previousMediaNode,
           getInputTextureForNode: (nodeId, targetFrame) => {
             const sourceNode = options.nodes.find((l) => l.id === nodeId);
             if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
@@ -3217,16 +3316,17 @@ export const renderWithSharedPipeline = async (
             }
             return undefined;
           },
+          resolveOutput: renderNodeOutputTexture,
+          executionMode: 'async',
           getRotoMaskLayers: options.getRotoMaskLayers,
           getRotoAlphaMode: options.getRotoAlphaMode,
-          getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
-          shaderId: `${baseNode.id}_global`,
+          getScratchRenderTarget: (key, size) => getUtilityOutputTarget(`__scratch:${key}`, size),
         });
 
         if (rendered) {
           swapMainBuffers();
           if (outputSceneSizeOverride) {
-            setCurrentSceneSize(outputSceneSizeOverride);
+            setCurrentRenderWindows(outputSceneSizeOverride, outputStorageWindow);
           }
         }
       }
@@ -3250,14 +3350,54 @@ export const renderWithSharedPipeline = async (
       extraTargets.push(target);
       capturedOutputTargets.set(capture.id, target);
 
-      const material = getMaterial(`capture:${capture.id}`, RendererShader.TEXTURE, {
-        u_tDiffuse: { value: texture },
-      });
+      const captureWindow = options.dataWindowPlan?.nodeWindows.get(capture.nodeId);
+      const captureDisplaySize = captureWindow?.outputDisplayWindow ?? currentSceneSize;
+      const captureStorageSize = captureWindow
+        ? getStorageSize(captureWindow.outputStorageWindow)
+        : captureDisplaySize;
+      const material =
+        captureStorageSize.width !== captureDisplaySize.width ||
+        captureStorageSize.height !== captureDisplaySize.height
+          ? getDisplayWindowCopyMaterial(
+              `capture:${capture.id}:display-window`,
+              texture,
+              captureDisplaySize,
+              captureStorageSize,
+              getMaterial,
+            )
+          : getMaterial(`capture:${capture.id}`, RendererShader.TEXTURE, {
+              u_tDiffuse: { value: texture },
+            });
       applyNoBlending(material);
       quad.material = material;
       clearRenderTargetTransparent(renderer, target);
       renderer.setRenderTarget(target);
       renderer.render(scene, camera);
+    }
+
+    const outputDisplaySize = { ...currentSceneSize };
+    let finalCompositeTexture = readBuffer.texture;
+    if (
+      currentStorageSize.width !== outputDisplaySize.width ||
+      currentStorageSize.height !== outputDisplaySize.height
+    ) {
+      const displayTarget = getUtilityOutputTarget('__final:display-window', {
+        width: options.width,
+        height: options.height,
+      });
+      const displayCopy = getDisplayWindowCopyMaterial(
+        '__final:display-window-copy',
+        readBuffer.texture,
+        outputDisplaySize,
+        currentStorageSize,
+        getMaterial,
+      );
+      applyNoBlending(displayCopy);
+      quad.material = displayCopy;
+      clearRenderTargetTransparent(renderer, displayTarget);
+      renderer.setRenderTarget(displayTarget);
+      renderer.render(scene, camera);
+      finalCompositeTexture = displayTarget.texture;
     }
 
     let finalMaterial: THREE.ShaderMaterial;
@@ -3267,7 +3407,7 @@ export const renderWithSharedPipeline = async (
       options.finalColorSpace === 'scene_linear'
     ) {
       finalMaterial = getMaterial('final_raw', RendererShader.TEXTURE, {
-        u_tDiffuse: { value: readBuffer.texture },
+        u_tDiffuse: { value: finalCompositeTexture },
       });
     } else if (options.finalColorSpace === 'color_space') {
       const ocioTransform = getOcioOutputColorSpaceTransform(
@@ -3277,7 +3417,7 @@ export const renderWithSharedPipeline = async (
       );
       finalMaterial = createSceneLinearOutputMaterial({
         materialKey: 'final_color_space',
-        inputTexture: readBuffer.texture,
+        inputTexture: finalCompositeTexture,
         ocioTransform,
         ocioTextures,
         ownedTextures,
@@ -3291,7 +3431,7 @@ export const renderWithSharedPipeline = async (
       );
       finalMaterial = createColorManagedOutputMaterial({
         materialKey: 'final_srgb',
-        inputTexture: readBuffer.texture,
+        inputTexture: finalCompositeTexture,
         ocioTransform,
         alphaOverlayStyle,
         ocioTextures,
@@ -3309,7 +3449,7 @@ export const renderWithSharedPipeline = async (
       }
       finalMaterial = createDisplayViewOutputMaterial({
         materialKey: 'final_viewport',
-        inputTexture: readBuffer.texture,
+        inputTexture: finalCompositeTexture,
         sceneColorSpace: options.sceneNode.colorSpace,
         viewerSettings,
         displayView,
@@ -3374,6 +3514,10 @@ export interface ViewportPipelineOptions {
   nodes: AnyNode[];
   sceneNode: SceneNode;
   frame: number;
+  /** Shared quality budget for interactive viewport work. Defaults to full quality. */
+  quality?: Partial<RenderQuality>;
+  /** Interactive scene ROI. Limits fragment work without changing graph or export semantics. */
+  workingArea?: RenderRegion | null;
   viewerSettings: ViewerSettings;
   displayView: DisplayViewSelection;
   outputDomain?: RenderOutputDomain;
@@ -3397,6 +3541,8 @@ export interface ViewportPipelineOptions {
    */
   presentToCanvas?: boolean;
   nodeRegistry: NodeRegistryLike;
+  /** Explicit per-node display/data-window projection supplied by the host graph. */
+  dataWindowPlan?: RendererDataWindowPlan;
 }
 
 export interface ViewportPipelineResult {
@@ -3427,15 +3573,20 @@ export const renderViewportFrameWithSharedPipeline = (
   } = options;
   assertRendererProcessingDomainsSupported(nodes, (nodeType) => nodeRegistry.get(nodeType));
   const alphaOverlayStyle = resolveAlphaOverlayStyle(options.alphaOverlayStyle);
-  const { isStackedAdjustmentNode, isStackAdjustmentType } = createNodePredicates(nodeRegistry);
+  const { isPrimaryInputNodeType } = createNodePredicates(nodeRegistry);
   const finalSceneSize = { width: sceneNode.width, height: sceneNode.height };
   const outputRenderScale = { width: 1, height: 1 };
   let currentSceneSize = getInitialSceneSize(nodes, nodeRegistry, finalSceneSize);
+  let currentStorageWindow = getInitialStorageWindow(options.dataWindowPlan, currentSceneSize);
+  let currentStorageSize = getStorageSize(currentStorageWindow);
   const renderContext: RenderContext = {
     frame,
     fps: sceneNode.fps || 30,
     scene: { ...currentSceneSize },
+    storageWindow: { ...currentStorageWindow },
+    outputStorageWindow: { ...currentStorageWindow },
     nodes: nodes,
+    quality: resolveRenderQuality(options.quality),
     transformColorPickingToSceneLinear: (color) =>
       colorManagement.transformRgb(
         colorManagement.colorPickingColorSpace,
@@ -3443,9 +3594,16 @@ export const renderViewportFrameWithSharedPipeline = (
         color,
       ),
   };
-  const setCurrentSceneSize = (size: RenderFormatSize) => {
-    currentSceneSize = size;
-    renderContext.scene = { ...size };
+  const setCurrentRenderWindows = (
+    displaySize: RenderFormatSize,
+    storageWindow = createDisplayStorageWindow(displaySize),
+  ) => {
+    currentSceneSize = displaySize;
+    currentStorageWindow = storageWindow;
+    currentStorageSize = getStorageSize(storageWindow);
+    renderContext.scene = { ...displaySize };
+    renderContext.storageWindow = { ...storageWindow };
+    renderContext.outputStorageWindow = { ...storageWindow };
   };
 
   const renderer = resources.renderer;
@@ -3467,10 +3625,48 @@ export const renderViewportFrameWithSharedPipeline = (
   renderer.autoClear = false;
 
   const renderTargetOptions = getRenderTargetOptionsForOutput(sceneNode, options.outputDomain);
+  const configureTargetWorkingArea = (target: THREE.WebGLRenderTarget): void => {
+    if (target.width !== finalSceneSize.width || target.height !== finalSceneSize.height) {
+      target.scissorTest = false;
+      return;
+    }
+    const scissor = resolveRenderRegionScissor(options.workingArea, finalSceneSize, {
+      width: target.width,
+      height: target.height,
+    });
+    target.scissorTest = scissor !== null;
+    if (scissor) {
+      target.scissor.set(scissor.x, scissor.y, scissor.width, scissor.height);
+    }
+  };
+  const configureCanvasWorkingArea = (): void => {
+    const setScissorTest = (
+      renderer as THREE.WebGLRenderer & { setScissorTest?: (enabled: boolean) => void }
+    ).setScissorTest;
+    if (typeof setScissorTest !== 'function') return;
+    if (!options.workingArea) {
+      setScissorTest.call(renderer, false);
+      return;
+    }
+    const drawingBufferSize =
+      typeof renderer.getDrawingBufferSize === 'function'
+        ? renderer.getDrawingBufferSize(new THREE.Vector2())
+        : typeof renderer.getSize === 'function'
+          ? renderer.getSize(new THREE.Vector2())
+          : new THREE.Vector2(finalSceneSize.width, finalSceneSize.height);
+    const scissor = resolveRenderRegionScissor(options.workingArea, finalSceneSize, {
+      width: drawingBufferSize.x,
+      height: drawingBufferSize.y,
+    });
+    setScissorTest.call(renderer, scissor !== null);
+    if (scissor) {
+      renderer.setScissor(scissor.x, scissor.y, scissor.width, scissor.height);
+    }
+  };
 
   let renderTargets = resources.renderTargets;
   if (
-    renderTargets.length !== 3 ||
+    renderTargets.length !== 2 ||
     renderTargets.some((target) => !renderTargetMatchesOptions(target, renderTargetOptions))
   ) {
     renderTargets.forEach((target) => target.dispose());
@@ -3479,33 +3675,31 @@ export const renderViewportFrameWithSharedPipeline = (
 
     renderTargets = [
       new THREE.WebGLRenderTarget(
-        currentSceneSize.width,
-        currentSceneSize.height,
+        currentStorageSize.width,
+        currentStorageSize.height,
         renderTargetOptions,
       ),
       new THREE.WebGLRenderTarget(
-        currentSceneSize.width,
-        currentSceneSize.height,
-        renderTargetOptions,
-      ),
-      new THREE.WebGLRenderTarget(
-        currentSceneSize.width,
-        currentSceneSize.height,
+        currentStorageSize.width,
+        currentStorageSize.height,
         renderTargetOptions,
       ),
     ];
   }
+  renderTargets.forEach(configureTargetWorkingArea);
   // The resources object owns the active pool. Keeping this assignment inside
   // the pipeline prevents callers from accidentally retaining the old empty or
   // wrong-sized array and leaking the newly allocated targets.
   resources.renderTargets = renderTargets;
 
   let [readBuffer, writeBuffer] = renderTargets;
-  const auxBuffer = renderTargets[2];
   const ensureTargetForSceneSize = (
     target: THREE.WebGLRenderTarget,
-    size: RenderFormatSize = currentSceneSize,
-  ) => ensureRenderTargetSize(target, size, outputRenderScale);
+    size: RenderFormatSize = currentStorageSize,
+  ) => {
+    ensureRenderTargetSize(target, size, outputRenderScale);
+    configureTargetWorkingArea(target);
+  };
   const getMaterial = new StudioShaderMaterialCache({
     materials: resources.materials,
     renderer,
@@ -3516,31 +3710,31 @@ export const renderViewportFrameWithSharedPipeline = (
   const swapMainBuffers = () => {
     [readBuffer, writeBuffer] = [writeBuffer, readBuffer];
   };
-  const copyTargetToWriteBuffer = (sourceTarget: THREE.WebGLRenderTarget) => {
-    ensureTargetForSceneSize(writeBuffer);
-    const copyMaterial = getMaterial('copy_to_main_write', RendererShader.TEXTURE, {
-      u_tDiffuse: { value: sourceTarget.texture },
-    });
-    applyNoBlending(copyMaterial);
-    resources.quad.material = copyMaterial;
-    renderer.setRenderTarget(writeBuffer);
-    renderer.render(resources.scene, resources.camera);
-  };
   resources.utilityTargets ??= new Map<string, THREE.WebGLRenderTarget>();
   const utilityRenderedThisFrame = new Set<string>();
   const utilityRenderStack = new Set<string>();
 
-  const getUtilityOutputTarget = (key: string): THREE.WebGLRenderTarget => {
+  const getUtilityOutputTarget = (
+    key: string,
+    size?: ScratchRenderTargetOptions,
+  ): THREE.WebGLRenderTarget => {
     const existing = resources.utilityTargets?.get(key);
     if (existing) {
-      ensureTargetForSceneSize(existing);
+      if (size) {
+        ensureRenderTargetSize(existing, size, { width: 1, height: 1 });
+        configureTargetWorkingArea(existing);
+      } else {
+        ensureTargetForSceneSize(existing);
+      }
       return existing;
     }
+    const targetSize = size ?? currentStorageSize;
     const target = new THREE.WebGLRenderTarget(
-      currentSceneSize.width,
-      currentSceneSize.height,
+      targetSize.width,
+      targetSize.height,
       renderTargetOptions,
     );
+    configureTargetWorkingArea(target);
     resources.utilityTargets!.set(key, target);
     return target;
   };
@@ -3550,6 +3744,8 @@ export const renderViewportFrameWithSharedPipeline = (
     texture: THREE.Texture,
     target: THREE.WebGLRenderTarget,
     textureSize?: { width: number; height: number },
+    renderSize: RenderFormatSize = currentStorageSize,
+    nodeRenderContext: RenderContext = renderContext,
   ) => {
     let width = textureSize?.width ?? currentSceneSize.width;
     let height = textureSize?.height ?? currentSceneSize.height;
@@ -3586,17 +3782,18 @@ export const renderViewportFrameWithSharedPipeline = (
         u_scaleX: { value: scaleX },
         u_scaleY: { value: scaleY },
         u_offset: { value: offset },
-        u_scene_res: { value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height) },
+        u_scene_res: { value: new THREE.Vector2(renderSize.width, renderSize.height) },
         u_image_res: { value: new THREE.Vector2(width, height) },
+        u_image_region: { value: getTextureSourceRegionUniform(texture, width, height) },
         u_source_alpha_mode: { value: getSourceAlphaModeUniform(node) },
         u_flipY: { value: false },
-        ...getGeneratedColorUniforms(node, renderContext, nodeRegistry),
+        ...getGeneratedColorUniforms(node, nodeRenderContext, nodeRegistry),
         ...createOcioUniforms(ocioTransform, resources.ocioTextures!),
       },
     );
     applyNoBlending(material);
     resources.quad.material = material;
-    ensureTargetForSceneSize(target);
+    ensureTargetForSceneSize(target, renderSize);
     clearRenderTargetTransparent(renderer, target);
     renderer.setRenderTarget(target);
     renderer.render(resources.scene, resources.camera);
@@ -3606,11 +3803,13 @@ export const renderViewportFrameWithSharedPipeline = (
     node: AnyNode,
     layers: RendererMediaCompositeLayer[],
     target: THREE.WebGLRenderTarget,
+    renderSize: RenderFormatSize = currentStorageSize,
+    nodeRenderContext: RenderContext = renderContext,
   ): boolean => {
     if (layers.length === 0) return false;
 
-    const layerRead = getUtilityOutputTarget(`${node.id}:media-composite:read`);
-    const layerWrite = getUtilityOutputTarget(`${node.id}:media-composite:write`);
+    const layerRead = getUtilityOutputTarget(`${node.id}:media-composite:read`, renderSize);
+    const layerWrite = getUtilityOutputTarget(`${node.id}:media-composite:write`, renderSize);
     let readTarget = layerRead;
     let writeTarget = layerWrite;
     let renderedAnyLayer = false;
@@ -3640,13 +3839,13 @@ export const renderViewportFrameWithSharedPipeline = (
               quad: resources.quad,
               getMaterial,
               getTarget: (key) => getUtilityOutputTarget(key),
-              ensureTarget: (maskTarget) => ensureTargetForSceneSize(maskTarget),
+              ensureTarget: (maskTarget) => ensureTargetForSceneSize(maskTarget, renderSize),
               resourceKey: `${node.id}:media-composite:difference-mask`,
               outputTexture: texture,
               referenceTexture: differenceReferenceTexture,
               layer,
               mask: differenceMask,
-              sceneSize: currentSceneSize,
+              sceneSize: renderSize,
               frame,
             })
           : null;
@@ -3671,9 +3870,12 @@ export const renderViewportFrameWithSharedPipeline = (
             ),
           },
           u_scene_res: {
-            value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+            value: new THREE.Vector2(renderSize.width, renderSize.height),
           },
           u_image_res: { value: new THREE.Vector2(layer.width, layer.height) },
+          u_image_region: {
+            value: getTextureSourceRegionUniform(texture, layer.width, layer.height),
+          },
           u_source_alpha_mode: { value: getSourceAlphaModeUniform(layer) },
           u_flipY: { value: false },
           ...(useDifferenceMask && differenceMask && renderedDifferenceMask
@@ -3690,13 +3892,13 @@ export const renderViewportFrameWithSharedPipeline = (
                 },
               }
             : {}),
-          ...getGeneratedColorUniforms(node, renderContext, nodeRegistry),
+          ...getGeneratedColorUniforms(node, nodeRenderContext, nodeRegistry),
           ...createOcioUniforms(ocioTransform, resources.ocioTextures!),
         },
       );
       applyNoBlending(material);
       resources.quad.material = material;
-      ensureTargetForSceneSize(writeTarget);
+      ensureTargetForSceneSize(writeTarget, renderSize);
       renderer.setRenderTarget(writeTarget);
       renderer.render(resources.scene, resources.camera);
       renderedAnyLayer = true;
@@ -3710,7 +3912,7 @@ export const renderViewportFrameWithSharedPipeline = (
     });
     applyNoBlending(copyMaterial);
     resources.quad.material = copyMaterial;
-    ensureTargetForSceneSize(target);
+    ensureTargetForSceneSize(target, renderSize);
     renderer.setRenderTarget(target);
     renderer.render(resources.scene, resources.camera);
     return true;
@@ -3730,6 +3932,9 @@ export const renderViewportFrameWithSharedPipeline = (
       frame,
       sceneNode,
       currentSceneSize,
+      currentRenderSize: currentStorageSize,
+      renderTargetScale: outputRenderScale,
+      dataWindowPlan: options.dataWindowPlan,
       blurRadiusScale: 1,
       renderTargetOptions,
       nodeRegistry,
@@ -3794,32 +3999,30 @@ export const renderViewportFrameWithSharedPipeline = (
       getTransparentInputTexture()
     );
   };
-  const renderStraightOverToMain = (
-    material: THREE.ShaderMaterial,
-    target: THREE.WebGLRenderTarget = writeBuffer,
-  ) => {
+  const renderStraightOverToMain = (material: THREE.ShaderMaterial) => {
     applyNoBlending(material);
     resources.quad.material = material;
-    renderer.setRenderTarget(target);
+    renderer.setRenderTarget(writeBuffer);
     renderer.render(resources.scene, resources.camera);
-    if (target !== writeBuffer) {
-      copyTargetToWriteBuffer(target);
-    }
     swapMainBuffers();
   };
 
   ensureTargetForSceneSize(readBuffer);
   ensureTargetForSceneSize(writeBuffer);
-  ensureTargetForSceneSize(auxBuffer);
   clearRenderTargetTransparent(renderer, readBuffer);
 
   const visibleNodes = getVisiblePipelineNodes(nodes, nodeRegistry);
-  let previousMediaNode: AnyNode | null = null;
   for (let index = 0; index < visibleNodes.length; index += 1) {
     const baseNode = visibleNodes[index];
+    const nodeWindow = options.dataWindowPlan?.nodeWindows.get(baseNode.id);
+    if (nodeWindow) {
+      setCurrentRenderWindows(nodeWindow.inputDisplayWindow, nodeWindow.inputStorageWindow);
+      renderContext.outputStorageWindow = { ...nodeWindow.outputStorageWindow };
+      renderContext.inputDataWindow = { ...nodeWindow.inputDataWindow };
+      renderContext.outputDataWindow = { ...nodeWindow.outputDataWindow };
+    }
     ensureTargetForSceneSize(readBuffer);
     ensureTargetForSceneSize(writeBuffer);
-    ensureTargetForSceneSize(auxBuffer);
     const baseMode = getRenderMode(baseNode, nodeRegistry);
 
     if (baseMode === 'utility') {
@@ -3844,9 +4047,6 @@ export const renderViewportFrameWithSharedPipeline = (
         swapMainBuffers();
       }
     } else if (baseMode === 'media' || baseMode === 'text') {
-      if (isMediaNodeWithRegistry(baseNode, nodeRegistry)) {
-        previousMediaNode = baseNode;
-      }
       let texture: THREE.Texture | undefined;
       let width = 0;
       let height = 0;
@@ -3873,8 +4073,8 @@ export const renderViewportFrameWithSharedPipeline = (
           );
           if (!renderedComposite) continue;
           texture = compositeTarget.texture;
-          width = currentSceneSize.width;
-          height = currentSceneSize.height;
+          width = currentStorageSize.width;
+          height = currentStorageSize.height;
           isCompositeMediaTexture = true;
         } else {
           texture = getMediaTexture(baseNode as MediaNode, frame);
@@ -3916,160 +4116,61 @@ export const renderViewportFrameWithSharedPipeline = (
             )
           : null;
 
-      const { stackedNodes, consumedCount } = collectAdjacentStackedNodes(
-        visibleNodes,
-        index,
-        isStackedAdjustmentNode,
-      );
-
       let finalCompositeMaterial: THREE.ShaderMaterial;
-      let straightOverTarget = writeBuffer;
-      if (stackedNodes.length > 0) {
-        let stackRead = writeBuffer;
-        let stackWrite = auxBuffer;
-        clearRenderTargetTransparent(renderer, stackRead);
-
-        const baseMaterial = getMaterial(
-          `${baseNode.id}_base_transformed`,
-          buildOcioTransformedTextureShader(baseOcioTransform, false),
+      const { operator } = getNodeBlendProps(baseNode);
+      if (operator === BlendMode.OVER) {
+        finalCompositeMaterial = getMaterial(
+          `${baseNode.id}_comp_transformed_straight_over`,
+          buildOcioTransformedTextureShader(baseOcioTransform, true),
           {
+            u_tBackdrop: { value: readBuffer.texture },
             u_tDiffuse: { value: texture },
-            u_opacity: { value: 1 },
+            u_opacity: { value: opacity / 100 },
             u_scaleX: { value: scaleX },
             u_scaleY: { value: scaleY },
             u_offset: { value: offset },
             u_scene_res: {
-              value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
+              value: new THREE.Vector2(currentStorageSize.width, currentStorageSize.height),
             },
             u_image_res: { value: new THREE.Vector2(width, height) },
+            u_image_region: { value: getTextureSourceRegionUniform(texture, width, height) },
             u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
             u_flipY: { value: false },
             ...getGeneratedColorUniforms(baseNode, renderContext, nodeRegistry),
             ...createOcioUniforms(baseOcioTransform, resources.ocioTextures!),
           },
         );
-        resources.quad.material = baseMaterial;
-        renderer.render(resources.scene, resources.camera);
-
-        for (const stackedNode of stackedNodes) {
-          const shouldSwap = renderAdjustmentNodeToTarget({
-            renderer,
-            scene: resources.scene,
-            camera: resources.camera,
-            quad: resources.quad,
-            getMaterial,
-            nodeRegistry,
-            renderContext,
-            node: stackedNode,
-            inputTexture: stackRead.texture,
-            outputTarget: stackWrite,
-            width: currentSceneSize.width,
-            height: currentSceneSize.height,
-            blurRadiusScale: 1,
-            renderTargetOptions,
-            sceneColorSpace: sceneNode.colorSpace,
-            colorManagement,
-            ocioTextures: resources.ocioTextures!,
-            fallbackSourceNode: baseNode,
-            getInputTextureForNode: (nodeId, targetFrame) => {
-              const sourceNode = nodes.find((l) => l.id === nodeId);
-              if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
-                return getMediaTexture(sourceNode as MediaNode, targetFrame);
-              }
-              return undefined;
-            },
-            getRotoMaskLayers,
-            getRotoAlphaMode,
-            getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
-          });
-
-          if (isPromiseLike(shouldSwap)) {
-            throw new Error('Viewport stacked adjustment rendering must remain synchronous.');
-          }
-
-          if (shouldSwap) {
-            [stackRead, stackWrite] = [stackWrite, stackRead];
-          }
-        }
-
-        const { operator } = getNodeBlendProps(baseNode);
-        if (operator === BlendMode.OVER) {
-          straightOverTarget = stackRead === writeBuffer ? auxBuffer : writeBuffer;
-          finalCompositeMaterial = getMaterial(
-            `${baseNode.id}_comp_straight_over`,
-            RendererShader.STRAIGHT_TEXTURE_OVER,
-            {
-              u_tBackdrop: { value: readBuffer.texture },
-              u_tDiffuse: { value: stackRead.texture },
-              u_opacity: { value: opacity / 100 },
-            },
-          );
-        } else {
-          finalCompositeMaterial = getMaterial(
-            `${baseNode.id}_comp`,
-            RendererShader.TEXTURE_OPACITY,
-            {
-              u_tDiffuse: { value: stackRead.texture },
-              u_opacity: { value: opacity / 100 },
-            },
-          );
-        }
       } else {
-        const { operator } = getNodeBlendProps(baseNode);
-        if (operator === BlendMode.OVER) {
-          finalCompositeMaterial = getMaterial(
-            `${baseNode.id}_comp_transformed_straight_over`,
-            buildOcioTransformedTextureShader(baseOcioTransform, true),
-            {
-              u_tBackdrop: { value: readBuffer.texture },
-              u_tDiffuse: { value: texture },
-              u_opacity: { value: opacity / 100 },
-              u_scaleX: { value: scaleX },
-              u_scaleY: { value: scaleY },
-              u_offset: { value: offset },
-              u_scene_res: {
-                value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
-              },
-              u_image_res: { value: new THREE.Vector2(width, height) },
-              u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
-              u_flipY: { value: false },
-              ...getGeneratedColorUniforms(baseNode, renderContext, nodeRegistry),
-              ...createOcioUniforms(baseOcioTransform, resources.ocioTextures!),
+        finalCompositeMaterial = getMaterial(
+          `${baseNode.id}_comp_transformed`,
+          buildOcioTransformedTextureShader(baseOcioTransform, false),
+          {
+            u_tDiffuse: { value: texture },
+            u_opacity: { value: opacity / 100 },
+            u_scaleX: { value: scaleX },
+            u_scaleY: { value: scaleY },
+            u_offset: { value: offset },
+            u_scene_res: {
+              value: new THREE.Vector2(currentStorageSize.width, currentStorageSize.height),
             },
-          );
-        } else {
-          finalCompositeMaterial = getMaterial(
-            `${baseNode.id}_comp_transformed`,
-            buildOcioTransformedTextureShader(baseOcioTransform, false),
-            {
-              u_tDiffuse: { value: texture },
-              u_opacity: { value: opacity / 100 },
-              u_scaleX: { value: scaleX },
-              u_scaleY: { value: scaleY },
-              u_offset: { value: offset },
-              u_scene_res: {
-                value: new THREE.Vector2(currentSceneSize.width, currentSceneSize.height),
-              },
-              u_image_res: { value: new THREE.Vector2(width, height) },
-              u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
-              u_flipY: { value: false },
-              ...getGeneratedColorUniforms(baseNode, renderContext, nodeRegistry),
-              ...createOcioUniforms(baseOcioTransform, resources.ocioTextures!),
-            },
-          );
-        }
+            u_image_res: { value: new THREE.Vector2(width, height) },
+            u_image_region: { value: getTextureSourceRegionUniform(texture, width, height) },
+            u_source_alpha_mode: { value: getSourceAlphaModeUniform(baseNode) },
+            u_flipY: { value: false },
+            ...getGeneratedColorUniforms(baseNode, renderContext, nodeRegistry),
+            ...createOcioUniforms(baseOcioTransform, resources.ocioTextures!),
+          },
+        );
       }
 
-      const { operator } = getNodeBlendProps(baseNode);
       if (operator === BlendMode.OVER) {
-        renderStraightOverToMain(finalCompositeMaterial, straightOverTarget);
+        renderStraightOverToMain(finalCompositeMaterial);
       } else {
         resources.quad.material = finalCompositeMaterial;
         applyBlendMode(finalCompositeMaterial, operator);
         renderer.setRenderTarget(readBuffer);
         renderer.render(resources.scene, resources.camera);
       }
-      index += consumedCount;
     } else if (baseMode === 'merge') {
       const renderedMerge = renderMergeNodeToTarget({
         renderer,
@@ -4086,11 +4187,14 @@ export const renderViewportFrameWithSharedPipeline = (
       if (isPromiseLike(renderedMerge)) {
         throw new Error('Viewport merge rendering must remain synchronous.');
       }
-    } else if (isStackAdjustmentType(baseNode.type) && !isStackedAdjustmentNode(baseNode)) {
+    } else if (isPrimaryInputNodeType(baseNode.type)) {
       const adjustmentInputTexture = getPipeInputTexture(baseNode);
       const outputSceneSizeOverride = getNodeOutputSceneSize(baseNode, nodeRegistry, renderContext);
       const outputSceneSize = outputSceneSizeOverride ?? currentSceneSize;
-      ensureTargetForSceneSize(writeBuffer, outputSceneSize);
+      const outputStorageWindow =
+        nodeWindow?.outputStorageWindow ?? createDisplayStorageWindow(outputSceneSize);
+      const outputStorageSize = getStorageSize(outputStorageWindow);
+      ensureTargetForSceneSize(writeBuffer, outputStorageSize);
       const rendered = renderAdjustmentNodeToTarget({
         renderer,
         scene: resources.scene,
@@ -4102,14 +4206,13 @@ export const renderViewportFrameWithSharedPipeline = (
         node: baseNode,
         inputTexture: adjustmentInputTexture,
         outputTarget: writeBuffer,
-        width: currentSceneSize.width,
-        height: currentSceneSize.height,
+        width: currentStorageSize.width,
+        height: currentStorageSize.height,
         blurRadiusScale: 1,
         renderTargetOptions,
         sceneColorSpace: sceneNode.colorSpace,
         colorManagement,
         ocioTextures: resources.ocioTextures!,
-        fallbackSourceNode: previousMediaNode,
         getInputTextureForNode: (nodeId, targetFrame) => {
           const sourceNode = nodes.find((l) => l.id === nodeId);
           if (sourceNode && isMediaNodeWithRegistry(sourceNode, nodeRegistry)) {
@@ -4117,9 +4220,11 @@ export const renderViewportFrameWithSharedPipeline = (
           }
           return undefined;
         },
+        resolveOutput: renderNodeOutputTexture,
+        executionMode: 'sync',
         getRotoMaskLayers,
         getRotoAlphaMode,
-        getScratchRenderTarget: (key) => getUtilityOutputTarget(`__scratch:${key}`),
+        getScratchRenderTarget: (key, size) => getUtilityOutputTarget(`__scratch:${key}`, size),
       });
 
       if (isPromiseLike(rendered)) {
@@ -4129,21 +4234,46 @@ export const renderViewportFrameWithSharedPipeline = (
       if (rendered) {
         swapMainBuffers();
         if (outputSceneSizeOverride) {
-          setCurrentSceneSize(outputSceneSizeOverride);
+          setCurrentRenderWindows(outputSceneSizeOverride, outputStorageWindow);
         }
       }
     }
   }
 
+  const outputDisplaySize = { ...currentSceneSize };
+  let finalCompositeTarget = readBuffer;
+  if (
+    currentStorageSize.width !== outputDisplaySize.width ||
+    currentStorageSize.height !== outputDisplaySize.height
+  ) {
+    const displayTarget = getUtilityOutputTarget('__viewer:scene-linear-display-window', {
+      width: outputDisplaySize.width,
+      height: outputDisplaySize.height,
+    });
+    const displayCopy = getDisplayWindowCopyMaterial(
+      '__viewer:scene-linear-display-window-copy',
+      readBuffer.texture,
+      outputDisplaySize,
+      currentStorageSize,
+      getMaterial,
+    );
+    applyNoBlending(displayCopy);
+    resources.quad.material = displayCopy;
+    clearRenderTargetTransparent(renderer, displayTarget);
+    renderer.setRenderTarget(displayTarget);
+    renderer.render(resources.scene, resources.camera);
+    finalCompositeTarget = displayTarget;
+  }
+
   const viewerMaterial =
     options.outputDomain?.kind === 'data'
       ? getMaterial('viewer_data', RendererShader.DATA_VIEW, {
-          u_tDiffuse: { value: readBuffer.texture },
+          u_tDiffuse: { value: finalCompositeTarget.texture },
           u_channel: { value: getDataViewerChannel(options.outputDomain) },
         })
       : createDisplayViewOutputMaterial({
           materialKey: 'viewer',
-          inputTexture: readBuffer.texture,
+          inputTexture: finalCompositeTarget.texture,
           sceneColorSpace: sceneNode.colorSpace,
           viewerSettings,
           displayView,
@@ -4155,18 +4285,24 @@ export const renderViewportFrameWithSharedPipeline = (
   resources.quad.material = viewerMaterial;
   let displayOutputTarget: THREE.WebGLRenderTarget | null = null;
   if (options.captureDisplayOutput) {
-    displayOutputTarget = getUtilityOutputTarget('__viewer:display-output');
+    displayOutputTarget = getUtilityOutputTarget('__viewer:display-output', {
+      width: outputDisplaySize.width,
+      height: outputDisplaySize.height,
+    });
     clearRenderTargetTransparent(renderer, displayOutputTarget);
     renderer.render(resources.scene, resources.camera);
   }
   if (presentToCanvas) {
+    renderer.setRenderTarget(null);
+    configureCanvasWorkingArea();
     clearRenderTargetTransparent(renderer, null);
     renderer.render(resources.scene, resources.camera);
   } else {
     // Do not leave a captured offscreen target bound for the caller's next
     // presentation pass.
     renderer.setRenderTarget(null);
+    if (typeof renderer.setScissorTest === 'function') renderer.setScissorTest(false);
   }
 
-  return { renderTargets, finalCompositeTarget: readBuffer, displayOutputTarget };
+  return { renderTargets, finalCompositeTarget, displayOutputTarget };
 };

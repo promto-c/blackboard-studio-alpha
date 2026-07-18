@@ -100,6 +100,7 @@ describe('useViewportRenderLoop', () => {
           displayView,
           projectColorManagement: createDefaultProjectColorManagement(),
           outputDomain: { kind: 'color' },
+          renderQuality: { mode: 'full', resolutionScale: 1, sampleLimit: 128 },
           alphaOverlayStyle: { color: [0, 0, 0], opacity: 0, bgDarken: 0 },
           hasRenderableNodes: true,
           isRenderReady: ready,

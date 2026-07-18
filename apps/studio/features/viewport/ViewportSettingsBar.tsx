@@ -1,15 +1,27 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
+import { useSceneNode, useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import type { ViewerSettings, ViewerSlot } from '@blackboard/types';
 import { Popover, Slider } from '@blackboard/ui';
-import { DisplayViewSelector, HotkeyBadge } from '@/components';
+import { DisplayViewSelector, HotkeyBadge, ViewportToolButton } from '@/components';
+import { useRegisterHotkeyCommands, useRegisterHotkeys } from '@/hotkeys';
+import type { HotkeyBinding, HotkeyCommand } from '@/hotkeys';
 import * as Icons from '@blackboard/icons';
 import { nodeFlags } from '@/nodes/helpers';
 import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { getViewerTargetLabel, VIEWER_SLOT_ORDER } from '@/utils/viewerSlots';
+import {
+  getViewerCompareSlotRole,
+  getViewerTargetLabel,
+  VIEWER_SLOT_ORDER,
+} from '@/utils/viewerSlots';
 import { hasViewerDisplayOverride, resolveCurrentViewerDisplayView } from '@/color-management';
 import { ViewportCompareBar } from './ViewportCompareBar';
+import {
+  VIEWER_COMPARE_SLOT_CLASS,
+  VIEWER_COMPARE_SLOT_LABEL,
+} from '@/components/viewerSlotPresentation';
+import { WorkingAreaSettings } from './WorkingAreaSettings';
+import { VIEWPORT_WORKING_AREA_TOOL } from './workingArea';
 
 type SettingsBarLayout = 'full' | 'comfortable' | 'compact' | 'narrow';
 
@@ -32,6 +44,8 @@ function ViewportSettingsBar() {
   const activeViewerSlot = useEditorSelector((s) => s.activeViewerSlot);
   const compareView = useEditorSelector((s) => s.compareView);
   const viewerSettings = useEditorSelector((s) => s.viewerSettings);
+  const activeViewportTool = useEditorSelector((s) => s.activeViewportTool);
+  const viewportWorkingArea = useEditorSelector((s) => s.viewportWorkingArea);
   const projectDisplayView = useEditorSelector((s) => s.colorManagement.viewer);
   const viewerColorManagement = useEditorSelector((s) => s.viewerColorManagement);
   const currentViewerDisplayView = resolveCurrentViewerDisplayView(
@@ -39,6 +53,7 @@ function ViewportSettingsBar() {
     viewerColorManagement,
   );
   const selectedNode = useSelectedEditorNode();
+  const sceneNode = useSceneNode();
   const {
     resetViewerToProjectView,
     setViewerDisplayView,
@@ -47,7 +62,10 @@ function ViewportSettingsBar() {
     assignViewerSlot,
     activateViewerSlot,
     clearViewerSlot,
-    exitCompareMode,
+    setActiveViewportTool,
+    setViewportWorkingArea,
+    setViewportWorkingAreaEnabled,
+    resetViewportWorkingArea,
   } = useEditorActions();
   const barRef = useRef<HTMLDivElement>(null);
   const glowRef = useRef<HTMLDivElement>(null);
@@ -127,6 +145,11 @@ function ViewportSettingsBar() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!compareView.isActive) return;
+    setOpenPopoverId((current) => (current === 'workingArea' ? null : current));
+  }, [compareView.isActive]);
+
   const handleToggleBar = () => {
     setIsBarVisible(!isBarVisible);
     if (isBarVisible) {
@@ -186,11 +209,45 @@ function ViewportSettingsBar() {
   const barMaxWidth = Math.max(224, layoutWidth);
 
   const isCompareActive = compareView.isActive;
+  const isWorkingAreaToolActive = activeViewportTool === VIEWPORT_WORKING_AREA_TOOL;
+
+  const toggleWorkingAreaTool = useCallback(() => {
+    if (!sceneNode || isCompareActive) return false;
+    setActiveViewportTool(isWorkingAreaToolActive ? null : VIEWPORT_WORKING_AREA_TOOL);
+    return true;
+  }, [isCompareActive, isWorkingAreaToolActive, sceneNode, setActiveViewportTool]);
+
+  const workingAreaCommands = useMemo<HotkeyCommand[]>(
+    () => [
+      {
+        id: 'viewport.toggleWorkingArea.runtime',
+        run: toggleWorkingAreaTool,
+      },
+    ],
+    [toggleWorkingAreaTool],
+  );
+
+  const workingAreaBindings = useMemo<HotkeyBinding[]>(
+    () =>
+      sceneNode && !isCompareActive
+        ? [
+            {
+              keys: 'Shift+R',
+              command: 'viewport.toggleWorkingArea.runtime',
+              scope: 'viewport',
+              weight: 450,
+            },
+          ]
+        : [],
+    [isCompareActive, sceneNode],
+  );
+
+  useRegisterHotkeyCommands('viewport.settingsBar', workingAreaCommands);
+  useRegisterHotkeys('viewport.settingsBar', workingAreaBindings);
 
   const handleViewerSlotClick = (slot: ViewerSlot, event: React.MouseEvent) => {
-    // During compare mode, clicking a slot exits compare and activates that slot
+    // Slot activation owns the atomic Compare-to-single-view transition.
     if (isCompareActive) {
-      exitCompareMode();
       activateViewerSlot(slot);
       return;
     }
@@ -217,8 +274,8 @@ function ViewportSettingsBar() {
     >
       <div
         ref={glowRef}
-        style={{ maxWidth: barMaxWidth }}
-        className={`interactive-glow glass-component relative z-10 flex min-w-0 items-center gap-2 bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-full shadow-lg ring-1 ring-inset ring-white/20 transition-all duration-300 overflow-hidden max-w-[calc(100vw-2rem)] ${
+        style={{ maxWidth: barMaxWidth, overflow: isBarVisible ? 'visible' : 'hidden' }}
+        className={`interactive-glow glass-component relative z-10 flex min-w-0 items-center ${layout === 'narrow' ? 'gap-1' : 'gap-2'} bg-gray-900/50 backdrop-blur-xl border border-white/10 rounded-full shadow-lg ring-1 ring-inset ring-white/20 transition-all duration-300 max-w-[calc(100vw-2rem)] ${
           isBarVisible ? 'max-h-20 px-2 py-1.5' : 'max-h-0 p-0 border-0 opacity-50'
         }`}
       >
@@ -311,7 +368,60 @@ function ViewportSettingsBar() {
           </button>
         )}
 
-        <div className="flex min-w-0 shrink items-center gap-1 pl-1 pr-1.5 py-1 rounded-full bg-black/20 ring-1 ring-inset ring-white/10">
+        {/* Viewport-global Working Area tool */}
+        {sceneNode && (
+          <Popover
+            widthClass="w-80 max-w-[calc(100vw-1rem)]"
+            sideOffset={30}
+            isOpen={openPopoverId === 'workingArea'}
+            onOpenChange={(open) => handlePopoverOpenChange('workingArea', open)}
+            trigger={
+              <ViewportToolButton
+                label="Working Area"
+                disabled={isCompareActive}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleWorkingAreaTool();
+                }}
+                onSettingsClick={() => undefined}
+                settingsPlacement="bottom"
+                isActive={isWorkingAreaToolActive}
+                isSettingsActive={openPopoverId === 'workingArea'}
+                title={
+                  isCompareActive
+                    ? 'Working Area is unavailable while Compare is active'
+                    : `Working Area: ${viewportWorkingArea.enabled ? 'Enabled' : 'Disabled'} (Shift+R toggles tool)`
+                }
+                aria-label="Working Area"
+                icon={
+                  <>
+                    <Icons.Rectangle className="h-5 w-5" />
+                    {viewportWorkingArea.enabled && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full bg-teal-300 ring-1 ring-gray-900"
+                      />
+                    )}
+                  </>
+                }
+              />
+            }
+          >
+            <WorkingAreaSettings
+              scene={sceneNode}
+              workingArea={viewportWorkingArea}
+              onChange={setViewportWorkingArea}
+              onEnabledChange={setViewportWorkingAreaEnabled}
+              onReset={resetViewportWorkingArea}
+            />
+          </Popover>
+        )}
+
+        <div
+          className={`flex min-w-0 shrink items-center rounded-full bg-black/20 py-1 ring-1 ring-inset ring-white/10 ${
+            layout === 'narrow' ? 'gap-0.5 pl-0.5 pr-1' : 'gap-1 pl-1 pr-1.5'
+          }`}
+        >
           {showViewerLabel && (
             <span className="text-[10px] uppercase tracking-wider text-gray-400 px-1">View</span>
           )}
@@ -319,8 +429,15 @@ function ViewportSettingsBar() {
             const assignedNodeId = viewerSlots?.[slot];
             const isAssigned = !!assignedNodeId;
             const isActive = activeViewerSlot === slot;
-            const isInCompare =
-              isCompareActive && (compareView.slotA === slot || compareView.slotB === slot);
+            const compareRole = isCompareActive
+              ? getViewerCompareSlotRole(
+                  slot,
+                  compareView.slotA && compareView.slotB
+                    ? [compareView.slotA, compareView.slotB]
+                    : null,
+                )
+              : null;
+            const isInCompare = compareRole !== null;
             const comparedWithLabel =
               isInCompare && compareView.slotA === slot
                 ? ` vs slot ${compareView.slotB}`
@@ -330,21 +447,20 @@ function ViewportSettingsBar() {
             const assignedNodeName = assignedNodeId
               ? getViewerTargetLabel(assignedNodeId, nodes)
               : 'Unassigned';
+            const slotClassName = compareRole
+              ? VIEWER_COMPARE_SLOT_CLASS[compareRole]
+              : isActive
+                ? 'bg-primary-500/40 text-white ring-primary-300/80 shadow-[0_0_0_1px_rgba(99,102,241,0.35)]'
+                : isAssigned
+                  ? 'bg-gray-700/90 text-gray-100 ring-gray-500/70 hover:bg-gray-600/90'
+                  : 'bg-gray-800/80 text-gray-500 ring-gray-700 hover:text-gray-300 hover:ring-gray-500';
 
             return (
               <button
                 key={`viewer-slot-${slot}`}
                 onClick={(event) => handleViewerSlotClick(slot, event)}
-                className={`w-6 h-6 rounded-full text-[11px] font-semibold transition-all ring-1 ring-inset ${
-                  isInCompare
-                    ? 'bg-amber-500/40 text-white ring-amber-300/80 shadow-[0_0_0_1px_rgba(245,158,11,0.35)]'
-                    : isActive
-                      ? 'bg-primary-500/40 text-white ring-primary-300/80 shadow-[0_0_0_1px_rgba(99,102,241,0.35)]'
-                      : isAssigned
-                        ? 'bg-gray-700/90 text-gray-100 ring-gray-500/70 hover:bg-gray-600/90'
-                        : 'bg-gray-800/80 text-gray-500 ring-gray-700 hover:text-gray-300 hover:ring-gray-500'
-                }`}
-                title={`Slot ${slot}: ${assignedNodeName}${isActive ? ' (active)' : ''}${isInCompare ? ' (comparing' + comparedWithLabel + ', click to exit compare)' : ''}. Hotkeys: ${slot} toggles slot; Ctrl/Cmd+${slot} assigns selected target.`}
+                className={`w-6 h-6 rounded-full text-[11px] font-semibold transition-all ring-1 ring-inset ${slotClassName}`}
+                title={`Slot ${slot}: ${assignedNodeName}${isActive ? ' (active)' : ''}${compareRole ? ` (${VIEWER_COMPARE_SLOT_LABEL[compareRole]}${comparedWithLabel}, click to exit compare)` : ''}. Hotkeys: ${slot} toggles slot; Ctrl/Cmd+${slot} assigns selected target.`}
               >
                 {slot}
               </button>
@@ -396,7 +512,7 @@ function ViewportSettingsBar() {
           </Popover>
         )}
 
-        <div className="w-px h-5 bg-gray-700 mx-1"></div>
+        {layout !== 'narrow' && <div className="w-px h-5 bg-gray-700 mx-1" />}
 
         {/* Exposure Button */}
         {showExposureInline && (

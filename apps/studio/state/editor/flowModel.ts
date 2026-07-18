@@ -65,20 +65,22 @@ export const createOutputNode = (id = OUTPUT_NODE_ID): OutputNode => ({
   enabled: true,
 });
 
-const stripNodeInputProjection = (node: AnyNode): AnyNode => {
+const stripNodeProjections = (node: AnyNode): AnyNode => {
   const {
     inputs: _inputs,
     inputSourcePorts: _inputSourcePorts,
+    stacked: _stacked,
     ...rest
   } = node as AnyNode & {
     inputs?: Record<string, string>;
     inputSourcePorts?: Record<string, string>;
+    stacked?: boolean;
   };
   return rest as AnyNode;
 };
 
 const normalizeNodeForFlow = (node: AnyNode): AnyNode => {
-  const topologyFreeNode = stripNodeInputProjection(node);
+  const topologyFreeNode = stripNodeProjections(node);
 
   if (isSceneNode(node)) {
     return { ...topologyFreeNode, kind: NodeKind.SCENE, type: NodeType.SCENE } as AnyNode;
@@ -98,6 +100,15 @@ const normalizeNodeForFlow = (node: AnyNode): AnyNode => {
 
   return { ...topologyFreeNode, kind: node.kind ?? NodeKind.EFFECT } as AnyNode;
 };
+
+const buildFlowStacks = (orderedNodes: AnyNode[]): FlowStack[] =>
+  buildNodeStacks(orderedNodes.filter((node) => !isOutputNode(node))).map(
+    (stack): FlowStack => ({
+      id: `stack_${stack[0].id}`,
+      rootNodeId: stack[0].id,
+      nodeIds: stack.map((node) => node.id),
+    }),
+  );
 
 export const buildFlowFromNodes = (
   orderedNodes: AnyNode[],
@@ -136,14 +147,7 @@ export const buildFlowFromNodes = (
   }
 
   nodes.push(outputNode);
-  const stackableNodes = orderedNodes.filter((node) => !isOutputNode(node));
-  const stacks = buildNodeStacks(stackableNodes).map(
-    (stack): FlowStack => ({
-      id: `stack_${stack[0].id}`,
-      rootNodeId: stack[0].id,
-      nodeIds: stack.map((node) => node.id),
-    }),
-  );
+  const stacks = buildFlowStacks(orderedNodes);
 
   return {
     id: flowId,
@@ -291,7 +295,7 @@ export const getOrderedNodesFromFlow = (flow: Flow | null): AnyNode[] => {
     .map((node) => {
       const nodeInputs = getNodeInputsFromFlow(flow, node.id);
       const inputSourcePorts = getNodeInputSourcePortsFromFlow(flow, node.id);
-      const topologyFreeNode = stripNodeInputProjection(node);
+      const topologyFreeNode = stripNodeProjections(node);
 
       return {
         ...topologyFreeNode,
@@ -318,10 +322,7 @@ export const replaceFlowNodes = (
   const nextNodeIds = new Set(builtFlow.nodes.map((node) => node.id));
   const preservedOutputEdges =
     currentFlow?.edges.filter(
-      (edge) =>
-        edge.targetNodeId === builtFlow.outputNodeId &&
-        edge.targetPort === 'pipe' &&
-        nextNodeIds.has(edge.sourceNodeId),
+      (edge) => edge.targetNodeId === builtFlow.outputNodeId && nextNodeIds.has(edge.sourceNodeId),
     ) ?? [];
   const nextFlow: Flow = {
     ...builtFlow,
@@ -335,6 +336,45 @@ export const replaceFlowNodes = (
     edges: [...builtFlow.edges, ...preservedOutputEdges],
   };
   return { ...flows, [flowId]: nextFlow };
+};
+
+/**
+ * Updates list/graph compaction metadata and canonical node order without
+ * changing graph topology. `Flow.stacks` is presentation state only.
+ */
+export const replaceFlowStackPresentation = (
+  flows: Record<FlowId, Flow>,
+  flowId: FlowId | null,
+  orderedNodes: AnyNode[],
+): Record<FlowId, Flow> | null => {
+  if (!flowId) return null;
+  const flow = flows[flowId];
+  if (!flow) return null;
+
+  const canonicalNodes = flow.nodes.filter((node) => !isOutputNode(node));
+  const canonicalById = new Map(canonicalNodes.map((node) => [node.id, node]));
+  const orderedNodeIds = orderedNodes.filter((node) => !isOutputNode(node)).map((node) => node.id);
+
+  if (
+    new Set(orderedNodeIds).size !== canonicalNodes.length ||
+    orderedNodeIds.some((nodeId) => !canonicalById.has(nodeId))
+  ) {
+    return null;
+  }
+
+  const stacks = buildFlowStacks(orderedNodes);
+  const outputNode = flow.nodes.find(isOutputNode);
+  const nodes = orderedNodeIds.map((nodeId) => canonicalById.get(nodeId)!);
+  if (outputNode) nodes.push(outputNode);
+
+  return {
+    ...flows,
+    [flowId]: {
+      ...flow,
+      nodes,
+      stacks,
+    },
+  };
 };
 
 export const getNodePositionsForFlow = (

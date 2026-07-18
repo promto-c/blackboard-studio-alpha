@@ -23,7 +23,7 @@ import { usePreferences } from '@/state/preferencesContext';
 import { getOutputTechnicalChannelPort } from '@/color-management';
 
 import { getSelectedNodeIdsForGrouping, OUTPUT_NODE_ID } from '@/state/editor/flowModel';
-import { isStackAdjustmentType } from '@/utils/nodePredicates';
+import { isStackableNode } from '@/utils/nodePredicates';
 import { hasPreviousStackTarget } from '@/utils/nodeStacks';
 import {
   useHotkeyScope,
@@ -46,7 +46,13 @@ import { requestRegisteredNodeExecution } from '@/utils/nodeExecutionRegistry';
 import { useInAppMediaDrop } from '@/hooks/useInAppMediaDrop';
 import { hasInAppMediaDrag, readInAppMediaDrag } from '@/utils/inAppMediaDrag';
 import { buildNodePortColorMap } from './nodePortVisuals';
-import { resolveVisibleGraphNodeId } from './nodeViewState';
+import {
+  GRAPH_INTERACTIVE_TARGET_SELECTOR,
+  isGraphCanvasBackgroundTarget,
+  resolveVisibleGraphNodeId,
+  shouldCancelWireCutGesture,
+} from './nodeViewState';
+import { getWireCutConnectionIds, makePolylinePath, type GraphPoint } from './wireGeometry';
 import {
   collectUpstreamEdgeIds,
   collectUpstreamEdgeIdsForNodes,
@@ -76,6 +82,14 @@ interface MarqueeSelectionState {
   currentY: number;
   additive: boolean;
   hasDragged: boolean;
+}
+
+interface WireCutGestureState {
+  points: GraphPoint[];
+  intersectedConnectionIds: Set<string>;
+  startConnectionId: string | null;
+  hasDragged: boolean;
+  canceled: boolean;
 }
 
 interface NodeViewProps {
@@ -133,6 +147,7 @@ function NodeView({
     deleteNode,
     connectNodeInput,
     disconnectNodeInput,
+    disconnectNodeInputs,
     setNodePosition,
     setNodePositions,
     commitNodePosition,
@@ -233,8 +248,28 @@ function NodeView({
   const [layoutTick, setLayoutTick] = useState(0);
   const [marqueeSelection, setMarqueeSelection] = useState<MarqueeSelectionState | null>(null);
   const marqueeSelectionRef = useRef<MarqueeSelectionState | null>(null);
+  const [wireCutGesture, setWireCutGesture] = useState<WireCutGestureState | null>(null);
+  const wireCutGestureRef = useRef<WireCutGestureState | null>(null);
+  const wireCutClickSuppressedUntilRef = useRef(0);
+  const [isWireCutModifierPressed, setIsWireCutModifierPressed] = useState(false);
   const suppressNextCanvasClickRef = useRef(false);
   const lastGraphPointerPositionRef = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    const updateModifier = (event: KeyboardEvent) => {
+      setIsWireCutModifierPressed(event.ctrlKey || event.metaKey);
+    };
+    const resetModifier = () => setIsWireCutModifierPressed(false);
+
+    window.addEventListener('keydown', updateModifier);
+    window.addEventListener('keyup', updateModifier);
+    window.addEventListener('blur', resetModifier);
+    return () => {
+      window.removeEventListener('keydown', updateModifier);
+      window.removeEventListener('keyup', updateModifier);
+      window.removeEventListener('blur', resetModifier);
+    };
+  }, []);
 
   const registerPortRef = useCallback((key: string, el: HTMLDivElement | null) => {
     if (el) portRefs.current.set(key, el);
@@ -555,7 +590,7 @@ function NodeView({
     (nodeId: string, x: number, y: number): StackMagnetTarget | null => {
       const draggedStack = nodeStacks.find((stack) => stack[0].id === nodeId);
       const draggedNode = draggedStack?.[0];
-      if (!draggedStack || !draggedNode || !isStackAdjustmentType(draggedNode.type)) {
+      if (!draggedStack || !draggedNode || !isStackableNode(draggedNode)) {
         return null;
       }
 
@@ -754,9 +789,7 @@ function NodeView({
       const target = event.target;
       if (!(target instanceof Element)) return;
 
-      const interactiveElement = target.closest(
-        'a, button, input, textarea, select, [role="button"], [data-graph-node], [data-port-input], [data-connection-wire]',
-      );
+      const interactiveElement = target.closest(GRAPH_INTERACTIVE_TARGET_SELECTOR);
       if (interactiveElement) return;
 
       event.preventDefault();
@@ -811,6 +844,143 @@ function NodeView({
     }),
     [viewport.panX, viewport.panY, viewport.zoom],
   );
+
+  const getGraphPoint = useCallback(
+    (clientX: number, clientY: number): GraphPoint | null => {
+      const containerPoint = getContainerPoint(clientX, clientY);
+      return containerPoint ? containerPointToGraphPoint(containerPoint) : null;
+    },
+    [containerPointToGraphPoint, getContainerPoint],
+  );
+
+  const startWireCutGesture = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>): boolean => {
+      if (
+        event.button !== 0 ||
+        (!event.ctrlKey && !event.metaKey) ||
+        isPanning.current ||
+        dragConnectState
+      ) {
+        return false;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Element)) return false;
+      const startWire = target.closest('[data-connection-wire]');
+      if (!startWire && !isGraphCanvasBackgroundTarget(target)) return false;
+
+      const start = getGraphPoint(event.clientX, event.clientY);
+      if (!start) return false;
+
+      event.preventDefault();
+      setSelectedConnection(null);
+      const nextGesture: WireCutGestureState = {
+        points: [start],
+        intersectedConnectionIds: new Set(),
+        startConnectionId: startWire?.getAttribute('data-connection-id') ?? null,
+        hasDragged: false,
+        canceled: false,
+      };
+      wireCutGestureRef.current = nextGesture;
+      setWireCutGesture(nextGesture);
+      return true;
+    },
+    [dragConnectState, getGraphPoint, isPanning],
+  );
+
+  const hasWireCutPointerGesture = wireCutGesture !== null;
+  const isWireCutGestureActive = !!wireCutGesture && !wireCutGesture.canceled;
+  useEffect(() => {
+    if (!hasWireCutPointerGesture) return;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const point = getGraphPoint(event.clientX, event.clientY);
+      if (!point) return;
+      const current = wireCutGestureRef.current;
+      if (!current || current.canceled) return;
+      const lastPoint = current.points[current.points.length - 1];
+      if (Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y) * viewport.zoom < 2) return;
+
+      const points = [...current.points, point];
+      const startPoint = points[0];
+      const hasDragged =
+        current.hasDragged ||
+        Math.hypot(point.x - startPoint.x, point.y - startPoint.y) * viewport.zoom >= 4;
+      const nextGesture: WireCutGestureState = {
+        points,
+        startConnectionId: current.startConnectionId,
+        hasDragged,
+        canceled: false,
+        intersectedConnectionIds: hasDragged
+          ? getWireCutConnectionIds(connections, portPositions, points, 5 / viewport.zoom)
+          : new Set(),
+      };
+      wireCutGestureRef.current = nextGesture;
+      setWireCutGesture(nextGesture);
+    };
+
+    const finishGesture = () => {
+      const finalGesture = wireCutGestureRef.current;
+      wireCutGestureRef.current = null;
+      setWireCutGesture(null);
+      wireCutClickSuppressedUntilRef.current = Date.now() + 500;
+
+      if (!finalGesture || finalGesture.canceled) return;
+      const connectionIds = finalGesture.hasDragged
+        ? finalGesture.intersectedConnectionIds
+        : finalGesture.startConnectionId
+          ? new Set([finalGesture.startConnectionId])
+          : new Set<string>();
+      if (connectionIds.size === 0) return;
+
+      disconnectNodeInputs(
+        connections
+          .filter((connection) => connectionIds.has(connection.id))
+          .map((connection) => ({
+            nodeId: connection.targetNodeId,
+            portName: connection.targetPort,
+          })),
+      );
+      setSelectedConnection(null);
+    };
+
+    const cancelGesture = (event: KeyboardEvent) => {
+      if (!shouldCancelWireCutGesture(event)) return;
+
+      const current = wireCutGestureRef.current;
+      if (!current || current.canceled) return;
+      const canceledGesture: WireCutGestureState = {
+        ...current,
+        intersectedConnectionIds: new Set(),
+        canceled: true,
+      };
+      wireCutGestureRef.current = canceledGesture;
+      setWireCutGesture(canceledGesture);
+    };
+
+    const cancelGestureOnBlur = () => {
+      wireCutGestureRef.current = null;
+      setWireCutGesture(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', finishGesture);
+    window.addEventListener('keyup', cancelGesture);
+    window.addEventListener('blur', cancelGestureOnBlur);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', finishGesture);
+      window.removeEventListener('keyup', cancelGesture);
+      window.removeEventListener('blur', cancelGestureOnBlur);
+    };
+  }, [
+    connections,
+    disconnectNodeInputs,
+    getGraphPoint,
+    hasWireCutPointerGesture,
+    portPositions,
+    viewport.zoom,
+  ]);
 
   const selectNodesInMarquee = useCallback(
     (selection: MarqueeSelectionState) => {
@@ -867,9 +1037,7 @@ function NodeView({
       const target = event.target;
       if (!(target instanceof Element)) return;
 
-      const interactiveElement = target.closest(
-        'a, button, input, textarea, select, [role="button"], [data-graph-node], [data-port-input], [data-connection-wire]',
-      );
+      const interactiveElement = target.closest(GRAPH_INTERACTIVE_TARGET_SELECTOR);
       if (interactiveElement) return;
 
       const start = getContainerPoint(event.clientX, event.clientY);
@@ -1024,13 +1192,20 @@ function NodeView({
     <div
       ref={containerRef}
       className="h-full w-full overflow-hidden relative"
-      style={{ cursor: getCursorStyle() }}
+      style={{
+        cursor: isWireCutModifierPressed || isWireCutGestureActive ? 'crosshair' : getCursorStyle(),
+      }}
       onMouseDown={(e) => {
         handleMouseDown(e);
+        if (startWireCutGesture(e)) return;
         startMarqueeSelection(e);
-        // Click on empty canvas deselects connection
-        if (e.target === e.currentTarget || e.target === contentRef.current) {
+        if (isGraphCanvasBackgroundTarget(e.target)) {
           setSelectedConnection(null);
+        }
+      }}
+      onMouseUp={(event) => {
+        if (event.button === 0 && isPanning.current) {
+          suppressNextCanvasClickRef.current = true;
         }
       }}
       onMouseMove={updateGraphPointerPosition}
@@ -1039,16 +1214,29 @@ function NodeView({
       onDragLeave={handleInAppMediaDragLeave}
       onDrop={handleInAppMediaDrop}
       onDoubleClick={openAddNodesPanel}
+      onClickCapture={(event) => {
+        if (wireCutClickSuppressedUntilRef.current < Date.now()) {
+          wireCutClickSuppressedUntilRef.current = 0;
+          return;
+        }
+        wireCutClickSuppressedUntilRef.current = 0;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       onClick={(event) => {
+        event.stopPropagation();
         if (suppressNextCanvasClickRef.current) {
           suppressNextCanvasClickRef.current = false;
           event.preventDefault();
-          event.stopPropagation();
           return;
         }
+
+        if (!isGraphCanvasBackgroundTarget(event.target)) return;
+
         setSelectedConnection(null);
-        // Prevent bubbling to the outer flow container's selectNode(null) handler
-        event.stopPropagation();
+        if (!event.shiftKey && !event.metaKey && !event.ctrlKey) {
+          selectNode(null);
+        }
       }}
     >
       {/* Grid background */}
@@ -1090,12 +1278,45 @@ function NodeView({
           portPositions={portPositions}
           selectedConnection={selectedConnection}
           onSelectConnection={setSelectedConnection}
-          onCutConnection={cutConnection}
           dragPreview={dragPreview}
           portColors={portColors}
           highlightedConnectionKeys={highlightedConnectionKeys}
           flowingConnectionKeys={flowingConnectionKeys}
+          cutPreviewConnectionIds={
+            isWireCutGestureActive ? wireCutGesture.intersectedConnectionIds : undefined
+          }
+          isCutGestureArmed={isWireCutModifierPressed || isWireCutGestureActive}
         />
+
+        {isWireCutGestureActive && wireCutGesture.hasDragged ? (
+          <svg
+            aria-hidden="true"
+            data-wire-cut-path="true"
+            className="pointer-events-none absolute left-0 top-0"
+            style={{ overflow: 'visible', width: 1, height: 1, zIndex: 20 }}
+          >
+            <path
+              d={makePolylinePath(wireCutGesture.points)}
+              fill="none"
+              stroke="#f87171"
+              strokeWidth={7}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={0.18}
+              vectorEffect="non-scaling-stroke"
+            />
+            <path
+              d={makePolylinePath(wireCutGesture.points)}
+              fill="none"
+              stroke="#fca5a5"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeDasharray="7 4"
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
+        ) : null}
 
         {/* Output node */}
         <div
@@ -1218,9 +1439,7 @@ function NodeView({
                 onToggleStacking={toggleNodeStacking}
                 canStackNode={canStackNode}
                 onDeleteNode={deleteNode}
-                onOutputPortMouseDown={(e, sourcePortName) =>
-                  handleOutputPortMouseDown(e, baseNode.id, sourcePortName)
-                }
+                onOutputPortMouseDown={handleOutputPortMouseDown}
                 registerPortRef={registerPortRef}
                 activeNodeJobMap={activeNodeJobMap}
                 onExecuteNode={handleExecuteNode}

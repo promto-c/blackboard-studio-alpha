@@ -3,6 +3,7 @@ import {
   clampRotoMotionBlurSamples,
   getRotoMotionBlurSampleFrames,
   getRotoMotionBlurSampleWeights,
+  quantizeRotoMotionBlurContributions,
   resolveRotoMotionBlurPreviewSamples,
   resolveRotoMotionBlurSettings,
 } from './rotoMotionBlur';
@@ -121,5 +122,46 @@ describe('getRotoMotionBlurSampleWeights', () => {
       expect(weights[0]).toBeCloseTo(interiorWeight * 0.5, 10);
       expect(weights[weights.length - 1]).toBeCloseTo(interiorWeight * 0.5, 10);
     }
+  });
+});
+
+describe('quantizeRotoMotionBlurContributions', () => {
+  it('conserves full coverage at Canvas precision for every supported sample count', () => {
+    for (let samples = 2; samples <= 128; samples += 1) {
+      const contributions = quantizeRotoMotionBlurContributions(
+        getRotoMotionBlurSampleWeights(samples),
+      );
+
+      expect(contributions.reduce((total, contribution) => total + contribution, 0)).toBeCloseTo(
+        1,
+        12,
+      );
+      contributions.forEach((contribution) => {
+        expect(contribution * 255).toBeCloseTo(Math.round(contribution * 255), 12);
+      });
+    }
+  });
+
+  it('preserves the nearest representable integrated opacity without temporal clustering', () => {
+    const rawContributions = getRotoMotionBlurSampleWeights(64).map(
+      (weight, index) => weight * (index < 32 ? 0.2 : 0.8),
+    );
+    const quantized = quantizeRotoMotionBlurContributions(rawContributions);
+    const expectedTotal =
+      Math.round(rawContributions.reduce((total, contribution) => total + contribution, 0) * 255) /
+      255;
+
+    expect(quantized.reduce((total, contribution) => total + contribution, 0)).toBeCloseTo(
+      expectedTotal,
+      12,
+    );
+
+    let rawPrefix = 0;
+    let quantizedPrefix = 0;
+    quantized.forEach((contribution, index) => {
+      rawPrefix += rawContributions[index];
+      quantizedPrefix += contribution;
+      expect(Math.abs(quantizedPrefix - rawPrefix)).toBeLessThanOrEqual(0.5 / 255 + 1e-12);
+    });
   });
 });

@@ -4,6 +4,8 @@ import type {
   RendererOcioTransformContext,
   RendererOcioTransformDescriptor,
   ResolveOutputContext,
+  RenderContext,
+  AdaptivePreviewCapabilities,
 } from '@blackboard/renderer';
 import {
   AnimatableNumber,
@@ -17,7 +19,6 @@ import {
   RenderSceneSize,
   RenderSceneSizeBehavior,
   RgbaChannel,
-  RotoPointRef,
   SceneNode,
   SourceAlphaMode,
   TransformData,
@@ -44,16 +45,7 @@ export type RenderMode =
 
 export type RenderOutputContract = 'pipeline' | 'viewport_preview' | 'none';
 
-export interface RenderContext {
-  frame: number;
-  fps: number;
-  scene: { width: number; height: number };
-  flow?: unknown;
-  nodes: AnyNode[];
-  transformColorPickingToSceneLinear: (
-    color: readonly [number, number, number],
-  ) => [number, number, number];
-}
+export type { RenderContext };
 
 export type RendererSceneSize = RenderSceneSize;
 export type RendererSceneSizeBehavior = RenderSceneSizeBehavior<AnyNode, RenderContext>;
@@ -268,8 +260,6 @@ export interface NodeFlags {
   isDraggable?: boolean;
   /** Node acts as the scene/canvas root (only one per project). */
   isSceneLike?: boolean;
-  /** Show a data-window border overlay in the viewport. */
-  showDataWindow?: boolean;
   /** Node cannot be deleted by the user. */
   isProtected?: boolean;
   /** Node has a thumbnail preview (e.g. image nodes in list view). */
@@ -505,6 +495,42 @@ export interface ViewportToolSeparator {
 export type ViewportToolEntry = ViewportToolDefinition | ViewportToolSeparator;
 
 // ---------------------------------------------------------------------------
+// Inspector field definition — reusable metadata for fields that can be
+// surfaced by containers such as Group nodes.
+
+export type NodeExposableFieldControl =
+  | 'number'
+  | 'slider'
+  | 'text'
+  | 'toggle'
+  | 'color'
+  | 'select';
+
+export interface NodeExposableFieldOption {
+  label: string;
+  value: string | number;
+}
+
+export interface NodeExposableFieldDescriptor {
+  /** Immutable property path on the node, e.g. `blur.radius`. */
+  path: string;
+  label: string;
+  section?: string;
+  description?: string;
+  control: NodeExposableFieldControl;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: NodeExposableFieldOption[];
+  /** Preserve an existing keyframe track when setting a numeric value. */
+  animatable?: boolean;
+}
+
+export type NodeExposableFields =
+  | NodeExposableFieldDescriptor[]
+  | ((node: AnyNode) => NodeExposableFieldDescriptor[]);
+
+// ---------------------------------------------------------------------------
 // NodeDefinition — the core type for registering a node type's behavior.
 
 export interface NodeDefinition {
@@ -530,6 +556,12 @@ export interface NodeDefinition {
   IconComponent: React.ComponentType<{ className?: string }>;
   ToolComponent?: React.ComponentType;
   AdjustmentComponent: React.ComponentType<{ node: AnyNode }>;
+  /**
+   * Public inspector fields that container nodes may surface. Uniform,
+   * animation, and simple initial-state fields are discovered automatically;
+   * definitions can use this metadata to provide richer controls or labels.
+   */
+  exposableFields?: NodeExposableFields;
   /** Optional items list panel for nodes that manage a collection of sub-items (e.g. Roto shapes). */
   ItemsComponent?: React.ComponentType<{
     node: AnyNode;
@@ -689,6 +721,9 @@ export interface NodeDefinition {
 
   /** Declarative scene-size behavior for nodes that establish or change the render format. */
   sceneSize?: RendererSceneSizeBehavior;
+
+  /** Shared preview budgets that can reduce this node's realtime render cost. */
+  adaptivePreview?: AdaptivePreviewCapabilities;
 
   /**
    * Return the scene-linear color applied to a generated alpha-mask source.

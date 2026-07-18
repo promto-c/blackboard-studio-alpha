@@ -155,6 +155,8 @@ in vec2 v_uv;
 uniform sampler2D u_tDiffuse;
 uniform vec2 u_scene_res;
 uniform vec2 u_target_res;
+uniform vec2 u_source_storage_res;
+uniform vec2 u_target_storage_res;
 uniform int u_mode; // 0 fit, 1 fill, 2 stretch, 3 none
 uniform int u_filter; // 0 nearest, 1 linear, 2 cubic, 3 lanczos
 out vec4 fragColor;
@@ -163,22 +165,16 @@ ${SPATIAL_RESAMPLING_GLSL}
 
 void main() {
   vec2 target_res = max(u_target_res, vec2(1.0));
-  vec2 local_px = v_uv * target_res - (target_res * 0.5);
-  vec2 half_target = target_res * 0.5;
-  bool inside_target =
-    abs(local_px.x) <= half_target.x &&
-    abs(local_px.y) <= half_target.y;
-
-  if (!inside_target) {
-    fragColor = vec4(0.0);
-    return;
-  }
+  vec2 source_storage_res = max(u_source_storage_res, vec2(1.0));
+  vec2 target_storage_res = max(u_target_storage_res, vec2(1.0));
+  vec2 local_px = (v_uv - vec2(0.5)) * target_storage_res;
 
   vec2 source_uv = vec2(0.5);
   vec2 source_res = u_scene_res;
 
   if (u_mode == 2) {
-    source_uv = local_px / target_res + 0.5;
+    vec2 source_px = (local_px / target_res) * source_res;
+    source_uv = source_px / source_storage_res + 0.5;
   } else {
     float scale = 1.0;
     if (u_mode == 0) {
@@ -187,7 +183,8 @@ void main() {
       scale = max(target_res.x / source_res.x, target_res.y / source_res.y);
     }
     scale = max(scale, 0.0001);
-    source_uv = (local_px / scale) / source_res + 0.5;
+    vec2 source_px = local_px / scale;
+    source_uv = source_px / source_storage_res + 0.5;
   }
 
   bool inside_source =
@@ -195,7 +192,9 @@ void main() {
     source_uv.x <= 1.0 &&
     source_uv.y >= 0.0 &&
     source_uv.y <= 1.0;
-  fragColor = inside_source ? sample_spatial(u_tDiffuse, source_uv, source_res, u_filter) : vec4(0.0);
+  fragColor = inside_source
+    ? sample_spatial(u_tDiffuse, source_uv, source_storage_res, u_filter)
+    : vec4(0.0);
 }
 `,
 } as const;

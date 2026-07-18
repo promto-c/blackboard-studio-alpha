@@ -342,6 +342,15 @@ describe('studio hotkey effect bindings', () => {
     expect(lookup.get('Shift+X')?.scope).toBeUndefined();
   });
 
+  it('activates viewer slots once per number-key press', () => {
+    const slotBindings = baseBindings.filter(
+      (binding) => binding.command === 'viewer.activateSlot',
+    );
+
+    expect(slotBindings).toHaveLength(4);
+    expect(slotBindings.every((binding) => binding.repeat === false)).toBe(true);
+  });
+
   it('binds Delete/Backspace in flow to delete the selected node', () => {
     const flowDelete = baseBindings.find(
       (binding) => binding.command === 'flow.deleteSelectedNode',

@@ -57,6 +57,10 @@ describe('buildProjectInitState', () => {
     expect(persistedState.nodePositionsByFlow?.[ROOT_FLOW_ID]).toEqual(nodePositions);
     expect(persistedState.history[0]).toEqual(historyEntry);
     expect(persistedState.historyIndex).toBe(0);
+    expect(persistedState.viewportWorkingArea).toEqual({
+      enabled: false,
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+    });
     expect(persistedState.flows[ROOT_FLOW_ID].edges).toContainEqual(
       expect.objectContaining({
         sourceNodeId: 'image-1',

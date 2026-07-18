@@ -9,7 +9,7 @@ export const groupNode: NodeDefinition = {
   category: 'Effect',
   renderMode: 'scene',
   processingDomain: 'scene_linear',
-  description: 'Container node with explicit external input ports.',
+  description: 'Container node with explicit internal props and external input ports.',
   IconComponent: Icons.FolderOpen,
   AdjustmentComponent: GroupAdjustments,
   flags: {
@@ -26,5 +26,6 @@ export const groupNode: NodeDefinition = {
   getInitialNodeProps: (): Omit<GroupNode, 'id' | 'name' | 'enabled' | 'type'> => ({
     childFlowId: null,
     externalInputs: [],
+    exposedFields: [],
   }),
 };

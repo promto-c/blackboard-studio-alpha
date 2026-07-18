@@ -18,6 +18,7 @@ import {
   ViewerSettings,
   ViewerSlotAssignments,
   ViewerSlot,
+  ViewportWorkingArea,
 } from '@blackboard/types';
 import { AnyNode } from '@blackboard/types';
 import {
@@ -31,6 +32,7 @@ import {
   DEFAULT_DISPLAY_OUTPUT,
   DEFAULT_OPEN_EXR_OUTPUT_PRESET,
 } from '@/color-management';
+import { createInitialCompareViewState } from '@/state/editor/compareView';
 
 export const getInitialHistoryEntry = (): HistoryEntry => ({
   id: `init_${Date.now()}`,
@@ -75,6 +77,10 @@ export const getInitialState = () => ({
   currentFrame: 0,
   timelineStartFrame: 0,
   activeViewportTool: null as string | null,
+  viewportWorkingArea: {
+    enabled: false,
+    rect: { x: 0, y: 0, width: 1, height: 1 },
+  } as ViewportWorkingArea,
   isDrawing: false,
   drawingRotoPath: null as RotoPath | null,
   drawingSubHistory: [] as RotoPath[],
@@ -139,17 +145,7 @@ export const getInitialState = () => ({
     label: string;
     createdAt: number;
   },
-  compareView: {
-    isActive: false,
-    slotA: null as ViewerSlot | null,
-    slotB: null as ViewerSlot | null,
-    mode: 'wipe' as 'wipe' | 'split',
-    dividerPosition: 0.5,
-    wipe: {
-      orientation: 'vertical' as 'vertical' | 'horizontal',
-      reference: 'canvas' as 'canvas' | 'viewport' | 'cursor',
-    },
-  },
+  compareView: createInitialCompareViewState(),
   nodes: [] as AnyNode[],
   backgroundJobs: loadPersistedBackgroundJobs() as BackgroundJob[],
   galleryUpdatedAt: 0 as number,

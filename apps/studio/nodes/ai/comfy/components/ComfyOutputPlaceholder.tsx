@@ -18,7 +18,7 @@ export function ComfyOutputPlaceholder({
       type="button"
       onClick={onClick}
       disabled={!isClickable}
-      className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-md border border-dashed px-1.5 text-center transition ${
+      className={`flex h-14 w-14 shrink-0 snap-start flex-col items-center justify-center rounded-md border border-dashed px-1.5 text-center transition ${
         active
           ? 'border-primary-300/45 bg-primary-300/[0.08] text-primary-100'
           : isClickable

@@ -355,6 +355,7 @@ export const rotoNode: NodeDefinition = {
   animation: rotoAnimation,
   defaultViewportTool: 'select',
   flags: {},
+  adaptivePreview: { resolutionScale: true, sampleLimit: true },
   getInitialNodeProps: () => ({
     paths: [],
     layers: [],

@@ -11,7 +11,7 @@ import {
   type SceneNode,
   type ViewerSettings,
 } from '@blackboard/types';
-import type { RendererMaskLayer } from '@blackboard/renderer';
+import type { RendererMaskLayer, RenderQuality } from '@blackboard/renderer';
 import { getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
 import { renderViewportFrameWithSharedPipeline } from '@/renderer/pipeline';
 import {
@@ -26,11 +26,20 @@ import {
   VIEWPORT_TEXTURE_VERTEX_SHADER,
   VIEWPORT_TEXTURE_FRAGMENT_SHADER,
 } from './compareShaders';
-import { viewportUVToCanvasUV } from './compareUtils';
+import { interactiveUVToViewportUV, presentationFrameUVToViewportUV } from './compareUtils';
+import {
+  calculateCompareLeadingViewProjection,
+  calculateComparePresentationScale,
+  calculateCompareViewportFrame,
+  type ComparePaneLayout,
+} from './comparePresentation';
+import type { CompareSizingMode } from '@/state/editor/compareView';
 
 interface CompareViewSettings {
   isActive: boolean;
+  sidesSwapped: boolean;
   mode: 'wipe' | 'split';
+  sizingMode: CompareSizingMode;
   dividerPosition: number;
   wipe: {
     orientation: 'vertical' | 'horizontal';
@@ -43,14 +52,18 @@ interface UseViewportCompareRenderParams {
   viewportSize: { width: number; height: number };
   interactiveViewportRect: { x: number; y: number; width: number; height: number };
   compareView: CompareViewSettings;
+  paneLayout: ComparePaneLayout;
+  viewportInterpolation: 'nearest' | 'linear';
   viewportNodesA: AnyNode[];
   viewportNodesB: AnyNode[];
-  sceneNode: SceneNode | undefined;
+  sceneNodeA: SceneNode | undefined;
+  sceneNodeB: SceneNode | undefined;
   visualFrame: number;
   viewerSettings: ViewerSettings;
   displayView: DisplayViewSelection;
   projectColorManagement: ProjectColorManagement;
   outputDomain: RenderOutputDomain;
+  renderQuality: RenderQuality;
   alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
   hasRenderableNodes: boolean;
   isRenderReady: boolean;
@@ -111,10 +124,7 @@ function ensureSplitScene(
     splitCamera: THREE.OrthographicCamera | null;
     splitQuad: THREE.Mesh | null;
     splitMaterial: THREE.RawShaderMaterial | null;
-    splitSceneWidth: number;
-    splitSceneHeight: number;
   }>,
-  sceneSize: { width: number; height: number },
 ): {
   scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
@@ -125,9 +135,6 @@ function ensureSplitScene(
   let camera = ref.current.splitCamera;
   let quad = ref.current.splitQuad;
   let material = ref.current.splitMaterial;
-  const sceneSizeChanged =
-    ref.current.splitSceneWidth !== sceneSize.width ||
-    ref.current.splitSceneHeight !== sceneSize.height;
 
   if (!scene) {
     scene = new THREE.Scene();
@@ -146,6 +153,8 @@ function ensureSplitScene(
       fragmentShader: VIEWPORT_TEXTURE_FRAGMENT_SHADER,
       uniforms: {
         u_tDiffuse: { value: null },
+        u_textureSize: { value: new THREE.Vector2(1, 1) },
+        u_interpolation: { value: 0 },
       },
       transparent: true,
       depthWrite: false,
@@ -155,17 +164,10 @@ function ensureSplitScene(
     ref.current.splitMaterial = material;
   }
 
-  if (!quad || sceneSizeChanged) {
-    if (quad) {
-      scene.remove(quad);
-      quad.geometry.dispose();
-    }
-
-    quad = new THREE.Mesh(new THREE.PlaneGeometry(sceneSize.width, sceneSize.height), material);
+  if (!quad) {
+    quad = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
     scene.add(quad);
     ref.current.splitQuad = quad;
-    ref.current.splitSceneWidth = sceneSize.width;
-    ref.current.splitSceneHeight = sceneSize.height;
   }
 
   return { scene, camera, quad, material };
@@ -189,41 +191,23 @@ function setSplitPaneCamera(
   camera.updateProjectionMatrix();
 }
 
-function getInteractivePanBase(
-  viewportSize: { width: number; height: number },
-  interactiveRect: { x: number; y: number; width: number; height: number },
-) {
-  return {
-    x: interactiveRect.x + interactiveRect.width / 2 - viewportSize.width / 2,
-    y: viewportSize.height / 2 - (interactiveRect.y + interactiveRect.height / 2),
-  };
-}
-
-function interactiveDividerToViewportUv(
-  divider: number,
-  orientation: 'vertical' | 'horizontal',
-  viewportSize: { width: number; height: number },
-  interactiveRect: { x: number; y: number; width: number; height: number },
-) {
-  if (orientation === 'vertical') {
-    return (interactiveRect.x + divider * interactiveRect.width) / viewportSize.width;
-  }
-  return (interactiveRect.y + divider * interactiveRect.height) / viewportSize.height;
-}
-
 export function useViewportCompareRender({
   gl,
   viewportSize,
   interactiveViewportRect,
   compareView,
+  paneLayout,
+  viewportInterpolation,
   viewportNodesA,
   viewportNodesB,
-  sceneNode,
+  sceneNodeA,
+  sceneNodeB,
   visualFrame,
   viewerSettings,
   displayView,
   projectColorManagement,
   outputDomain,
+  renderQuality,
   alphaOverlayStyle,
   hasRenderableNodes,
   isRenderReady,
@@ -247,8 +231,6 @@ export function useViewportCompareRender({
     splitScene: THREE.Scene | null;
     splitCamera: THREE.OrthographicCamera | null;
     splitMaterial: THREE.RawShaderMaterial | null;
-    splitSceneWidth: number;
-    splitSceneHeight: number;
     lastMode: 'wipe' | 'split' | null;
   }>({
     targetB: null,
@@ -260,8 +242,6 @@ export function useViewportCompareRender({
     splitScene: null,
     splitCamera: null,
     splitMaterial: null,
-    splitSceneWidth: 0,
-    splitSceneHeight: 0,
     lastMode: null,
   });
 
@@ -274,6 +254,7 @@ export function useViewportCompareRender({
     displayView: DisplayViewSelection;
     projectColorManagement: ProjectColorManagement;
     outputDomain: RenderOutputDomain;
+    renderQuality: RenderQuality;
     alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
   } | null>(null);
 
@@ -303,8 +284,6 @@ export function useViewportCompareRender({
     targets.splitMaterial = null;
     targets.splitScene = null;
     targets.splitCamera = null;
-    targets.splitSceneWidth = 0;
-    targets.splitSceneHeight = 0;
     targets.lastMode = null;
     prevRenderInputsRef.current = null;
     finalCompBufferRef.current = null;
@@ -315,7 +294,7 @@ export function useViewportCompareRender({
   useLayoutEffect(() => () => disposeCompareResources(), [disposeCompareResources]);
 
   useLayoutEffect(() => {
-    if (!compareView.isActive || !gl || !sceneNode || !hasRenderableNodes) {
+    if (!compareView.isActive || !gl || !sceneNodeA || !sceneNodeB || !hasRenderableNodes) {
       disposeCompareResources();
       return;
     }
@@ -343,13 +322,14 @@ export function useViewportCompareRender({
     const inputsChanged =
       !prev ||
       prev.nodes !== viewportNodesB ||
-      prev.sceneNode !== sceneNode ||
+      prev.sceneNode !== sceneNodeB ||
       prev.visualFrame !== visualFrame ||
       prev.mediaUpdateTrigger !== mediaUpdateTrigger ||
       prev.viewerSettings !== viewerSettings ||
       prev.displayView !== displayView ||
       prev.projectColorManagement !== projectColorManagement ||
       prev.outputDomain !== outputDomain ||
+      prev.renderQuality !== renderQuality ||
       prev.alphaOverlayStyle !== alphaOverlayStyle ||
       !slotBResourcesRef.current ||
       !compareTargetsRef.current.textureB;
@@ -365,12 +345,13 @@ export function useViewportCompareRender({
         const resultB = renderViewportFrameWithSharedPipeline({
           resources,
           nodes: viewportNodesB,
-          sceneNode,
+          sceneNode: sceneNodeB,
           frame: visualFrame,
           viewerSettings,
           displayView,
           projectColorManagement,
           outputDomain,
+          quality: renderQuality,
           alphaOverlayStyle,
           captureDisplayOutput: true,
           presentToCanvas: false,
@@ -417,13 +398,14 @@ export function useViewportCompareRender({
 
         prevRenderInputsRef.current = {
           nodes: viewportNodesB,
-          sceneNode,
+          sceneNode: sceneNodeB,
           visualFrame,
           mediaUpdateTrigger,
           viewerSettings,
           displayView,
           projectColorManagement,
           outputDomain,
+          renderQuality,
           alphaOverlayStyle,
         };
       } catch (error) {
@@ -439,10 +421,35 @@ export function useViewportCompareRender({
 
     if (!textureB) return;
 
-    const presentationSize =
-      compareView.mode === 'split'
-        ? viewportSize
-        : { width: sceneNode.width, height: sceneNode.height };
+    const slotBTarget = compareTargetsRef.current.targetB;
+    const leadingDisplayTarget =
+      (compareView.sidesSwapped ? slotBTarget : slotATarget) ?? slotATarget;
+    const slotA = {
+      texture: textureA,
+      textureSize: { width: slotATarget.width, height: slotATarget.height },
+      size: sceneNodeA,
+    };
+    const slotB = {
+      texture: textureB,
+      textureSize: {
+        width: slotBTarget?.width ?? sceneNodeB.width,
+        height: slotBTarget?.height ?? sceneNodeB.height,
+      },
+      size: sceneNodeB,
+    };
+    const leadingSlot = compareView.sidesSwapped ? slotB : slotA;
+    const trailingSlot = compareView.sidesSwapped ? slotA : slotB;
+    const leadingViewProjection = calculateCompareLeadingViewProjection({
+      viewportSize,
+      layout: paneLayout,
+      slotASize: sceneNodeA,
+      leadingSize: leadingSlot.size,
+      sizingMode: compareView.sizingMode,
+      zoom,
+      pan,
+    });
+
+    const presentationSize = viewportSize;
     const currentRendererSize =
       typeof gl.getSize === 'function' ? gl.getSize(new THREE.Vector2()) : null;
     if (
@@ -457,19 +464,10 @@ export function useViewportCompareRender({
       const {
         scene: splitScene,
         camera: splitCamera,
+        quad: splitQuad,
         material: splitMaterial,
-      } = ensureSplitScene(compareTargetsRef, { width: sceneNode.width, height: sceneNode.height });
-      const activeRect = {
-        x: Math.round(interactiveViewportRect.x),
-        y: Math.round(interactiveViewportRect.y),
-        width: Math.round(interactiveViewportRect.width),
-        height: Math.round(interactiveViewportRect.height),
-      };
-      const panBase = getInteractivePanBase(viewportSize, interactiveViewportRect);
-      const splitPan = {
-        x: pan.x - panBase.x,
-        y: pan.y - panBase.y,
-      };
+      } = ensureSplitScene(compareTargetsRef);
+      const splitPan = leadingViewProjection.presentationPan;
       const previousTarget = gl.getRenderTarget();
       const previousScissorTest = gl.getScissorTest();
       const previousViewport = new THREE.Vector4();
@@ -482,86 +480,54 @@ export function useViewportCompareRender({
       gl.clear();
       gl.setScissorTest(true);
 
+      const leadingInteractivePane = paneLayout.leadingPane;
+      const trailingInteractivePane = paneLayout.trailingPane;
+      const leadingVisualPane = paneLayout.leadingVisualPane;
+      const trailingVisualPane = paneLayout.trailingVisualPane;
+
+      // The editor zoom remains the canonical slot-A pixel scale. Each pane derives its
+      // own presentation base scale, then receives the same user zoom multiplier and screen pan.
+      const sharedZoomMultiplier = leadingViewProjection.scaleMultiplier;
+
       const renderPane = (
-        texture: THREE.Texture,
-        visualPane: { x: number; y: number; width: number; height: number },
-        interactivePane: { x: number; y: number; width: number; height: number },
+        slot: {
+          texture: THREE.Texture;
+          textureSize: { width: number; height: number };
+          size: Pick<SceneNode, 'width' | 'height'>;
+        },
+        visualPane: ComparePaneLayout['leadingVisualPane'],
+        interactivePane: ComparePaneLayout['leadingPane'],
       ) => {
         if (visualPane.width <= 0 || visualPane.height <= 0) return;
         if (interactivePane.width <= 0 || interactivePane.height <= 0) return;
+        const baseScale = calculateComparePresentationScale(
+          interactivePane,
+          slot.size,
+          compareView.sizingMode,
+        );
+        const paneZoom = baseScale * sharedZoomMultiplier;
         const glY = viewportSize.height - visualPane.y - visualPane.height;
-        splitMaterial.uniforms.u_tDiffuse.value = texture;
+        splitQuad.scale.set(slot.size.width, slot.size.height, 1);
+        splitMaterial.uniforms.u_tDiffuse.value = slot.texture;
+        splitMaterial.uniforms.u_textureSize.value.set(
+          slot.textureSize.width,
+          slot.textureSize.height,
+        );
+        splitMaterial.uniforms.u_interpolation.value = viewportInterpolation === 'nearest' ? 1 : 0;
         gl.setViewport(visualPane.x, glY, visualPane.width, visualPane.height);
         gl.setScissor(visualPane.x, glY, visualPane.width, visualPane.height);
-        setSplitPaneCamera(splitCamera, visualPane, interactivePane, zoom, splitPan);
+        setSplitPaneCamera(splitCamera, visualPane, interactivePane, paneZoom, splitPan);
         gl.render(splitScene, splitCamera);
       };
 
-      if (compareView.wipe.orientation === 'vertical') {
-        const leftWidth = Math.floor(activeRect.width / 2);
-        const splitX = activeRect.x + leftWidth;
-        const rightWidth = Math.max(0, activeRect.width - leftWidth);
-        renderPane(
-          textureA,
-          { x: 0, y: 0, width: splitX, height: viewportSize.height },
-          {
-            x: activeRect.x,
-            y: activeRect.y,
-            width: leftWidth,
-            height: activeRect.height,
-          },
-        );
-        renderPane(
-          textureB,
-          {
-            x: splitX,
-            y: 0,
-            width: Math.max(0, viewportSize.width - splitX),
-            height: viewportSize.height,
-          },
-          {
-            x: splitX,
-            y: activeRect.y,
-            width: rightWidth,
-            height: activeRect.height,
-          },
-        );
-      } else {
-        const topHeight = Math.floor(activeRect.height / 2);
-        const splitY = activeRect.y + topHeight;
-        const bottomHeight = Math.max(0, activeRect.height - topHeight);
-        renderPane(
-          textureA,
-          { x: 0, y: 0, width: viewportSize.width, height: splitY },
-          {
-            x: activeRect.x,
-            y: activeRect.y,
-            width: activeRect.width,
-            height: topHeight,
-          },
-        );
-        renderPane(
-          textureB,
-          {
-            x: 0,
-            y: splitY,
-            width: viewportSize.width,
-            height: Math.max(0, viewportSize.height - splitY),
-          },
-          {
-            x: activeRect.x,
-            y: splitY,
-            width: activeRect.width,
-            height: bottomHeight,
-          },
-        );
-      }
+      renderPane(leadingSlot, leadingVisualPane, leadingInteractivePane);
+      renderPane(trailingSlot, trailingVisualPane, trailingInteractivePane);
 
       gl.setViewport(previousViewport);
       gl.setScissor(previousScissor);
       gl.setScissorTest(previousScissorTest);
       gl.setRenderTarget(previousTarget);
-      finalCompBufferRef.current = slotATarget;
+      finalCompBufferRef.current = leadingDisplayTarget;
       compareTargetsRef.current.lastMode = compareView.mode;
       return;
     }
@@ -573,25 +539,33 @@ export function useViewportCompareRender({
       quad: compositeQuad,
     } = ensureCompositeScene(compareTargetsRef);
 
-    // Compute the effective divider position in canvas UV space,
-    // accounting for the reference mode (canvas vs viewport/cursor).
-    const reference = compareView.wipe.reference;
+    const wipePan = leadingViewProjection.presentationPan;
+    const sharedZoomMultiplier = leadingViewProjection.scaleMultiplier;
+    const getWipeFrame = (slot: typeof slotA) =>
+      calculateCompareViewportFrame(paneLayout.leadingPane, slot.size, compareView.sizingMode, {
+        scaleMultiplier: sharedZoomMultiplier,
+        pan: wipePan,
+      });
+    const leadingFrame = leadingViewProjection.frame;
+    const trailingFrame = getWipeFrame(trailingSlot);
+    // The Wipe shader and overlay both use full-viewport coordinates. A
+    // Canvas reference follows the currently displayed leading image.
     const effectiveDivider =
-      reference === 'canvas' || !sceneNode
-        ? compareView.dividerPosition
-        : viewportUVToCanvasUV(
-            interactiveDividerToViewportUv(
-              compareView.dividerPosition,
-              compareView.wipe.orientation,
-              viewportSize,
-              interactiveViewportRect,
-            ),
+      compareView.wipe.reference === 'canvas'
+        ? presentationFrameUVToViewportUV(
+            compareView.dividerPosition,
             compareView.wipe.orientation,
             viewportSize,
-            sceneNode,
-            zoom,
-            pan,
+            leadingFrame,
+          )
+        : interactiveUVToViewportUV(
+            compareView.dividerPosition,
+            compareView.wipe.orientation,
+            viewportSize,
+            interactiveViewportRect,
           );
+    const toShaderFrameOrigin = (frame: { x: number; y: number; height: number }) =>
+      new THREE.Vector2(frame.x, viewportSize.height - frame.y - frame.height);
 
     const modeChanged = compareTargetsRef.current.lastMode !== compareView.mode;
 
@@ -605,12 +579,31 @@ export function useViewportCompareRender({
         vertexShader: WIPE_VERTEX_SHADER,
         fragmentShader: WIPE_FRAGMENT_SHADER,
         uniforms: {
-          u_tSlotA: { value: textureA },
-          u_tSlotB: { value: textureB },
+          u_tSlotA: { value: leadingSlot.texture },
+          u_tSlotB: { value: trailingSlot.texture },
+          u_paneSize: {
+            value: new THREE.Vector2(presentationSize.width, presentationSize.height),
+          },
+          u_slotATextureSize: {
+            value: new THREE.Vector2(leadingSlot.textureSize.width, leadingSlot.textureSize.height),
+          },
+          u_slotBTextureSize: {
+            value: new THREE.Vector2(
+              trailingSlot.textureSize.width,
+              trailingSlot.textureSize.height,
+            ),
+          },
+          u_slotAFrameOrigin: { value: toShaderFrameOrigin(leadingFrame) },
+          u_slotAFrameSize: { value: new THREE.Vector2(leadingFrame.width, leadingFrame.height) },
+          u_slotBFrameOrigin: { value: toShaderFrameOrigin(trailingFrame) },
+          u_slotBFrameSize: {
+            value: new THREE.Vector2(trailingFrame.width, trailingFrame.height),
+          },
           u_divider: { value: effectiveDivider },
           u_orientation: {
             value: compareView.wipe.orientation === 'vertical' ? 0 : 1,
           },
+          u_interpolation: { value: viewportInterpolation === 'nearest' ? 1 : 0 },
         },
         depthWrite: false,
         depthTest: false,
@@ -620,11 +613,25 @@ export function useViewportCompareRender({
     } else if (compositeQuad.material instanceof THREE.ShaderMaterial) {
       // Same shader — just update uniforms in-place (no allocation)
       const mat = compositeQuad.material;
-      mat.uniforms.u_tSlotA.value = textureA;
-      mat.uniforms.u_tSlotB.value = textureB;
+      mat.uniforms.u_tSlotA.value = leadingSlot.texture;
+      mat.uniforms.u_tSlotB.value = trailingSlot.texture;
+      mat.uniforms.u_paneSize.value.set(presentationSize.width, presentationSize.height);
+      mat.uniforms.u_slotATextureSize.value.set(
+        leadingSlot.textureSize.width,
+        leadingSlot.textureSize.height,
+      );
+      mat.uniforms.u_slotBTextureSize.value.set(
+        trailingSlot.textureSize.width,
+        trailingSlot.textureSize.height,
+      );
+      mat.uniforms.u_slotAFrameOrigin.value.copy(toShaderFrameOrigin(leadingFrame));
+      mat.uniforms.u_slotAFrameSize.value.set(leadingFrame.width, leadingFrame.height);
+      mat.uniforms.u_slotBFrameOrigin.value.copy(toShaderFrameOrigin(trailingFrame));
+      mat.uniforms.u_slotBFrameSize.value.set(trailingFrame.width, trailingFrame.height);
 
       mat.uniforms.u_divider.value = effectiveDivider;
       mat.uniforms.u_orientation.value = compareView.wipe.orientation === 'vertical' ? 0 : 1;
+      mat.uniforms.u_interpolation.value = viewportInterpolation === 'nearest' ? 1 : 0;
     }
 
     // Render the composite to the visible canvas
@@ -633,30 +640,36 @@ export function useViewportCompareRender({
     gl.render(compositeScene, compositeCamera);
 
     // Store final pixel reading target
-    finalCompBufferRef.current = slotATarget;
+    finalCompBufferRef.current = leadingDisplayTarget;
 
     // Restore render target
     gl.setRenderTarget(previousTarget);
   }, [
     compareView.isActive,
+    compareView.sidesSwapped,
     compareView.mode,
+    compareView.sizingMode,
     compareView.dividerPosition,
     compareView.wipe.orientation,
     compareView.wipe.reference,
     viewportNodesA,
     viewportNodesB,
-    sceneNode,
+    sceneNodeA,
+    sceneNodeB,
     visualFrame,
     viewerSettings,
     displayView,
     projectColorManagement,
     outputDomain,
+    renderQuality,
     alphaOverlayStyle,
     hasRenderableNodes,
     isRenderReady,
     mediaUpdateTrigger,
     viewportSize,
     interactiveViewportRect,
+    paneLayout,
+    viewportInterpolation,
     gl,
     slotADisplayOutputRef,
     textureCacheRef,

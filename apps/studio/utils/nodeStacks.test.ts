@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 // Suppress Google GenAI import that nodeRegistry pulls in transitively.
 import { NodeType, type AnyNode } from '@blackboard/types';
@@ -19,10 +19,13 @@ const img = (id: string): AnyNode =>
   }) as AnyNode;
 
 const grade = (id: string, stacked = true): AnyNode =>
-  ({ id, type: NodeType.GRADE, name: id, enabled: true, stacked }) as AnyNode;
+  ({ id, type: NodeType.GRADE, name: id, enabled: true, stacked }) as unknown as AnyNode;
 
 const blur = (id: string, stacked = true): AnyNode =>
-  ({ id, type: NodeType.BLUR, name: id, enabled: true, stacked }) as AnyNode;
+  ({ id, type: NodeType.BLUR, name: id, enabled: true, stacked }) as unknown as AnyNode;
+
+const premultiply = (id: string, stacked = true): AnyNode =>
+  ({ id, type: NodeType.PREMULTIPLY, name: id, enabled: true, stacked, uniforms: {} }) as AnyNode;
 
 const scene = (id: string): AnyNode =>
   ({ id, type: NodeType.SCENE, name: id, enabled: true }) as AnyNode;
@@ -57,6 +60,12 @@ describe('buildNodeStacks', () => {
     const stacks = buildNodeStacks([img('i1'), grade('g1'), blur('b1')]);
     expect(stacks).toHaveLength(1);
     expect(stacks[0].map((n) => n.id)).toEqual(['i1', 'g1', 'b1']);
+  });
+
+  it('groups a Utility-category primary-input shader into its upstream stack', () => {
+    const stacks = buildNodeStacks([img('i1'), premultiply('p1')]);
+    expect(stacks).toHaveLength(1);
+    expect(stacks[0].map((n) => n.id)).toEqual(['i1', 'p1']);
   });
 
   it('creates a new stack for each unstacked source node', () => {

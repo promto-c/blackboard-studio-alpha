@@ -9,7 +9,11 @@ import {
 } from '@blackboard/types';
 import { calculateTransformForFitMode } from '@/state/editor/selectors';
 import type { NodeFlags, NodeUpdateContext, NodeUpdateResult } from './NodeDefinition';
-import { IMAGE_FIT_MODE_OPTIONS, shouldApplyImageFitPreset } from './imageFitMode';
+import {
+  getImageFitModeTransformUpdate,
+  IMAGE_FIT_MODE_OPTIONS,
+  shouldApplyImageFitPreset,
+} from './imageFitMode';
 
 export type SourceTransformNode = MediaSourceNode | ImageSequenceNode | ComfyNode | OnnxModelNode;
 
@@ -17,7 +21,6 @@ export const sourceMediaNodeFlags: NodeFlags = {
   isSource: true,
   isRenderable: true,
   isMediaNode: true,
-  showDataWindow: true,
   hasThumbnail: true,
 };
 
@@ -39,7 +42,10 @@ export const createAutoFitTransform = ({
 }): ImageTransform => {
   const sceneRect = { x: 0, y: 0, width: sceneNode.width, height: sceneNode.height };
   if (!hasRenderableSize(imageSize) || !hasRenderableSize(sceneRect)) {
-    return node.transform;
+    return {
+      ...node.transform,
+      ...getImageFitModeTransformUpdate(fitMode),
+    };
   }
 
   const fittedTransform = calculateTransformForFitMode(
@@ -62,7 +68,13 @@ export const createSourceTransformUpdate = (
   changes: Record<string, unknown>,
   context: NodeUpdateContext,
 ): NodeUpdateResult | null => {
-  const incomingTransform = changes.transform as Partial<ImageTransform> | undefined;
+  const rawIncomingTransform = changes.transform as Partial<ImageTransform> | undefined;
+  const incomingTransform = rawIncomingTransform?.fitMode
+    ? {
+        ...rawIncomingTransform,
+        ...getImageFitModeTransformUpdate(rawIncomingTransform.fitMode),
+      }
+    : rawIncomingTransform;
   const width = typeof changes.width === 'number' ? changes.width : node.width;
   const height = typeof changes.height === 'number' ? changes.height : node.height;
   const sceneNode = context.sceneNode as SceneNode | undefined;

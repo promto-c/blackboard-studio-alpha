@@ -7,9 +7,11 @@ import {
   type PersistedProjectState,
   type SceneNode,
 } from '@blackboard/types';
+import { getOrderedNodesFromFlow } from '@/state/editor/flowModel';
 import { buildNodeStacks } from './nodeStacks';
+import { getViewerRenderNodes } from './viewerSlots';
 import type { AiToolExecutionResult } from './agentToolRegistry';
-import { renderStackToDataURL } from './thumbnailRenderer';
+import { renderNodesToDataURL } from './thumbnailRenderer';
 import { isSceneNode } from './guards';
 
 interface AgentRenderPreviewOptions {
@@ -27,7 +29,7 @@ interface AgentRenderComparisonOptions extends AgentRenderPreviewOptions {
 interface AgentRenderPreviewTarget {
   flow: Flow;
   sceneNode: SceneNode;
-  stack: AnyNode[];
+  renderNodes: AnyNode[];
   node: AnyNode;
 }
 
@@ -55,7 +57,8 @@ export const resolveAgentRenderPreviewTarget = (
   const sceneNode = flow.nodes.find(isSceneNode);
   if (!sceneNode) return null;
 
-  const stacks = buildNodeStacks(flow.nodes);
+  const orderedNodes = getOrderedNodesFromFlow(flow);
+  const stacks = buildNodeStacks(orderedNodes);
   if (stacks.length === 0) return null;
 
   const requestedStack = options.nodeId
@@ -67,11 +70,14 @@ export const resolveAgentRenderPreviewTarget = (
     stack[stack.length - 1];
 
   if (!node) return null;
+  const renderNodes = getViewerRenderNodes(orderedNodes, node.id, flow).filter(
+    (candidate) => candidate.type !== 'scene' && candidate.type !== 'output',
+  );
 
   return {
     flow,
     sceneNode,
-    stack,
+    renderNodes,
     node,
   };
 };
@@ -90,14 +96,14 @@ async function captureAgentRenderPreview(
   const target = resolveAgentRenderPreviewTarget(projectState, options);
   if (!target) {
     return {
-      content: 'No renderable stack was found in the requested agent snapshot.',
+      content: 'No renderable graph branch was found in the requested agent snapshot.',
       artifact: null,
     };
   }
 
   const frame = Math.max(0, Math.floor(options.frame ?? projectState.currentFrame ?? 0));
-  const dataUrl = await renderStackToDataURL(
-    target.stack,
+  const dataUrl = await renderNodesToDataURL(
+    target.renderNodes,
     target.sceneNode,
     projectState.colorManagement,
     frame,

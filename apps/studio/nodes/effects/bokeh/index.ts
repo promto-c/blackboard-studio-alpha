@@ -1,4 +1,10 @@
-import { NodeType, type BokehBlurNode, type DepthSource, type AnyNode } from '@blackboard/types';
+import {
+  NodeType,
+  type AnimatableNumber,
+  type BokehBlurNode,
+  type DepthSource,
+  type AnyNode,
+} from '@blackboard/types';
 import {
   createShaderNodeDefinition,
   type ShaderUniformMap,
@@ -9,7 +15,7 @@ import BokehAdjustments from './BokehAdjustments';
 import * as Icons from '@blackboard/icons';
 import { BokehTool } from './BokehTool';
 import { BOKEH_BLUR_SHADER } from './bokehShader';
-import { parseUniformsFromGLSL } from '@blackboard/renderer';
+import { getValueAtFrame, parseUniformsFromGLSL } from '@blackboard/renderer';
 import * as THREE from 'three';
 import React from 'react';
 
@@ -65,14 +71,25 @@ export const bokehNode = createShaderNodeDefinition({
   excludedUniforms: EXCLUDED_UNIFORMS,
   additionalUniforms: (node: AnyNode, context: RenderContext): ShaderUniformMap => {
     const bokehNode = node as BokehBlurNode;
+    const configuredSamples = bokehNode.uniforms.u_samples;
+    const previewSamples = configuredSamples
+      ? Math.min(
+          getValueAtFrame(configuredSamples.value as AnimatableNumber, context.frame),
+          context.quality.sampleLimit,
+        )
+      : context.quality.sampleLimit;
     return {
       u_resolution: { value: new THREE.Vector2(context.scene.width, context.scene.height) },
       u_depthSource: { value: depthSourceMap[bokehNode.depthSource] },
       u_previewDepth: { value: !!bokehNode.previewDepth },
       u_depthInvert: { value: !!bokehNode.depthInvert },
+      ...(context.quality.mode === 'preview'
+        ? { u_samples: { value: Math.max(2, Math.round(previewSamples)) } }
+        : {}),
     };
   },
   overrides: {
+    adaptivePreview: { sampleLimit: true },
     viewportTools: [
       {
         id: 'bokeh_pick',

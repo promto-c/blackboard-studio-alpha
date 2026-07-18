@@ -66,11 +66,11 @@ describe('useViewportRotoMasks', () => {
       sceneNode,
       viewportSize: { width: 1934, height: 1321 },
       currentFrame: 10,
-      interactiveMotionBlurPreviewEnabled: true,
-      interactiveMotionBlurPreviewActive: false,
-      interactiveNodeId: null,
-      interactiveMaxDimension: 1280,
-      interactiveMotionBlurPreviewSamples: 8,
+      optimizedPreviewActive: false,
+      editingPreviewActive: false,
+      editingNodeId: null,
+      maxDimension: 1280,
+      sampleLimit: 8,
       rotoPointWeightMode: 'global' as const,
       suspendMaskUpdatesWhileEditing: false,
       bumpMediaUpdate,
@@ -85,8 +85,9 @@ describe('useViewportRotoMasks', () => {
 
     rerender({
       ...initialProps,
-      interactiveMotionBlurPreviewActive: true,
-      interactiveNodeId: rotoA.id,
+      optimizedPreviewActive: true,
+      editingPreviewActive: true,
+      editingNodeId: rotoA.id,
     });
 
     expect(createRotoMaskLayersMock).toHaveBeenCalledTimes(3);
@@ -98,8 +99,9 @@ describe('useViewportRotoMasks', () => {
     rerender({
       ...initialProps,
       nodes: [editedRotoA, rotoB],
-      interactiveMotionBlurPreviewActive: true,
-      interactiveNodeId: rotoA.id,
+      optimizedPreviewActive: true,
+      editingPreviewActive: true,
+      editingNodeId: rotoA.id,
     });
 
     expect(createRotoMaskLayersMock).toHaveBeenCalledTimes(4);
@@ -119,6 +121,18 @@ describe('useViewportRotoMasks', () => {
       firstInteractiveCache,
     );
     expect(bumpMediaUpdate).toHaveBeenCalledTimes(2);
+
+    rerender({
+      ...initialProps,
+      nodes: [editedRotoA, rotoB],
+      optimizedPreviewActive: true,
+      editingPreviewActive: true,
+      editingNodeId: rotoA.id,
+    });
+
+    expect(createRotoMaskLayersMock).toHaveBeenCalledTimes(6);
+    expect(createRotoMaskLayersMock.mock.calls[5]?.[3]?.textureCache).toBe(firstInteractiveCache);
+    expect(bumpMediaUpdate).toHaveBeenCalledTimes(3);
   });
 
   it('uses the proxy for every Roto node during temporal preview', () => {
@@ -130,12 +144,11 @@ describe('useViewportRotoMasks', () => {
         sceneNode,
         viewportSize: { width: 1920, height: 1080 },
         currentFrame: 12,
-        interactiveMotionBlurPreviewEnabled: true,
-        interactiveMotionBlurPreviewActive: false,
-        interactiveNodeId: null,
-        interactiveMaxDimension: 1280,
-        interactiveMotionBlurPreviewSamples: 8,
-        temporalPreviewActive: true,
+        optimizedPreviewActive: true,
+        editingPreviewActive: false,
+        editingNodeId: null,
+        maxDimension: 1280,
+        sampleLimit: 8,
         rotoPointWeightMode: 'global',
         suspendMaskUpdatesWhileEditing: false,
         bumpMediaUpdate: vi.fn(),

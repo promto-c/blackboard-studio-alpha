@@ -7,7 +7,10 @@ import * as Icons from '@blackboard/icons';
 import ComfyViewportToolPanel from './ComfyViewportToolPanel';
 import { ComfyCropSvgOverlay, ComfyCropPromptOverlay } from './ComfyCropOverlay';
 import ComfyItemsPanel from './ComfyItemsPanel';
-import { getSelectedComfyWorkflowInputCandidates } from './comfyInputs';
+import {
+  getComfyWorkflowInputPortPresentation,
+  getSelectedComfyWorkflowInputCandidates,
+} from './comfyInputs';
 import { getComfyInputPortName } from '../../portMapping';
 import {
   getComfyCompositeLayers,
@@ -178,15 +181,18 @@ export const comfyNode: NodeDefinition = {
     }
 
     const inputCandidates = getSelectedComfyWorkflowInputCandidates(workflow);
-    return inputCandidates.map((candidate) => ({
-      name: getComfyInputPortName(workflow.id, candidate, Object.keys(comfyNode.inputs ?? {}), {
-        allowSingleReservedPort: inputCandidates.length === 1,
-      }),
-      label: candidate.label,
-      type: 'texture' as const,
-      required: false,
-      description: `${candidate.nodeType} #${candidate.nodeId} · ${candidate.inputName}`,
-    }));
+    return inputCandidates.map((candidate) => {
+      return {
+        name: getComfyInputPortName(workflow.id, candidate, Object.keys(comfyNode.inputs ?? {}), {
+          allowSingleReservedPort: inputCandidates.length === 1,
+        }),
+        ...getComfyWorkflowInputPortPresentation(candidate),
+        required: false,
+        description: `${candidate.nodeType} #${candidate.nodeId} · ${candidate.inputName}${
+          candidate.inputType ? ` (${candidate.inputType})` : ''
+        }`,
+      };
+    });
   },
   toolHotkeys: {
     q: 'select',

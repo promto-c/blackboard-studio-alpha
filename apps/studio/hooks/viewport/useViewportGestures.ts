@@ -8,7 +8,12 @@ import {
   getTimeCorrectedSmoothing,
 } from '@/utils/adaptiveAnimation';
 import { useViewportLayoutInsets } from './useViewportLayoutInsets';
-import { calculatePivotedViewportPan, calculateViewportFitTarget } from './viewportFit';
+import {
+  calculatePivotedViewportPan,
+  calculateViewportFitTarget,
+  type ViewportFitMode,
+  type ViewportFitTarget,
+} from './viewportFit';
 
 const MIN_VIEWPORT_ZOOM = 0.02;
 const MAX_VIEWPORT_ZOOM = 16;
@@ -43,16 +48,19 @@ interface UseViewportGesturesParams {
   ) => void;
   setAnimationTarget: (target: { zoom?: number; pan?: Pan }) => void;
   gestureTransform?: ViewportGestureTransform | null;
+  fitMode?: ViewportFitMode;
+  fitPaddingScale?: number;
+  fitTargetOverride?: ViewportFitTarget | null;
 }
 
-interface ViewportGestureFrame {
+export interface ViewportGestureFrame {
   x: number;
   y: number;
   width: number;
   height: number;
 }
 
-interface ViewportGestureTransform {
+export interface ViewportGestureTransform {
   panBase: Pan;
   fitFrame: ViewportGestureFrame;
   getFrameForPoint: (point: { x: number; y: number }) => ViewportGestureFrame;
@@ -93,6 +101,9 @@ export function useViewportGestures({
   setViewportTransform,
   setAnimationTarget,
   gestureTransform = null,
+  fitMode = 'fit',
+  fitPaddingScale,
+  fitTargetOverride = null,
 }: UseViewportGesturesParams): UseViewportGesturesResult {
   // --- Middle mouse panning ---
   const [isMousePanning, setIsMousePanning] = useState(false);
@@ -276,6 +287,8 @@ export function useViewportGestures({
   const panelWidth = viewportInsets.left;
 
   const fitTarget = useMemo(() => {
+    if (fitTargetOverride) return fitTargetOverride;
+
     if (gestureTransform) {
       const target = calculateViewportFitTarget({
         viewportSize: {
@@ -285,6 +298,8 @@ export function useViewportGestures({
         sceneSize: sceneNode
           ? { width: sceneNode.width, height: sceneNode.height }
           : { width: 0, height: 0 },
+        mode: fitMode,
+        paddingScale: fitPaddingScale,
       });
 
       return {
@@ -302,8 +317,18 @@ export function useViewportGestures({
         ? { width: sceneNode.width, height: sceneNode.height }
         : { width: 0, height: 0 },
       insets: viewportInsets,
+      mode: fitMode,
+      paddingScale: fitPaddingScale,
     });
-  }, [gestureTransform, sceneNode, viewportInsets, viewportSize]);
+  }, [
+    fitMode,
+    fitPaddingScale,
+    fitTargetOverride,
+    gestureTransform,
+    sceneNode,
+    viewportInsets,
+    viewportSize,
+  ]);
   const fitZoom = fitTarget.zoom;
 
   const isFit = useMemo(() => {

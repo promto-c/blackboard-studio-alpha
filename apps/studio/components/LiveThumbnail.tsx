@@ -1,9 +1,10 @@
-import { useState, useEffect, memo } from 'react';
-import { renderStackToBlob } from '@/utils/thumbnailRenderer';
-import { AnyNode, SceneNode } from '@blackboard/types';
+import { useState, useEffect, memo, useMemo } from 'react';
+import { renderNodesToBlob } from '@/utils/thumbnailRenderer';
+import { AnyNode, NodeType, SceneNode } from '@blackboard/types';
 import { useEditorSelector } from '@/state/editorContext';
 import { useDebouncedAsync } from '@/hooks/useDebouncedAsync';
 import { Spinner } from '@blackboard/ui';
+import { getViewerRenderNodes } from '@/utils/viewerSlots';
 
 interface Props {
   stack: AnyNode[];
@@ -19,8 +20,20 @@ export const LiveThumbnail = memo(function LiveThumbnail({ stack, sceneNode, sta
   const currentFrame = useEditorSelector((s) => s.currentFrame);
   const projectColorManagement = useEditorSelector((s) => s.colorManagement);
   const isFrameScrubbing = useEditorSelector((s) => s.isFrameScrubbing);
+  const nodes = useEditorSelector((s) => s.nodes);
+  const activeFlow = useEditorSelector((s) => {
+    const flowId = s.activeFlowId ?? s.rootFlowId;
+    return flowId ? (s.flows[flowId] ?? null) : null;
+  });
   const [deferredFrame, setDeferredFrame] = useState(currentFrame);
   const effectiveFrame = staticFrame !== undefined ? staticFrame : deferredFrame;
+  const targetNodeId = stack.at(-1)?.id;
+  const renderNodes = useMemo(() => {
+    if (!activeFlow || !targetNodeId) return stack;
+    return getViewerRenderNodes(nodes, targetNodeId, activeFlow).filter(
+      (node) => node.type !== NodeType.SCENE && node.type !== NodeType.OUTPUT,
+    );
+  }, [activeFlow, nodes, stack, targetNodeId]);
 
   useEffect(() => {
     if (staticFrame !== undefined) {
@@ -34,8 +47,8 @@ export const LiveThumbnail = memo(function LiveThumbnail({ stack, sceneNode, sta
   }, [currentFrame, isFrameScrubbing, staticFrame]);
 
   const latestBlob = useDebouncedAsync(
-    () => renderStackToBlob(stack, sceneNode, projectColorManagement, effectiveFrame),
-    [stack, sceneNode, projectColorManagement, effectiveFrame],
+    () => renderNodesToBlob(renderNodes, sceneNode, projectColorManagement, effectiveFrame),
+    [renderNodes, sceneNode, projectColorManagement, effectiveFrame],
     {
       delay: THUMBNAIL_DEBOUNCE_MS,
       onError: (error) => {

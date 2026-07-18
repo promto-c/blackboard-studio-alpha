@@ -303,6 +303,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '4',
         nodeType: 'LoadImage',
         inputName: 'image',
+        inputType: 'IMAGEUPLOAD',
         label: 'LoadImage #4',
       },
     ]);
@@ -825,6 +826,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '4',
         nodeType: 'LoadImage',
         inputName: 'image',
+        inputType: 'IMAGEUPLOAD',
         label: 'LoadImage #4',
       },
     ]);
@@ -912,6 +914,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '269',
         nodeType: 'LoadImage',
         inputName: 'image',
+        inputType: 'IMAGEUPLOAD',
         label: 'LoadImage #269',
       },
     ]);
@@ -971,6 +974,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '5',
         nodeType: 'IPAdapter',
         inputName: 'image',
+        inputType: 'IMAGE',
         label: 'IPAdapter #5',
       },
       {
@@ -978,6 +982,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '7',
         nodeType: 'ImageScale',
         inputName: 'image',
+        inputType: 'IMAGE',
         label: 'ImageScale #7',
       },
     ]);
@@ -1035,6 +1040,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '4',
         nodeType: 'LoadImage',
         inputName: 'image',
+        inputType: 'IMAGEUPLOAD',
         label: 'LoadImage #4',
       },
     ]);
@@ -1108,6 +1114,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '10_4',
         nodeType: 'ImageScale',
         inputName: 'image',
+        inputType: 'IMAGE',
         label: 'ImageScale #10_4',
         scope: 'internal',
       },
@@ -1214,6 +1221,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '269',
         nodeType: 'LoadImage',
         inputName: 'image',
+        inputType: 'IMAGEUPLOAD',
         label: 'LoadImage #269',
       },
     ]);
@@ -1431,6 +1439,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '133',
         nodeType: 'custom-image-edit-subgraph',
         inputName: 'start_image',
+        inputType: 'IMAGE',
         label: 'custom-image-edit-subgraph #133',
         promptTargets: [{ nodeId: '133_4', inputName: 'image' }],
       },
@@ -1557,6 +1566,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '12',
         nodeType: 'LoadVideo',
         inputName: 'video',
+        inputType: 'VIDEOUPLOAD',
         label: 'LoadVideo #12',
       },
       {
@@ -1564,6 +1574,7 @@ describe('Comfy workflow conversion', () => {
         nodeId: '20',
         nodeType: 'ImageListConsumer',
         inputName: 'images',
+        inputType: 'IMAGES',
         label: 'ImageListConsumer #20',
       },
     ]);
@@ -1683,6 +1694,85 @@ describe('Comfy workflow conversion', () => {
       inputs: {
         image: [loadNodeId!, 0],
       },
+    });
+  });
+
+  it('routes a Comfy MASK workflow input through the LoadImage mask output', () => {
+    const workflow = {
+      nodes: [
+        {
+          id: 66,
+          type: 'alpha-upscale-subgraph',
+          inputs: [{ name: 'alpha', type: 'MASK', link: null }],
+          outputs: [{ name: 'images', type: 'IMAGE', links: [] }],
+        },
+      ],
+      links: [],
+      definitions: {
+        subgraphs: [
+          {
+            id: 'alpha-upscale-subgraph',
+            inputs: [{ name: 'alpha', type: 'MASK', linkIds: [40] }],
+            outputs: [{ name: 'images', type: 'IMAGE', linkIds: [45] }],
+            nodes: [
+              {
+                id: 50,
+                type: 'JoinImageWithAlpha',
+                inputs: [
+                  { name: 'image', type: 'IMAGE', link: null },
+                  { name: 'alpha', type: 'MASK', link: 40 },
+                ],
+                outputs: [{ name: 'IMAGE', type: 'IMAGE', links: [45] }],
+              },
+            ],
+            links: [
+              [40, -10, 0, 50, 1, 'MASK'],
+              [45, 50, 0, -20, 0, 'IMAGE'],
+            ],
+          },
+        ],
+      },
+    };
+    const objectInfo = {
+      JoinImageWithAlpha: {
+        input: {
+          required: {
+            image: ['IMAGE'],
+            alpha: ['MASK'],
+          },
+        },
+        output: ['IMAGE'],
+      },
+      PreviewImage: {
+        input: { required: { images: ['IMAGE'] } },
+        output_node: true,
+      },
+    };
+
+    const extracted = extractComfyPromptWithOutputs(workflow, objectInfo);
+    const alphaCandidate = extracted.inputCandidates.find(
+      (candidate) => candidate.id === '66:alpha',
+    );
+
+    expect(alphaCandidate).toMatchObject({
+      inputName: 'alpha',
+      inputType: 'MASK',
+      promptTargets: [{ nodeId: '66_50', inputName: 'alpha' }],
+    });
+
+    const patched = applyComfyWorkflowInputImages(extracted.prompt, [
+      {
+        candidate: alphaCandidate!,
+        imageName: 'blackboard/alpha.png',
+      },
+    ]);
+    const loadNodeId = Object.keys(patched).find((key) =>
+      key.startsWith('blackboard_input_load_66_alpha'),
+    );
+
+    expect(loadNodeId).toBeDefined();
+    expect(patched['66_50']).toMatchObject({
+      inputs: { alpha: [loadNodeId!, 1] },
     });
   });
 

@@ -1,5 +1,5 @@
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
-import { BlendMode, MergeNode } from '@blackboard/types';
+import { BlendMode, type MergeNode } from '@blackboard/types';
 import { CollapsibleSection, Slider } from '@blackboard/ui';
 import { SegmentedControl, SettingRow } from '@/components';
 import { getValueAtFrame, hasKeyframeAt } from '@blackboard/renderer';

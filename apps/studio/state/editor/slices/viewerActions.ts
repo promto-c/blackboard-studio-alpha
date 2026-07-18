@@ -13,6 +13,7 @@ import type { EditorState, GetState, SetState } from '@/state/editor/slices/type
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import {
   assignViewerSlotToNode,
+  orderViewerCompareSlots,
   sanitizeActiveViewerSlot,
   sanitizeViewerNodeId,
   sanitizeViewerSlots,
@@ -22,6 +23,13 @@ import {
   createDefaultViewerColorManagement,
   resolveCurrentViewerDisplayView,
 } from '@/color-management';
+import {
+  deactivateCompareView,
+  type CompareMode,
+  type CompareOrientation,
+  type CompareSizingMode,
+  type CompareWipeReference,
+} from '@/state/editor/compareView';
 
 export function createViewerActions(
   set: SetState,
@@ -177,7 +185,11 @@ export function createViewerActions(
       const validNodeId = sanitizeViewerNodeId(nodeId, state.nodes);
       if (!validNodeId) return false;
 
-      if (state.activeViewerSlot === slot && state.viewerNodeId === validNodeId) {
+      if (
+        !state.compareView.isActive &&
+        state.activeViewerSlot === slot &&
+        state.viewerNodeId === validNodeId
+      ) {
         set(() => ({
           viewerNodeId: null,
           activeViewerSlot: null,
@@ -188,6 +200,9 @@ export function createViewerActions(
       set(() => ({
         viewerNodeId: validNodeId,
         activeViewerSlot: slot,
+        ...(state.compareView.isActive
+          ? { compareView: deactivateCompareView(state.compareView) }
+          : {}),
       }));
       return true;
     },
@@ -236,47 +251,53 @@ export function createViewerActions(
 
     enterCompareMode: (slotA: ViewerSlot, slotB: ViewerSlot) => {
       const state = get();
-      const nodeIdA = state.viewerSlots?.[slotA];
-      const nodeIdB = state.viewerSlots?.[slotB];
+      const [baseSlot, comparisonSlot] = orderViewerCompareSlots(slotA, slotB);
+      const nodeIdA = state.viewerSlots?.[baseSlot];
+      const nodeIdB = state.viewerSlots?.[comparisonSlot];
       if (!nodeIdA || !nodeIdB) return false;
 
       const validA = sanitizeViewerNodeId(nodeIdA, state.nodes);
       const validB = sanitizeViewerNodeId(nodeIdB, state.nodes);
       if (!validA || !validB) return false;
 
-      // Set the viewer to slot A so the render loop renders that slot
+      // The lower-numbered slot is the stable base rendered by the primary loop.
       set(() => ({
         compareView: {
           ...state.compareView,
           isActive: true,
-          slotA,
-          slotB,
+          slotA: baseSlot,
+          slotB: comparisonSlot,
+          sidesSwapped: false,
         },
         viewerNodeId: validA,
-        activeViewerSlot: slotA,
+        activeViewerSlot: baseSlot,
       }));
       return true;
     },
 
     exitCompareMode: () => {
       set((s) => ({
-        compareView: {
-          ...s.compareView,
-          isActive: false,
-          slotA: null,
-          slotB: null,
-          dividerPosition: 0.5,
-        },
+        compareView: deactivateCompareView(s.compareView),
       }));
     },
 
-    setCompareMode: (mode: 'wipe' | 'split') => {
+    setCompareMode: (mode: CompareMode) => {
       set((s) => ({
         compareView: { ...s.compareView, mode },
       }));
     },
 
-    setCompareWipeOrientation: (orientation: 'vertical' | 'horizontal') => {
+    setCompareSizingMode: (sizingMode: CompareSizingMode) => {
+      set((s) => ({
+        compareView: {
+          ...s.compareView,
+          sizingMode,
+          sizingRequestId: s.compareView.sizingRequestId + 1,
+        },
+      }));
+    },
+
+    setCompareWipeOrientation: (orientation: CompareOrientation) => {
       set((s) => ({
         compareView: {
           ...s.compareView,
@@ -285,7 +306,7 @@ export function createViewerActions(
       }));
     },
 
-    setCompareWipeReference: (reference: 'canvas' | 'viewport' | 'cursor') => {
+    setCompareWipeReference: (reference: CompareWipeReference) => {
       set((s) => ({
         compareView: {
           ...s.compareView,
@@ -301,22 +322,15 @@ export function createViewerActions(
     },
 
     swapCompareSlots: () => {
-      const state = get();
-      const { slotA, slotB } = state.compareView;
-      if (!slotA || !slotB) return;
-
-      const nodeIdB = state.viewerSlots?.[slotB];
-      if (!nodeIdB) return;
-
-      set(() => ({
-        compareView: {
-          ...state.compareView,
-          slotA: slotB,
-          slotB: slotA,
-        },
-        viewerNodeId: sanitizeViewerNodeId(nodeIdB, state.nodes),
-        activeViewerSlot: slotB,
-      }));
+      set((s) => {
+        if (!s.compareView.isActive || !s.compareView.slotA || !s.compareView.slotB) return {};
+        return {
+          compareView: {
+            ...s.compareView,
+            sidesSwapped: !s.compareView.sidesSwapped,
+          },
+        };
+      });
     },
   };
 }

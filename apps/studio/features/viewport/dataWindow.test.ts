@@ -201,6 +201,7 @@ describe('getDataWindowRect', () => {
         type: NodeType.CROP,
         name: 'Crop',
         enabled: true,
+        inputs: { pipe: 'image' },
         crop: { left: 20, right: 0, top: 0, bottom: 0 },
       } as AnyNode,
       {
@@ -208,6 +209,7 @@ describe('getDataWindowRect', () => {
         type: NodeType.TRANSFORM,
         name: 'Transform',
         enabled: true,
+        inputs: { pipe: 'crop' },
         transform: {
           translateX: 0,
           translateY: 0,
@@ -398,10 +400,89 @@ describe('getDataWindowRect', () => {
     expect(projection.outputs.get('comfy')).toEqual({
       x: 0,
       y: 0,
-      width: 1000,
-      height: 1000,
-      nativeWidth: 1000,
-      nativeHeight: 1000,
+      width: 0,
+      height: 0,
+      nativeWidth: 0,
+      nativeHeight: 0,
     });
+  });
+
+  it('reserves upstream overscan through passthrough nodes so a larger reformat can reveal it', () => {
+    const comfyNode = makeComfyNode({
+      width: 200,
+      height: 200,
+      generatedOutputs: [
+        makeComfyOutput({
+          width: 200,
+          height: 200,
+          visible: true,
+          transform: {
+            x: 0,
+            y: 0,
+            scaleX: 1,
+            scaleY: 1,
+            fitMode: ImageFitMode.CUSTOM,
+          },
+        }),
+      ],
+    });
+    const passthrough = {
+      id: 'grade',
+      type: NodeType.GRADE,
+      name: 'Grade',
+      enabled: true,
+      inputs: { pipe: comfyNode.id },
+    } as unknown as AnyNode;
+    const reformat = {
+      id: 'reformat',
+      type: NodeType.REFORMAT,
+      name: 'Reformat',
+      enabled: true,
+      inputs: { pipe: passthrough.id },
+      sourceWidth: 100,
+      sourceHeight: 100,
+      width: 200,
+      height: 200,
+      resizeMode: 'none',
+    } as AnyNode;
+
+    const projection = getDataWindowProjection(
+      { width: 200, height: 200 },
+      [comfyNode, passthrough, reformat],
+      0,
+    );
+
+    expect(projection.outputs.get(comfyNode.id)).toMatchObject({
+      x: -50,
+      y: -50,
+      width: 200,
+      height: 200,
+    });
+    expect(projection.outputs.get(passthrough.id)).toMatchObject({
+      x: -50,
+      y: -50,
+      width: 200,
+      height: 200,
+    });
+    expect(projection.outputs.get(reformat.id)).toMatchObject({
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 200,
+    });
+
+    expect(projection.nodeWindows.get(comfyNode.id)).toMatchObject({
+      inputStorageWindow: { x: -50, y: -50, width: 200, height: 200 },
+      outputStorageWindow: { x: -50, y: -50, width: 200, height: 200 },
+    });
+    expect(projection.nodeWindows.get(passthrough.id)).toMatchObject({
+      inputDataWindow: { x: -50, y: -50, width: 200, height: 200 },
+      outputDataWindow: { x: -50, y: -50, width: 200, height: 200 },
+    });
+    expect(projection.nodeWindows.get(reformat.id)).toMatchObject({
+      inputStorageWindow: { x: -50, y: -50, width: 200, height: 200 },
+      outputStorageWindow: { x: 0, y: 0, width: 200, height: 200 },
+    });
+    expect(projection.handledDataWindowNodeIds).toEqual(new Set([comfyNode.id, reformat.id]));
   });
 });

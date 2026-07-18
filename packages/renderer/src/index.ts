@@ -3,6 +3,13 @@
 // Types
 export type {
   ShaderUniformMap,
+  RenderQuality,
+  ScratchRenderTargetOptions,
+  RenderRegion,
+  RenderWindowRect,
+  RendererNodeDataWindow,
+  RendererDataWindowPlan,
+  AdaptivePreviewCapabilities,
   RenderMode,
   RenderContext,
   RendererNodeEntry,
@@ -40,7 +47,6 @@ export {
 } from './animation';
 
 // Node predicates
-export { createNodePredicates, hasStackedFlag } from './nodePredicates';
 export {
   areProcessingDomainsCompatible,
   assertRendererProcessingDomainsSupported,
@@ -98,4 +104,7 @@ export {
   isPromiseLike,
   getSceneRenderTargetOptions,
   getRenderTargetOptionsForOutput,
+  FULL_RENDER_QUALITY,
+  resolveRenderQuality,
+  resolveRenderRegionScissor,
 } from './pipeline';

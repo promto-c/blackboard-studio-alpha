@@ -16,7 +16,7 @@ import { CollapsibleSection, RangeSlider, Slider } from '@blackboard/ui';
 import { calculateTransformForFitMode } from '@/state/editor/selectors';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { ImageTransformSettings, type LinkedScaleUpdate } from '@/nodes/ImageTransformSettings';
-import { isAutoImageFitMode } from '@/nodes/imageFitMode';
+import { getImageFitModeTransformUpdate, isAutoImageFitMode } from '@/nodes/imageFitMode';
 import {
   CheckboxIndicator,
   MediaColorManagementControls,
@@ -189,7 +189,7 @@ export function ComfyOutputTransformSection({
 
   const handleFitModeChange = (mode: ImageFitMode) => {
     if (outputUseOutputSizeAsScene) return;
-    updateOutputTransform({ fitMode: mode });
+    updateOutputTransform(getImageFitModeTransformUpdate(mode));
   };
 
   const handleOutputSizeSceneChange = (checked: boolean) => {

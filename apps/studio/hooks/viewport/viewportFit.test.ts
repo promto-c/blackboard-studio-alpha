@@ -44,6 +44,30 @@ describe('calculateViewportFitTarget', () => {
     expect(target.zoom).toBeCloseTo(1.08);
     expect(target.pan).toEqual({ x: 150, y: 100 });
   });
+
+  it('can fill a viewport exactly for compare presentation', () => {
+    const target = calculateViewportFitTarget({
+      viewportSize: { width: 600, height: 600 },
+      sceneSize: { width: 1920, height: 1080 },
+      mode: 'fill',
+      paddingScale: 1,
+    });
+
+    expect(target.zoom).toBeCloseTo(5 / 9);
+    expect(target.pan).toEqual({ x: 0, y: 0 });
+  });
+
+  it('uses native 1:1 scale for a Compare None preset', () => {
+    const target = calculateViewportFitTarget({
+      viewportSize: { width: 600, height: 600 },
+      sceneSize: { width: 1920, height: 1080 },
+      mode: 'none',
+      paddingScale: 1,
+    });
+
+    expect(target.zoom).toBe(1);
+    expect(target.pan).toEqual({ x: 0, y: 0 });
+  });
 });
 
 describe('normalizeViewportInsets', () => {

@@ -12,6 +12,8 @@ import { createNodeActions } from '@/state/editor/slices/nodeActions';
 import { getOutputTechnicalChannelPort } from '@/color-management/outputTechnicalChannels';
 import { createDefaultGrade } from '@/nodes/effects/grade/gradeModel';
 import { connectDefaultPipeline } from '@/utils/pipelineGraph';
+import { getPrimaryPipelineNodeIds } from '@/utils/flowTopology';
+import { isNodeStacked } from '@/utils/nodePredicates';
 
 type TestState = {
   nodes: AnyNode[];
@@ -110,7 +112,7 @@ const grade = (id: string, stacked = false): AnyNode =>
   }) as AnyNode;
 
 const blur = (id: string, stacked = false): AnyNode =>
-  ({ id, type: NodeType.BLUR, name: id, enabled: true, stacked }) as AnyNode;
+  ({ id, type: NodeType.BLUR, name: id, enabled: true, stacked }) as unknown as AnyNode;
 
 const mergeChannels = (id: string): AnyNode =>
   ({ id, type: NodeType.MERGE_CHANNELS, name: id, enabled: true }) as AnyNode;
@@ -1106,6 +1108,30 @@ describe('createNodeActions connectNodeInput', () => {
       }),
     );
   });
+
+  it('disconnects several graph inputs in one history entry', () => {
+    const merge = {
+      ...image('merge'),
+      type: NodeType.MERGE,
+      inputs: { source: 'source', pipe: 'main' },
+    } as AnyNode;
+    const nodes = [scene(), image('main'), image('source'), merge];
+    const { actions, getState, pushHistory } = createHarness(nodes);
+
+    actions.disconnectNodeInputs([
+      { nodeId: 'merge', portName: 'source' },
+      { nodeId: 'merge', portName: 'pipe' },
+    ]);
+
+    expect(getState().nodes.find((node) => node.id === 'merge')).not.toHaveProperty('inputs');
+    expect(getState().flows[ROOT_FLOW_ID].edges).not.toContainEqual(
+      expect.objectContaining({ targetNodeId: 'merge' }),
+    );
+    expect(pushHistory).toHaveBeenCalledOnce();
+    expect(pushHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'Disconnect 2 connections' }),
+    );
+  });
 });
 
 describe('createNodeActions group nodes', () => {
@@ -1161,6 +1187,37 @@ describe('createNodeActions group nodes', () => {
       expect.objectContaining({
         label: 'Group 2 Nodes',
       }),
+    );
+  });
+
+  it('updates an exposed child field without leaving the parent group', () => {
+    const animatedBlur = {
+      ...blur('blur-1'),
+      blur: {
+        method: 'gaussian',
+        radius: [{ frame: 0, value: 5 }],
+      },
+    } as AnyNode;
+    const { actions, getState, pushHistory } = createHarness([scene(), animatedBlur], 24);
+    getState().selectedNodeId = 'blur-1';
+    getState().selectedNodeIds = ['blur-1'];
+
+    actions.groupSelectedNodes();
+    const groupNode = getState().nodes.find((node) => node.type === NodeType.GROUP)!;
+    actions.updateGroupChildField(groupNode.id, 'blur-1', 'blur.radius', 12.5, true, true);
+
+    const childBlur = getState().flows[groupNode.childFlowId!].nodes.find(
+      (node) => node.id === 'blur-1',
+    ) as AnyNode & { blur: { radius: Array<{ frame: number; value: number }> } };
+    expect(childBlur.blur.radius).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ frame: 0, value: 5 }),
+        expect.objectContaining({ frame: 24, value: 12.5 }),
+      ]),
+    );
+    expect(getState().activeFlowId).toBe(ROOT_FLOW_ID);
+    expect(pushHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'Update Group Prop' }),
     );
   });
 
@@ -1576,6 +1633,13 @@ describe('createNodeActions node clipboard', () => {
       enabled: true,
       childFlowId: 'flow-group-1',
       externalInputs: [],
+      exposedFields: [
+        {
+          id: 'field_child-grade_grade.exposure',
+          targetNodeId: 'child-grade',
+          targetPath: 'grade.exposure',
+        },
+      ],
     } as GroupNode;
     const nodes = [scene(), group as AnyNode, grade('grade-1')];
     const { actions, getState } = createHarness(nodes);
@@ -1606,6 +1670,13 @@ describe('createNodeActions node clipboard', () => {
     expect(pastedGroup).toBeDefined();
     expect(pastedGroup.childFlowId).toBe('flow_flow-group-1_copy');
     expect(pastedGroup.childFlowId).not.toBe(group.childFlowId);
+    expect(pastedGroup.exposedFields).toEqual([
+      {
+        id: 'field_child-grade_grade.exposure',
+        targetNodeId: 'child-grade_copy',
+        targetPath: 'grade.exposure',
+      },
+    ]);
 
     const pastedChildFlow = getState().flows[pastedGroup.childFlowId!];
     expect(pastedChildFlow.nodes.map((node) => node.id)).toEqual([
@@ -1707,7 +1778,7 @@ describe('createNodeActions stackNodeOntoStack', () => {
 
     actions.toggleNodeStacking('grade-1');
 
-    expect(getState().nodes.find((node) => node.id === 'grade-1')?.stacked).toBeFalsy();
+    expect(isNodeStacked(getState().nodes.find((node) => node.id === 'grade-1')!)).toBe(false);
     expect(pushHistory).not.toHaveBeenCalled();
   });
 
@@ -1746,6 +1817,7 @@ describe('createNodeActions stackNodeOntoStack', () => {
       image('image-2'),
     ];
     const { actions, getState } = createHarness(nodes);
+    const initialEdges = getState().flows[ROOT_FLOW_ID].edges;
     const flowId = getState().rootFlowId ?? '';
     getState().nodePositionsByFlow![flowId] = {
       'image-1': { x: 0, y: 0 },
@@ -1766,6 +1838,7 @@ describe('createNodeActions stackNodeOntoStack', () => {
     expect(getState().nodes.find((node) => node.id === 'grade-1')).toEqual(
       expect.objectContaining({ stacked: true }),
     );
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(initialEdges);
     // Position is no longer cleaned up here — auto-layout handles stale positions.
   });
 
@@ -1778,43 +1851,30 @@ describe('createNodeActions stackNodeOntoStack', () => {
     expect(pushHistory).not.toHaveBeenCalled();
   });
 
-  it('rewires the primary pipe when an adjustment is stacked and unstacked', () => {
-    const nodes = [scene(), image('image-1'), grade('grade-1'), blur('blur-1')];
+  it('deletes only the chosen node inside a compact card', () => {
+    const nodes = [scene(), image('image-1'), grade('grade-1'), blur('blur-1', true)];
     const { actions, getState } = createHarness(nodes);
 
-    actions.toggleNodeStacking('grade-1');
+    actions.deleteNode('grade-1');
 
-    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sourceNodeId: 'image-1',
-          targetNodeId: 'blur-1',
-          targetPort: 'pipe',
-        }),
-      ]),
-    );
-    expect(getState().flows[ROOT_FLOW_ID].edges).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ targetNodeId: 'grade-1', targetPort: 'pipe' }),
-      ]),
-    );
+    expect(getState().nodes.map((node) => node.id)).toEqual(['scene', 'image-1', 'blur-1']);
+  });
+
+  it('preserves the primary pipe exactly when a node is compacted and expanded', () => {
+    const nodes = [scene(), image('image-1'), grade('grade-1'), blur('blur-1')];
+    const { actions, getState } = createHarness(nodes);
+    const initialEdges = getState().flows[ROOT_FLOW_ID].edges;
+    const initialPipeline = getPrimaryPipelineNodeIds(getState().flows[ROOT_FLOW_ID]);
 
     actions.toggleNodeStacking('grade-1');
 
-    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sourceNodeId: 'image-1',
-          targetNodeId: 'grade-1',
-          targetPort: 'pipe',
-        }),
-        expect.objectContaining({
-          sourceNodeId: 'grade-1',
-          targetNodeId: 'blur-1',
-          targetPort: 'pipe',
-        }),
-      ]),
-    );
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(initialEdges);
+    expect(getPrimaryPipelineNodeIds(getState().flows[ROOT_FLOW_ID])).toEqual(initialPipeline);
+
+    actions.toggleNodeStacking('grade-1');
+
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(initialEdges);
+    expect(getPrimaryPipelineNodeIds(getState().flows[ROOT_FLOW_ID])).toEqual(initialPipeline);
   });
 });
 

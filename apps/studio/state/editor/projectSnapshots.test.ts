@@ -12,6 +12,10 @@ describe('buildPersistedProjectState', () => {
     const state = {
       ...getInitialState(),
       maxFrames: 0,
+      viewportWorkingArea: {
+        enabled: true,
+        rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+      },
       history: [
         {
           id: 'hist-1',
@@ -34,6 +38,7 @@ describe('buildPersistedProjectState', () => {
     expect(persistedState.colorManagement).toBe(state.colorManagement);
     expect(persistedState).not.toHaveProperty('viewerSettings');
     expect(persistedState).not.toHaveProperty('viewerColorManagement');
+    expect(persistedState.viewportWorkingArea).toEqual(state.viewportWorkingArea);
     expect(persistedState.history.map((entry) => entry.id)).toEqual(['hist-1', 'hist-2']);
     expect(persistedState.historyIndex).toBe(1);
   });
@@ -52,6 +57,10 @@ describe('buildPersistedProjectState', () => {
             history: [{ id: 'nested' } as never],
             historyIndex: 0,
             viewerSettings: getInitialState().viewerSettings,
+            viewportWorkingArea: {
+              enabled: true,
+              rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+            },
           },
         },
       ],
@@ -63,6 +72,7 @@ describe('buildPersistedProjectState', () => {
     expect(persistedState.history[0]?.state).not.toHaveProperty('history');
     expect(persistedState.history[0]?.state).not.toHaveProperty('historyIndex');
     expect(persistedState.history[0]?.state).not.toHaveProperty('viewerSettings');
+    expect(persistedState.history[0]?.state).not.toHaveProperty('viewportWorkingArea');
   });
 
   it('limits history to maxHistoryEntries if set', () => {

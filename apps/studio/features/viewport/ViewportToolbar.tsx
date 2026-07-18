@@ -140,7 +140,6 @@ function ViewportToolbar() {
   const [openPanels, setOpenPanels] = useState<Set<string>>(() => new Set());
 
   const selectedNode = useSelectedEditorNode() ?? null;
-
   // Close all panels when the selected node changes
   const prevNodeId = React.useRef(selectedNodeId);
   if (prevNodeId.current !== selectedNodeId) {
@@ -182,7 +181,7 @@ function ViewportToolbar() {
     });
   }, []);
 
-  const trackingPanelCommands = useMemo<HotkeyCommand[]>(
+  const viewportToolbarCommands = useMemo<HotkeyCommand[]>(
     () => [
       {
         id: 'viewport.toggleRotoTrackingPanel.runtime',
@@ -198,29 +197,31 @@ function ViewportToolbar() {
     [handlePanelToggle],
   );
 
-  const trackingPanelBindings = useMemo<HotkeyBinding[]>(
-    () =>
-      selectedNode?.type === NodeType.ROTO
+  const viewportToolbarBindings = useMemo<HotkeyBinding[]>(
+    () => [
+      ...(selectedNode?.type === NodeType.ROTO
         ? [
             {
               keys: 'T',
               command: 'viewport.toggleRotoTrackingPanel.runtime',
               scope: 'viewport',
               weight: 400,
-            },
+            } satisfies HotkeyBinding,
           ]
-        : [],
+        : []),
+    ],
     [selectedNode?.type],
   );
 
-  useRegisterHotkeyCommands('viewport.toolbar', trackingPanelCommands);
-  useRegisterHotkeys('viewport.toolbar', trackingPanelBindings);
+  useRegisterHotkeyCommands('viewport.toolbar', viewportToolbarCommands);
+  useRegisterHotkeys('viewport.toolbar', viewportToolbarBindings);
 
   if (!selectedNode || (!hasTools && !ToolPanelComponent && !hasStabilize)) {
     return null;
   }
 
-  const showEffectPanel = ToolPanelComponent && openPanels.size > 0;
+  const showEffectPanel =
+    ToolPanelComponent && Array.from(openPanels).some((panel) => panel !== 'stabilize');
   const showStabilizePanel = openPanels.has('stabilize') && hasStabilize;
   const showPanelColumn = showEffectPanel || showStabilizePanel;
 

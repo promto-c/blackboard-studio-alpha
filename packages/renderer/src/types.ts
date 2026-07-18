@@ -19,6 +19,70 @@ import type {
 
 export type ShaderUniformMap = Record<string, { value: unknown }>;
 
+/**
+ * Runtime quality budget for an image-processing render.
+ *
+ * Full quality is the reliable default for exports, thumbnails, and an idle
+ * viewport. Preview quality is opt-in and lets expensive nodes share one
+ * resolution and sampling budget while the user is editing or playing.
+ */
+export interface RenderQuality {
+  mode: 'full' | 'preview';
+  /** Linear render scale in (0, 1]. A value of 0.5 processes one quarter as many pixels. */
+  resolutionScale: number;
+  /** Maximum samples per direction/pass for nodes that support adaptive sampling. */
+  sampleLimit: number;
+}
+
+export interface ScratchRenderTargetOptions {
+  width: number;
+  height: number;
+}
+
+/** Top-left-origin pixel region in the final scene display window. */
+export interface RenderRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Top-left-origin pixel rectangle in a pipeline display-window coordinate system. */
+export interface RenderWindowRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface RendererNodeDataWindow {
+  inputDisplayWindow: RenderSceneSize;
+  outputDisplayWindow: RenderSceneSize;
+  inputDataWindow: RenderWindowRect;
+  outputDataWindow: RenderWindowRect;
+  /** Centered backing-store extent that preserves every bbox in the input format segment. */
+  inputStorageWindow: RenderWindowRect;
+  /** Centered backing-store extent that preserves every bbox in the output format segment. */
+  outputStorageWindow: RenderWindowRect;
+}
+
+/**
+ * Explicit display/data-window plan supplied by the host graph projection.
+ * Every rendered node receives an entry, including bbox-passthrough effects.
+ */
+export interface RendererDataWindowPlan {
+  nodeWindows: ReadonlyMap<string, RendererNodeDataWindow>;
+  initialDisplayWindow: RenderSceneSize;
+  displayWindow: RenderSceneSize;
+  storageWindow: RenderWindowRect;
+}
+
+/** Declares which shared preview budgets can materially reduce a node's work. */
+export interface AdaptivePreviewCapabilities {
+  resolutionScale?: boolean;
+  sampleLimit?: boolean;
+}
+
 export type RenderMode =
   | 'shader'
   | 'ocio'
@@ -39,9 +103,19 @@ type RendererToolCategory = 'Image' | 'Spatial' | 'Adjustment' | 'Effect' | 'Uti
 export interface RenderContext {
   frame: number;
   fps: number;
+  /** Current logical display window. */
   scene: { width: number; height: number };
-  nodes: unknown[];
+  /** Centered backing-store window preserving pixels outside the display window. */
+  storageWindow?: RenderWindowRect;
+  /** Backing-store window produced by the current node (different for format nodes). */
+  outputStorageWindow?: RenderWindowRect;
+  /** Exact upstream pixel bbox for the current node. */
+  inputDataWindow?: RenderWindowRect;
+  /** Exact output pixel bbox produced by the current node. */
+  outputDataWindow?: RenderWindowRect;
+  nodes: AnyNode[];
   flow?: unknown;
+  quality: RenderQuality;
   transformColorPickingToSceneLinear: (
     color: readonly [number, number, number],
   ) => [number, number, number];
@@ -321,8 +395,11 @@ export interface ResolveOutputContext {
   /** Whether this render may await asset preparation or must complete in the current frame. */
   executionMode?: 'sync' | 'async';
   frame: number;
+  quality: RenderQuality;
   nodes: AnyNode[];
   sceneNode: SceneNode;
+  /** Per-node display and backing-store context for bbox-aware custom renderers. */
+  renderContext?: RenderContext;
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
@@ -350,8 +427,11 @@ export interface ResolveOutputContext {
   getChannelIndex: (channel: string | undefined, fallback: string) => number;
   /** Get transparent fallback texture. */
   getTransparentInputTexture: () => THREE.Texture;
-  /** Returns a reusable full-frame target with the scene working precision. */
-  getScratchRenderTarget?: (key: string) => THREE.WebGLRenderTarget;
+  /** Returns a reusable target with scene working precision. Full-frame when size is omitted. */
+  getScratchRenderTarget?: (
+    key: string,
+    size?: ScratchRenderTargetOptions,
+  ) => THREE.WebGLRenderTarget;
 }
 
 /**
@@ -375,6 +455,9 @@ export interface RendererNodeEntry {
   ) => readonly RendererOcioTransformDescriptor[];
   inputPorts?: RendererInputPorts;
   outputPorts?: RendererOutputPorts;
+
+  /** Opts this node into the shared realtime-preview quality policy. */
+  adaptivePreview?: AdaptivePreviewCapabilities;
 
   // --- Phase 0 additions ---
 

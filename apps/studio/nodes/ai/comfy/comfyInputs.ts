@@ -1,8 +1,36 @@
 import type { ComfyWorkflow, ComfyWorkflowInputCandidate } from '@blackboard/types';
 import { isJsonObject } from '@/utils/guards';
-import { normalizeComfyType } from '@/utils/comfyUtils';
+import { isComfyMaskWorkflowInput, normalizeComfyType } from '@/utils/comfyUtils';
 
-const mediaInputNames = new Set(['image', 'images', 'video', 'mask']);
+const mediaInputNames = new Set(['image', 'images', 'video', 'alpha', 'mask']);
+
+const getFallbackComfyInputType = (inputName: string): string => {
+  const normalizedName = normalizeComfyType(inputName);
+  if (normalizedName === 'alpha' || normalizedName.includes('mask')) return 'MASK';
+  if (normalizedName.includes('video')) return 'VIDEO';
+  return 'IMAGE';
+};
+
+export const getComfyWorkflowInputAlphaMode = (
+  candidate: ComfyWorkflowInputCandidate,
+  configuredMode: 'opaque' | 'preserve' = 'opaque',
+): 'opaque' | 'preserve' => (isComfyMaskWorkflowInput(candidate) ? 'preserve' : configuredMode);
+
+export const getComfyWorkflowInputPortPresentation = (candidate: ComfyWorkflowInputCandidate) => {
+  const inputLabel = candidate.inputName.trim() || candidate.label;
+  if (!isComfyMaskWorkflowInput(candidate)) {
+    return { label: inputLabel, type: 'texture' as const };
+  }
+
+  return {
+    label: normalizeComfyType(candidate.inputName) === 'alpha' ? 'Alpha / Mask' : inputLabel,
+    type: 'mask' as const,
+    dataSemantic: 'mask' as const,
+    channel: 'a' as const,
+    processingDomain: 'alpha' as const,
+    color: '#9da5b2',
+  };
+};
 
 const isLoadMediaNodeType = (classType: string): boolean => {
   const normalizedType = normalizeComfyType(classType);
@@ -37,6 +65,7 @@ export const getComfyWorkflowInputCandidates = (
         nodeId,
         nodeType: classType,
         inputName,
+        inputType: getFallbackComfyInputType(inputName),
         label: `${classType} #${nodeId}`,
       });
       continue;
@@ -44,14 +73,17 @@ export const getComfyWorkflowInputCandidates = (
 
     for (const inputName of mediaInputNames) {
       const value = inputs[inputName];
-      const isBindableEmptyInput =
-        inputName === 'mask' ? value === null : value === null || value === undefined;
+      const isMaskInputName = inputName === 'alpha' || inputName === 'mask';
+      const isBindableEmptyInput = isMaskInputName
+        ? value === null
+        : value === null || value === undefined;
       if (isBindableEmptyInput) {
         result.push({
           id: `${nodeId}:${inputName}`,
           nodeId,
           nodeType: classType,
           inputName,
+          inputType: getFallbackComfyInputType(inputName),
           label: `${classType} #${nodeId}`,
         });
       }

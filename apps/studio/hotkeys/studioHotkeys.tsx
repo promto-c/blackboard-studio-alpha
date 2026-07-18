@@ -658,6 +658,7 @@ export const baseBindings: HotkeyBinding[] = [
     keys: `${slot}`,
     command: 'viewer.activateSlot',
     args: { slot },
+    repeat: false,
   })),
   ...[1, 2, 3, 4].map<HotkeyBinding>((slot) => ({
     keys: `${slot}`,

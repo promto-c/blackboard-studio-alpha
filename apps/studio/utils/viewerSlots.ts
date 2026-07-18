@@ -17,6 +17,30 @@ import { getOutputInputEdge } from '@/utils/flowTopology';
 
 export const VIEWER_SLOT_ORDER: ViewerSlot[] = [...VIEWER_SLOTS];
 
+export type ViewerCompareSlotRole = 'base' | 'comparison';
+
+/**
+ * Compare has stable roles: the lower-numbered viewer slot is always the base,
+ * and the higher-numbered slot is the comparison image.
+ */
+export const orderViewerCompareSlots = (
+  first: ViewerSlot,
+  second: ViewerSlot,
+): readonly [baseSlot: ViewerSlot, comparisonSlot: ViewerSlot] =>
+  first < second ? [first, second] : [second, first];
+
+export const getViewerCompareSlotRole = (
+  slot: ViewerSlot,
+  comparedSlots: Iterable<ViewerSlot> | null | undefined,
+): ViewerCompareSlotRole | null => {
+  if (!comparedSlots) return null;
+  const slots = Array.from(comparedSlots).sort((left, right) => left - right);
+  if (slots.length !== 2) return null;
+  if (slot === slots[0]) return 'base';
+  if (slot === slots[1]) return 'comparison';
+  return null;
+};
+
 export interface ViewerCompareRouteState {
   isActive: boolean;
   slotA: ViewerSlot | null;
@@ -41,8 +65,9 @@ export const resolveViewerRouting = (
   viewerSlots: ViewerSlotAssignments | undefined,
   compareView: ViewerCompareRouteState,
 ): ResolvedViewerRouting => {
-  const { slotA, slotB } = compareView;
-  if (compareView.isActive && slotA && slotB) {
+  const { slotA: requestedSlotA, slotB: requestedSlotB } = compareView;
+  if (compareView.isActive && requestedSlotA && requestedSlotB) {
+    const [slotA, slotB] = orderViewerCompareSlots(requestedSlotA, requestedSlotB);
     const nodeIdA = viewerSlots?.[slotA];
     const nodeIdB = viewerSlots?.[slotB];
     if (nodeIdA && nodeIdB) {
@@ -67,24 +92,41 @@ const getValidViewerTargetIds = (nodes: AnyNode[]) => {
   return validTargetIds;
 };
 
-const getNodeOutputSize = (node: AnyNode): { width: number; height: number } | null => {
-  const sourceNode = node as AnyNode & { width?: unknown; height?: unknown };
-  if (typeof sourceNode.width !== 'number' || typeof sourceNode.height !== 'number') return null;
-  if (!Number.isFinite(sourceNode.width) || !Number.isFinite(sourceNode.height)) return null;
-  if (sourceNode.width <= 0 || sourceNode.height <= 0) return null;
+const getNodeOutputSize = (value: unknown): { width: number; height: number } | null => {
+  if (!value || typeof value !== 'object') return null;
+  const size = value as { width?: unknown; height?: unknown };
+  if (typeof size.width !== 'number' || typeof size.height !== 'number') return null;
+  if (!Number.isFinite(size.width) || !Number.isFinite(size.height)) return null;
+  if (size.width <= 0 || size.height <= 0) return null;
   return {
-    width: Math.round(sourceNode.width),
-    height: Math.round(sourceNode.height),
+    width: Math.round(size.width),
+    height: Math.round(size.height),
   };
 };
 
-const hasOutputSizeSceneMode = (node: AnyNode): boolean =>
-  (node as AnyNode & { useOutputSizeAsScene?: boolean }).useOutputSizeAsScene === true;
+const getOutputSizeSceneSize = (node: AnyNode): { width: number; height: number } | null => {
+  if ((node as AnyNode & { useOutputSizeAsScene?: boolean }).useOutputSizeAsScene === true) {
+    return getNodeOutputSize(node);
+  }
+
+  if (node.type !== NodeType.COMFY) return null;
+  const activeOutput = (node.generatedOutputs ?? []).find(
+    (output) =>
+      !output.deletedAt &&
+      output.mediaKind !== 'model_3d' &&
+      (node.activeGeneratedOutputId
+        ? output.id === node.activeGeneratedOutputId
+        : output.src === node.src),
+  );
+  return activeOutput?.useOutputSizeAsScene === true ? getNodeOutputSize(activeOutput) : null;
+};
 
 const isReformatNode = (node: AnyNode): boolean => node.type === NodeType.REFORMAT;
 
-const resolveOutputDisplayWindow = (sceneNode: AnyNode, formatNode: AnyNode): AnyNode => {
-  const outputSize = getNodeOutputSize(formatNode);
+const resolveOutputDisplayWindow = (
+  sceneNode: AnyNode,
+  outputSize: { width: number; height: number } | null,
+): AnyNode => {
   if (!outputSize || sceneNode.type !== NodeType.SCENE) return sceneNode;
   return { ...(sceneNode as SceneNode), ...outputSize };
 };
@@ -113,7 +155,16 @@ const resolveRenderFormatNodes = (renderNodes: AnyNode[]): AnyNode[] => {
   if (sceneIndex < 0) return renderNodes;
 
   const sceneNode = renderNodes[sceneIndex];
-  let currentFormat = getNodeOutputSize(sceneNode);
+  const matchOutputSource = [...renderNodes]
+    .reverse()
+    .find(
+      (node) =>
+        node.enabled !== false &&
+        isSourceNodeType(node.type) &&
+        getOutputSizeSceneSize(node) !== null,
+    );
+  const matchOutputSize = matchOutputSource ? getOutputSizeSceneSize(matchOutputSource) : null;
+  let currentFormat = matchOutputSize ?? getNodeOutputSize(sceneNode);
   let reformatNode: AnyNode | undefined;
   const nodesWithFormatMetadata = renderNodes.map((node) => {
     if (!isEnabledFormatNode(node)) return node;
@@ -131,21 +182,15 @@ const resolveRenderFormatNodes = (renderNodes: AnyNode[]): AnyNode[] => {
     } as AnyNode;
   });
 
-  const matchOutputSource = [...nodesWithFormatMetadata]
-    .reverse()
-    .find((node) => isSourceNodeType(node.type) && hasOutputSizeSceneMode(node));
-  const outputSizeSource = reformatNode ? null : matchOutputSource;
-  const formatNode = reformatNode ?? outputSizeSource;
-
-  if (!formatNode || !getNodeOutputSize(formatNode)) {
+  if (!reformatNode && !matchOutputSource) {
     return nodesWithFormatMetadata;
   }
 
   return nodesWithFormatMetadata.map((node, index) => {
     if (index === sceneIndex) {
-      return resolveOutputDisplayWindow(node, formatNode);
+      return resolveOutputDisplayWindow(node, currentFormat);
     }
-    if (outputSizeSource && node.id === outputSizeSource.id) {
+    if (matchOutputSource && node.id === matchOutputSource.id) {
       return resolveSourceOutputTransform(node);
     }
     return node;

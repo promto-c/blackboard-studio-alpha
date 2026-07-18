@@ -43,7 +43,6 @@ import {
   isOutputNode,
   isSceneNode,
   OUTPUT_NODE_ID,
-  removeFlowNodeInput,
   replaceFlowNodeInput,
   replaceFlowNodes,
   setNodePositionsForFlow,
@@ -885,6 +884,85 @@ export function connectNodeCommand(
 // disconnectNodeCommand  —  disconnects a node input in the persisted graph
 // ---------------------------------------------------------------------------
 
+export interface NodeInputTarget {
+  nodeId: string;
+  portName: string;
+}
+
+const getNodeInputTargetKey = ({ nodeId, portName }: NodeInputTarget): string =>
+  `${nodeId}\u0000${portName}`;
+
+/** Disconnect several canonical graph inputs as one undoable command. */
+export function disconnectNodeInputsCommand(
+  state: {
+    flows: Record<FlowId, Flow>;
+    activeFlowId: FlowId | null;
+    rootFlowId: FlowId | null;
+    nodes: AnyNode[];
+    selectedNodeId?: string | null;
+    selectedNodeIds?: string[];
+  },
+  targets: readonly NodeInputTarget[],
+): GraphCommandResult | null {
+  const flowId = state.activeFlowId ?? state.rootFlowId;
+  const flow = flowId ? state.flows[flowId] : null;
+  if (!flowId || !flow || targets.length === 0) return null;
+
+  const requestedKeys = new Set(targets.map(getNodeInputTargetKey));
+  const disconnectedEdges = flow.edges.filter((edge) =>
+    requestedKeys.has(
+      getNodeInputTargetKey({ nodeId: edge.targetNodeId, portName: edge.targetPort }),
+    ),
+  );
+  if (disconnectedEdges.length === 0) return null;
+
+  const disconnectedPortsByNode = new Map<string, Set<string>>();
+  for (const edge of disconnectedEdges) {
+    const ports = disconnectedPortsByNode.get(edge.targetNodeId) ?? new Set<string>();
+    ports.add(edge.targetPort);
+    disconnectedPortsByNode.set(edge.targetNodeId, ports);
+  }
+
+  const nextFlow: Flow = {
+    ...flow,
+    edges: flow.edges.filter(
+      (edge) =>
+        !requestedKeys.has(
+          getNodeInputTargetKey({ nodeId: edge.targetNodeId, portName: edge.targetPort }),
+        ),
+    ),
+  };
+  const nextFlows = { ...state.flows, [flowId]: nextFlow };
+  const nextNodes = state.nodes.map((node) => {
+    const disconnectedPorts = disconnectedPortsByNode.get(node.id);
+    if (!disconnectedPorts || disconnectedPorts.size === 0) return node;
+
+    const inputs = { ...(node.inputs ?? {}) };
+    const inputSourcePorts = { ...(node.inputSourcePorts ?? {}) };
+    for (const portName of disconnectedPorts) {
+      delete inputs[portName];
+      delete inputSourcePorts[portName];
+    }
+
+    return {
+      ...node,
+      inputs: Object.keys(inputs).length > 0 ? inputs : undefined,
+      inputSourcePorts: Object.keys(inputSourcePorts).length > 0 ? inputSourcePorts : undefined,
+    } as AnyNode;
+  });
+
+  const connectionLabel = disconnectedEdges.length === 1 ? 'connection' : 'connections';
+  return {
+    documentPatch: { flows: nextFlows, nodes: nextNodes },
+    selectionPatch: {
+      selectedNodeId: state.selectedNodeId ?? null,
+      selectedNodeIds: state.selectedNodeIds ?? [],
+    },
+    layoutPatch: {},
+    historyLabel: `Disconnect ${disconnectedEdges.length} ${connectionLabel}`,
+  };
+}
+
 export function disconnectNodeCommand(
   state: {
     flows: Record<FlowId, Flow>;
@@ -897,43 +975,8 @@ export function disconnectNodeCommand(
   nodeId: string,
   portName: string,
 ): GraphCommandResult | null {
-  const flowId = state.activeFlowId ?? state.rootFlowId;
-  const node = state.nodes.find((l) => l.id === nodeId);
-  const flow = flowId ? state.flows[flowId] : null;
-  if (nodeId === OUTPUT_NODE_ID) {
-    const edge = getOutputInputEdge(flow);
-    if (!edge || edge.targetPort !== portName) return null;
-  } else if (!node?.inputs?.[portName]) {
-    return null;
-  }
-
-  const nextFlows = removeFlowNodeInput(state.flows, flowId, nodeId, portName);
-  if (!nextFlows) return null;
-
-  // Keep the nodes array in sync with flows: remove the disconnected input
-  const nextNodes = state.nodes.map((n) => {
-    if (n.id !== nodeId || !n.inputs?.[portName]) return n;
-    const newInputs = { ...n.inputs };
-    const newInputSourcePorts = { ...(n.inputSourcePorts ?? {}) };
-    delete newInputs[portName];
-    delete newInputSourcePorts[portName];
-    return {
-      ...n,
-      inputs: Object.keys(newInputs).length > 0 ? newInputs : undefined,
-      inputSourcePorts:
-        Object.keys(newInputSourcePorts).length > 0 ? newInputSourcePorts : undefined,
-    } as AnyNode;
-  });
-
-  return {
-    documentPatch: { flows: nextFlows, nodes: nextNodes },
-    selectionPatch: {
-      selectedNodeId: state.selectedNodeId ?? null,
-      selectedNodeIds: state.selectedNodeIds ?? [],
-    },
-    layoutPatch: {},
-    historyLabel: `Disconnect ${portName} input`,
-  };
+  const result = disconnectNodeInputsCommand(state, [{ nodeId, portName }]);
+  return result ? { ...result, historyLabel: `Disconnect ${portName} input` } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -983,24 +1026,6 @@ const isCopyableClipboardNode = (node: AnyNode): boolean =>
   !isInputNode(node) &&
   !isOutputNode(node);
 
-const expandNodeIdsWithStackedFollowers = (nodes: AnyNode[], nodeIds: string[]): Set<string> => {
-  const requestedIds = new Set(nodeIds);
-  const expandedIds = new Set<string>();
-
-  for (let index = 0; index < nodes.length; index += 1) {
-    const node = nodes[index];
-    if (!requestedIds.has(node.id)) continue;
-
-    expandedIds.add(node.id);
-    const endIndex = getStackedGroupEndIndex(nodes, index);
-    for (let followerIndex = index + 1; followerIndex <= endIndex; followerIndex += 1) {
-      expandedIds.add(nodes[followerIndex].id);
-    }
-  }
-
-  return expandedIds;
-};
-
 const getSelectedCopyableNodes = (state: GraphCommandState): AnyNode[] => {
   const selectedIds =
     state.selectedNodeIds.length > 0
@@ -1010,8 +1035,8 @@ const getSelectedCopyableNodes = (state: GraphCommandState): AnyNode[] => {
         : [];
   if (selectedIds.length === 0) return [];
 
-  const expandedIds = expandNodeIdsWithStackedFollowers(state.nodes, selectedIds);
-  return state.nodes.filter((node) => expandedIds.has(node.id) && isCopyableClipboardNode(node));
+  const selectedIdSet = new Set(selectedIds);
+  return state.nodes.filter((node) => selectedIdSet.has(node.id) && isCopyableClipboardNode(node));
 };
 
 const collectGroupFlows = (
@@ -1217,12 +1242,19 @@ const remapGroupNodeFields = (
       };
     })
     .filter((input): input is NonNullable<GroupNode['externalInputs']>[number] => !!input);
+  const exposedFields = (node.exposedFields ?? [])
+    .map((field) => {
+      const targetNodeId = mapNodeRef(field.targetNodeId, nodeIdMap);
+      return targetNodeId ? { ...field, targetNodeId } : null;
+    })
+    .filter((field): field is NonNullable<GroupNode['exposedFields']>[number] => !!field);
   const inputNodeId = mapNodeRef(node.inputNodeId, nodeIdMap);
   const outputNodeId = mapNodeRef(node.outputNodeId, nodeIdMap);
 
   return {
     childFlowId: node.childFlowId ? (flowIdMap.get(node.childFlowId) ?? null) : null,
     externalInputs,
+    exposedFields,
     ...(inputNodeId ? { inputNodeId } : { inputNodeId: undefined }),
     ...(outputNodeId ? { outputNodeId } : { outputNodeId: undefined }),
   };
@@ -1577,7 +1609,7 @@ export function pasteNodesCommand(
 }
 
 // ---------------------------------------------------------------------------
-// deleteNodeCommand  —  removes node(s) and stacked followers
+// deleteNodeCommand  —  removes only the explicitly selected real node(s)
 // ---------------------------------------------------------------------------
 
 const createNoopDeleteResult = (
@@ -1593,7 +1625,7 @@ const createNoopDeleteResult = (
   historyLabel,
 });
 
-const getDeleteIdsWithStackedFollowers = (
+const getDeletableNodeIds = (
   state: GraphCommandState,
   nodeIds: readonly string[],
 ): { deletedIds: Set<string>; firstDeletedIndex: number } => {
@@ -1606,10 +1638,6 @@ const getDeleteIdsWithStackedFollowers = (
 
     firstDeletedIndex = Math.min(firstDeletedIndex, nodeIndex);
     deletedIds.add(state.nodes[nodeIndex].id);
-    const endIndex = getStackedGroupEndIndex(state.nodes, nodeIndex);
-    for (let index = nodeIndex + 1; index <= endIndex; index += 1) {
-      deletedIds.add(state.nodes[index].id);
-    }
   }
 
   return {
@@ -1650,7 +1678,7 @@ function deleteNodesCommand(
   nodeIds: readonly string[],
   historyLabel?: string,
 ): GraphCommandResult | null {
-  const { deletedIds, firstDeletedIndex } = getDeleteIdsWithStackedFollowers(state, nodeIds);
+  const { deletedIds, firstDeletedIndex } = getDeletableNodeIds(state, nodeIds);
   if (deletedIds.size === 0) return null;
 
   const cleanedNodes = cleanDanglingNodeInputs(
@@ -1729,6 +1757,7 @@ const createGroupNode = (name: string, childFlowId: FlowId): GroupNode => ({
   enabled: true,
   childFlowId,
   externalInputs: [],
+  exposedFields: [],
 });
 
 const getInputNodeId = (groupNodeId: string, externalInputId: string) =>

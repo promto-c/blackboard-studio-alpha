@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import {
+  AlphaMergeOperation,
   BlendMode,
   NodeType,
   type AnyNode,
+  type MaskedMergeNode,
   type SceneNode,
   type ViewerSettings,
 } from '@blackboard/types';
@@ -17,9 +19,12 @@ import type {
   RendererNodeEntry,
   RendererColorManagement,
   RendererOcioShaderInfo,
+  RendererDataWindowPlan,
   ResolveOutputContext,
   ViewportPipelineResources,
 } from '../../../packages/renderer/src';
+import { AlphaMathShader } from '@/nodes/builtin/alpha_math/alphaMathShader';
+import { renderMaskedMergeGpu } from '@/nodes/builtin/merge/maskedMergeGpu';
 
 class MockRenderer {
   capabilities = { isWebGL2: true };
@@ -32,6 +37,8 @@ class MockRenderer {
   }> = [];
   compileCalls = 0;
   setSizeCalls = 0;
+  scissorTest = false;
+  scissor = new THREE.Vector4();
 
   setSize() {
     this.setSizeCalls += 1;
@@ -39,6 +46,18 @@ class MockRenderer {
 
   setRenderTarget(target: THREE.WebGLRenderTarget | null) {
     this.currentTarget = target;
+  }
+
+  getDrawingBufferSize(target: THREE.Vector2) {
+    return target.set(1920, 1080);
+  }
+
+  setScissorTest(enabled: boolean) {
+    this.scissorTest = enabled;
+  }
+
+  setScissor(x: number, y: number, width: number, height: number) {
+    this.scissor.set(x, y, width, height);
   }
 
   compile() {
@@ -193,7 +212,19 @@ const createBlurNode = (stacked = false): AnyNode =>
     name: 'Blur',
     enabled: true,
     stacked,
+    inputs: { pipe: 'media' },
     blur: { radius: 12, method: 'gaussian' },
+  }) as AnyNode;
+
+const createPremultiplyNode = (stacked = false): AnyNode =>
+  ({
+    id: stacked ? 'stacked-premultiply' : 'global-premultiply',
+    type: NodeType.PREMULTIPLY,
+    name: 'Premultiply',
+    enabled: true,
+    stacked,
+    uniforms: {},
+    inputs: { pipe: 'media' },
   }) as AnyNode;
 
 const createLogGradeNode = (): AnyNode =>
@@ -203,8 +234,9 @@ const createLogGradeNode = (): AnyNode =>
     name: 'Log Grade',
     enabled: true,
     stacked: true,
+    inputs: { pipe: 'media' },
     grade: { processingDomain: 'log' },
-  }) as AnyNode;
+  }) as unknown as AnyNode;
 
 const createOcioTransformNode = (): AnyNode =>
   ({
@@ -223,6 +255,7 @@ const createMaskNode = (stacked = false): AnyNode =>
     name: 'Roto',
     enabled: true,
     stacked,
+    inputs: { pipe: 'media' },
     paths: [],
     layers: [],
     invert: false,
@@ -235,6 +268,7 @@ const createPaintNode = (stacked = false): AnyNode =>
     name: 'Paint',
     enabled: true,
     stacked,
+    inputs: { pipe: 'media' },
     strokes: [],
     layers: [],
   }) as AnyNode;
@@ -252,6 +286,19 @@ const createMergeNode = (): AnyNode =>
       source: 'source',
     },
   }) as AnyNode;
+
+const createMaskedMergeNode = (): MaskedMergeNode => ({
+  id: 'masked-merge',
+  type: NodeType.MASKED_MERGE,
+  name: 'Masked Merge',
+  enabled: true,
+  mix: 100,
+  alphaOperation: AlphaMergeOperation.REPLACE,
+  inputs: {
+    pipe: 'rgba',
+    mask: 'mask',
+  },
+});
 
 const createMergeChannelsNode = (): AnyNode =>
   ({
@@ -328,6 +375,26 @@ const createRegistry = (): Map<string, RendererNodeEntry> =>
       },
     ],
     [
+      NodeType.PREMULTIPLY,
+      {
+        renderMode: 'shader',
+        category: 'Utility',
+        processingDomain: 'scene_linear',
+        inputPorts: [
+          {
+            name: 'reference',
+            label: 'Reference',
+            type: 'texture',
+            required: false,
+            uniformName: 'u_reference',
+            frameOffset: -1,
+          },
+        ],
+        getShader: () => AlphaMathShader.PREMULTIPLY,
+        getUniforms: () => ({}),
+      },
+    ],
+    [
       NodeType.OCIO_COLOR_SPACE,
       {
         renderMode: 'ocio',
@@ -348,7 +415,7 @@ const createRegistry = (): Map<string, RendererNodeEntry> =>
       {
         renderMode: 'mask',
         category: 'Effect',
-        processingDomain: 'alpha',
+        processingDomain: 'scene_linear',
         flags: { isRenderable: true },
         renderOutput: (
           node: AnyNode,
@@ -406,6 +473,29 @@ const createRegistry = (): Map<string, RendererNodeEntry> =>
       },
     ],
     [
+      NodeType.MASKED_MERGE,
+      {
+        renderMode: 'mask',
+        category: 'Effect',
+        processingDomain: 'scene_linear',
+        flags: { isRenderable: true },
+        inputPorts: [
+          { name: 'pipe', label: 'RGBA', type: 'texture', required: false },
+          {
+            name: 'mask',
+            label: 'Alpha / Mask',
+            type: 'mask',
+            dataSemantic: 'mask',
+            channel: 'a',
+            processingDomain: 'alpha',
+            required: false,
+          },
+        ],
+        renderOutput: (node, target, inputTexture, context) =>
+          renderMaskedMergeGpu(node, target, inputTexture, context),
+      },
+    ],
+    [
       NodeType.MERGE_CHANNELS,
       {
         renderMode: 'utility',
@@ -437,10 +527,16 @@ const createRegistry = (): Map<string, RendererNodeEntry> =>
         processingDomain: 'scene_linear',
         outputPorts: [
           { name: 'output', label: 'RGBA', processingDomain: 'scene_linear' },
-          { name: 'r', label: 'R', processingDomain: 'data' },
-          { name: 'g', label: 'G', processingDomain: 'data' },
-          { name: 'b', label: 'B', processingDomain: 'data' },
-          { name: 'a', label: 'A', processingDomain: 'alpha', dataSemantic: 'alpha' },
+          { name: 'r', label: 'R', channel: 'r', processingDomain: 'data' },
+          { name: 'g', label: 'G', channel: 'g', processingDomain: 'data' },
+          { name: 'b', label: 'B', channel: 'b', processingDomain: 'data' },
+          {
+            name: 'a',
+            label: 'A',
+            channel: 'a',
+            processingDomain: 'alpha',
+            dataSemantic: 'alpha',
+          },
         ],
         flags: { isRenderable: true },
         renderOutput: (
@@ -489,11 +585,6 @@ const createResources = () => {
         depthBuffer: false,
         stencilBuffer: false,
       }),
-      new THREE.WebGLRenderTarget(1920, 1080, {
-        type: THREE.HalfFloatType,
-        depthBuffer: false,
-        stencilBuffer: false,
-      }),
     ],
     utilityTargets: new Map(),
   };
@@ -522,6 +613,69 @@ const expectSceneCompositeShaderPreservesRgbRange = (material: THREE.Material | 
 };
 
 describe('viewport/export render pipeline parity guards', () => {
+  it('scissors shared viewport work to the non-destructive working area', () => {
+    const { renderer, resources } = createResources();
+    const croppedTexture = new THREE.Texture();
+    croppedTexture.userData.blackboardSourceRegion = {
+      x: 240,
+      y: 120,
+      width: 720,
+      height: 360,
+      fullWidth: 1920,
+      fullHeight: 1080,
+      coordinateSpace: 'top-left',
+    };
+
+    renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [createMediaNode()],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      workingArea: { x: 240, y: 120, width: 720, height: 360 },
+      getMediaTexture: () => croppedTexture,
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    expect(resources.renderTargets).toHaveLength(2);
+    resources.renderTargets.forEach((target) => {
+      expect(target.scissorTest).toBe(true);
+      expect(target.scissor.toArray()).toEqual([240, 600, 720, 360]);
+    });
+    expect(renderer.scissorTest).toBe(true);
+    expect(renderer.scissor.toArray()).toEqual([240, 600, 720, 360]);
+    const mediaMaterial = [...resources.materials.values()].find(
+      (material) => material.uniforms.u_tDiffuse?.value === croppedTexture,
+    );
+    expect((mediaMaterial?.uniforms.u_image_region.value as THREE.Vector4).toArray()).toEqual([
+      240, 600, 720, 360,
+    ]);
+  });
+
+  it.each([
+    ['connected', false, 'global-premultiply'],
+    ['stacked', true, 'stacked-premultiply'],
+  ])('renders a Utility-category primary-input shader when %s', (_label, stacked, materialId) => {
+    const { resources } = createResources();
+
+    renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [createMediaNode(), createPremultiplyNode(stacked)],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => createTexture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    const material = resources.materials.get(materialId);
+    expect(material?.fragmentShader).toContain('source.rgb *= source.a;');
+    expect(material?.uniforms.u_tDiffuse.value).toBeInstanceOf(THREE.Texture);
+    expect(material?.uniforms).not.toHaveProperty('u_reference');
+  });
+
   it('compiles shader programs on first use and reuses unchanged viewport materials', () => {
     const { renderer, resources } = createResources();
     const options = {
@@ -723,6 +877,189 @@ describe('viewport/export render pipeline parity guards', () => {
     });
   });
 
+  it('keeps upstream overscan allocated until a larger format reveals it', async () => {
+    const formatType = 'plugin_overscan_format';
+    let uniformContextSnapshot: {
+      scene: { width: number; height: number };
+      storageWindow?: { x: number; y: number; width: number; height: number };
+      outputStorageWindow?: { x: number; y: number; width: number; height: number };
+    } | null = null;
+    const getUniforms = vi.fn((_node: AnyNode, context) => {
+      uniformContextSnapshot = {
+        scene: { ...context.scene },
+        storageWindow: context.storageWindow ? { ...context.storageWindow } : undefined,
+        outputStorageWindow: context.outputStorageWindow
+          ? { ...context.outputStorageWindow }
+          : undefined,
+      };
+      return { u_storage_width: { value: context.storageWindow?.width ?? 0 } };
+    });
+    const registry = createRegistry();
+    registry.set(formatType, {
+      renderMode: 'shader',
+      category: 'Spatial',
+      processingDomain: 'scene_linear',
+      sceneSize: {
+        getInputSize: () => ({ width: 100, height: 100 }),
+        getOutputSize: () => ({ width: 200, height: 200 }),
+      },
+      getShader: () => 'void main() {}',
+      getUniforms,
+    });
+    const mediaNode = {
+      ...createMediaNode(),
+      width: 200,
+      height: 200,
+      transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: 'custom' },
+    } as AnyNode;
+    const formatNode = {
+      id: 'overscan-format',
+      type: formatType,
+      name: 'Overscan Format',
+      enabled: true,
+      inputs: { pipe: mediaNode.id },
+      width: 200,
+      height: 200,
+    } as unknown as AnyNode;
+    const dataWindowPlan: RendererDataWindowPlan = {
+      initialDisplayWindow: { width: 100, height: 100 },
+      displayWindow: { width: 200, height: 200 },
+      storageWindow: { x: 0, y: 0, width: 200, height: 200 },
+      nodeWindows: new Map([
+        [
+          mediaNode.id,
+          {
+            inputDisplayWindow: { width: 100, height: 100 },
+            outputDisplayWindow: { width: 100, height: 100 },
+            inputDataWindow: { x: -50, y: -50, width: 200, height: 200 },
+            outputDataWindow: { x: -50, y: -50, width: 200, height: 200 },
+            inputStorageWindow: { x: -50, y: -50, width: 200, height: 200 },
+            outputStorageWindow: { x: -50, y: -50, width: 200, height: 200 },
+          },
+        ],
+        [
+          formatNode.id,
+          {
+            inputDisplayWindow: { width: 100, height: 100 },
+            outputDisplayWindow: { width: 200, height: 200 },
+            inputDataWindow: { x: -50, y: -50, width: 200, height: 200 },
+            outputDataWindow: { x: 0, y: 0, width: 200, height: 200 },
+            inputStorageWindow: { x: -50, y: -50, width: 200, height: 200 },
+            outputStorageWindow: { x: 0, y: 0, width: 200, height: 200 },
+          },
+        ],
+      ]),
+    };
+    const sceneNode = { ...createSceneNode(), width: 200, height: 200 };
+    const { resources } = createResources();
+
+    const result = renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [mediaNode, formatNode],
+      sceneNode,
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => createTexture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: registry,
+      dataWindowPlan,
+    });
+
+    const mediaComposite = resources.materials.get('media_comp_transformed_straight_over');
+    expect((mediaComposite?.uniforms.u_scene_res.value as THREE.Vector2).toArray()).toEqual([
+      200, 200,
+    ]);
+    expect(getUniforms).toHaveBeenCalledOnce();
+    expect(uniformContextSnapshot).toEqual({
+      scene: { width: 100, height: 100 },
+      storageWindow: { x: -50, y: -50, width: 200, height: 200 },
+      outputStorageWindow: { x: 0, y: 0, width: 200, height: 200 },
+    });
+    expect(result.finalCompositeTarget).toMatchObject({ width: 200, height: 200 });
+
+    const exportRenderer = new MockRenderer();
+    const exportResult = await renderWithSharedPipeline({
+      renderer: exportRenderer as unknown as THREE.WebGLRenderer,
+      nodes: [mediaNode, formatNode],
+      sceneNode,
+      frame: 0,
+      width: 200,
+      height: 200,
+      finalColorSpace: 'raw_texture',
+      getAsset: async () => new Blob(['asset']),
+      loadAssetTexture: async () => createTexture(),
+      nodeRegistry: registry,
+      dataWindowPlan,
+    });
+
+    try {
+      const exportMediaComposite = exportRenderer.renderCalls.find(({ material }) =>
+        materialWithUniform(material, 'u_scene_res'),
+      )?.material as THREE.ShaderMaterial | undefined;
+      expect((exportMediaComposite?.uniforms.u_scene_res.value as THREE.Vector2).toArray()).toEqual(
+        [200, 200],
+      );
+      expect(exportRenderer.renderCalls.at(-1)?.target).toBeNull();
+    } finally {
+      exportResult.dispose();
+    }
+  });
+
+  it('crops preserved overscan only at the final display boundary', () => {
+    const sceneNode = { ...createSceneNode(), width: 200, height: 200 };
+    const mediaNode = {
+      ...createMediaNode(),
+      width: 300,
+      height: 300,
+      transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: 'custom' },
+    } as AnyNode;
+    const storageWindow = { x: -50, y: -50, width: 300, height: 300 };
+    const dataWindowPlan: RendererDataWindowPlan = {
+      initialDisplayWindow: { width: 200, height: 200 },
+      displayWindow: { width: 200, height: 200 },
+      storageWindow,
+      nodeWindows: new Map([
+        [
+          mediaNode.id,
+          {
+            inputDisplayWindow: { width: 200, height: 200 },
+            outputDisplayWindow: { width: 200, height: 200 },
+            inputDataWindow: storageWindow,
+            outputDataWindow: storageWindow,
+            inputStorageWindow: storageWindow,
+            outputStorageWindow: storageWindow,
+          },
+        ],
+      ]),
+    };
+    const { resources } = createResources();
+
+    const result = renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [mediaNode],
+      sceneNode,
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => createTexture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+      dataWindowPlan,
+    });
+
+    expect(resources.renderTargets).toEqual([
+      expect.objectContaining({ width: 300, height: 300 }),
+      expect.objectContaining({ width: 300, height: 300 }),
+    ]);
+    expect(result.finalCompositeTarget).toMatchObject({ width: 200, height: 200 });
+    const copyMaterial = resources.materials.get('__viewer:scene-linear-display-window-copy');
+    expect((copyMaterial?.uniforms.u_display_res.value as THREE.Vector2).toArray()).toEqual([
+      200, 200,
+    ]);
+    expect((copyMaterial?.uniforms.u_storage_res.value as THREE.Vector2).toArray()).toEqual([
+      300, 300,
+    ]);
+  });
+
   it('rebuilds stale byte targets at the scene working precision', () => {
     const { resources } = createResources();
     resources.renderTargets.forEach((target) => target.dispose());
@@ -888,7 +1225,7 @@ describe('viewport/export render pipeline parity guards', () => {
       nodeRegistry: createRegistry(),
     });
 
-    expect(result.renderTargets).toHaveLength(3);
+    expect(result.renderTargets).toHaveLength(2);
     expect(result.renderTargets).toEqual(initialTargets);
     expect(resources.materials.get('global-blur_ds')?.fragmentShader).toContain(
       'texture(u_tDiffuse, v_uv)',
@@ -905,26 +1242,31 @@ describe('viewport/export render pipeline parity guards', () => {
     );
   });
 
-  it('composites stacked multipass output from the stack write target', () => {
-    const { resources } = createResources();
-    const [, , auxBuffer] = resources.renderTargets;
+  it('keeps multipass execution identical when compact stack metadata changes', () => {
+    const renderMaterialKeys = (stacked: boolean) => {
+      const { resources } = createResources();
+      const blurNode = {
+        ...createBlurNode(false),
+        id: 'blur',
+        stacked,
+      } as unknown as AnyNode;
 
-    const result = renderViewportFrameWithSharedPipeline({
-      resources,
-      nodes: [createMediaNode(), createBlurNode(true)],
-      sceneNode: createSceneNode(),
-      frame: 0,
-      viewerSettings: createViewerSettings(),
-      getMediaTexture: () => new THREE.Texture(),
-      getTextTexture: () => undefined,
-      nodeRegistry: createRegistry(),
-    });
+      const result = renderViewportFrameWithSharedPipeline({
+        resources,
+        nodes: [createMediaNode(), blurNode],
+        sceneNode: createSceneNode(),
+        frame: 0,
+        viewerSettings: createViewerSettings(),
+        getMediaTexture: () => new THREE.Texture(),
+        getTextTexture: () => undefined,
+        nodeRegistry: createRegistry(),
+      });
 
-    const compositeMaterial = resources.materials.get('media_comp_straight_over');
+      expect(result.renderTargets).toHaveLength(2);
+      return [...resources.materials.keys()].sort();
+    };
 
-    expect(result.renderTargets).toHaveLength(3);
-    expect(compositeMaterial?.uniforms.u_tDiffuse.value).toBe(auxBuffer.texture);
-    expectSceneCompositeShaderPreservesRgbRange(compositeMaterial);
+    expect(renderMaterialKeys(true)).toEqual(renderMaterialKeys(false));
   });
 
   it('wraps log-domain effects in explicit scene-to-log and log-to-scene OCIO passes', () => {
@@ -998,9 +1340,8 @@ describe('viewport/export render pipeline parity guards', () => {
     ).toThrow('requires the OCIO "compositing_log" role');
   });
 
-  it('composites stacked mask output from the stack write target', () => {
-    const { resources } = createResources();
-    const [, , auxBuffer] = resources.renderTargets;
+  it('renders a compacted mask through its canonical pipe input', () => {
+    const { renderer, resources } = createResources();
     const maskTexture = createTexture();
 
     const result = renderViewportFrameWithSharedPipeline({
@@ -1024,17 +1365,16 @@ describe('viewport/export render pipeline parity guards', () => {
     });
 
     const maskMaterial = resources.materials.get('stacked-roto');
-    const compositeMaterial = resources.materials.get('media_comp_straight_over');
+    const maskCall = renderer.renderCalls.find(({ material }) => material === maskMaterial);
 
-    expect(result.renderTargets).toHaveLength(3);
+    expect(result.renderTargets).toHaveLength(2);
     expect(maskMaterial?.uniforms.u_tMask.value).toBe(maskTexture);
     expect(maskMaterial?.uniforms.u_alphaMode.value).toBe(1);
-    expect(compositeMaterial?.uniforms.u_tDiffuse.value).toBe(auxBuffer.texture);
+    expect(maskCall?.target).toBe(result.finalCompositeTarget);
   });
 
-  it('composites stacked paint output from the stack write target', () => {
-    const { resources } = createResources();
-    const [, , auxBuffer] = resources.renderTargets;
+  it('renders compacted paint through its canonical pipe input', () => {
+    const { renderer, resources } = createResources();
 
     const result = renderViewportFrameWithSharedPipeline({
       resources,
@@ -1048,11 +1388,11 @@ describe('viewport/export render pipeline parity guards', () => {
     });
 
     const paintMaterial = resources.materials.get('stacked-paint_paint');
-    const compositeMaterial = resources.materials.get('media_comp_straight_over');
+    const paintCall = renderer.renderCalls.find(({ material }) => material === paintMaterial);
 
-    expect(result.renderTargets).toHaveLength(3);
+    expect(result.renderTargets).toHaveLength(2);
     expect(paintMaterial?.uniforms.u_tDiffuse.value).toBeDefined();
-    expect(compositeMaterial?.uniforms.u_tDiffuse.value).toBe(auxBuffer.texture);
+    expect(paintCall?.target).toBe(result.finalCompositeTarget);
   });
 
   it('applies global paint through the shared adjustment renderer in the viewport path', () => {
@@ -1072,7 +1412,7 @@ describe('viewport/export render pipeline parity guards', () => {
 
     const paintMaterial = resources.materials.get('global-paint_paint');
 
-    expect(result.renderTargets).toHaveLength(3);
+    expect(result.renderTargets).toHaveLength(2);
     expect(paintMaterial?.uniforms.u_tDiffuse.value).toBeDefined();
   });
 
@@ -1102,12 +1442,48 @@ describe('viewport/export render pipeline parity guards', () => {
     const sourceTarget = resources.utilityTargets?.get('source:output');
     const mergeMaterial = resources.materials.get('merge_merge_comp_straight_over');
 
-    expect(result.renderTargets).toHaveLength(3);
+    expect(result.renderTargets).toHaveLength(2);
     expect(pipeTarget).toBeDefined();
     expect(sourceTarget).toBeDefined();
     expect(mergeMaterial?.uniforms.u_tBackdrop.value).toBe(pipeTarget?.texture);
     expect(mergeMaterial?.uniforms.u_tDiffuse.value).toBe(sourceTarget?.texture);
     expectSceneCompositeShaderPreservesRgbRange(mergeMaterial);
+  });
+
+  it('resolves RGBA and Alpha/Mask as the only Masked Merge viewport inputs', () => {
+    const { resources } = createResources();
+    const textures = new Map([
+      ['rgba', createTexture()],
+      ['mask', createTexture()],
+    ]);
+
+    renderViewportFrameWithSharedPipeline({
+      resources,
+      nodes: [
+        createMediaNodeWithId('rgba', 'rgba-asset'),
+        createMediaNodeWithId('mask', 'mask-asset'),
+        createMaskedMergeNode(),
+      ],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: (node) => textures.get(node.id),
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    const rgbaTarget = resources.utilityTargets?.get('rgba:output');
+    const maskTarget = resources.utilityTargets?.get('mask:output');
+    const material = resources.materials.get('masked-merge:masked-merge');
+
+    expect(material?.uniforms.u_tSource.value).toBe(rgbaTarget?.texture);
+    expect(material?.uniforms.u_tMask.value).toBe(maskTarget?.texture);
+    expect(material?.uniforms.u_hasMask.value).toBe(true);
+    expect(material?.uniforms.u_maskChannel.value).toBe(3);
+    expect(material?.uniforms.u_alphaOperation.value).toBe(0);
+    expect(material?.uniforms.u_mix.value).toBe(1);
+    expect(material?.fragmentShader).toContain('fragColor = vec4(source.rgb, outputAlpha)');
+    expect(material?.blending).toBe(THREE.NoBlending);
   });
 
   it('resolves merge output as the input texture of a downstream node', () => {
@@ -1158,12 +1534,12 @@ describe('viewport/export render pipeline parity guards', () => {
     const utilityTarget = resources.utilityTargets?.get('channels:output');
     const utilityMaterial = resources.materials.get('channels_utility_output');
 
-    expect(result.renderTargets).toHaveLength(3);
+    expect(result.renderTargets).toHaveLength(2);
     expect(utilityTarget).toBeDefined();
     expect(utilityMaterial?.uniforms.u_tDiffuse.value).toBe(utilityTarget?.texture);
   });
 
-  it('uses the stacked mask output as the export composite input', async () => {
+  it('uses compacted mask output as the export final input', async () => {
     const renderer = new MockRenderer();
     const sceneNode = createSceneNode();
     const maskTexture = createTexture();
@@ -1194,14 +1570,12 @@ describe('viewport/export render pipeline parity guards', () => {
         if (!materialWithUniform(material, 'u_tMask')) return false;
         return material.uniforms.u_tMask.value === maskTexture;
       });
-      const compositeCall = renderer.renderCalls.find(({ material }) =>
-        materialWithUniform(material, 'u_tBackdrop'),
-      );
+      const finalCall = renderer.renderCalls.at(-1);
 
       expect(maskCall?.target).toBeInstanceOf(THREE.WebGLRenderTarget);
-      expect(compositeCall?.material).toBeInstanceOf(THREE.ShaderMaterial);
+      expect(finalCall?.target).toBeNull();
       expect(
-        (compositeCall?.material as THREE.ShaderMaterial | undefined)?.uniforms.u_tDiffuse.value,
+        (finalCall?.material as THREE.ShaderMaterial | undefined)?.uniforms.u_tDiffuse.value,
       ).toBe(maskCall?.target?.texture);
     } finally {
       result.dispose();

@@ -4,6 +4,7 @@ import {
   buildFlowFromNodes,
   getOrderedNodesFromFlow,
   replaceFlowNodes,
+  replaceFlowStackPresentation,
   ROOT_FLOW_ID,
 } from '@/state/editor/flowModel';
 import { getPrimaryPipelineNodeIds } from '@/utils/flowTopology';
@@ -16,7 +17,7 @@ const image = (id: string): AnyNode =>
   ({ id, type: NodeType.MEDIA_SOURCE, name: id, enabled: true }) as AnyNode;
 
 const adjustment = (id: string, stacked = false): AnyNode =>
-  ({ id, type: NodeType.BLUR, name: id, enabled: true, stacked }) as AnyNode;
+  ({ id, type: NodeType.BLUR, name: id, enabled: true, stacked }) as unknown as AnyNode;
 
 const merge = (id: string): AnyNode =>
   ({ id, type: NodeType.MERGE, name: id, enabled: true }) as AnyNode;
@@ -62,7 +63,7 @@ describe('rewirePrimaryPipeline', () => {
     expect(getPrimaryPipelineNodeIds(nextFlow)).toEqual(['image', 'second', 'first']);
   });
 
-  it('collapses and restores pipe edges when an adjustment is stacked and unstacked', () => {
+  it('keeps the canonical pipe chain unchanged when presentation is compacted', () => {
     const previousFlow = createFlow([
       scene(),
       image('image'),
@@ -70,20 +71,36 @@ describe('rewirePrimaryPipeline', () => {
       adjustment('tail'),
     ]);
     const stackedNodes = getOrderedNodesFromFlow(previousFlow).map((node) =>
-      node.id === 'stacked' ? ({ ...node, stacked: true } as AnyNode) : node,
+      node.id === 'stacked' ? ({ ...node, stacked: true } as unknown as AnyNode) : node,
     );
 
-    const stackedFlow = rebuildAndRewire(previousFlow, stackedNodes);
-
-    expect(getPrimaryPipelineNodeIds(stackedFlow)).toEqual(['image', 'tail']);
-    expect(hasEdge(stackedFlow.edges, 'image', 'stacked')).toBe(false);
-    expect(hasEdge(stackedFlow.edges, 'image', 'tail')).toBe(true);
-
-    const unstackedNodes = getOrderedNodesFromFlow(stackedFlow).map((node) =>
-      node.id === 'stacked' ? ({ ...node, stacked: false } as AnyNode) : node,
+    const stackedFlows = replaceFlowStackPresentation(
+      { [previousFlow.id]: previousFlow },
+      previousFlow.id,
+      stackedNodes,
     );
-    const unstackedFlow = rebuildAndRewire(stackedFlow, unstackedNodes);
+    const stackedFlow = stackedFlows?.[previousFlow.id];
 
+    expect(stackedFlow).toBeDefined();
+    expect(stackedFlow?.edges).toEqual(previousFlow.edges);
+    expect(getPrimaryPipelineNodeIds(stackedFlow)).toEqual(['image', 'stacked', 'tail']);
+    expect(stackedFlow?.stacks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ rootNodeId: 'image', nodeIds: ['image', 'stacked'] }),
+      ]),
+    );
+
+    const unstackedNodes = getOrderedNodesFromFlow(stackedFlow ?? null).map((node) =>
+      node.id === 'stacked' ? ({ ...node, stacked: false } as unknown as AnyNode) : node,
+    );
+    const unstackedFlows = replaceFlowStackPresentation(
+      stackedFlows ?? {},
+      previousFlow.id,
+      unstackedNodes,
+    );
+    const unstackedFlow = unstackedFlows?.[previousFlow.id];
+
+    expect(unstackedFlow?.edges).toEqual(previousFlow.edges);
     expect(getPrimaryPipelineNodeIds(unstackedFlow)).toEqual(['image', 'stacked', 'tail']);
   });
 
@@ -133,5 +150,16 @@ describe('connectDefaultPipeline', () => {
     const nextFlow = createFlow([scene(), image('image'), merge('merge')]);
 
     expect(getPrimaryPipelineNodeIds(nextFlow)).toEqual(['image', 'merge']);
+  });
+
+  it('materializes every compacted node as a real pipe connection', () => {
+    const nextFlow = createFlow([
+      scene(),
+      image('image'),
+      adjustment('compact-a', true),
+      adjustment('compact-b', true),
+    ]);
+
+    expect(getPrimaryPipelineNodeIds(nextFlow)).toEqual(['image', 'compact-a', 'compact-b']);
   });
 });

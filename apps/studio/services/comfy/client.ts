@@ -6,7 +6,7 @@ import type {
   ComfyWorkflowSyntheticOutputNode,
 } from '@blackboard/types';
 import { isJsonObject } from '@/utils/guards';
-import { normalizeComfyType } from '@/utils/comfyUtils';
+import { getComfyWorkflowMediaInputKind, normalizeComfyType } from '@/utils/comfyUtils';
 
 export const DEFAULT_COMFY_ENDPOINT = 'http://127.0.0.1:8188';
 
@@ -1893,7 +1893,7 @@ const getObjectInfoInputType = (info: JsonObject | undefined, inputName: string)
   return typeof definition[0] === 'string' ? definition[0] : null;
 };
 
-const mediaPromptInputNames = new Set(['image', 'images', 'mask', 'video']);
+const mediaPromptInputNames = new Set(['image', 'images', 'alpha', 'mask', 'video']);
 const mediaGraphInputTypes = new Set(['IMAGE', 'IMAGES', 'IMAGE_LIST', 'MASK', 'MASKS', 'VIDEO']);
 
 const isLoadMediaNodeType = (nodeType: string): boolean => {
@@ -1925,6 +1925,29 @@ const isMediaGraphInputType = (inputType: string | null | undefined): boolean =>
 
 const getGraphNodeInput = (node: ComfyGraphNode, inputName: string): ComfyGraphInput | undefined =>
   node.inputs?.find((input) => input.name === inputName);
+
+const getTopLevelGraphInputCandidateType = ({
+  node,
+  info,
+  subgraph,
+  inputName,
+}: {
+  node: ComfyGraphNode;
+  info: JsonObject | undefined;
+  subgraph: JsonObject | undefined;
+  inputName: string;
+}): string | undefined => {
+  const subgraphInput = Array.isArray(subgraph?.inputs)
+    ? subgraph.inputs.find((input) => isJsonObject(input) && input.name === inputName)
+    : undefined;
+  const subgraphInputType = isJsonObject(subgraphInput) ? subgraphInput.type : undefined;
+  if (typeof subgraphInputType === 'string') return subgraphInputType;
+
+  const graphInputType = getGraphNodeInput(node, inputName)?.type;
+  if (typeof graphInputType === 'string') return graphInputType;
+
+  return getObjectInfoInputType(info, inputName) ?? undefined;
+};
 
 const getSubgraphInputPromptTargets = ({
   subgraph,
@@ -2120,6 +2143,7 @@ const collectTopLevelGraphInputCandidates = (
         nodeId: String(node.id),
         nodeType: node.type,
         inputName,
+        inputType: getTopLevelGraphInputCandidateType({ node, info, subgraph, inputName }),
         label: `${node.type} #${String(node.id)}`,
         ...(promptTargets ? { promptTargets } : {}),
       });
@@ -2177,7 +2201,8 @@ const collectPromptInputCandidates = (
         inputType,
       });
       const isUnconnectedMediaInput =
-        isMediaGraphInputType(inputType) &&
+        (isMediaGraphInputType(inputType) ||
+          (!info && mediaPromptInputNames.has(inputName.toLowerCase()))) &&
         !toPromptLink(value) &&
         (value === null || value === undefined);
       if (!isUploadInput && !isUnconnectedMediaInput) {
@@ -2192,6 +2217,7 @@ const collectPromptInputCandidates = (
         nodeId,
         nodeType: classType,
         inputName,
+        ...(inputType ? { inputType } : {}),
         label: `${classType} #${nodeId}`,
         ...(scope ? { scope } : {}),
       });
@@ -2585,7 +2611,7 @@ export const applyComfyWorkflowInputImages = (
   inputImages: Array<{
     candidate: Pick<
       ComfyWorkflowInputCandidate,
-      'nodeId' | 'inputName' | 'nodeType' | 'promptTargets'
+      'nodeId' | 'inputName' | 'inputType' | 'nodeType' | 'promptTargets'
     >;
     imageName: string;
   }>,
@@ -2609,6 +2635,7 @@ export const applyComfyWorkflowInputImages = (
         class_type: 'LoadImage',
         inputs: { image: imageName },
       };
+      const loadOutputIndex = getComfyWorkflowMediaInputKind(candidate) === 'mask' ? 1 : 0;
       const targets =
         candidate.promptTargets && candidate.promptTargets.length > 0
           ? candidate.promptTargets
@@ -2618,7 +2645,7 @@ export const applyComfyWorkflowInputImages = (
         const promptNode = nextPrompt[target.nodeId];
         if (!isJsonObject(promptNode)) continue;
         const inputs = isJsonObject(promptNode.inputs) ? promptNode.inputs : {};
-        promptNode.inputs = { ...inputs, [target.inputName]: [loadNodeId, 0] };
+        promptNode.inputs = { ...inputs, [target.inputName]: [loadNodeId, loadOutputIndex] };
       }
     }
   }

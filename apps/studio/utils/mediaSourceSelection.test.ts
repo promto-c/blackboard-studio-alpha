@@ -62,14 +62,14 @@ const VIDEO_NODE: AnyNode = {
   transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
 };
 
-const GRADE_NODE: AnyNode = {
+const GRADE_NODE = {
   id: 'grade-1',
   type: NodeType.GRADE,
   name: 'Look',
   enabled: true,
   stacked: true,
   grade: createDefaultGrade(),
-};
+} as AnyNode;
 
 const ROTO_NODE: AnyNode = {
   id: 'roto-1',

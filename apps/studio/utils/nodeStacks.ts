@@ -1,14 +1,14 @@
 import { AnyNode, NodeType } from '@blackboard/types';
-import { isStackedAdjustmentNode } from '@/utils/nodePredicates';
+import { isStackedNode } from '@/utils/nodePredicates';
 
 /**
  * From a starting index in `nodes`, collect the node at that index and all
- * consecutive stacked adjustment nodes that follow it. Returns the slice.
+ * consecutive nodes compacted with it in list/graph presentation.
  */
 export function getStackedGroup(nodes: readonly AnyNode[], startIndex: number): AnyNode[] {
   const group: AnyNode[] = [nodes[startIndex]];
   for (let i = startIndex + 1; i < nodes.length; i++) {
-    if (isStackedAdjustmentNode(nodes[i])) {
+    if (isStackedNode(nodes[i])) {
       group.push(nodes[i]);
     } else {
       break;
@@ -23,7 +23,7 @@ export function getStackedGroup(nodes: readonly AnyNode[], startIndex: number): 
 export function getStackedGroupEndIndex(nodes: readonly AnyNode[], startIndex: number): number {
   let endIndex = startIndex;
   for (let i = startIndex + 1; i < nodes.length; i++) {
-    if (isStackedAdjustmentNode(nodes[i])) {
+    if (isStackedNode(nodes[i])) {
       endIndex = i;
     } else {
       break;
@@ -48,7 +48,7 @@ export function buildNodeStacks(nodes: AnyNode[]): AnyNode[][] {
       continue;
     }
 
-    if (isStackedAdjustmentNode(node)) {
+    if (isStackedNode(node)) {
       currentStack.push(node);
       continue;
     }

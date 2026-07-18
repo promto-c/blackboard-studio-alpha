@@ -1,6 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useUIInteractionSession } from './UIInteractionProvider';
 import { DEFAULT_CONTROL_INPUT_CLASS } from './controlInputStyles';
+import {
+  extendNumericPrecisionAtCaret,
+  formatValueForNumericPlace,
+  getCaretPositionForNumericPlace,
+  getNumericCaretStep,
+} from './numberInputStepping';
 
 export type NumberInputChangeSource = 'keyboard' | 'wheel' | 'drag' | 'commit';
 export interface NumberInputProps extends Omit<
@@ -23,6 +29,21 @@ export interface NumberInputProps extends Omit<
 const DRAG_THRESHOLD_PX = 4;
 
 const DEFAULT_NUMBER_INPUT_CLASS = `${DEFAULT_CONTROL_INPUT_CLASS} font-mono tabular-nums`;
+
+type PendingInputSelection =
+  | { kind: 'caret'; position: number }
+  | {
+      affinity: 'after' | 'before';
+      kind: 'place';
+      place: number;
+      selection: {
+        direction: 'backward' | 'forward' | 'none';
+        end: number;
+        selectAll: boolean;
+        start: number;
+      } | null;
+    }
+  | { end: number; kind: 'range'; selectAll: boolean; start: number };
 
 const finiteAttribute = (value: string | number | undefined): number | undefined => {
   if (value === undefined || value === '') return undefined;
@@ -98,6 +119,7 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
     const inputRef = useRef<HTMLInputElement | null>(null);
     const isEditingRef = useRef(false);
     const skipBlurCommitRef = useRef(false);
+    const pendingInputSelectionRef = useRef<PendingInputSelection | null>(null);
     const dragRef = useRef<{
       pointerId: number;
       startX: number;
@@ -128,6 +150,46 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
       if (!isEditingRef.current) setDraft(formatValue(value));
     }, [formatValue, value]);
 
+    useLayoutEffect(() => {
+      const pendingSelection = pendingInputSelectionRef.current;
+      const input = inputRef.current;
+      pendingInputSelectionRef.current = null;
+      if (!pendingSelection || !input || document.activeElement !== input) return;
+
+      if (pendingSelection.kind === 'caret') {
+        const position = Math.min(pendingSelection.position, input.value.length);
+        input.setSelectionRange(position, position);
+        return;
+      }
+
+      if (pendingSelection.kind === 'range') {
+        const start = Math.min(pendingSelection.start, input.value.length);
+        const end = pendingSelection.selectAll
+          ? input.value.length
+          : Math.min(pendingSelection.end, input.value.length);
+        input.setSelectionRange(start, Math.max(start, end));
+        return;
+      }
+
+      const caretPosition = getCaretPositionForNumericPlace(input.value, pendingSelection.place);
+      if (caretPosition !== null) {
+        if (pendingSelection.selection) {
+          const selectionStart = Math.min(pendingSelection.selection.start, input.value.length);
+          const selectionEnd = pendingSelection.selection.selectAll
+            ? input.value.length
+            : Math.min(pendingSelection.selection.end, input.value.length);
+          input.setSelectionRange(
+            selectionStart,
+            Math.max(selectionStart, selectionEnd),
+            pendingSelection.selection.direction,
+          );
+        } else {
+          const offset = pendingSelection.affinity === 'after' ? 1 : 0;
+          input.setSelectionRange(caretPosition + offset, caretPosition + offset);
+        }
+      }
+    });
+
     const restoreBodyInteractionStyles = () => {
       const previousStyles = previousBodyStylesRef.current;
       if (!previousStyles) return;
@@ -149,11 +211,22 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
       [],
     );
 
-    const applyValue = (nextValue: number, source: NumberInputChangeSource) => {
+    const applyValue = (
+      nextValue: number,
+      source: NumberInputChangeSource,
+      stepSelection: PendingInputSelection | null = null,
+    ) => {
       if (!Number.isFinite(nextValue)) return;
       const normalizedValue = clamp(normalizeValue(nextValue), min, max);
       if (!Number.isFinite(normalizedValue)) return;
-      setDraft(formatValue(normalizedValue));
+      const formattedValue =
+        stepSelection?.kind === 'place' && formatValue === defaultFormatValue
+          ? formatValueForNumericPlace(normalizedValue, stepSelection.place, draft)
+          : formatValue(normalizedValue);
+      if (stepSelection && formattedValue !== draft) {
+        pendingInputSelectionRef.current = stepSelection;
+      }
+      setDraft(formattedValue);
       if (!Object.is(normalizedValue, value)) onValueChange(normalizedValue, source);
     };
 
@@ -169,7 +242,49 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
     const applyStep = (direction: 1 | -1, source: 'keyboard' | 'wheel') => {
       const draftValue = Number(draft);
       const currentValue = Number.isFinite(draftValue) ? draftValue : value;
-      applyValue(stepValue(currentValue, direction, step, min, max), source);
+      const input = inputRef.current;
+      const caretStep = input
+        ? getNumericCaretStep(draft, input.selectionStart, input.selectionEnd)
+        : null;
+      const activeStep = caretStep?.step ?? step;
+      const selectionStart = input?.selectionStart ?? null;
+      const selectionEnd = input?.selectionEnd ?? null;
+      const stepSelection: PendingInputSelection | null = caretStep
+        ? {
+            affinity: caretStep.affinity,
+            kind: 'place',
+            place: caretStep.place,
+            selection:
+              selectionStart !== null && selectionEnd !== null && selectionStart !== selectionEnd
+                ? {
+                    direction: input?.selectionDirection ?? 'none',
+                    start: selectionStart,
+                    end: selectionEnd,
+                    selectAll: selectionStart === 0 && selectionEnd === draft.length,
+                  }
+                : null,
+          }
+        : selectionStart !== null && selectionEnd !== null
+          ? {
+              kind: 'range',
+              start: selectionStart,
+              end: selectionEnd,
+              selectAll: selectionStart === 0 && selectionEnd === draft.length,
+            }
+          : null;
+      applyValue(stepValue(currentValue, direction, activeStep, min, max), source, stepSelection);
+    };
+
+    const extendPrecision = (): boolean => {
+      const input = inputRef.current;
+      const extension = input
+        ? extendNumericPrecisionAtCaret(draft, input.selectionStart, input.selectionEnd)
+        : null;
+      if (!extension) return false;
+
+      pendingInputSelectionRef.current = { kind: 'caret', position: extension.caret };
+      setDraft(extension.text);
+      return true;
     };
 
     const beginEditing = () => {
@@ -248,7 +363,9 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
         onKeyDown={(event) => {
           onKeyDown?.(event);
           if (event.defaultPrevented || disabled || readOnly) return;
-          if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          if (event.key === 'ArrowRight' && extendPrecision()) {
+            event.preventDefault();
+          } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
             event.preventDefault();
             applyStep(event.key === 'ArrowUp' ? 1 : -1, 'keyboard');
           } else if (event.key === 'Enter') {

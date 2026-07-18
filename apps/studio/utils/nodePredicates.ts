@@ -1,15 +1,18 @@
-import { createNodePredicates, hasStackedFlag } from '@blackboard/renderer';
 import type { AnyNode } from '@blackboard/types';
+import { getInputPorts } from '@/nodes/helpers';
 import { nodeRegistry } from '@/nodes/registry';
 
-const predicates = createNodePredicates({
-  get: (type) => nodeRegistry.get(type),
-});
+/** Transient list/graph projection derived from Flow.stacks. */
+export const isNodeStacked = (node: AnyNode): boolean =>
+  (node as AnyNode & { stacked?: boolean }).stacked === true;
 
-export const isStackAdjustmentType = predicates.isStackAdjustmentType;
-export const isExportAdjustmentType = predicates.isExportAdjustmentType;
-export const isStackedAdjustmentNode = predicates.isStackedAdjustmentNode;
-export const isStackedExportAdjustmentNode = predicates.isStackedExportAdjustmentNode;
+export const isStackedNode = isNodeStacked;
+
+/** Adds or removes transient compaction state without changing canonical node data. */
+export const setNodeStackedPresentation = (node: AnyNode, stacked: boolean): AnyNode => {
+  const { stacked: _stacked, ...canonicalNode } = node as AnyNode & { stacked?: boolean };
+  return (stacked ? { ...canonicalNode, stacked: true } : canonicalNode) as unknown as AnyNode;
+};
 
 /**
  * Returns true if the node type belongs to the "Image" category (source/media).
@@ -32,14 +35,17 @@ export const usesPipelineInput = (type: string): boolean => {
   return true;
 };
 
+/** Any unary node may be compacted with the card before it. */
+export const isStackableNode = (node: AnyNode): boolean => {
+  const inputPortNames = new Set(getInputPorts(node).map((port) => port.name));
+  if (usesPipelineInput(node.type)) inputPortNames.add('pipe');
+  for (const portName of Object.keys(node.inputs ?? {})) inputPortNames.add(portName);
+  return inputPortNames.size === 1;
+};
+
 /** Whether a node can participate in the primary output pipeline. */
 export const participatesInPipeline = (type: string): boolean => {
   const def = nodeRegistry.get(type);
   if (!def) return false;
   return def.renderMode !== 'utility' && def.renderMode !== 'scene' && !def.flags?.isSceneLike;
 };
-
-export const isNodeStacked = (node: AnyNode): boolean =>
-  hasStackedFlag(node) ? node.stacked : false;
-
-export { hasStackedFlag };

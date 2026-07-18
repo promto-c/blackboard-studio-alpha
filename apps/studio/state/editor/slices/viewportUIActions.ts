@@ -1,8 +1,19 @@
-import { EditorTab, Pan, TransformData, StabilizationConfig } from '@blackboard/types';
+import {
+  EditorTab,
+  Pan,
+  TransformData,
+  StabilizationConfig,
+  type NormalizedRect,
+} from '@blackboard/types';
 import { nodeRegistry } from '@/nodes/registry';
 import type { SetState, GetState } from '@/state/editor/slices/types';
+import { clampNormalizedRect } from '@/features/viewport/workingArea';
 
-export function createViewportUIActions(set: SetState, get: GetState) {
+export function createViewportUIActions(
+  set: SetState,
+  get: GetState,
+  deps: { debouncedSave?: () => void } = {},
+) {
   return {
     setActiveTab: (tab: EditorTab) => set(() => ({ activeTab: tab })),
     setSubPanelVisible: (visible: boolean) => set(() => ({ isSubPanelVisible: visible })),
@@ -25,6 +36,33 @@ export function createViewportUIActions(set: SetState, get: GetState) {
         targetPan: targets.pan ?? s.targetPan,
       })),
     setActiveViewportTool: (tool: string | null) => set(() => ({ activeViewportTool: tool })),
+    setViewportWorkingArea: (rect: NormalizedRect) => {
+      set(() => ({
+        viewportWorkingArea: {
+          enabled: true,
+          rect: clampNormalizedRect(rect),
+        },
+      }));
+      deps.debouncedSave?.();
+    },
+    setViewportWorkingAreaEnabled: (enabled: boolean) => {
+      set((state) => ({
+        viewportWorkingArea: {
+          ...state.viewportWorkingArea,
+          enabled,
+        },
+      }));
+      deps.debouncedSave?.();
+    },
+    resetViewportWorkingArea: () => {
+      set(() => ({
+        viewportWorkingArea: {
+          enabled: false,
+          rect: { x: 0, y: 0, width: 1, height: 1 },
+        },
+      }));
+      deps.debouncedSave?.();
+    },
 
     toggleStabilize: () => {
       const state = get();

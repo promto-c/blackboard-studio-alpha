@@ -3,7 +3,7 @@
 // --- Components ---
 export { Badge, type BadgeProps } from './Badge';
 export { default as CodeBlock, type CodeBlockProps } from './CodeBlock';
-export { default as CollapsibleSection } from './CollapsibleSection';
+export { default as CollapsibleSection, type CollapsibleSectionProps } from './CollapsibleSection';
 export { default as ColorPicker } from './ColorPicker';
 export { default as ColorInput, type ColorInputProps } from './ColorInput';
 export { default as DirectoryImportModeModal } from './DirectoryImportModeModal';

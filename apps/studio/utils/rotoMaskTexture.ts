@@ -20,6 +20,7 @@ import { drawRotoPathGeometry } from '@/utils/rotoMaskRaster';
 import {
   getRotoMotionBlurSampleFrames,
   getRotoMotionBlurSampleWeights,
+  quantizeRotoMotionBlurContributions,
   resolveRotoMotionBlurSettings,
 } from '@/utils/rotoMotionBlur';
 import { DEFAULT_ROTO_POINT_WEIGHT_MODE, type RotoPointWeightMode } from '@/utils/rotoPointWeights';
@@ -158,16 +159,20 @@ export const createRotoMaskLayers = (
   const retainedTextureIds = new Set<string>();
 
   const maskLayers = getVisibleRotoPaths(node).flatMap((path) => {
-    const weightedSamples = sampleFrames.flatMap((sampleFrame, sampleIndex) => {
+    const resolvedSamples = sampleFrames.map((sampleFrame, sampleIndex) => {
       const clampedFrame = Math.max(0, Math.min(maxFrame, sampleFrame));
       const opacity = Math.max(0, Math.min(1, getValueAtFrame(path.opacity, clampedFrame) / 100));
-      if (opacity <= 0) return [];
-      return [
-        {
-          frame: clampedFrame,
-          weight: sampleWeights[sampleIndex] * opacity,
-        },
-      ];
+      return {
+        frame: clampedFrame,
+        contribution: sampleWeights[sampleIndex] * opacity,
+      };
+    });
+    const quantizedContributions = quantizeRotoMotionBlurContributions(
+      resolvedSamples.map((sample) => sample.contribution),
+    );
+    const weightedSamples = resolvedSamples.flatMap((sample, sampleIndex) => {
+      const weight = quantizedContributions[sampleIndex];
+      return weight > 0 ? [{ frame: sample.frame, weight }] : [];
     });
     if (weightedSamples.length === 0) {
       return [];

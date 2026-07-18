@@ -32,7 +32,31 @@ export const blurNode: NodeDefinition = {
   ToolComponent: BlurTool,
   AdjustmentComponent: BlurAdjustments,
   flags: {},
+  adaptivePreview: { resolutionScale: true, sampleLimit: true },
   animation: blurAnimation,
+  exposableFields: [
+    {
+      path: 'blur.method',
+      label: 'Method',
+      section: 'Parameters',
+      control: 'select',
+      options: [
+        { value: BlurMethod.GAUSSIAN, label: 'Gaussian' },
+        { value: BlurMethod.BOX, label: 'Box' },
+        { value: BlurMethod.ITERATED_BOX, label: '3× Box' },
+      ],
+    },
+    {
+      path: 'blur.radius',
+      label: 'Radius',
+      section: 'Parameters',
+      control: 'slider',
+      min: 0,
+      max: 100,
+      step: 0.1,
+      animatable: true,
+    },
+  ],
   getInitialNodeProps: () => ({
     blur: { radius: 5, method: BlurMethod.GAUSSIAN },
   }),
@@ -60,8 +84,18 @@ export const blurNode: NodeDefinition = {
     const blurNode = node as BlurNode;
     const radius = getValueAtFrame(blurNode.blur.radius, context.frame);
     const sigma = radius / 2.0;
-    if (sigma < 1) return 1;
-    // Downsample when sigma > 20 to keep kernel small
-    return Math.min(1, 20 / sigma);
+    const largeKernelScale = sigma < 1 ? 1 : Math.min(1, 20 / sigma);
+    if (context.quality.mode !== 'preview' || radius <= 0) return largeKernelScale;
+
+    const method = blurNode.blur?.method || BlurMethod.GAUSSIAN;
+    const kernelExtent =
+      method === BlurMethod.ITERATED_BOX
+        ? radius * 3
+        : method === BlurMethod.BOX
+          ? radius
+          : sigma * 3;
+    if (kernelExtent <= context.quality.sampleLimit) return largeKernelScale;
+    const sampleBudgetScale = context.quality.sampleLimit / Math.max(1, kernelExtent);
+    return Math.min(largeKernelScale, sampleBudgetScale, context.quality.resolutionScale);
   },
 };

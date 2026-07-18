@@ -1,8 +1,9 @@
 import React from 'react';
 import {
   CompareChordHoldMs,
-  RotoInteractivePreviewSize,
-  RotoPreviewRefineDelay,
+  PreviewMaxDimension,
+  PreviewRefineDelay,
+  PreviewSampleLimit,
   RotoTrackingDriftTolerance,
   getRecommendedCacheSizeMB,
   type BackgroundPrefetchMode,
@@ -12,7 +13,7 @@ import {
   type UndoHistoryLimitPreference,
   type ViewportBackgroundMode,
 } from '@/state/preferences';
-import type { RotoPlaybackPreviewMode } from '@/utils/rotoTemporalPreview';
+import type { PreviewPlaybackMode } from '@/utils/previewPerformance';
 import { usePreferences } from '@/state/preferencesContext';
 import { useOcio } from '@/state/ocioContext';
 import { useEditorActions, useEditorSelector } from '@/state/editorContext';
@@ -124,7 +125,7 @@ const preferenceSections: {
   {
     id: 'performance',
     label: 'Performance',
-    description: 'Prefetching, memory, and cache budgets',
+    description: 'Realtime quality, prefetching, and cache budgets',
     icon: Icons.ComputerDesktop,
     group: 'app',
   },
@@ -323,12 +324,12 @@ function PreferencesView({
     rotoMotionCueMode,
     rotoMotionCueScope,
     rotoMotionTrailFrames,
-    rotoMotionBlurInteractivePreviewEnabled,
-    rotoFrameChangePreviewEnabled,
-    rotoPreviewRefineDelayMs,
-    rotoPlaybackPreviewMode,
-    rotoInteractivePreviewMaxDimension,
-    rotoMotionBlurInteractivePreviewSamples,
+    previewOptimizeWhileEditing,
+    previewOptimizeFrameChanges,
+    previewRefineDelayMs,
+    previewPlaybackMode,
+    previewMaxDimension,
+    previewSampleLimit,
     rotoPointWeightMode,
     rotoTrackingBackgroundEnabled,
     rotoTrackingDriftTolerance,
@@ -435,7 +436,7 @@ function PreferencesView({
     { value: 'all', label: 'All' },
   ];
 
-  const rotoPlaybackPreviewModeOptions = [
+  const previewPlaybackModeOptions = [
     { value: 'auto', label: 'Auto' },
     { value: 'optimized', label: 'Optimized' },
     { value: 'full', label: 'Full' },
@@ -451,10 +452,8 @@ function PreferencesView({
     { value: 'local', label: 'Local Pull' },
   ];
 
-  const rotoPreviewOptimizationEnabled =
-    rotoMotionBlurInteractivePreviewEnabled ||
-    rotoFrameChangePreviewEnabled ||
-    rotoPlaybackPreviewMode !== 'full';
+  const previewOptimizationEnabled =
+    previewOptimizeWhileEditing || previewOptimizeFrameChanges || previewPlaybackMode !== 'full';
 
   const alphaOverlayColorSourceOptions = [
     { value: 'accent', label: 'Accent' },
@@ -616,16 +615,16 @@ function PreferencesView({
       rotoMotionCueEnabled ? 'Cue overlay on' : 'Cue overlay off',
       rotoTrackingBackgroundEnabled ? 'Background tracking' : 'Inline tracking',
       `Drift stop ${rotoTrackingDriftTolerance !== null ? rotoTrackingDriftTolerance.toFixed(1) : '∞'}`,
-      rotoMotionBlurInteractivePreviewEnabled
-        ? `${rotoInteractivePreviewMaxDimension}px · ${rotoMotionBlurInteractivePreviewSamples} samples`
-        : 'Full quality while editing',
-      rotoPlaybackPreviewMode === 'auto'
-        ? 'Adaptive playback quality'
-        : rotoPlaybackPreviewMode === 'optimized'
-          ? 'Optimized playback'
-          : 'Full-quality playback',
     ],
     performance: [
+      previewOptimizationEnabled
+        ? `${previewMaxDimension}px · ${previewSampleLimit} samples`
+        : 'Full-quality viewport',
+      previewPlaybackMode === 'auto'
+        ? 'Adaptive playback quality'
+        : previewPlaybackMode === 'optimized'
+          ? 'Optimized playback'
+          : 'Full-quality playback',
       backgroundPrefetchMode === 'on_demand'
         ? 'On-demand prefetch'
         : backgroundPrefetchMode === 'auto'
@@ -1083,182 +1082,11 @@ function PreferencesView({
         return (
           <SettingsGroup
             title="Roto"
-            description="Tune Roto interaction, timeline, playback, and motion feedback."
+            description="Tune Roto point interaction, tracking, and motion feedback."
             icon={Icons.Curve}
             highlights={activeSectionHighlights.rotoMotion}
           >
             <div className="grid items-start gap-3 lg:grid-cols-12">
-              <PreferenceBentoCard
-                title="Preview performance"
-                description="Balance interaction latency with final matte quality across editing, seeking, and playback."
-                icon={Icons.Play}
-                headerAction={
-                  <div className="flex items-center gap-2">
-                    <ToggleSwitch
-                      checked={rotoPreviewOptimizationEnabled}
-                      ariaLabel="Toggle all optimized Roto preview modes"
-                      onCheckedChange={(checked) =>
-                        setPreferences(
-                          checked
-                            ? {
-                                rotoMotionBlurInteractivePreviewEnabled: true,
-                                rotoFrameChangePreviewEnabled: true,
-                                rotoPlaybackPreviewMode: 'auto',
-                              }
-                            : {
-                                rotoMotionBlurInteractivePreviewEnabled: false,
-                                rotoFrameChangePreviewEnabled: false,
-                                rotoPlaybackPreviewMode: 'full',
-                              },
-                        )
-                      }
-                    />
-                    <PreferenceBentoResetButton
-                      label="Reset preview performance settings"
-                      onReset={() =>
-                        setPreferences({
-                          rotoMotionBlurInteractivePreviewEnabled: true,
-                          rotoFrameChangePreviewEnabled: true,
-                          rotoPlaybackPreviewMode: 'auto',
-                          rotoInteractivePreviewMaxDimension: RotoInteractivePreviewSize.DEFAULT,
-                          rotoPreviewRefineDelayMs: RotoPreviewRefineDelay.DEFAULT,
-                          rotoMotionBlurInteractivePreviewSamples: 16,
-                        })
-                      }
-                    />
-                  </div>
-                }
-                className="lg:col-span-7"
-              >
-                <PreferenceBentoControl
-                  title="Shape editing"
-                  description="Use a lighter matte while dragging points and shapes."
-                >
-                  <ToggleField
-                    checked={rotoMotionBlurInteractivePreviewEnabled}
-                    ariaLabel="Toggle optimized Roto preview while editing"
-                    activeLabel="Optimized"
-                    inactiveLabel="Full"
-                    onCheckedChange={(checked) =>
-                      setPreferences({ rotoMotionBlurInteractivePreviewEnabled: checked })
-                    }
-                  />
-                </PreferenceBentoControl>
-
-                <PreferenceBentoControl
-                  title="Frame changes"
-                  description="Preview coarse while scrubbing or seeking, then refine after the playhead settles."
-                >
-                  <ToggleField
-                    checked={rotoFrameChangePreviewEnabled}
-                    ariaLabel="Toggle optimized Roto preview during frame changes"
-                    activeLabel="Coarse to fine"
-                    inactiveLabel="Full"
-                    onCheckedChange={(checked) =>
-                      setPreferences({ rotoFrameChangePreviewEnabled: checked })
-                    }
-                  />
-                </PreferenceBentoControl>
-
-                <PreferenceBentoControl
-                  title="Playback quality"
-                  description="Auto stays full quality while the renderer meets the frame budget."
-                  stacked
-                >
-                  <SegmentedControl
-                    options={rotoPlaybackPreviewModeOptions}
-                    value={rotoPlaybackPreviewMode}
-                    onChange={(mode) =>
-                      setPreferences({
-                        rotoPlaybackPreviewMode: mode as RotoPlaybackPreviewMode,
-                      })
-                    }
-                  />
-                </PreferenceBentoControl>
-
-                {rotoPreviewOptimizationEnabled ? (
-                  <>
-                    <PreferenceBentoControl
-                      title="Optimized mask size"
-                      description="Maximum long-edge resolution for temporary mattes."
-                      stacked
-                    >
-                      <Slider
-                        label="Optimized Mask Size"
-                        value={rotoInteractivePreviewMaxDimension}
-                        min={RotoInteractivePreviewSize.MIN}
-                        max={RotoInteractivePreviewSize.MAX}
-                        step={RotoInteractivePreviewSize.STEP}
-                        onChange={(value) =>
-                          setPreferences({
-                            rotoInteractivePreviewMaxDimension: Math.round(value),
-                          })
-                        }
-                        onReset={() =>
-                          setPreferences({
-                            rotoInteractivePreviewMaxDimension: RotoInteractivePreviewSize.DEFAULT,
-                          })
-                        }
-                        displayFormatter={(value) => `${Math.round(value)} px`}
-                      />
-                    </PreferenceBentoControl>
-
-                    <PreferenceBentoControl
-                      title="Full-quality refine delay"
-                      description="Quiet time before a temporary matte is replaced by its full-resolution result."
-                      stacked
-                    >
-                      <Slider
-                        label="Refine Delay"
-                        value={rotoPreviewRefineDelayMs}
-                        min={RotoPreviewRefineDelay.MIN}
-                        max={RotoPreviewRefineDelay.MAX}
-                        step={RotoPreviewRefineDelay.STEP}
-                        onChange={(value) =>
-                          setPreferences({ rotoPreviewRefineDelayMs: Math.round(value) })
-                        }
-                        onReset={() =>
-                          setPreferences({
-                            rotoPreviewRefineDelayMs: RotoPreviewRefineDelay.DEFAULT,
-                          })
-                        }
-                        displayFormatter={(value) => `${Math.round(value)} ms`}
-                      />
-                    </PreferenceBentoControl>
-
-                    <PreferenceBentoControl
-                      title="Motion-blur sample cap"
-                      description="Maximum samples used by optimized mattes."
-                      stacked
-                    >
-                      <Slider
-                        label="Optimized Sample Cap"
-                        value={rotoMotionBlurInteractivePreviewSamples}
-                        min={2}
-                        max={64}
-                        step={1}
-                        onChange={(value) =>
-                          setPreferences({
-                            rotoMotionBlurInteractivePreviewSamples: Math.round(value),
-                          })
-                        }
-                        onReset={() =>
-                          setPreferences({
-                            rotoMotionBlurInteractivePreviewSamples: 16,
-                          })
-                        }
-                        displayFormatter={(value) => `${Math.round(value)}`}
-                      />
-                    </PreferenceBentoControl>
-                  </>
-                ) : (
-                  <PreferenceBentoEmptyState icon={Icons.Sparkles}>
-                    Optimized quality controls will appear when an optimized preview path is
-                    enabled.
-                  </PreferenceBentoEmptyState>
-                )}
-              </PreferenceBentoCard>
-
               <PreferenceBentoCard
                 title="Interaction & tracking"
                 description="Choose how point edits behave and how tracking work is scheduled and validated."
@@ -1275,7 +1103,7 @@ function PreferencesView({
                     }
                   />
                 }
-                className="lg:col-span-5"
+                className="lg:col-span-12"
               >
                 <PreferenceBentoControl
                   title="Default point pull"
@@ -1507,10 +1335,180 @@ function PreferencesView({
         return (
           <SettingsGroup
             title="Performance"
-            description="Balance scrubbing responsiveness and memory usage with clearer cache and prefetch limits."
+            description="Balance realtime preview responsiveness, reliable full-quality refinement, and memory usage."
             icon={Icons.ComputerDesktop}
             highlights={activeSectionHighlights.performance}
           >
+            <div className="grid items-start gap-3 lg:grid-cols-12">
+              <PreferenceBentoCard
+                title="Realtime preview"
+                description="Share one temporary resolution and sampling budget across adaptive nodes. Idle and export renders always return to full quality."
+                icon={Icons.Play}
+                headerAction={
+                  <div className="flex items-center gap-2">
+                    <ToggleSwitch
+                      checked={previewOptimizationEnabled}
+                      ariaLabel="Toggle all optimized viewport preview modes"
+                      onCheckedChange={(checked) =>
+                        setPreferences(
+                          checked
+                            ? {
+                                previewOptimizeWhileEditing: true,
+                                previewOptimizeFrameChanges: true,
+                                previewPlaybackMode: 'auto',
+                              }
+                            : {
+                                previewOptimizeWhileEditing: false,
+                                previewOptimizeFrameChanges: false,
+                                previewPlaybackMode: 'full',
+                              },
+                        )
+                      }
+                    />
+                    <PreferenceBentoResetButton
+                      label="Reset realtime preview settings"
+                      onReset={() =>
+                        setPreferences({
+                          previewOptimizeWhileEditing: true,
+                          previewOptimizeFrameChanges: true,
+                          previewPlaybackMode: 'auto',
+                          previewMaxDimension: PreviewMaxDimension.DEFAULT,
+                          previewRefineDelayMs: PreviewRefineDelay.DEFAULT,
+                          previewSampleLimit: PreviewSampleLimit.DEFAULT,
+                        })
+                      }
+                    />
+                  </div>
+                }
+                className="lg:col-span-12"
+              >
+                <div className="grid md:grid-cols-3 md:divide-x md:divide-white/[0.07]">
+                  <div className="md:pr-4">
+                    <PreferenceBentoControl
+                      title="While editing"
+                      description="Use the proxy budget during node and viewport interaction, then refine."
+                    >
+                      <ToggleField
+                        checked={previewOptimizeWhileEditing}
+                        ariaLabel="Toggle optimized preview while editing"
+                        activeLabel="Optimized"
+                        inactiveLabel="Full"
+                        onCheckedChange={(checked) =>
+                          setPreferences({ previewOptimizeWhileEditing: checked })
+                        }
+                      />
+                    </PreferenceBentoControl>
+                  </div>
+                  <div className="md:px-4">
+                    <PreferenceBentoControl
+                      title="Frame changes"
+                      description="Stay full while frames are fast; use coarse-to-fine only after the render misses its budget."
+                    >
+                      <ToggleField
+                        checked={previewOptimizeFrameChanges}
+                        ariaLabel="Toggle optimized preview during frame changes"
+                        activeLabel="Adaptive"
+                        inactiveLabel="Full"
+                        onCheckedChange={(checked) =>
+                          setPreferences({ previewOptimizeFrameChanges: checked })
+                        }
+                      />
+                    </PreferenceBentoControl>
+                  </div>
+                  <div className="md:pl-4">
+                    <PreferenceBentoControl
+                      title="Playback quality"
+                      description="Auto reduces quality only after the render exceeds its frame budget."
+                      stacked
+                    >
+                      <SegmentedControl
+                        options={previewPlaybackModeOptions}
+                        value={previewPlaybackMode}
+                        onChange={(mode) =>
+                          setPreferences({ previewPlaybackMode: mode as PreviewPlaybackMode })
+                        }
+                      />
+                    </PreferenceBentoControl>
+                  </div>
+                </div>
+
+                {previewOptimizationEnabled ? (
+                  <div className="grid border-t border-white/[0.07] md:grid-cols-3 md:divide-x md:divide-white/[0.07]">
+                    <div className="pt-4 md:pr-4">
+                      <PreferenceBentoControl
+                        title="Proxy long edge"
+                        description="Maximum temporary processing size, also bounded by the viewport."
+                        stacked
+                      >
+                        <Slider
+                          label="Proxy Long Edge"
+                          value={previewMaxDimension}
+                          min={PreviewMaxDimension.MIN}
+                          max={PreviewMaxDimension.MAX}
+                          step={PreviewMaxDimension.STEP}
+                          onChange={(value) =>
+                            setPreferences({ previewMaxDimension: Math.round(value) })
+                          }
+                          onReset={() =>
+                            setPreferences({ previewMaxDimension: PreviewMaxDimension.DEFAULT })
+                          }
+                          displayFormatter={(value) => `${Math.round(value)} px`}
+                        />
+                      </PreferenceBentoControl>
+                    </div>
+                    <div className="pt-4 md:px-4">
+                      <PreferenceBentoControl
+                        title="Full-quality refine delay"
+                        description="Quiet time before the proxy is replaced by an exact result."
+                        stacked
+                      >
+                        <Slider
+                          label="Refine Delay"
+                          value={previewRefineDelayMs}
+                          min={PreviewRefineDelay.MIN}
+                          max={PreviewRefineDelay.MAX}
+                          step={PreviewRefineDelay.STEP}
+                          onChange={(value) =>
+                            setPreferences({ previewRefineDelayMs: Math.round(value) })
+                          }
+                          onReset={() =>
+                            setPreferences({ previewRefineDelayMs: PreviewRefineDelay.DEFAULT })
+                          }
+                          displayFormatter={(value) => `${Math.round(value)} ms`}
+                        />
+                      </PreferenceBentoControl>
+                    </div>
+                    <div className="pt-4 md:pl-4">
+                      <PreferenceBentoControl
+                        title="Preview sample limit"
+                        description="Caps adaptive matte, blur, bokeh, and motion-blur work per pass."
+                        stacked
+                      >
+                        <Slider
+                          label="Preview Sample Limit"
+                          value={previewSampleLimit}
+                          min={PreviewSampleLimit.MIN}
+                          max={PreviewSampleLimit.MAX}
+                          step={PreviewSampleLimit.STEP}
+                          onChange={(value) =>
+                            setPreferences({ previewSampleLimit: Math.round(value) })
+                          }
+                          onReset={() =>
+                            setPreferences({ previewSampleLimit: PreviewSampleLimit.DEFAULT })
+                          }
+                          displayFormatter={(value) => `${Math.round(value)}`}
+                        />
+                      </PreferenceBentoControl>
+                    </div>
+                  </div>
+                ) : (
+                  <PreferenceBentoEmptyState icon={Icons.Sparkles}>
+                    Enable an optimized preview mode to configure its shared quality budget.
+                  </PreferenceBentoEmptyState>
+                )}
+              </PreferenceBentoCard>
+            </div>
+
             <SettingsRow
               title="Background prefetch"
               description="Auto follows the current scrub or playback direction. On demand only loads the current frame. Forward fills ahead. Bidirectional keeps context on both sides."
