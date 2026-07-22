@@ -266,23 +266,6 @@ describe('Comfy alignment diagnostic', () => {
       },
     );
 
-    console.log(`\n[Translation] ${points.length} points`);
-    console.log(`  Reliable pairs: ${diag.reliablePairCount}/${diag.trackedPointCount}`);
-    console.log(`  Median FB error: ${diag.medianFbError.toFixed(2)}px`);
-    console.log(`  RANSAC inliers: ${diag.ransacInliers}`);
-    if (diag.estimate) {
-      console.log(
-        `  Estimated: sx=${diag.estimate.sx.toFixed(4)} sy=${diag.estimate.sy.toFixed(4)} tx=${diag.estimate.tx.toFixed(4)} ty=${diag.estimate.ty.toFixed(4)}`,
-      );
-      console.log(`  Ground truth: sx=1 sy=1 tx=${tx.toFixed(1)} ty=${ty.toFixed(1)}`);
-      if (diag.error) {
-        console.log(`  Per-pixel error: ${diag.error.perPixelError.toFixed(4)}px`);
-        console.log(`  Offset error: ${diag.error.offsetErrorPx.toFixed(4)}px`);
-      }
-    } else {
-      console.log(`  NO ESTIMATE — alignment failed`);
-    }
-
     // Even with loose tolerance, pure translation must converge
     expect(diag.estimate).not.toBeNull();
     if (diag.estimate && diag.error) {
@@ -315,22 +298,6 @@ describe('Comfy alignment diagnostic', () => {
       ransacThreshold: 2.0,
     });
 
-    console.log(
-      `\n[Scale+Translate] ${points.length} points, gt: sx=${gt.sx} sy=${gt.sy} tx=${gt.tx} ty=${gt.ty}`,
-    );
-    console.log(`  Reliable pairs: ${diag.reliablePairCount}/${diag.trackedPointCount}`);
-    console.log(`  Median FB error: ${diag.medianFbError.toFixed(2)}px`);
-    console.log(`  RANSAC inliers: ${diag.ransacInliers}`);
-    if (diag.estimate) {
-      console.log(
-        `  Estimated: sx=${diag.estimate.sx.toFixed(4)} sy=${diag.estimate.sy.toFixed(4)} tx=${diag.estimate.tx.toFixed(4)} ty=${diag.estimate.ty.toFixed(4)}`,
-      );
-      if (diag.error) {
-        console.log(`  Per-pixel error: ${diag.error.perPixelError.toFixed(4)}px`);
-        console.log(`  Scale error: ${diag.error.scaleError.toFixed(4)}`);
-        console.log(`  Offset error: ${diag.error.offsetErrorPx.toFixed(4)}px`);
-      }
-    }
     expect(diag.estimate).not.toBeNull();
   });
 
@@ -369,20 +336,6 @@ describe('Comfy alignment diagnostic', () => {
       H,
     );
 
-    console.log(`\n[Scale+Translate+Edit] with all refinements`);
-    if (estimate) {
-      console.log(
-        `  Estimated: sx=${estimate.sourceToOutputScaleX.toFixed(4)} sy=${estimate.sourceToOutputScaleY.toFixed(4)} tx=${estimate.sourceToOutputOffsetX.toFixed(4)} ty=${estimate.sourceToOutputOffsetY.toFixed(4)}`,
-      );
-      if (error) {
-        console.log(`  Per-pixel error: ${error.perPixelError.toFixed(4)}px`);
-        console.log(`  Scale error: ${error.scaleError.toFixed(4)}`);
-        console.log(`  Offset error: ${error.offsetErrorPx.toFixed(4)}px`);
-      }
-    } else {
-      console.log(`  NO ESTIMATE`);
-    }
-
     // Must at least get something
     expect(estimate).not.toBeNull();
     expect(error?.perPixelError).toBeLessThan(0.25);
@@ -416,30 +369,6 @@ describe('Comfy alignment diagnostic', () => {
 
     // Edge-aware (selectTrackingPoints)
     const edgePoints = selectTrackingPoints(source);
-
-    console.log(
-      `\n[Grid comparison] Dense: ${densePoints.length}, Sparse: ${sparsePoints.length}, Edge: ${edgePoints.length}`,
-    );
-
-    for (const [label, pts] of [
-      ['dense', densePoints] as const,
-      ['sparse', sparsePoints] as const,
-      ['edge', edgePoints] as const,
-    ]) {
-      const diag = diagnoseAlignmentPass(source, outputImg, pts, gt, label, {
-        searchRadius: 16,
-        maxError: 12,
-        outlierDistance: 20,
-        ransacThreshold: 2.0,
-      });
-      if (diag.estimate && diag.error) {
-        console.log(
-          `  ${label}: per-pixel=${diag.error.perPixelError.toFixed(4)}px offsetErr=${diag.error.offsetErrorPx.toFixed(4)}px pairs=${diag.reliablePairCount}/${diag.trackedPointCount} medianFB=${diag.medianFbError.toFixed(2)}`,
-        );
-      } else {
-        console.log(`  ${label}: FAILED`);
-      }
-    }
   });
 
   /**
@@ -456,23 +385,6 @@ describe('Comfy alignment diagnostic', () => {
     for (let y = 10; y < H - 10; y += 12) {
       for (let x = 10; x < W - 10; x += 12) {
         points.push({ x, y });
-      }
-    }
-
-    console.log(`\n[RANSAC threshold sweep]`);
-    for (const threshold of [0.5, 1.0, 1.5, 2.0, 3.0, 5.0]) {
-      const diag = diagnoseAlignmentPass(source, outputImg, points, gt, `thresh=${threshold}`, {
-        searchRadius: 16,
-        maxError: 12,
-        outlierDistance: 20,
-        ransacThreshold: threshold,
-      });
-      if (diag.estimate && diag.error) {
-        console.log(
-          `  thresh=${threshold.toFixed(1)}: per-px=${diag.error.perPixelError.toFixed(4)} scale=${diag.error.scaleError.toFixed(4)} offset=${diag.error.offsetErrorPx.toFixed(4)} inliers=${diag.ransacInliers}/${diag.reliablePairCount} stx=${diag.estimate.sx.toFixed(4)} sy=${diag.estimate.sy.toFixed(4)}`,
-        );
-      } else {
-        console.log(`  thresh=${threshold.toFixed(1)}: FAILED`);
       }
     }
   });
@@ -538,18 +450,6 @@ describe('Comfy alignment diagnostic', () => {
       validErrors.length > 0
         ? validErrors.map((e) => e.y).sort((a, b) => a - b)[Math.floor(validErrors.length / 2)]
         : 0;
-
-    console.log(
-      `\n[Tracker bias] ${points.length} points tracked, ${validErrors.length} valid pairs`,
-    );
-    console.log(`  Median tracker error: ${medianErr.toFixed(4)}px`);
-    console.log(`  Mean tracker error: ${meanErr.toFixed(4)}px`);
-    console.log(`  Median bias X: ${medianBiasX.toFixed(4)}px`);
-    console.log(`  Median bias Y: ${medianBiasY.toFixed(4)}px`);
-    if (validErrors.length > 0) {
-      // Bias should be small
-      console.log(`  Bias magnitude: ${Math.hypot(medianBiasX, medianBiasY).toFixed(4)}px`);
-    }
   });
 
   /**
@@ -569,7 +469,6 @@ describe('Comfy alignment diagnostic', () => {
       { sx: 1.05, sy: 0.95, tx: 8.0, ty: -5.0, label: 'larger scale + translate' },
     ];
 
-    console.log(`\n[Full pipeline sweep]`);
     for (const scenario of scenarios) {
       const output = warpImageBilinear(
         src,
@@ -582,54 +481,20 @@ describe('Comfy alignment diagnostic', () => {
       );
       const outputImg: PixelImage = { data: output, width: W, height: H };
 
-      // With refinements disabled (pure single-pass)
       const estimateBasic = estimateComfyImageAlignment(source, outputImg, {
         skipEditedRegions: false,
         iterativeRefinement: false,
         edgeAwareSampling: false,
       });
 
-      // With all refinements enabled
       const estimateFull = estimateComfyImageAlignment(
         source,
         outputImg,
         COMFY_ALIGNMENT_QUALITY_PRESETS.precise,
       );
 
-      const errBasic = computeTransformError(
-        estimateBasic
-          ? {
-              sx: estimateBasic.sourceToOutputScaleX,
-              sy: estimateBasic.sourceToOutputScaleY,
-              tx: estimateBasic.sourceToOutputOffsetX,
-              ty: estimateBasic.sourceToOutputOffsetY,
-            }
-          : null,
-        scenario,
-        W,
-        H,
-      );
-      const errFull = computeTransformError(
-        estimateFull
-          ? {
-              sx: estimateFull.sourceToOutputScaleX,
-              sy: estimateFull.sourceToOutputScaleY,
-              tx: estimateFull.sourceToOutputOffsetX,
-              ty: estimateFull.sourceToOutputOffsetY,
-            }
-          : null,
-        scenario,
-        W,
-        H,
-      );
-
-      const basicStr = errBasic
-        ? `basic: per-px=${errBasic.perPixelError.toFixed(4)}`
-        : 'basic: FAILED';
-      const fullStr = errFull
-        ? `full:  per-px=${errFull.perPixelError.toFixed(4)}`
-        : 'full:  FAILED';
-      console.log(`  ${scenario.label}: ${basicStr} | ${fullStr}`);
+      expect(estimateBasic).not.toBeNull();
+      expect(estimateFull).not.toBeNull();
     }
   });
 

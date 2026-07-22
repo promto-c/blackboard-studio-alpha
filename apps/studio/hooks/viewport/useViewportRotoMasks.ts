@@ -70,6 +70,7 @@ interface UseViewportRotoMasksOptions {
   maxDimension: number;
   sampleLimit: number;
   rotoPointWeightMode: RotoPointWeightMode;
+  bypassNodeIds?: ReadonlySet<string>;
   suspendMaskUpdatesWhileEditing: boolean;
   reportPrepareDuration?: (durationMs: number) => void;
   bumpMediaUpdate: () => void;
@@ -86,6 +87,7 @@ export const useViewportRotoMasks = ({
   maxDimension,
   sampleLimit,
   rotoPointWeightMode,
+  bypassNodeIds,
   suspendMaskUpdatesWhileEditing,
   reportPrepareDuration,
   bumpMediaUpdate,
@@ -97,7 +99,7 @@ export const useViewportRotoMasks = ({
     const prepareStartedAt = performance.now();
 
     const rotoNodes = nodes.filter(
-      (node) => node.type === NodeType.ROTO && node.enabled,
+      (node) => node.type === NodeType.ROTO && node.enabled && !bypassNodeIds?.has(node.id),
     ) as RotoNode[];
     const nextMasks = new Map<string, RotoMaskEntry>();
     let requiresMediaUpdate = false;
@@ -125,10 +127,10 @@ export const useViewportRotoMasks = ({
         !entry || entry.width !== rasterSize.width || entry.height !== rasterSize.height;
       // When the viewer is ignoring alpha entirely, keep the last matte texture
       // until the interaction ends instead of burning time on invisible updates.
-      const shouldReuseFrozenMask = suspendMaskUpdatesWhileEditing && isEditingNode && !!entry;
+      const shouldFreezeMask = suspendMaskUpdatesWhileEditing && isEditingNode;
 
-      if (shouldReuseFrozenMask) {
-        nextMasks.set(node.id, entry);
+      if (shouldFreezeMask) {
+        if (entry) nextMasks.set(node.id, entry);
         return;
       }
 
@@ -205,6 +207,7 @@ export const useViewportRotoMasks = ({
     maxDimension,
     sampleLimit,
     rotoPointWeightMode,
+    bypassNodeIds,
     suspendMaskUpdatesWhileEditing,
     reportPrepareDuration,
     bumpMediaUpdate,

@@ -85,4 +85,38 @@ describe('opticalFlow hybrid tracking', () => {
     expect(tracked.y).toBeCloseTo(target.y, 0);
     expect(tracked.error).toBeLessThan(5);
   });
+
+  it('uses an artist target hint to refine a distant current-frame pose', () => {
+    const width = 80;
+    const height = 64;
+    const source = { x: 16, y: 22 };
+    const target = { x: 55, y: 30 };
+    const previous = buildOpticalFlowPyramid(
+      createFrameWithPatch(width, height, source),
+      width,
+      height,
+    );
+    const current = buildOpticalFlowPyramid(
+      createFrameWithPatch(width, height, target),
+      width,
+      height,
+    );
+
+    const [tracked] = calculateHybridOpticalFlowFromPyramids(
+      previous,
+      current,
+      [source],
+      {
+        searchRadius: 3,
+        patchRadius: 4,
+        minimumNccScore: 0.5,
+        coherentFallback: false,
+      },
+      [{ x: 53, y: 29 }],
+    );
+
+    expect(tracked.x).toBeCloseTo(target.x, 0);
+    expect(tracked.y).toBeCloseTo(target.y, 0);
+    expect(tracked.error).toBeLessThan(5);
+  });
 });

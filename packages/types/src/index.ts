@@ -537,6 +537,9 @@ export type ColorProcessingDomain =
   | 'vector'
   | 'depth';
 
+/** How an input alpha channel can affect a node's visible output. */
+export type AlphaInputBehavior = 'propagate' | 'consume' | 'discard';
+
 export interface RenderSceneSize {
   width: number;
   height: number;
@@ -1104,6 +1107,41 @@ export interface RotoLayer {
 export type RotoPointType = 'bspline' | 'cardinal' | 'corner';
 export type RotoPointWeightMode = 'global' | 'local';
 
+export interface RotoSegmentationPromptPoint {
+  x: number;
+  y: number;
+  label: 'include' | 'exclude';
+}
+
+export type RotoSegmentationModelVariant = 'auto' | 'q4' | 'q4f16' | 'q8';
+
+/**
+ * Provenance retained when an interactive segmentation mask is converted to
+ * an editable Roto path. The raster mask remains a project asset so future
+ * contour tools can retrace it without running the vision encoder again.
+ */
+export interface RotoSegmentationSource {
+  kind: 'segmentation';
+  modelId: string;
+  modelVariant?: RotoSegmentationModelVariant;
+  sourceId: string;
+  sourceFrame: number;
+  maskAssetId: string;
+  width: number;
+  height: number;
+  confidence?: number;
+  createdAt: number;
+  prompts: {
+    points: RotoSegmentationPromptPoint[];
+    box?: { x1: number; y1: number; x2: number; y2: number };
+  };
+  cleanup: {
+    threshold: number;
+    removeSpecks: number;
+    fillHoles: number;
+  };
+}
+
 export interface RotoPath {
   id: string;
   name: string;
@@ -1128,6 +1166,7 @@ export interface RotoPath {
   userTransform?: RotoTrackingTransform;
   originalPoints?: { x: number; y: number }[];
   epsilon?: number;
+  sourceMask?: RotoSegmentationSource;
   trackingData?: { [frame: number]: number };
 }
 
@@ -1153,6 +1192,8 @@ export interface RotoNode extends EffectNode {
   invert: boolean;
   alphaMode?: RotoAlphaMode;
   motionBlur?: RotoMotionBlurSettings;
+  /** Per-node quality/runtime choice for interactive Smart Mask inference. */
+  segmentationModelVariant?: RotoSegmentationModelVariant;
 }
 
 export type PaintTool = 'brush' | 'erase' | 'clone';
@@ -1672,6 +1713,36 @@ export interface ComfyNode extends EffectNode {
 }
 
 export type OnnxBackend = 'webgpu' | 'wasm';
+
+export type ModelCatalogOrigin = 'builtin' | 'plugin' | 'imported';
+export type ModelRuntimeKind = 'onnxruntime' | 'transformers-onnx' | 'custom';
+
+/** Stable reference from a locally installed graph back to its catalog model. */
+export interface ModelCatalogReference {
+  modelId: string;
+  modelName: string;
+  origin: ModelCatalogOrigin;
+  runtime: ModelRuntimeKind;
+  targetId?: string;
+  targetLabel?: string;
+  providerId?: string;
+  providerName?: string;
+}
+
+/**
+ * Declarative model dependency shared by built-in nodes and plugins.
+ * Requirements are informational until a node activates the associated feature.
+ */
+export interface ModelRequirement {
+  modelId: string;
+  modelName: string;
+  purpose: string;
+  runtime: ModelRuntimeKind;
+  optional?: boolean;
+  variantIds?: string[];
+  repoName?: string;
+  sourceUrl?: string;
+}
 export type OnnxPrecision =
   | 'fp16'
   | 'fp32'
@@ -1708,7 +1779,7 @@ export interface OnnxOutputMetadata {
   dims: number[];
   isDynamic: boolean;
   dimsLabel: string;
-  kind: 'image' | 'scalar';
+  kind: 'image' | 'scalar' | 'tensor';
 }
 
 export interface OnnxNodeOutput {
@@ -1719,7 +1790,7 @@ export interface OnnxNodeOutput {
   width: number;
   height: number;
   createdAt: number;
-  kind: 'image' | 'scalar';
+  kind: 'image' | 'scalar' | 'tensor';
   scalarValue?: number;
   dims: number[];
   type: string;
@@ -1759,6 +1830,10 @@ export interface InstalledOnnxModel {
   installedAt: number;
   sizeBytes?: number;
   externalData?: OnnxModelExternalData[];
+  /** Catalog identity for built-in or plugin-provided graphs installed through the model library. */
+  catalogRef?: ModelCatalogReference;
+  /** Mount containing the model blobs and catalog; omitted for legacy browser cache entries. */
+  storageMountId?: string;
 }
 
 export type OnnxChannelMode = 'RGB' | 'R' | 'G' | 'B' | 'A' | 'Luminance';
@@ -1768,6 +1843,7 @@ export type OnnxResultBehavior = 'static' | 'frame_sequence';
 export interface OnnxModelNode extends EffectNode {
   type: typeof NodeType.ONNX_MODEL;
   modelId?: string;
+  catalogRef?: ModelCatalogReference;
   modelName?: string;
   modelRepo?: string;
   variantId?: string;
@@ -2057,6 +2133,9 @@ export interface HistoryEntry {
 
 export type PersistedProjectState = Omit<EditorStateSlice, 'projectId' | 'viewerSettings'>;
 
+export type ProjectStorageMode = 'direct' | 'local-clone';
+export type ProjectStorageWorkflow = 'browser-only' | ProjectStorageMode;
+
 export interface ProjectIndexEntry {
   id: string;
   name: string;
@@ -2065,6 +2144,12 @@ export interface ProjectIndexEntry {
   thumbnailAssetId?: string;
   estimatedSize?: number;
   schemaVersion?: number;
+  /** Non-browser mount containing the project document or tracked upstream. */
+  storageMountId?: string;
+  /** Mount-relative root for project state and future project-local files. */
+  storagePath?: string;
+  /** Direct mount editing or an explicit Browser working copy with a remote upstream. */
+  storageMode?: ProjectStorageMode;
 }
 
 export interface FlowValidationIssue {

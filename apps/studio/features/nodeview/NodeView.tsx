@@ -17,7 +17,8 @@ import {
   estimateNodeHeight,
   buildStackMap,
 } from '@/utils/autoLayoutGraph';
-import { useCanvasViewport } from '@/hooks/useCanvasViewport';
+import { CanvasViewportControls } from '@/components/CanvasViewportControls';
+import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, useCanvasViewport } from '@/hooks/useCanvasViewport';
 import { useNodeDrag } from '@/hooks/useNodeDrag';
 import { usePreferences } from '@/state/preferencesContext';
 import { getOutputTechnicalChannelPort } from '@/color-management';
@@ -185,6 +186,8 @@ function NodeView({
     getTransformStyle,
     fitAll,
     handleMouseDown,
+    zoomIn,
+    zoomOut,
     getCursorStyle,
     isPanning,
   } = useCanvasViewport();
@@ -1101,6 +1104,11 @@ function NodeView({
   // --- Auto-layout initialization ---
   const initialLayoutDone = useRef(false);
 
+  const fitGraphToView = useCallback(() => {
+    const bounds = computeBounds(nodePositions, stackMap, graphNodeIds);
+    if (bounds) fitAll(bounds, { right: fitInsetRight, bottom: 52, animate: true });
+  }, [fitAll, fitInsetRight, graphNodeIds, nodePositions, stackMap]);
+
   useEffect(() => {
     if (nodes.length === 0 || initialLayoutDone.current) return;
 
@@ -1113,11 +1121,11 @@ function NodeView({
       const positions = autoArrangeNodes({ pushHistory: false });
       // Fit viewport to show all nodes
       const bounds = computeBounds(positions, stackMap, graphNodeIds);
-      if (bounds) fitAll(bounds, { right: fitInsetRight });
+      if (bounds) fitAll(bounds, { right: fitInsetRight, bottom: 52 });
     } else {
       // Fit viewport to existing positions
       const bounds = computeBounds(nodePositions, stackMap, graphNodeIds);
-      if (bounds) fitAll(bounds, { right: fitInsetRight });
+      if (bounds) fitAll(bounds, { right: fitInsetRight, bottom: 52 });
     }
     initialLayoutDone.current = true;
   }, [
@@ -1240,7 +1248,7 @@ function NodeView({
       }}
     >
       {/* Grid background */}
-      <CanvasGrid zoom={viewport.zoom} />
+      <CanvasGrid zoom={viewport.zoom} panX={viewport.panX} panY={viewport.panY} />
 
       {isInAppMediaDragOver ? (
         <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border border-dashed border-primary-300/60 bg-primary-300/10 text-sm font-medium text-primary-100 backdrop-blur-sm">
@@ -1448,6 +1456,16 @@ function NodeView({
           );
         })}
       </div>
+
+      <CanvasViewportControls
+        zoom={viewport.zoom}
+        minZoom={CANVAS_MIN_ZOOM}
+        maxZoom={CANVAS_MAX_ZOOM}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onFit={fitGraphToView}
+        fitTooltip="Fit graph to view"
+      />
     </div>
   );
 }

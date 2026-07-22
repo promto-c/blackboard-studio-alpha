@@ -33,6 +33,7 @@ export const matteControlNode: NodeDefinition = {
   category: 'Utility',
   renderMode: 'mask',
   processingDomain: 'scene_linear',
+  alphaInputBehavior: 'propagate',
   description: 'Refine image alpha with erode/dilate, edge blur, clamp, and invert controls.',
   IconComponent: Icons.Alpha,
   ToolComponent: MatteControlTool,

@@ -1,5 +1,6 @@
 import * as Icons from '@blackboard/icons';
 import { usePreferences } from '@/state/preferencesContext';
+import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { ViewportToolButton, ViewportToolsRenderer } from '@/components';
 import type { ViewportToolEntry } from '@/nodes/NodeDefinition';
 
@@ -11,7 +12,27 @@ const ROTO_TOOLS: ViewportToolEntry[] = [
   { id: 'freehand', label: 'Freehand Tool', icon: Icons.Curve, hotkey: 'F' },
   { id: 'bspline', label: 'B-spline Tool', icon: Icons.Bsline, hotkey: 'B' },
   { kind: 'separator' },
-  { id: 'auto-trace', label: 'Auto-Trace', icon: Icons.Sparkles, isPanel: true, panelId: 'trace' },
+  {
+    id: 'smart-mask',
+    label: 'Smart Mask',
+    icon: Icons.Sparkles,
+    isPanel: true,
+    panelId: 'segmentation',
+  },
+  {
+    id: 'separate-parts',
+    label: 'Separate Parts',
+    icon: Icons.Branch,
+    isPanel: true,
+    panelId: 'part-separation',
+  },
+  {
+    id: 'auto-trace',
+    label: 'Auto-Trace',
+    icon: Icons.ContourTrace,
+    isPanel: true,
+    panelId: 'trace',
+  },
   {
     id: 'tracking',
     label: 'Tracking',
@@ -30,13 +51,28 @@ function RotoViewportTools({
   onPanelToggle: (panel: string) => void;
 }) {
   const { rotoMotionCueEnabled, setPreferences } = usePreferences();
+  const activeViewportTool = useEditorSelector((state) => state.activeViewportTool);
+  const { setActiveViewportTool } = useEditorActions();
+
+  const handlePanelToggle = (panel: string) => {
+    onPanelToggle(panel);
+    if (panel === 'segmentation' && !openPanels.has(panel)) {
+      setActiveViewportTool('segment-point');
+    } else if (
+      panel === 'segmentation' &&
+      openPanels.has(panel) &&
+      activeViewportTool?.startsWith('segment-')
+    ) {
+      setActiveViewportTool('select');
+    }
+  };
 
   return (
     <>
       <ViewportToolsRenderer
         tools={ROTO_TOOLS}
         openPanels={openPanels}
-        onPanelToggle={onPanelToggle}
+        onPanelToggle={handlePanelToggle}
       />
 
       <ViewportToolButton

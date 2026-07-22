@@ -8,6 +8,7 @@ import {
   type TemporalTrackingRepair,
   type TrackingAlgorithm,
   TrackingConfig,
+  type RotoSegmentationModelVariant,
 } from '@blackboard/types';
 import type { RotoMotionCueScope, RotoMotionCueMode } from '@blackboard/types';
 import * as Icons from '@blackboard/icons';
@@ -16,7 +17,7 @@ import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { useMediaSourceSelection } from '@/hooks/useMediaSourceSelection';
 import { usePreferences } from '@/state/preferencesContext';
 import { RotoTrackingDriftTolerance } from '@/state/preferences';
-import { Badge, Slider, ToggleButton } from '@blackboard/ui';
+import { Badge, Slider, StyledDropdown, TextInput, ToggleButton } from '@blackboard/ui';
 import {
   MediaSourceSelect,
   SegmentedControl,
@@ -27,11 +28,54 @@ import {
 } from '@/components';
 import { toggleTransformWithHierarchy } from '@/utils/transformHierarchy';
 import {
+  getRotoMatchTemplateFrames,
   isPendingRotoTrackingLayerTarget,
   resolveRotoTrackingSelection,
   type RotoTrackingTarget,
 } from '@/utils/rotoTracking';
 import { resolveRotoMotionBlurSettings } from '@/utils/rotoMotionBlur';
+import {
+  getSourcePixelDataForFrame,
+  resolveSourcePixelSource,
+} from '@/state/editor/services/sourcePixelData';
+import { findSceneNode } from '@/utils/graphCommands';
+import { getMediaSourceLabel } from '@/utils/mediaSourceSelection';
+import {
+  clearSegmentationPrompts,
+  dismissSegmentationError,
+  prepareSegmentationSession,
+  redoSegmentationPrompt,
+  reportSegmentationError,
+  resetSegmentationPrompts,
+  resetSegmentationSession,
+  setSegmentationCleanup,
+  setSegmentationPromptLabel,
+  setSegmentationPromptMode,
+  undoSegmentationPrompt,
+  useSegmentationSession,
+} from '@/services/segmentation/segmentationSession';
+import {
+  DEFAULT_SAM3_MODEL_VARIANT,
+  getSam3ModelVariant,
+  SAM3_MODEL_VARIANTS,
+} from '@/services/models/builtinModelRegistry';
+import { usePreferencesNavigation } from '@/features/projects/preferencesNavigation';
+import { RotoPartSeparationPanel } from './RotoPartSeparationPanel';
+
+const hashSourceRevision = (value: unknown): string => {
+  const input = JSON.stringify(value);
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
+};
 
 function NudgePanel({ onClose }: { onClose: () => void }) {
   const { nudgeRadius, setPreferences } = usePreferences();
@@ -134,6 +178,448 @@ function AutoTracePanel({ node, onClose }: { node: RotoNode; onClose: () => void
           >
             Update
           </button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function SmartMaskPanel({ node, onClose }: { node: RotoNode; onClose: () => void }) {
+  const nodes = useEditorSelector((state) => state.nodes);
+  const currentFrame = useEditorSelector((state) => state.currentFrame);
+  const fps = useEditorSelector((state) => state.fps);
+  const colorManagement = useEditorSelector((state) => state.colorManagement);
+  const session = useSegmentationSession(node.id);
+  const { setActiveViewportTool, commitRotoSegmentationMask, updateNode } = useEditorActions();
+  const { openPreferences } = usePreferencesNavigation();
+  const { onnxRuntimeWebGpuEnabled, onnxRuntimeWasmEnabled } = usePreferences();
+  const {
+    sourceId,
+    setSourceId,
+    options: availableSources,
+  } = useMediaSourceSelection(nodes, node.id);
+  const [maskName, setMaskName] = useState('Smart Mask');
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const modelVariant = node.segmentationModelVariant ?? DEFAULT_SAM3_MODEL_VARIANT;
+  const modelVariantDefinition = getSam3ModelVariant(modelVariant);
+  const modelVariantBackendEnabled = modelVariantDefinition.supportedBackends.some((backend) =>
+    backend === 'webgpu' ? onnxRuntimeWebGpuEnabled : onnxRuntimeWasmEnabled,
+  );
+
+  const isBusy =
+    isCapturing ||
+    session.status === 'loading-model' ||
+    session.status === 'encoding' ||
+    session.status === 'decoding' ||
+    session.status === 'cleaning';
+  const canPrompt = Boolean(
+    session.preparedKey &&
+    session.sourceId === sourceId &&
+    session.sourceFrame === currentFrame &&
+    session.status !== 'loading-model',
+  );
+  const canAccept = Boolean(
+    session.mask &&
+    session.contour &&
+    session.sourceId === sourceId &&
+    session.sourceFrame === currentFrame &&
+    session.status === 'ready' &&
+    !isSaving,
+  );
+
+  useEffect(() => {
+    if (session.promptMode === 'point') setActiveViewportTool('segment-point');
+    else setActiveViewportTool('segment-box');
+  }, [session.promptMode, setActiveViewportTool]);
+
+  const analyzeFrame = async () => {
+    if (!sourceId) return;
+    setIsCapturing(true);
+    try {
+      const source = resolveSourcePixelSource(nodes, node.id, sourceId, colorManagement);
+      const sceneNode = findSceneNode(nodes);
+      if (!source || !sceneNode) throw new Error('The selected source is not available.');
+
+      const pixels = await getSourcePixelDataForFrame(source, currentFrame, fps || 30, {
+        finalColorSpace: 'srgb',
+      });
+      if (!pixels) throw new Error('Could not read pixels from the selected source.');
+      const sourceLabel =
+        getMediaSourceLabel(nodes, node.id, sourceId) ??
+        (source.kind === 'media-node' ? source.node.name : 'Upstream Result');
+      const sourceRevision =
+        source.kind === 'media-node'
+          ? hashSourceRevision(source.node)
+          : hashSourceRevision(source.nodes);
+
+      setIsCapturing(false);
+      await prepareSegmentationSession({
+        nodeId: node.id,
+        sourceId,
+        sourceLabel,
+        sourceFrame: currentFrame,
+        modelVariant,
+        runtimePreferences: {
+          webgpuEnabled: onnxRuntimeWebGpuEnabled,
+          wasmEnabled: onnxRuntimeWasmEnabled,
+        },
+        input: {
+          key: `${sourceId}:${currentFrame}:${sourceRevision}:${hashSourceRevision(colorManagement)}:${pixels.width}x${pixels.height}`,
+          data: pixels.data,
+          width: pixels.width,
+          height: pixels.height,
+          sceneWidth: sceneNode.width,
+          sceneHeight: sceneNode.height,
+        },
+      });
+    } catch (error) {
+      reportSegmentationError(node.id, error);
+    } finally {
+      setIsCapturing(false);
+    }
+  };
+
+  const acceptMask = async () => {
+    if (!session.mask || !session.contour || !session.sourceId || session.sourceFrame == null) {
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const pathId = await commitRotoSegmentationMask({
+        rotoNodeId: node.id,
+        name: maskName.trim() || 'Smart Mask',
+        sourceId: session.sourceId,
+        sourceFrame: session.sourceFrame,
+        modelId: session.modelId,
+        modelVariant: session.modelVariant,
+        width: session.imageWidth,
+        height: session.imageHeight,
+        score: session.score ?? undefined,
+        points: session.points.map(({ x, y, label }) => ({ x, y, label })),
+        box: session.box ?? undefined,
+        cleanup: {
+          threshold: session.cleanup.threshold,
+          removeSpecks: session.cleanup.removeSpecks,
+          fillHoles: session.cleanup.fillHoles,
+        },
+        mask: session.mask,
+        contour: session.contour,
+        epsilon: session.cleanup.contourDetail,
+      });
+      if (!pathId) throw new Error('The mask contour could not be converted into a shape.');
+      resetSegmentationPrompts(node.id);
+      setActiveViewportTool('select');
+    } catch (error) {
+      reportSegmentationError(node.id, error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const statusLabel = isCapturing
+    ? 'Reading frame'
+    : session.status === 'loading-model'
+      ? 'Loading model'
+      : session.status === 'encoding'
+        ? 'Encoding frame'
+        : session.status === 'decoding'
+          ? 'Updating mask'
+          : session.status === 'cleaning'
+            ? 'Cleaning mask'
+            : session.preparedKey
+              ? 'Prompt ready'
+              : 'Not analyzed';
+
+  return (
+    <Panel>
+      <PanelHeader
+        title="Smart Mask"
+        onClose={() => {
+          setActiveViewportTool('select');
+          onClose();
+        }}
+      />
+      <div className="space-y-3">
+        <div className="rounded-md border border-sky-400/15 bg-sky-400/[0.06] p-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold text-sky-100">
+                SAM3 Tracker · {modelVariantDefinition.shortLabel} ·{' '}
+                {session.backend === 'webgpu'
+                  ? 'WebGPU'
+                  : session.backend === 'wasm'
+                    ? 'WASM'
+                    : 'On-device'}
+              </p>
+              <p className="mt-0.5 text-[10px] leading-4 text-gray-400">
+                The frame is encoded once. Point and box edits reuse its embedding.
+              </p>
+            </div>
+            <Badge size="sm" uppercase variant={session.status === 'error' ? 'danger' : 'neutral'}>
+              {statusLabel}
+            </Badge>
+          </div>
+          {session.modelProgress?.total ? (
+            <div className="mt-2 space-y-1">
+              <div className="h-1 overflow-hidden rounded bg-white/10">
+                <div
+                  className="h-full rounded bg-sky-400 transition-[width]"
+                  style={{ width: `${session.modelProgress.progress ?? 0}%` }}
+                />
+              </div>
+              <div className="flex justify-between gap-2 text-[9px] text-gray-500">
+                <span className="truncate">{session.modelProgress.file ?? 'Model files'}</span>
+                <span className="shrink-0">
+                  {formatBytes(session.modelProgress.loaded)} /{' '}
+                  {formatBytes(session.modelProgress.total)}
+                </span>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="space-y-1.5 rounded-md border border-white/[0.07] bg-black/20 p-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-[10px] font-medium text-gray-400">Model variant</label>
+            <button
+              type="button"
+              onClick={() => openPreferences({ section: 'models' })}
+              className="text-[9px] text-sky-300 transition hover:text-sky-100"
+            >
+              Manage models
+            </button>
+          </div>
+          <StyledDropdown
+            value={modelVariant}
+            options={SAM3_MODEL_VARIANTS.map((variant) => ({
+              value: variant.id,
+              label: variant.label,
+              secondaryLabel: variant.supportedBackends
+                .map((backend) => backend.toUpperCase())
+                .join(' / '),
+            }))}
+            onChange={(value) => {
+              const nextVariant = value as RotoSegmentationModelVariant;
+              if (nextVariant === modelVariant) return;
+              updateNode(node.id, { segmentationModelVariant: nextVariant });
+              resetSegmentationSession(node.id);
+            }}
+            density="compact"
+            disabled={isBusy}
+          />
+          <p className="text-[9px] leading-4 text-gray-500">{modelVariantDefinition.description}</p>
+          {!modelVariantBackendEnabled ? (
+            <p className="text-[9px] leading-4 text-amber-300">
+              Enable a compatible backend in Models preferences before analyzing.
+            </p>
+          ) : null}
+        </div>
+
+        <MediaSourceSelect
+          value={sourceId}
+          options={availableSources}
+          onChange={(nextSourceId) => {
+            setSourceId(nextSourceId);
+            resetSegmentationSession(node.id);
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => void analyzeFrame()}
+          disabled={
+            !sourceId ||
+            !modelVariantBackendEnabled ||
+            isCapturing ||
+            session.status === 'loading-model' ||
+            session.status === 'encoding'
+          }
+          className="w-full rounded-md border border-sky-400/25 bg-sky-500/15 py-2 text-xs font-medium text-sky-50 transition-colors hover:bg-sky-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isCapturing
+            ? 'Reading frame…'
+            : session.status === 'loading-model'
+              ? 'Loading model…'
+              : session.status === 'encoding'
+                ? 'Encoding frame…'
+                : session.preparedKey &&
+                    session.sourceId === sourceId &&
+                    session.sourceFrame === currentFrame
+                  ? 'Refresh frame embedding'
+                  : 'Analyze current frame'}
+        </button>
+
+        {session.error ? (
+          <div className="rounded-md border border-red-400/20 bg-red-500/10 p-2 text-[10px] leading-4 text-red-100">
+            <div className="flex items-start justify-between gap-2">
+              <span>{session.error}</span>
+              <button
+                type="button"
+                onClick={() => dismissSegmentationError(node.id)}
+                className="text-red-200 hover:text-white"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className={canPrompt ? 'space-y-3' : 'pointer-events-none space-y-3 opacity-45'}>
+          <div className="space-y-1">
+            <label className="text-[10px] font-medium text-gray-400">Prompt tool</label>
+            <SegmentedControl
+              options={[
+                { value: 'point', label: 'Points' },
+                { value: 'box', label: 'Box' },
+              ]}
+              value={session.promptMode}
+              onChange={(value) => setSegmentationPromptMode(node.id, value as 'point' | 'box')}
+            />
+          </div>
+
+          {session.promptMode === 'point' ? (
+            <div className="space-y-1">
+              <label className="text-[10px] font-medium text-gray-400">Click meaning</label>
+              <SegmentedControl
+                options={[
+                  { value: 'include', label: 'Include' },
+                  { value: 'exclude', label: 'Exclude' },
+                ]}
+                value={session.promptLabel}
+                onChange={(value) =>
+                  setSegmentationPromptLabel(node.id, value as 'include' | 'exclude')
+                }
+              />
+              <p className="text-[9px] leading-4 text-gray-500">
+                Hover previews the mask. Click to confirm; Alt-click excludes an area.
+              </p>
+            </div>
+          ) : (
+            <p className="text-[9px] leading-4 text-gray-500">
+              Drag a tight box around the subject, then refine it with include or exclude points.
+            </p>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => undoSegmentationPrompt(node.id)}
+              disabled={session.promptHistoryIndex === 0}
+              title="Undo prompt (Ctrl/Cmd+Z)"
+              className="flex-1 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[10px] text-gray-300 hover:bg-white/[0.08] disabled:opacity-40"
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={() => redoSegmentationPrompt(node.id)}
+              disabled={session.promptHistoryIndex >= session.promptHistory.length - 1}
+              title="Redo prompt (Ctrl/Cmd+Shift+Z)"
+              className="flex-1 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[10px] text-gray-300 hover:bg-white/[0.08] disabled:opacity-40"
+            >
+              Redo
+            </button>
+            <button
+              type="button"
+              onClick={() => clearSegmentationPrompts(node.id)}
+              disabled={session.points.length === 0 && !session.box}
+              className="flex-1 rounded border border-white/10 bg-white/[0.04] py-1.5 text-[10px] text-gray-300 hover:bg-white/[0.08] disabled:opacity-40"
+            >
+              Clear
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1 rounded-md border border-white/[0.07] bg-black/20 p-2 text-center">
+            <div>
+              <div className="text-xs font-semibold text-emerald-300">
+                {session.points.filter((point) => point.label === 'include').length}
+              </div>
+              <div className="text-[9px] text-gray-500">Include</div>
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-rose-300">
+                {session.points.filter((point) => point.label === 'exclude').length}
+              </div>
+              <div className="text-[9px] text-gray-500">Exclude</div>
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-sky-200">
+                {session.score == null ? '—' : `${Math.round(session.score * 100)}%`}
+              </div>
+              <div className="text-[9px] text-gray-500">Confidence</div>
+            </div>
+          </div>
+
+          {session.logits ? (
+            <div className="space-y-2 rounded-md border border-white/[0.07] bg-black/20 p-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+                Mask cleanup
+              </div>
+              <Slider
+                label="Edge threshold"
+                value={session.cleanup.threshold}
+                min={-1}
+                max={1}
+                step={0.02}
+                onChange={(threshold) => setSegmentationCleanup(node.id, { threshold })}
+                onReset={() => setSegmentationCleanup(node.id, { threshold: 0 })}
+                displayFormatter={(value) => value.toFixed(2)}
+              />
+              <Slider
+                label="Remove specks"
+                value={session.cleanup.removeSpecks}
+                min={0}
+                max={2048}
+                step={8}
+                onChange={(removeSpecks) => setSegmentationCleanup(node.id, { removeSpecks })}
+                onReset={() => setSegmentationCleanup(node.id, { removeSpecks: 64 })}
+                displayFormatter={(value) => `${Math.round(value)}px²`}
+              />
+              <Slider
+                label="Fill holes"
+                value={session.cleanup.fillHoles}
+                min={0}
+                max={2048}
+                step={8}
+                onChange={(fillHoles) => setSegmentationCleanup(node.id, { fillHoles })}
+                onReset={() => setSegmentationCleanup(node.id, { fillHoles: 64 })}
+                displayFormatter={(value) => `${Math.round(value)}px²`}
+              />
+              <Slider
+                label="Contour detail"
+                value={session.cleanup.contourDetail}
+                min={0.25}
+                max={12}
+                step={0.25}
+                onChange={(contourDetail) => setSegmentationCleanup(node.id, { contourDetail })}
+                onReset={() => setSegmentationCleanup(node.id, { contourDetail: 2 })}
+                displayFormatter={(value) => `${value.toFixed(2)}px`}
+              />
+            </div>
+          ) : null}
+
+          {session.mask ? (
+            <div className="space-y-2 border-t border-white/[0.08] pt-3">
+              <TextInput
+                value={maskName}
+                onValueChange={setMaskName}
+                aria-label="Mask name"
+                className="w-full"
+              />
+              <button
+                type="button"
+                onClick={() => void acceptMask()}
+                disabled={!canAccept || isBusy}
+                className="w-full rounded-md bg-primary-600 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSaving ? 'Saving mask…' : 'Create editable mask shape'}
+              </button>
+              <p className="text-[9px] leading-4 text-gray-500">
+                Stores the source mask and an editable B-spline contour in this Roto node.
+              </p>
+            </div>
+          ) : null}
         </div>
       </div>
     </Panel>
@@ -246,14 +732,20 @@ const DEFAULT_TEMPORAL_TRACKING_CONFIG: TemporalTrackingConfig = {
 
 function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void }) {
   const nodes = useEditorSelector((s) => s.nodes);
+  const currentFrame = useEditorSelector((s) => s.currentFrame);
   const selectedRotoLayerIds = useEditorSelector(
     (s) => s.hierarchySelections[s.selectedNodeId ?? '']?.layerIds ?? [],
   );
   const selectedRotoPathIds = useEditorSelector(
     (s) => s.hierarchySelections[s.selectedNodeId ?? '']?.itemIds ?? [],
   );
-  const { trackRotoSelection, smartTrackRotoSelection, clearRotoTrackingTarget, cancelTracking } =
-    useEditorActions();
+  const {
+    trackRotoSelection,
+    smartTrackRotoSelection,
+    matchRotoSelectionToCurrentFrame,
+    clearRotoTrackingTarget,
+    cancelTracking,
+  } = useEditorActions();
   const { rotoTrackingBackgroundEnabled, rotoTrackingDriftTolerance, setPreferences } =
     usePreferences();
   const {
@@ -346,6 +838,20 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
   }, [effectiveTarget, node.paths, selectedLayer, selectedPath, trackingScope.sourcePathIds]);
   const canTrack =
     !!sourceId && !!effectiveTarget && trackingScope.sourcePathIds.length > 0 && !isTracking;
+  const matchTemplateFrames = useMemo(
+    () => getRotoMatchTemplateFrames(node, trackingScope.sourcePathIds, currentFrame),
+    [currentFrame, node, trackingScope.sourcePathIds],
+  );
+  const hasMatchTemplate =
+    matchTemplateFrames.previous !== null || matchTemplateFrames.next !== null;
+  const canMatchCurrent = canTrack && hasMatchTemplate;
+  const matchCurrentTitle = !hasMatchTemplate
+    ? 'Add a manual Roto keyframe before or after the current frame'
+    : matchTemplateFrames.hasCurrentKeyframe
+      ? `Refine and overwrite the manual shape keyframe at frame ${currentFrame}`
+      : matchTemplateFrames.previous !== null && matchTemplateFrames.next !== null
+        ? `Match frame ${currentFrame} from nearby keyframes ${matchTemplateFrames.previous} and ${matchTemplateFrames.next}, then bake shape point keyframes`
+        : `Match frame ${currentFrame} from keyframe ${matchTemplateFrames.previous ?? matchTemplateFrames.next}, then bake shape point keyframes`;
   const sourceShapeCount = trackingScope.sourcePathIds.length;
   const sourceShapeLabel = `${sourceShapeCount} shape${sourceShapeCount === 1 ? '' : 's'}`;
 
@@ -403,6 +909,23 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
         effectiveTarget,
         sourceId,
         createTrackingConfig(null),
+        { runInBackground: rotoTrackingBackgroundEnabled },
+      );
+    } finally {
+      setIsTracking(false);
+    }
+  };
+
+  const handleMatchCurrent = async () => {
+    if (!sourceId || !effectiveTarget || !canMatchCurrent) return;
+    setIsTracking(true);
+    try {
+      await matchRotoSelectionToCurrentFrame(
+        node.id,
+        trackingScope.sourcePathIds,
+        effectiveTarget,
+        sourceId,
+        createTrackingConfig(rotoTrackingDriftTolerance),
         { runInBackground: rotoTrackingBackgroundEnabled },
       );
     } finally {
@@ -810,6 +1333,15 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
               />
             </div>
 
+            <TrackingActionButton
+              label="Match Current"
+              icon={<Icons.Sparkles className="h-3.5 w-3.5" />}
+              onClick={handleMatchCurrent}
+              disabled={!canMatchCurrent}
+              title={matchCurrentTitle}
+              variant="smart"
+            />
+
             <div className="grid grid-cols-3 gap-1.5">
               <TrackingActionButton
                 label="1 Back"
@@ -823,7 +1355,7 @@ function TrackingPanel({ node, onClose }: { node: RotoNode; onClose: () => void 
                 icon={<Icons.Sparkles className="h-3.5 w-3.5" />}
                 onClick={handleSmartTrack}
                 disabled={!canTrack}
-                title="Smart track"
+                title="Fill the range between surrounding keyframes"
                 variant="smart"
               />
               <TrackingActionButton
@@ -1002,6 +1534,12 @@ function RotoToolPanels({
       {openPanels.has('nudge') && <NudgePanel onClose={() => onPanelClose('nudge')} />}
       {openPanels.has('trace') && (
         <AutoTracePanel node={rotoNode} onClose={() => onPanelClose('trace')} />
+      )}
+      {openPanels.has('segmentation') && (
+        <SmartMaskPanel node={rotoNode} onClose={() => onPanelClose('segmentation')} />
+      )}
+      {openPanels.has('part-separation') && (
+        <RotoPartSeparationPanel node={rotoNode} onClose={() => onPanelClose('part-separation')} />
       )}
       {openPanels.has('tracking') && (
         <TrackingPanel node={rotoNode} onClose={() => onPanelClose('tracking')} />

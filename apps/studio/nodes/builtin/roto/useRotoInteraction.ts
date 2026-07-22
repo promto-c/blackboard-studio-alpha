@@ -75,6 +75,15 @@ import type {
   RotoTransformSelection,
   RotoTransformDragState,
 } from '@/features/viewport/viewportOverlayTypes';
+import {
+  addSegmentationPoint,
+  clearSegmentationTransientPreview,
+  commitSegmentationBox,
+  setSegmentationBoxDraft,
+  setSegmentationHoverPoint,
+  useSegmentationSession,
+} from '@/services/segmentation/segmentationSession';
+import { useRotoPartSeparationPreview } from '@/services/segmentation/rotoPartSeparationPreview';
 
 // Re-export so Viewport can reference without separate import
 export type { RotoTransformSelection, RotoTransformDragState };
@@ -361,6 +370,9 @@ export function useRotoInteraction(params: UseRotoInteractionParams) {
   } = params;
 
   const selectedNodeIdVal = selectedNodeId ?? '';
+  const segmentationSession = useSegmentationSession(selectedNodeIdVal);
+  const partSeparationPreview = useRotoPartSeparationPreview(selectedNodeIdVal);
+  const segmentationBoxStartRef = useRef<ScenePoint | null>(null);
 
   // -----------------------------------------------------------------------
   // State: roto-specific
@@ -410,6 +422,125 @@ export function useRotoInteraction(params: UseRotoInteractionParams) {
     useState<PointWeightControlState | null>(null);
   const [temporalControllerValue, setTemporalControllerValue] =
     useState<RotoTemporalControllerValue | null>(null);
+
+  const isSegmentationTool =
+    activeViewportTool === 'segment-point' || activeViewportTool === 'segment-box';
+
+  const handleSegmentationMouseDown = useCallback(
+    (
+      event: { button: number; altKey: boolean; preventDefault: () => void },
+      scenePoint: ScenePoint,
+    ): boolean => {
+      if (!isSegmentationTool || selectedNode?.type !== NodeType.ROTO) return false;
+      if (event.button === 1) {
+        clearSegmentationTransientPreview(selectedNode.id);
+        return false;
+      }
+      if (
+        !segmentationSession.preparedKey ||
+        segmentationSession.sourceFrame !== visualFrame ||
+        (event.button !== 0 && event.button !== 2)
+      ) {
+        return true;
+      }
+      event.preventDefault();
+
+      if (activeViewportTool === 'segment-point') {
+        addSegmentationPoint(selectedNode.id, {
+          x: scenePoint.x,
+          y: scenePoint.y,
+          label: event.button === 2 || event.altKey ? 'exclude' : segmentationSession.promptLabel,
+        });
+        return true;
+      }
+
+      if (event.button === 0) {
+        segmentationBoxStartRef.current = scenePoint;
+        setSegmentationBoxDraft(selectedNode.id, {
+          x1: scenePoint.x,
+          y1: scenePoint.y,
+          x2: scenePoint.x,
+          y2: scenePoint.y,
+        });
+      }
+      return true;
+    },
+    [
+      activeViewportTool,
+      isSegmentationTool,
+      segmentationSession.preparedKey,
+      segmentationSession.promptLabel,
+      segmentationSession.sourceFrame,
+      selectedNode,
+      visualFrame,
+    ],
+  );
+
+  const handleSegmentationMouseMove = useCallback(
+    (scenePoint: ScenePoint, modifiers: { alt: boolean }): boolean => {
+      if (!isSegmentationTool || selectedNode?.type !== NodeType.ROTO) return false;
+      if (!segmentationSession.preparedKey || segmentationSession.sourceFrame !== visualFrame) {
+        return true;
+      }
+      const start = segmentationBoxStartRef.current;
+      if (activeViewportTool === 'segment-box' && start) {
+        setSegmentationBoxDraft(selectedNode.id, {
+          x1: start.x,
+          y1: start.y,
+          x2: scenePoint.x,
+          y2: scenePoint.y,
+        });
+      } else if (activeViewportTool === 'segment-point') {
+        setSegmentationHoverPoint(selectedNode.id, {
+          x: scenePoint.x,
+          y: scenePoint.y,
+          label: modifiers.alt ? 'exclude' : segmentationSession.promptLabel,
+        });
+      }
+      return true;
+    },
+    [
+      activeViewportTool,
+      isSegmentationTool,
+      segmentationSession.preparedKey,
+      segmentationSession.promptLabel,
+      segmentationSession.sourceFrame,
+      selectedNode,
+      visualFrame,
+    ],
+  );
+
+  const handleSegmentationMouseUp = useCallback(
+    (scenePoint: ScenePoint, button: number): boolean => {
+      if (!isSegmentationTool || selectedNode?.type !== NodeType.ROTO) return false;
+      if (button === 1) return false;
+      const start = segmentationBoxStartRef.current;
+      if (activeViewportTool === 'segment-box' && start) {
+        const width = Math.abs(scenePoint.x - start.x);
+        const height = Math.abs(scenePoint.y - start.y);
+        if (width >= 2 / zoom && height >= 2 / zoom) {
+          commitSegmentationBox(selectedNode.id, {
+            x1: start.x,
+            y1: start.y,
+            x2: scenePoint.x,
+            y2: scenePoint.y,
+          });
+        } else {
+          setSegmentationBoxDraft(selectedNode.id, null);
+        }
+        segmentationBoxStartRef.current = null;
+      }
+      return true;
+    },
+    [activeViewportTool, isSegmentationTool, selectedNode, zoom],
+  );
+
+  const cancelSegmentationPreview = useCallback((): void => {
+    if (!selectedNodeIdVal) return;
+    segmentationBoxStartRef.current = null;
+    setSegmentationBoxDraft(selectedNodeIdVal, null);
+    clearSegmentationTransientPreview(selectedNodeIdVal);
+  }, [selectedNodeIdVal]);
 
   const setTemporalControllerInputValue = useCallback(
     (value: number | RotoTemporalControllerValue | null): void => {
@@ -2370,6 +2501,8 @@ export function useRotoInteraction(params: UseRotoInteractionParams) {
   const shouldForceOverlays =
     selectedNode?.type === NodeType.ROTO &&
     (isDrawing ||
+      isSegmentationTool ||
+      !!partSeparationPreview ||
       !!rotoRefinement ||
       !!drawingState ||
       !!freehandPoints ||
@@ -2424,6 +2557,10 @@ export function useRotoInteraction(params: UseRotoInteractionParams) {
     handleMouseUp,
     handleMouseLeave,
     handleContextMenu,
+    handleSegmentationMouseDown,
+    handleSegmentationMouseMove,
+    handleSegmentationMouseUp,
+    cancelSegmentationPreview,
     deletePointsInNudgeArea,
     cleanupOnToolChange,
     handlePointMouseDown,
@@ -2481,5 +2618,7 @@ export function useRotoInteraction(params: UseRotoInteractionParams) {
     isEditingRotoPaths,
     shouldForceOverlays,
     nudgeOverlayState,
+    segmentationSession,
+    partSeparationPreview,
   };
 }

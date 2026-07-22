@@ -14,6 +14,10 @@ import { useEditorActions, useEditorSelector } from '@/state/editorContext';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
 import { usePreferences } from '@/state/preferencesContext';
 import {
+  redoSegmentationPrompt,
+  undoSegmentationPrompt,
+} from '@/services/segmentation/segmentationSession';
+import {
   EditorTab,
   NodeType,
   type AnyNode,
@@ -100,6 +104,13 @@ interface StudioHotkeyActionSet {
 
 const getStudioActions = (context: HotkeyExecutionContext): StudioHotkeyActionSet =>
   context.actions as unknown as StudioHotkeyActionSet;
+
+const getActiveSegmentationNodeId = (context: HotkeyContext): string | null =>
+  context.selectedNodeType === NodeType.ROTO &&
+  context.selectedNodeId &&
+  context.activeViewportTool?.startsWith('segment-')
+    ? context.selectedNodeId
+    : null;
 
 const getVisibleKeyframeFrames = (
   selectedNode: AnyNode | null,
@@ -224,7 +235,10 @@ export const createBaseCommands = (): HotkeyCommand[] => [
     id: 'history.undo',
     run: (context) => {
       const actions = getStudioActions(context);
-      if (context.isDrawing) {
+      const segmentationNodeId = getActiveSegmentationNodeId(context);
+      if (segmentationNodeId) {
+        undoSegmentationPrompt(segmentationNodeId);
+      } else if (context.isDrawing) {
         actions.undoDrawingPoint();
       } else {
         actions.undo();
@@ -236,7 +250,10 @@ export const createBaseCommands = (): HotkeyCommand[] => [
     id: 'history.redo',
     run: (context) => {
       const actions = getStudioActions(context);
-      if (context.isDrawing) {
+      const segmentationNodeId = getActiveSegmentationNodeId(context);
+      if (segmentationNodeId) {
+        redoSegmentationPrompt(segmentationNodeId);
+      } else if (context.isDrawing) {
         actions.redoDrawingPoint();
       } else {
         actions.redo();

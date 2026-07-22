@@ -1,13 +1,13 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import * as Icons from '@blackboard/icons';
-import { Badge, TextInput, ToggleButton } from '@blackboard/ui';
+import { TextInput, ToggleButton } from '@blackboard/ui';
 import { useEditorSelector, useOptionalEditorActions } from '@/state/editorContext';
 import { usePreferences } from '@/state/preferencesContext';
 import { useInstalledOnnxModels } from '@/state/installedOnnxModelsContext';
 
 import {
-  NodeType,
   type InstalledOnnxModel,
+  type ModelCatalogReference,
   type OnnxBackend,
   type OnnxInputMetadata,
   type OnnxModelVariantMetadata,
@@ -44,6 +44,10 @@ import {
   loadOnnxModelOutputMetadataCached,
 } from '@/services/onnx/onnxMetadataCache';
 import { getOnnxRuntimeCompatibility } from '@/services/onnx/onnxRuntime';
+import { groupInstalledOnnxModels } from '@/services/models/installedModelGroups';
+import { getModelConsumers } from '@/services/models/modelUsageRegistry';
+import BuiltinModelsPreferences from './BuiltinModelsPreferences';
+import InstalledOnnxModelGroupCard from './InstalledOnnxModelGroupCard';
 
 type BrowseState = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -63,11 +67,6 @@ const formatBytes = (bytes?: number): string => {
 
 function OnnxModelsPreferences() {
   const editorActions = useOptionalEditorActions() as {
-    addNodeWithProps?: (
-      nodeType: string,
-      props: Record<string, unknown>,
-      options?: { name?: string },
-    ) => void;
     runBackgroundJob?: (
       input: BackgroundJobInput,
       runner: (context: BackgroundJobRunContext) => Promise<BackgroundJobUpdate | void>,
@@ -82,11 +81,12 @@ function OnnxModelsPreferences() {
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const { models: installedModels, refresh: refreshInstalledModels } = useInstalledOnnxModels();
   const backgroundJobs = useEditorSelector((state) => state.backgroundJobs);
+  const projectNodes = useEditorSelector((state) => state.nodes);
   const [browseState, setBrowseState] = useState<BrowseState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [downloadJobId, setDownloadJobId] = useState<string | null>(null);
   const [copiedValue, setCopiedValue] = useState<string | null>(null);
-  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [selectedModelGroupId, setSelectedModelGroupId] = useState<string | null>(null);
 
   interface PerModelMetadata {
     loading: boolean;
@@ -110,6 +110,10 @@ function OnnxModelsPreferences() {
   );
 
   const [modelsMetadata, setModelsMetadata] = useState<Record<string, PerModelMetadata>>({});
+  const installedModelGroups = useMemo(
+    () => groupInstalledOnnxModels(installedModels),
+    [installedModels],
+  );
 
   const setModelMeta = useCallback((modelId: string, update: Partial<PerModelMetadata>) => {
     setModelsMetadata((prev) => ({
@@ -265,7 +269,11 @@ function OnnxModelsPreferences() {
   const startOnnxDownloadJob = useCallback(
     (
       variant: OnnxModelVariantMetadata,
-      options: { redownload?: boolean; selectWhenComplete?: boolean } = {},
+      options: {
+        redownload?: boolean;
+        selectWhenComplete?: boolean;
+        catalogRef?: ModelCatalogReference;
+      } = {},
     ) => {
       if (!editorActions?.runBackgroundJob) {
         setError('Background job executor is unavailable.');
@@ -293,7 +301,7 @@ function OnnxModelsPreferences() {
             url: getOnnxDownloadUrl(variant),
             filename: fileName,
           },
-          payload: { variant },
+          payload: { variant, catalogRef: options.catalogRef },
         },
         async (job) => {
           let currentFile: NonNullable<BackgroundJob['progressState']>['currentFile'] | undefined;
@@ -321,6 +329,7 @@ function OnnxModelsPreferences() {
 
           const model = await downloadAndCacheOnnxModel({
             variant,
+            catalogRef: options.catalogRef,
             onProgress: reportProgress,
             signal: job.signal,
           });
@@ -374,32 +383,9 @@ function OnnxModelsPreferences() {
 
   const redownloadModel = useCallback(
     async (model: InstalledOnnxModel) => {
-      startOnnxDownloadJob(model.variant, { redownload: true });
+      startOnnxDownloadJob(model.variant, { redownload: true, catalogRef: model.catalogRef });
     },
     [startOnnxDownloadJob],
-  );
-
-  const createNodeFromModel = useCallback(
-    (model: InstalledOnnxModel) => {
-      editorActions?.addNodeWithProps?.(
-        NodeType.ONNX_MODEL,
-        {
-          modelId: model.id,
-          modelName: model.name,
-          modelRepo: model.repoName,
-          variantId: model.variant.id,
-          variantLabel: model.variant.label,
-          backend: effectiveBackend,
-          inputSize:
-            model.variant.inputShape?.[2] && model.variant.inputShape?.[3]
-              ? { width: model.variant.inputShape[3], height: model.variant.inputShape[2] }
-              : { ...GENERIC_ONNX_RECIPE.defaultInputSize },
-          task: GENERIC_ONNX_RECIPE.task,
-        },
-        { name: `${model.name} ONNX` },
-      );
-    },
-    [effectiveBackend, editorActions],
   );
 
   const copyText = useCallback(async (value: string) => {
@@ -443,16 +429,11 @@ function OnnxModelsPreferences() {
       </div>
 
       <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium text-white">Hugging Face ONNX Import</p>
-            <p className="mt-1 text-xs leading-6 text-gray-400">
-              Paste a repo name or search for ONNX models.
-            </p>
-          </div>
-          <Badge variant="accent" size="lg">
-            {GENERIC_ONNX_RECIPE.name}
-          </Badge>
+        <div>
+          <p className="text-sm font-medium text-white">Hugging Face ONNX Import</p>
+          <p className="mt-1 text-xs leading-6 text-gray-400">
+            Paste a repo name or search for ONNX models.
+          </p>
         </div>
 
         <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
@@ -659,275 +640,99 @@ function OnnxModelsPreferences() {
 
       <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
         <div>
-          <p className="text-sm font-medium text-white">Installed Models</p>
+          <p className="text-sm font-medium text-white">Model Library</p>
           <p className="mt-1 text-xs leading-6 text-gray-400">
-            Cached locally in IndexedDB. Nodes store a model reference, not model bytes.
+            Manage built-in bundles, plugin requirements, and imported ONNX graphs.
           </p>
         </div>
 
-        <div className="mt-4 space-y-2">
+        <div className="mt-4">
+          <BuiltinModelsPreferences
+            installedModels={installedModels}
+            projectNodes={projectNodes}
+            installingVariantId={
+              activeDownloadJob && isBackgroundJobActive(activeDownloadJob)
+                ? activeDownloadJob.source?.variantId
+                : undefined
+            }
+            onInstallOnnxGraph={(variant, catalogRef) =>
+              startOnnxDownloadJob(variant, { catalogRef })
+            }
+            onBrowseRepository={(repoName) => void browseRepo(repoName)}
+          />
+        </div>
+
+        <div className="mt-5 border-t border-white/[0.08] pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-medium text-gray-200">Installed ONNX graphs</p>
+              <p className="mt-0.5 text-[10px] text-gray-500">
+                Browser cache and connected model mounts
+              </p>
+            </div>
+            <span className="text-[10px] text-gray-600">
+              {installedModelGroups.length} model{installedModelGroups.length === 1 ? '' : 's'} ·{' '}
+              {installedModels.length} variant{installedModels.length === 1 ? '' : 's'}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-3 space-y-2">
           {installedModels.length === 0 ? (
             <div className="rounded-xl border border-dashed border-white/10 bg-black/20 p-4 text-sm text-gray-400">
-              No ONNX models installed yet.
+              No ONNX graphs installed yet. Built-in runtime bundles remain available above.
             </div>
           ) : (
-            installedModels.map((model) => {
-              const isSelected = selectedModelId === model.id;
-              const meta = modelsMetadata[model.id];
-              const inputs = meta?.inputs ?? model.variant.inputMetadata;
-              const outputs = meta?.outputs ?? model.variant.outputMetadata;
-              const totalSize = formatBytes(
-                (model.sizeBytes ?? 0) +
-                  (model.externalData ?? []).reduce((s, e) => s + (e.sizeBytes ?? 0), 0),
+            installedModelGroups.map((group) => {
+              const expanded = selectedModelGroupId === group.id;
+              const modelKeys = new Set(
+                group.models.flatMap((model) => [
+                  model.id,
+                  model.repoName,
+                  ...(model.catalogRef ? [model.catalogRef.modelId] : []),
+                ]),
               );
-              const hasMetadata = (inputs && inputs.length > 0) || (outputs && outputs.length > 0);
-              const hasExternal = model.externalData?.length ?? 0 > 0;
+              const consumers = getModelConsumers(modelKeys, projectNodes);
+              const activeConsumerCount = consumers.filter((consumer) => consumer.active).length;
 
               return (
-                <div
-                  key={model.id}
-                  onClick={() => setSelectedModelId(isSelected ? null : model.id)}
-                  className={`group rounded-xl border transition-all cursor-pointer ${
-                    isSelected
-                      ? 'border-primary-400/40 bg-primary-500/8'
-                      : 'border-white/10 bg-black/20 hover:border-white/20'
-                  }`}
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3 p-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium text-white truncate">{model.name}</p>
-                        <Badge variant="accent" size="lg">
-                          {model.variant.label}
-                        </Badge>
-                        <span
-                          className={`shrink-0 transition-transform duration-200 ${isSelected ? 'rotate-90 text-primary-400' : 'text-gray-600 group-hover:text-gray-400'}`}
-                        >
-                          <Icons.ChevronRight className="h-3.5 w-3.5" />
-                        </span>
-                      </div>
-                      <p className="mt-0.5 truncate font-mono text-[11px] text-gray-500">
-                        {model.repoName}
-                      </p>
-                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-gray-400">
-                        <span>{totalSize}</span>
-                        <span className="text-gray-600">·</span>
-                        <span>{model.variant.supportedBackends.join(', ')}</span>
-                        {(inputs?.length ?? 0) > 0 || (outputs?.length ?? 0) > 0 ? (
-                          <>
-                            <span className="text-gray-600">·</span>
-                            <span>
-                              {inputs?.length ?? 0} in / {outputs?.length ?? 0} out
-                            </span>
-                          </>
-                        ) : null}
-                        {hasExternal && (
-                          <>
-                            <span className="text-gray-600">·</span>
-                            <span className="text-amber-300/70">
-                              {model.externalData!.length} ext
-                            </span>
-                          </>
-                        )}
-                        {meta?.loading ? (
-                          <span className="text-[11px] text-gray-500">Loading metadata...</span>
-                        ) : meta?.error ? (
-                          <span className="text-[11px] text-red-300">
-                            Metadata error: {meta.error}
-                            <button
-                              type="button"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                model.variant.metadataError = undefined;
-                                await updateInstalledOnnxModel(model);
-                                setModelMeta(model.id, {
-                                  loading: false,
-                                  error: null,
-                                  inputs: null,
-                                  outputs: null,
-                                });
-                                void loadModelMetadata(model);
-                              }}
-                              className="ml-2 underline"
-                            >
-                              Retry
-                            </button>
-                          </span>
-                        ) : null}
-                      </div>
-                      {isSelected && (
-                        <>
-                          {(hasMetadata || meta?.error) && (
-                            <div className="mt-2 space-y-3">
-                              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
-                                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                                  Inputs
-                                </p>
-                                {inputs && inputs.length > 0 ? (
-                                  <div className="space-y-1">
-                                    {inputs.map((input, i) => (
-                                      <div key={i} className="flex items-center gap-2 text-[11px]">
-                                        <span className="w-32 shrink-0 truncate font-mono text-gray-100">
-                                          {input.name}
-                                        </span>
-                                        <span className="font-mono text-gray-300">
-                                          {input.dimsLabel}
-                                        </span>
-                                        <Badge
-                                          size="sm"
-                                          variant={input.isDynamic ? 'warning' : 'success'}
-                                          shrink
-                                          className={input.isDynamic ? 'text-amber-200' : ''}
-                                        >
-                                          {input.isDynamic ? 'Dynamic' : 'Fixed'}
-                                        </Badge>
-                                        {input.type !== 'unknown' && (
-                                          <span className="shrink-0 text-gray-500">
-                                            {input.type}
-                                          </span>
-                                        )}
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : model.variant.inputShape?.length ? (
-                                  <p className="font-mono text-[11px] text-gray-100">
-                                    {model.variant.inputShape.join(' \u00d7 ')}
-                                  </p>
-                                ) : (
-                                  <p className="text-[11px] text-gray-500">Not inspected yet</p>
-                                )}
-                              </div>
-                              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
-                                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                                  Outputs
-                                </p>
-                                {outputs && outputs.length > 0 ? (
-                                  <div className="space-y-1">
-                                    {outputs.map((output, i) => (
-                                      <div key={i} className="flex items-center gap-2 text-[11px]">
-                                        <span className="w-32 shrink-0 truncate font-mono text-gray-100">
-                                          {output.name}
-                                        </span>
-                                        <span className="font-mono text-gray-300">
-                                          {output.dimsLabel}
-                                        </span>
-                                        <Badge
-                                          size="sm"
-                                          variant={output.isDynamic ? 'warning' : 'success'}
-                                          shrink
-                                          className={output.isDynamic ? 'text-amber-200' : ''}
-                                        >
-                                          {output.isDynamic ? 'Dynamic' : 'Fixed'}
-                                        </Badge>
-                                        {output.type !== 'unknown' && (
-                                          <span className="shrink-0 text-gray-500">
-                                            {output.type}
-                                          </span>
-                                        )}
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : model.variant.outputShape?.length ? (
-                                  <p className="font-mono text-[11px] text-gray-100">
-                                    {model.variant.outputShape.join(' \u00d7 ')}
-                                  </p>
-                                ) : (
-                                  <p className="text-[11px] text-gray-500">Not inspected yet</p>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          {hasExternal && (
-                            <div className="mt-2 rounded-lg border border-white/10 bg-black/20 p-3">
-                              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                                Cached files
-                              </p>
-                              <div className="space-y-0.5">
-                                {model.externalData!.map((ext) => (
-                                  <div
-                                    key={ext.path}
-                                    className="flex items-center justify-between gap-2 font-mono text-[11px] text-gray-400"
-                                  >
-                                    <span className="truncate text-amber-200/70">
-                                      ◈ {ext.path.split('/').pop()}
-                                    </span>
-                                    <span className="shrink-0 text-gray-600">
-                                      {formatBytes(ext.sizeBytes)}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          createNodeFromModel(model);
-                        }}
-                        disabled={!editorActions?.addNodeWithProps}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-primary-400/30 bg-primary-500/15 px-2.5 py-1.5 text-[11px] font-medium text-primary-100 transition hover:bg-primary-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <Icons.Plus className="h-3 w-3" />
-                        Add Node
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          window.open(
-                            `https://huggingface.co/${model.repoName}`,
-                            '_blank',
-                            'noopener,noreferrer',
-                          );
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-gray-300 transition hover:border-white/20 hover:bg-white/[0.07]"
-                      >
-                        <Icons.Link className="h-3 w-3" />
-                        HF
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void copyText(model.cacheKey);
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-gray-300 transition hover:border-white/20 hover:bg-white/[0.07]"
-                      >
-                        <Icons.Copy className="h-3 w-3" />
-                        {copiedValue === model.cacheKey ? 'Copied' : 'Key'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void redownloadModel(model);
-                        }}
-                        disabled={isDownloadActive}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-gray-300 transition hover:border-white/20 hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <Icons.RotateLoop className="h-3 w-3" />
-                        Redownload
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          await deleteInstalledOnnxModel(model.id);
-                          await refreshInstalledModels();
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-red-300/20 bg-red-500/10 px-2.5 py-1.5 text-[11px] font-medium text-red-100 transition hover:bg-red-500/15"
-                      >
-                        <Icons.Trash className="h-3 w-3" />
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                <InstalledOnnxModelGroupCard
+                  key={group.id}
+                  group={group}
+                  expanded={expanded}
+                  metadataByModelId={modelsMetadata}
+                  consumers={consumers}
+                  downloadActive={isDownloadActive}
+                  onToggle={() => setSelectedModelGroupId(expanded ? null : group.id)}
+                  onRetryMetadata={(model) => {
+                    void (async () => {
+                      model.variant.metadataError = undefined;
+                      await updateInstalledOnnxModel(model);
+                      setModelMeta(model.id, {
+                        loading: false,
+                        error: null,
+                        inputs: null,
+                        outputs: null,
+                      });
+                      await loadModelMetadata(model);
+                    })();
+                  }}
+                  onRedownload={(model) => void redownloadModel(model)}
+                  onDelete={(model) => {
+                    const usageWarning =
+                      activeConsumerCount > 0
+                        ? ` It is referenced by ${activeConsumerCount} node${activeConsumerCount === 1 ? '' : 's'} in this project.`
+                        : '';
+                    if (
+                      !window.confirm(
+                        `Delete ${model.name} (${model.variant.label}) from local model storage?${usageWarning}`,
+                      )
+                    ) {
+                      return;
+                    }
+                    void deleteInstalledOnnxModel(model.id).then(refreshInstalledModels);
+                  }}
+                />
               );
             })
           )}

@@ -5,6 +5,7 @@ import {
   PreviewRefineDelay,
   PreviewSampleLimit,
   RotoTrackingDriftTolerance,
+  ViewportPixelGridThresholdPercent,
   getRecommendedCacheSizeMB,
   type BackgroundPrefetchMode,
   type CacheBudgetMode,
@@ -42,6 +43,7 @@ import ViewportBackground from '@/components/ViewportBackground';
 import { normalizeComfyEndpoint } from '@/services/comfy/client';
 import OnnxModelsPreferences from './OnnxModelsPreferences';
 import IntegrationsPreferences from './IntegrationsPreferences';
+import StorageMountPreferences from './StorageMountPreferences';
 import {
   getDefaultPreferencesColorScope,
   type PreferencesColorScope,
@@ -109,6 +111,13 @@ const preferenceSections: {
     group: 'app',
   },
   {
+    id: 'storage',
+    label: 'Storage',
+    description: 'Browser, folder, object, and workspace mounts',
+    icon: Icons.Stack,
+    group: 'app',
+  },
+  {
     id: 'integrations',
     label: 'Integrations',
     description: 'External services and local backends',
@@ -118,7 +127,7 @@ const preferenceSections: {
   {
     id: 'models',
     label: 'Models',
-    description: 'Browser ONNX inference and model cache',
+    description: 'Model library, dependencies, and browser ONNX inference',
     icon: Icons.CubeTransparent,
     group: 'app',
   },
@@ -341,6 +350,8 @@ function PreferencesView({
     viewportBackgroundMode,
     viewportBackgroundColor,
     viewportInterpolation,
+    viewportPixelGridEnabled,
+    viewportPixelGridZoomThresholdPercent,
     autoDetectViewportView,
     timelineCacheMode,
     componentStyle,
@@ -573,6 +584,9 @@ function PreferencesView({
         : (viewportBackgroundOptions.find((option) => option.value === viewportBackgroundMode)
             ?.label ?? viewportBackgroundMode),
       viewportInterpolation === 'nearest' ? 'Nearest sampling' : 'Linear sampling',
+      viewportPixelGridEnabled
+        ? `Pixel grid by ${viewportPixelGridZoomThresholdPercent}%`
+        : 'Pixel grid off',
     ],
     colorManagement: [
       colorScope === 'project' && projectId ? 'Current project' : 'App defaults',
@@ -602,13 +616,23 @@ function PreferencesView({
       reopenHistoryLimit === 0 ? 'Reopen history off' : `${reopenHistoryLimit} steps after reopen`,
       autoCheckpointEnabled ? 'Auto checkpoints on' : 'Manual checkpoints only',
     ],
+    storage: [
+      colorScope === 'project' && projectId ? 'Current project workflow' : 'New project defaults',
+      'Browser storage by default',
+      'Multi-mount assets and Gallery',
+    ],
     integrations: [
       `${integrationConnections.length} connection${integrationConnections.length === 1 ? '' : 's'}`,
       `${Object.keys(aiTaskRoutes).length} task routes`,
       `OpenAI ${aiRouteCountsByProvider.openai} · Ollama ${aiRouteCountsByProvider.ollama}`,
       `Comfy ${trimmedComfyEndpoint}`,
     ],
-    models: ['ONNX Runtime Web', 'Hugging Face import', 'WebGPU with WASM fallback'],
+    models: [
+      'Built-in and plugin model requirements',
+      'ONNX Runtime Web',
+      'Hugging Face import',
+      'WebGPU with WASM fallback',
+    ],
     rotoMotion: [
       'Float GPU feather',
       rotoPointWeightMode === 'local' ? 'Default local pull' : 'Default full pull',
@@ -794,6 +818,45 @@ function PreferencesView({
                 }
               />
             </SettingsRow>
+
+            <SettingsRow
+              title="Pixel grid"
+              description="Shows native image-pixel boundaries when the viewport reaches the chosen zoom level."
+            >
+              <ToggleField
+                checked={viewportPixelGridEnabled}
+                onCheckedChange={(checked) => setPreferences({ viewportPixelGridEnabled: checked })}
+                ariaLabel="Toggle viewport pixel grid"
+                activeLabel="Automatic"
+                inactiveLabel="Hidden"
+              />
+            </SettingsRow>
+
+            {viewportPixelGridEnabled && (
+              <SettingsRow
+                title="Pixel grid zoom"
+                description="The grid eases in over the preceding 100% zoom and is fully visible at this level."
+                stacked
+              >
+                <Slider
+                  label="Fully visible at"
+                  value={viewportPixelGridZoomThresholdPercent}
+                  min={ViewportPixelGridThresholdPercent.MIN}
+                  max={ViewportPixelGridThresholdPercent.MAX}
+                  step={ViewportPixelGridThresholdPercent.STEP}
+                  onChange={(value) =>
+                    setPreferences({ viewportPixelGridZoomThresholdPercent: value })
+                  }
+                  onReset={() =>
+                    setPreferences({
+                      viewportPixelGridZoomThresholdPercent:
+                        ViewportPixelGridThresholdPercent.DEFAULT,
+                    })
+                  }
+                  displayFormatter={(value) => `${Math.round(value)}%`}
+                />
+              </SettingsRow>
+            )}
 
             <SettingsRow
               title="Alpha overlay preview"
@@ -1075,6 +1138,14 @@ function PreferencesView({
           >
             <IntegrationsPreferences />
           </SettingsGroup>
+        );
+      case 'storage':
+        return (
+          <StorageMountPreferences
+            projectId={projectId}
+            scope={colorScope}
+            onScopeChange={setColorScope}
+          />
         );
       case 'models':
         return <OnnxModelsPreferences />;

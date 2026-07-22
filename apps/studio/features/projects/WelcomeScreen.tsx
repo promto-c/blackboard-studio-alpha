@@ -2,12 +2,15 @@ import React, { useRef, useState, useEffect } from 'react';
 import { ScrollArea } from '@blackboard/ui';
 import { useEditorActions } from '@/state/editorContext';
 import {
+  listStorageMounts,
   loadGalleryEntries,
   makeProjectTag,
   hasTag,
   softDeleteGalleryEntries,
+  subscribeToStorageMounts,
+  type StorageMountInfo,
 } from '@blackboard/project-store';
-import { getProjectIndex } from '@/state/persist';
+import { getProjectIndex, refreshMountedProjectIndex } from '@/state/persist';
 import { getAsset } from '@/state/assetStorage';
 import { ProjectIndexEntry } from '@blackboard/types';
 import {
@@ -35,6 +38,7 @@ import PreferencesView from './PreferencesView';
 import WelcomeGalleryView from './WelcomeGalleryView';
 import ProjectReferenceImportModal from './ProjectReferenceImportModal';
 import ProjectVersionDialog from './ProjectVersionDialog';
+import ProjectStorageBadge from './ProjectStorageBadge';
 import { BackgroundJobsMonitor, NativeDesktopStatusButton, PwaStatusButton } from '@/components';
 import * as Icons from '@blackboard/icons';
 
@@ -68,6 +72,9 @@ function WelcomeScreen() {
   const projectInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [projects, setProjects] = useState<ProjectIndexEntry[]>([]);
+  const [storageMountsById, setStorageMountsById] = useState<
+    Record<string, StorageMountInfo | undefined>
+  >({});
   const [projectStorageById, setProjectStorageById] = useState<
     Record<string, ProjectStorageResult | undefined>
   >({});
@@ -93,9 +100,23 @@ function WelcomeScreen() {
     : projects;
 
   useEffect(() => {
-    const timer = setTimeout(() => {
+    let cancelled = false;
+    const loadProjects = async () => {
+      try {
+        await refreshMountedProjectIndex();
+      } catch (error) {
+        console.warn('Could not refresh mounted projects.', error);
+      }
+      if (cancelled) return;
       const projectList = getProjectIndex().sort((a, b) => b.lastModified - a.lastModified);
       const limitedProjects = projectList.slice(0, 25);
+      let storageMounts: StorageMountInfo[] | null = null;
+      try {
+        storageMounts = await listStorageMounts();
+      } catch (error) {
+        console.warn('Could not load storage mount details.', error);
+      }
+      if (cancelled) return;
 
       const initialStorage: Record<string, ProjectStorageResult | undefined> = {};
       for (const project of limitedProjects) {
@@ -105,10 +126,19 @@ function WelcomeScreen() {
         }
       }
       setProjectStorageById(initialStorage);
+      if (storageMounts) {
+        setStorageMountsById(Object.fromEntries(storageMounts.map((mount) => [mount.id, mount])));
+      }
 
       setProjects(limitedProjects);
-    }, 50);
-    return () => clearTimeout(timer);
+    };
+    const timer = setTimeout(() => void loadProjects(), 50);
+    const unsubscribe = subscribeToStorageMounts(() => void loadProjects());
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -399,9 +429,14 @@ function WelcomeScreen() {
 
   const handleDeleteProject = async (e: React.MouseEvent, projectId: string) => {
     e.stopPropagation();
-    if (
-      window.confirm('Are you sure you want to delete this project? This action cannot be undone.')
-    ) {
+    const project = projects.find((candidate) => candidate.id === projectId);
+    const deletionMessage =
+      project?.storageMode === 'local-clone'
+        ? 'Delete this Browser working copy? The tracked remote snapshot will remain available.'
+        : project?.storageMode === 'direct'
+          ? 'Delete this directly mounted project and its remote project files? This cannot be undone.'
+          : 'Are you sure you want to delete this project? This action cannot be undone.';
+    if (window.confirm(deletionMessage)) {
       const all = await loadGalleryEntries();
       const projectTag = makeProjectTag(projectId);
       const projectEntries = all.filter((e) => hasTag(e.tags, projectTag) && !e.deletedAt);
@@ -580,6 +615,9 @@ function WelcomeScreen() {
                   const summary = storage?.summary;
                   const isStale = storage?.isStale ?? false;
                   const approxPrefix = isStale ? '~' : '';
+                  const projectMount = project.storageMountId
+                    ? storageMountsById[project.storageMountId]
+                    : undefined;
 
                   return (
                     <div
@@ -605,8 +643,20 @@ function WelcomeScreen() {
                             </div>
                           );
                         })()}
-                        <div className="overflow-hidden">
-                          <p className="font-medium text-white truncate">{project.name}</p>
+                        <div className="min-w-0 overflow-hidden">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <p className="min-w-0 truncate font-medium text-white">
+                              {project.name}
+                            </p>
+                            {project.storageMountId && project.storageMode && (
+                              <ProjectStorageBadge
+                                mode={project.storageMode}
+                                mountId={project.storageMountId}
+                                mountName={projectMount?.name}
+                                connected={projectMount?.connected}
+                              />
+                            )}
+                          </div>
                           <p className="text-xs text-gray-400 truncate">
                             Last modified: {new Date(project.lastModified).toLocaleString()}
                           </p>

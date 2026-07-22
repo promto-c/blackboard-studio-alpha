@@ -27,6 +27,7 @@ export const blurNode: NodeDefinition = {
   category: 'Adjustment',
   renderMode: 'multipass',
   processingDomain: 'scene_linear',
+  alphaInputBehavior: 'propagate',
   description: 'Add a blur adjustment node.',
   IconComponent: Icons.Blur,
   ToolComponent: BlurTool,

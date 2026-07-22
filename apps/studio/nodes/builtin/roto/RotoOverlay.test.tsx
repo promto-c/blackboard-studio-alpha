@@ -39,7 +39,10 @@ const createRotoNode = (): RotoNode =>
   }) as RotoNode;
 
 /** Build the minimum context needed to render the transform selection bbox. */
-const createMinimalProps = (activeTransformHandle: string | null) =>
+const createMinimalProps = (
+  activeTransformHandle: string | null,
+  partSeparationPreview: Record<string, unknown> | null = null,
+) =>
   ({
     node: createRotoNode(),
     frame: 0,
@@ -116,6 +119,7 @@ const createMinimalProps = (activeTransformHandle: string | null) =>
           freehandPoints: null,
           isHoveringClosePoint: false,
           marqueeState: null,
+          partSeparationPreview,
         },
         nudgeOverlayState: {
           activeViewportTool: 'select',
@@ -171,5 +175,62 @@ describe('RotoOverlay transform selection', () => {
       </svg>,
     );
     expect(active.container.querySelectorAll('rect')).toHaveLength(0);
+  });
+
+  it('renders a colored part-separation preview directly in the viewport', () => {
+    const preview = {
+      ownerId: 'panel-a',
+      nodeId: 'roto-1',
+      sourcePathId: 'source-path',
+      sourceFrame: 0,
+      width: 100,
+      height: 100,
+      sceneBounds: { x: -50, y: -50, width: 100, height: 100 },
+      partCount: 2,
+      overlap: 8,
+      branchReach: 2.5,
+      parts: [
+        {
+          index: 0,
+          seed: { x: 25, y: 50 },
+          contour: [
+            { x: 0, y: 0 },
+            { x: 50, y: 0 },
+            { x: 50, y: 100 },
+            { x: 0, y: 100 },
+          ],
+          pointTypes: ['cardinal', 'cardinal', 'cardinal', 'cardinal'],
+          corePixelCount: 100,
+          pixelCount: 120,
+        },
+        {
+          index: 1,
+          seed: { x: 75, y: 50 },
+          contour: [
+            { x: 50, y: 0 },
+            { x: 100, y: 0 },
+            { x: 100, y: 100 },
+            { x: 50, y: 100 },
+          ],
+          pointTypes: ['cardinal', 'cardinal', 'cardinal', 'cardinal'],
+          corePixelCount: 100,
+          pixelCount: 120,
+        },
+      ],
+    };
+    const rendered = render(
+      <svg>
+        <RotoOverlay {...createMinimalProps(null, preview)} />
+      </svg>,
+    );
+
+    const overlay = rendered.container.querySelector('[data-roto-part-separation-preview="true"]');
+    expect(overlay).not.toBeNull();
+    expect(overlay?.querySelectorAll('circle')).toHaveLength(2);
+    expect(overlay?.querySelector('path')?.getAttribute('d')).toContain(' L ');
+    expect([...overlay!.querySelectorAll('text')].map((label) => label.textContent)).toEqual([
+      '1',
+      '2',
+    ]);
   });
 });

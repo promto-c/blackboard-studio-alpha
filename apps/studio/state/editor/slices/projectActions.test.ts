@@ -13,6 +13,7 @@ import {
   RotoPathBlend,
   RotoShapeType,
   SceneNode,
+  type TrackingConfig,
 } from '@blackboard/types';
 import { getInitialState } from '@/state/editor/initialState';
 import {
@@ -40,7 +41,16 @@ const sourcePixelDataMocks = vi.hoisted(() => ({
   onReadFrame: undefined as undefined | ((frame: number) => void),
   calculateOpticalFlow: undefined as
     | undefined
-    | ((points: Array<{ x: number; y: number }>) => Array<{ x: number; y: number; error: number }>),
+    | ((
+        points: Array<{ x: number; y: number }>,
+        targetHints?: ReadonlyArray<{ x: number; y: number }>,
+      ) => Array<{ x: number; y: number; error: number }>),
+  fitTrackedTransform: undefined as
+    | undefined
+    | ((
+        referencePoints: Array<{ x: number; y: number }>,
+        trackedPoints: Array<{ x: number; y: number }>,
+      ) => { type: 'translation'; model: number[] } | null),
 }));
 
 const galleryMocks = vi.hoisted(() => ({
@@ -104,11 +114,19 @@ vi.mock('@/state/editor/services/sourcePixelData', () => ({
 
 vi.mock('@/utils/opticalFlow', () => ({
   applySolvedTransform: vi.fn(
-    (points: Array<{ x: number; y: number }>, transform: { dx?: number; dy?: number } | null) =>
-      points.map((point) => ({
-        x: point.x + (transform?.dx ?? 0),
-        y: point.y + (transform?.dy ?? 0),
-      })),
+    (
+      points: Array<{ x: number; y: number }>,
+      transform: { dx?: number; dy?: number; type?: string; model?: number[] } | null,
+    ) => {
+      const dx =
+        transform?.dx ?? (transform?.type === 'translation' ? transform.model?.[0] : 0) ?? 0;
+      const dy =
+        transform?.dy ?? (transform?.type === 'translation' ? transform.model?.[1] : 0) ?? 0;
+      return points.map((point) => ({
+        x: point.x + dx,
+        y: point.y + dy,
+      }));
+    },
   ),
   buildOpticalFlowPyramid: vi.fn(() => ({})),
   calculateOpticalFlowFromPyramids: vi.fn(
@@ -117,11 +135,22 @@ vi.mock('@/utils/opticalFlow', () => ({
       points.map((point) => ({ ...point, x: point.x + 1, y: point.y + 1, error: 1 })),
   ),
   calculateHybridOpticalFlowFromPyramids: vi.fn(
-    (_previous: unknown, _current: unknown, points: Array<{ x: number; y: number }>) =>
-      sourcePixelDataMocks.calculateOpticalFlow?.(points) ??
+    (
+      _previous: unknown,
+      _current: unknown,
+      points: Array<{ x: number; y: number }>,
+      _options: unknown,
+      targetHints?: ReadonlyArray<{ x: number; y: number }>,
+    ) =>
+      sourcePixelDataMocks.calculateOpticalFlow?.(points, targetHints) ??
       points.map((point) => ({ ...point, x: point.x + 1, y: point.y + 1, error: 1 })),
   ),
-  fitTrackedTransform: vi.fn(() => null),
+  fitTrackedTransform: vi.fn(
+    (
+      referencePoints: Array<{ x: number; y: number }>,
+      trackedPoints: Array<{ x: number; y: number }>,
+    ) => sourcePixelDataMocks.fitTrackedTransform?.(referencePoints, trackedPoints) ?? null,
+  ),
   solveTransform: vi.fn(
     (
       _source: Array<{ x: number; y: number }>,
@@ -184,6 +213,94 @@ const createHarness = (
   };
 };
 
+const createRotoMatchHarness = (manualFrames: number[], currentFrame: number) => {
+  const sceneNode: SceneNode = {
+    id: 'scene-1',
+    type: NodeType.SCENE,
+    name: 'Scene',
+    enabled: true,
+    width: 20,
+    height: 20,
+    bitDepth: 16,
+    colorSpace: 'Linear',
+    startFrame: 0,
+    maxFrames: Math.max(currentFrame, ...manualFrames),
+    fps: 24,
+  };
+  const imageNode: MediaSourceNode = {
+    id: 'image-1',
+    type: NodeType.MEDIA_SOURCE,
+    name: 'Plate',
+    enabled: true,
+    mediaKind: 'image',
+    src: 'asset-1',
+    width: 20,
+    height: 20,
+    opacity: 100,
+    operator: BlendMode.OVER,
+    transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, fitMode: ImageFitMode.NONE },
+    colorSpace: 'sRGB',
+  };
+  const keyframes = (value: number) => manualFrames.map((frame) => ({ frame, value }));
+  const rotoNode: RotoNode = {
+    id: 'roto-1',
+    type: NodeType.ROTO,
+    name: 'Roto',
+    enabled: true,
+    invert: false,
+    paths: [
+      {
+        id: 'path-1',
+        name: 'Shape',
+        shapeType: RotoShapeType.POLYGON,
+        points: [
+          { x: keyframes(-2), y: keyframes(-2) },
+          { x: keyframes(2), y: keyframes(-2) },
+          { x: keyframes(-2), y: keyframes(2) },
+        ],
+        closed: true,
+        feather: 0,
+        opacity: 100,
+        blend: RotoPathBlend.ADD,
+        style: { mode: RotoDrawMode.FILL, strokeWidth: 1 },
+      },
+    ],
+  };
+  const flow = buildFlowFromNodes([sceneNode, imageNode, rotoNode], ROOT_FLOW_ID, 'Root Flow');
+  const finishBackgroundJob = vi.fn();
+  const harness = createHarness({
+    initialState: {
+      projectId: 'project-1',
+      activeProjectBranchId: 'main',
+      nodes: [sceneNode, imageNode, rotoNode],
+      flows: { [ROOT_FLOW_ID]: flow },
+      rootFlowId: ROOT_FLOW_ID,
+      activeFlowId: ROOT_FLOW_ID,
+      selectedNodeId: rotoNode.id,
+      currentFrame,
+      maxFrames: sceneNode.maxFrames,
+      fps: 24,
+    },
+    deps: {
+      startBackgroundJob: vi.fn(() => 'job-1'),
+      updateBackgroundJob: vi.fn(),
+      finishBackgroundJob,
+    },
+  });
+
+  return { ...harness, imageNode, rotoNode, finishBackgroundJob };
+};
+
+const ROTO_DEFORM_MATCH_CONFIG: TrackingConfig = {
+  translation: true,
+  rotation: false,
+  scale: false,
+  affine: false,
+  perspective: false,
+  deform: true,
+  driftTolerance: null,
+};
+
 describe('createProjectActions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -194,6 +311,7 @@ describe('createProjectActions', () => {
     galleryMocks.loadGalleryEntries.mockResolvedValue([]);
     sourcePixelDataMocks.onReadFrame = undefined;
     sourcePixelDataMocks.calculateOpticalFlow = undefined;
+    sourcePixelDataMocks.fitTrackedTransform = undefined;
     vi.mocked(requestReferencePermissions).mockResolvedValue(undefined);
   });
 
@@ -1410,6 +1528,154 @@ describe('createProjectActions', () => {
     )[0] as ComfyNode;
     expect(undoneHistoryNode.generatedOutputs).toHaveLength(1);
     expect(runStartHistoryNode.generatedOutputs).toHaveLength(1);
+  });
+
+  it('bakes a rigid current-frame match into the selected Roto shape points', async () => {
+    const { actions, getState, imageNode, rotoNode } = createRotoMatchHarness([0], 3);
+
+    sourcePixelDataMocks.calculateOpticalFlow = (points) =>
+      points.map((point) => ({ ...point, x: point.x + 1, y: point.y + 1, error: 1 }));
+    sourcePixelDataMocks.fitTrackedTransform = (referencePoints, trackedPoints) => ({
+      type: 'translation',
+      model: [trackedPoints[0].x - referencePoints[0].x, trackedPoints[0].y - referencePoints[0].y],
+    });
+
+    await actions.matchRotoSelectionToCurrentFrame(
+      rotoNode.id,
+      ['path-1'],
+      { kind: 'shape', pathId: 'path-1' },
+      imageNode.id,
+      { ...ROTO_DEFORM_MATCH_CONFIG, deform: false },
+    );
+
+    const matchedNode = getState().nodes.find((node) => node.id === rotoNode.id) as RotoNode;
+    const matchedPointX = matchedNode.paths[0].points[0].x;
+
+    expect(matchedNode.paths[0].trackPoints).toBeUndefined();
+    expect(matchedNode.paths[0].trackingTransform).toBeUndefined();
+    expect(Array.isArray(matchedPointX)).toBe(true);
+    expect(
+      Array.isArray(matchedPointX)
+        ? matchedPointX.find((keyframe) => keyframe.frame === 3)?.value
+        : null,
+    ).toBe(1);
+  });
+
+  it('uses and overwrites an adjusted current-frame shape key as the match hint', async () => {
+    const { actions, getState, imageNode, rotoNode } = createRotoMatchHarness([0, 3], 3);
+    rotoNode.paths[0].points = rotoNode.paths[0].points.map((point) => ({
+      x: Array.isArray(point.x)
+        ? point.x.map((keyframe) =>
+            keyframe.frame === 3 ? { ...keyframe, value: keyframe.value + 4 } : keyframe,
+          )
+        : point.x,
+      y: Array.isArray(point.y)
+        ? point.y.map((keyframe) =>
+            keyframe.frame === 3 ? { ...keyframe, value: keyframe.value + 4 } : keyframe,
+          )
+        : point.y,
+    }));
+    let hintedCanvasPoints: ReadonlyArray<{ x: number; y: number }> | undefined;
+    sourcePixelDataMocks.calculateOpticalFlow = (points, targetHints) => {
+      if (targetHints) hintedCanvasPoints = targetHints;
+      return (targetHints ?? points).map((point) => ({
+        x: point.x + 1,
+        y: point.y + 1,
+        error: 1,
+      }));
+    };
+
+    await actions.matchRotoSelectionToCurrentFrame(
+      rotoNode.id,
+      ['path-1'],
+      { kind: 'shape', pathId: 'path-1' },
+      imageNode.id,
+      ROTO_DEFORM_MATCH_CONFIG,
+    );
+
+    const matchedNode = getState().nodes.find((node) => node.id === rotoNode.id) as RotoNode;
+    const matchedPointX = matchedNode.paths[0].points[0].x;
+
+    expect(hintedCanvasPoints?.[0]).toEqual({ x: 12, y: 12 });
+    expect(Array.isArray(matchedPointX)).toBe(true);
+    expect(
+      Array.isArray(matchedPointX)
+        ? matchedPointX.find((keyframe) => keyframe.frame === 3)?.value
+        : null,
+    ).toBe(3);
+    expect(
+      Array.isArray(matchedPointX) ? matchedPointX.filter((keyframe) => keyframe.frame === 3) : [],
+    ).toHaveLength(1);
+  });
+
+  it('matches the current Roto frame from the nearest manual keyframes on both sides', async () => {
+    const { actions, getState, imageNode, rotoNode, finishBackgroundJob } = createRotoMatchHarness(
+      [0, 10],
+      5,
+    );
+
+    sourcePixelDataMocks.calculateOpticalFlow = (points) =>
+      points.map((point) => ({ ...point, x: point.x + 1, y: point.y + 1, error: 1 }));
+
+    await actions.matchRotoSelectionToCurrentFrame(
+      rotoNode.id,
+      ['path-1'],
+      { kind: 'shape', pathId: 'path-1' },
+      imageNode.id,
+      ROTO_DEFORM_MATCH_CONFIG,
+    );
+
+    const matchedNode = getState().nodes.find((node) => node.id === rotoNode.id) as RotoNode;
+    const matchedPointX = matchedNode.paths[0].points[0].x;
+
+    expect(getState().currentFrame).toBe(5);
+    expect(finishBackgroundJob).toHaveBeenLastCalledWith(
+      'job-1',
+      expect.objectContaining({ status: 'complete', detail: 'Matched frame 5 from 0 + 10' }),
+    );
+    expect(matchedNode.paths[0].trackingData).toBeUndefined();
+    expect(matchedNode.paths[0].trackingTransform).toBeUndefined();
+    expect(Array.isArray(matchedPointX)).toBe(true);
+    expect(
+      Array.isArray(matchedPointX)
+        ? matchedPointX.find((keyframe) => keyframe.frame === 5)?.value
+        : null,
+    ).toBe(3);
+  });
+
+  it('matches the current Roto frame from the only available manual-keyframe side', async () => {
+    const { actions, getState, imageNode, rotoNode, finishBackgroundJob } = createRotoMatchHarness(
+      [8],
+      3,
+    );
+
+    sourcePixelDataMocks.calculateOpticalFlow = (points) =>
+      points.map((point) => ({ ...point, x: point.x + 1, y: point.y + 1, error: 1 }));
+
+    await actions.matchRotoSelectionToCurrentFrame(
+      rotoNode.id,
+      ['path-1'],
+      { kind: 'shape', pathId: 'path-1' },
+      imageNode.id,
+      ROTO_DEFORM_MATCH_CONFIG,
+    );
+
+    const matchedNode = getState().nodes.find((node) => node.id === rotoNode.id) as RotoNode;
+    const matchedPointX = matchedNode.paths[0].points[0].x;
+
+    expect(getState().currentFrame).toBe(3);
+    expect(finishBackgroundJob).toHaveBeenLastCalledWith(
+      'job-1',
+      expect.objectContaining({ status: 'complete', detail: 'Matched frame 3 from 8' }),
+    );
+    expect(matchedNode.paths[0].trackingData).toBeUndefined();
+    expect(matchedNode.paths[0].trackingTransform).toBeUndefined();
+    expect(Array.isArray(matchedPointX)).toBe(true);
+    expect(
+      Array.isArray(matchedPointX)
+        ? matchedPointX.find((keyframe) => keyframe.frame === 3)?.value
+        : null,
+    ).toBe(3);
   });
 
   it('does not stop roto tracking for a single outlier drift point', async () => {

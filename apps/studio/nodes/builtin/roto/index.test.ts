@@ -18,6 +18,14 @@ import {
 import { projectTrackingModelToMatrix4 } from '@/utils/rotoTracking';
 import { rotoNode } from './index';
 
+describe('rotoNode defaults', () => {
+  it('uses the managed automatic SAM3 variant', () => {
+    expect(rotoNode.getInitialNodeProps()).toMatchObject({
+      segmentationModelVariant: 'auto',
+    });
+  });
+});
+
 const createNode = (): RotoNode => ({
   id: 'roto-1',
   type: NodeType.ROTO,
@@ -558,5 +566,38 @@ describe('rotoNode stabilization scopes', () => {
     expect(transform.auxiliaryTranslation).toBeDefined();
     expect(transform.auxiliaryTranslation[0][3]).toBe(10);
     expect(transform.auxiliaryTranslation[1][3]).toBe(20);
+  });
+});
+
+describe('rotoNode assets', () => {
+  it('exposes retained smart-mask rasters to project asset collection', () => {
+    const node = createNode();
+    node.paths = [
+      {
+        id: 'smart-mask',
+        name: 'Smart Mask',
+        shapeType: RotoShapeType.BSPLINE,
+        points: [],
+        closed: true,
+        feather: 0,
+        opacity: 100,
+        blend: RotoPathBlend.ADD,
+        style: { mode: RotoDrawMode.FILL, strokeWidth: 1 },
+        sourceMask: {
+          kind: 'segmentation',
+          modelId: 'onnx-community/sam3-tracker-ONNX',
+          sourceId: 'plate',
+          sourceFrame: 12,
+          maskAssetId: 'asset-mask-1',
+          width: 1920,
+          height: 1080,
+          createdAt: 1,
+          prompts: { points: [] },
+          cleanup: { threshold: 0, removeSpecks: 64, fillHoles: 64 },
+        },
+      },
+    ];
+
+    expect(rotoNode.getAssetIds?.(node)).toEqual(['asset-mask-1']);
   });
 });

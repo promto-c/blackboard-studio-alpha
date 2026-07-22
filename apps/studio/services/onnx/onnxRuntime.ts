@@ -189,7 +189,7 @@ export async function runOnnxModel({
           blob,
           rawFloatData,
         });
-      } else {
+      } else if (outMeta.kind === 'scalar') {
         const data = tensor.data as Float32Array | number[];
         const scalarValue = Number(data[0]);
         results.push({
@@ -202,6 +202,19 @@ export async function runOnnxModel({
           createdAt: now,
           kind: 'scalar',
           scalarValue,
+          dims: [...tensor.dims],
+          type: outMeta.type,
+        });
+      } else {
+        results.push({
+          id: `${model.id}:out:${i}:${now}`,
+          name: outMeta.name,
+          outputIndex: i,
+          src: '',
+          width: 0,
+          height: 0,
+          createdAt: now,
+          kind: 'tensor',
           dims: [...tensor.dims],
           type: outMeta.type,
         });

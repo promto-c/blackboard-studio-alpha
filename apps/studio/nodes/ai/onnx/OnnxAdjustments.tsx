@@ -48,6 +48,7 @@ import { OnnxRunButtonGroup } from './OnnxRunButtonGroup';
 import { useOnnxModelMetadata } from './useOnnxModelMetadata';
 import SourceTransformControls from '../../SourceTransformControls';
 import { getSceneTimelineRange } from '@/utils/timelineRange';
+import { usePreferencesNavigation } from '@/features/projects/preferencesNavigation';
 
 const MIN_INPUT_SIZE = 64;
 const MAX_INPUT_SIZE = 8192;
@@ -209,6 +210,7 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
     requestBackgroundJobCancel,
   } = useEditorActions();
   const { onnxRuntimeWebGpuEnabled, onnxRuntimeWasmEnabled } = usePreferences();
+  const { openPreferences } = usePreferencesNavigation();
   const allNodes = useEditorSelector((state) => state.nodes);
   const flows = useEditorSelector((state) => state.flows);
   const currentFrame = useEditorSelector((state) => state.currentFrame);
@@ -593,7 +595,7 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
                   dims: result.dims,
                 });
               }
-            } else if (result.kind === 'scalar') {
+            } else if (result.kind === 'scalar' || result.kind === 'tensor') {
               frameOutputs.push(cleanResult);
             }
           }
@@ -683,6 +685,21 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
                 width: firstImageOutput.width,
                 height: firstImageOutput.height,
                 ...transformUpdate,
+                lastRunAt: Date.now(),
+                lastError: undefined,
+              },
+              fi === targetFrames.length - 1,
+            );
+          } else if (frameOutputs.length > 0) {
+            allOutputs = isBatch ? [...allOutputs, ...frameOutputs] : frameOutputs;
+            updateNode(
+              node.id,
+              {
+                outputs: allOutputs,
+                activeOutputId:
+                  (previousActiveOutputName
+                    ? allOutputs.find((output) => output.name === previousActiveOutputName)?.id
+                    : undefined) ?? allOutputs[0]?.id,
                 lastRunAt: Date.now(),
                 lastError: undefined,
               },
@@ -832,7 +849,14 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
       (model.sizeBytes ?? 0) +
         (model.externalData ?? []).reduce((s, e) => s + (e.sizeBytes ?? 0), 0),
     )}`,
-    badges: [model.variant.supportedBackends.join('/')],
+    badges: [
+      model.catalogRef?.origin === 'builtin'
+        ? 'Built-in graph'
+        : model.catalogRef?.origin === 'plugin'
+          ? 'Plugin'
+          : 'Imported',
+      model.variant.supportedBackends.join('/'),
+    ],
   }));
 
   const backendOptions = [
@@ -864,6 +888,7 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
         node.id,
         {
           modelId: String(value),
+          catalogRef: model.catalogRef,
           modelName: model.name,
           modelRepo: model.repoName,
           variantId: model.variant.id,
@@ -905,13 +930,31 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
               />
             </SettingRow>
             {selectedModel ? (
-              <p className="text-xs leading-5 text-gray-500">
-                {selectedModel.repoName} \u00b7 {selectedModel.variant.filePath}
-              </p>
+              <div className="space-y-1">
+                <p className="text-xs leading-5 text-gray-500">
+                  {selectedModel.repoName} \u00b7 {selectedModel.variant.filePath}
+                </p>
+                {selectedModel.catalogRef ? (
+                  <p className="text-[10px] leading-4 text-sky-300">
+                    {selectedModel.catalogRef.origin === 'builtin' ? 'Built-in' : 'Plugin'} model
+                    {' \u00b7 '}
+                    {selectedModel.catalogRef.targetLabel ?? 'ONNX graph'}
+                  </p>
+                ) : null}
+              </div>
             ) : (
-              <p className="text-xs leading-5 text-amber-200">
-                Install a model in Preferences &gt; Models, then choose it here.
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs leading-5 text-amber-200">
+                  Choose an installed, built-in, or plugin-provided ONNX graph.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => openPreferences({ section: 'models' })}
+                  className="shrink-0 text-[10px] font-medium text-primary-300 hover:text-primary-100"
+                >
+                  Manage models
+                </button>
+              </div>
             )}
           </div>
 
@@ -1420,6 +1463,27 @@ function OnnxAdjustments({ node: anyNode }: { node: AnyNode }) {
                         </span>
                       </div>
                     ))}
+                </div>
+              ) : null}
+              {nodeOutputs.filter((o) => o.kind === 'tensor').length > 0 ? (
+                <div className="rounded-xl border border-violet-400/15 bg-violet-400/5 p-2 text-xs">
+                  <p className="mb-1 text-[11px] font-medium text-violet-200">Tensor Outputs</p>
+                  {nodeOutputs
+                    .filter((o) => o.kind === 'tensor')
+                    .map((output) => (
+                      <div
+                        key={output.id}
+                        className="flex items-center justify-between gap-2 py-0.5"
+                      >
+                        <span className="truncate text-gray-300">{output.name}</span>
+                        <span className="shrink-0 font-mono text-gray-400">
+                          {output.dims.join('\u00d7')} · {output.type}
+                        </span>
+                      </div>
+                    ))}
+                  <p className="mt-1 text-[10px] leading-4 text-gray-500">
+                    Raw feature tensors are reported for inspection and are not rendered as images.
+                  </p>
                 </div>
               ) : null}
             </div>

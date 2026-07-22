@@ -60,6 +60,7 @@ export const gradeNode: NodeDefinition = {
   category: 'Adjustment',
   renderMode: 'shader',
   processingDomain: (node) => (node as GradeNode).grade.processingDomain,
+  alphaInputBehavior: 'propagate',
   description: 'Add a color grading adjustment node.',
   IconComponent: Icons.Sun,
   ToolComponent: GradeTool,

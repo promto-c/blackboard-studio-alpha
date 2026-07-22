@@ -15,15 +15,4 @@ describe('SettingRow', () => {
     expect(row).not.toBeNull();
     expect(row?.querySelector('.bb-responsive-setting-row__content')).not.toBeNull();
   });
-
-  it('supports an explicit compact inline layout', () => {
-    const { container } = render(
-      <SettingRow label="Visible" layout="inline">
-        <button type="button">Toggle</button>
-      </SettingRow>,
-    );
-
-    expect(container.firstElementChild?.classList.contains('flex')).toBe(true);
-    expect(container.querySelector('.bb-responsive-setting-row')).toBeNull();
-  });
 });

@@ -189,6 +189,7 @@ export function createShaderNodeDefinition(
     category,
     renderMode: 'shader',
     processingDomain: 'scene_linear',
+    alphaInputBehavior: (_node, inputPort) => (inputPort === 'pipe' ? 'propagate' : 'consume'),
     description,
     IconComponent,
     ToolComponent,

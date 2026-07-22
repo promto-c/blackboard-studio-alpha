@@ -73,6 +73,34 @@ describe('viewport background preferences', () => {
   });
 });
 
+describe('viewport pixel grid preferences', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('makes the pixel grid fully visible at 800% zoom by default', () => {
+    expect(createDefaultPreferences()).toMatchObject({
+      viewportPixelGridEnabled: true,
+      viewportPixelGridZoomThresholdPercent: 800,
+    });
+  });
+
+  it('persists the toggle and clamps the zoom threshold', () => {
+    localStorage.setItem(
+      'blackboard-studio-preferences',
+      JSON.stringify({
+        viewportPixelGridEnabled: false,
+        viewportPixelGridZoomThresholdPercent: 9999,
+      }),
+    );
+
+    expect(loadPreferences()).toMatchObject({
+      viewportPixelGridEnabled: false,
+      viewportPixelGridZoomThresholdPercent: 1600,
+    });
+  });
+});
+
 describe('compare preferences', () => {
   afterEach(() => {
     localStorage.clear();

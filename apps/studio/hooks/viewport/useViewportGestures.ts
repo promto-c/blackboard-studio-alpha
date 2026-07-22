@@ -14,9 +14,8 @@ import {
   type ViewportFitMode,
   type ViewportFitTarget,
 } from './viewportFit';
+import { ViewportZoom } from '@/utils/viewportZoom';
 
-const MIN_VIEWPORT_ZOOM = 0.02;
-const MAX_VIEWPORT_ZOOM = 16;
 const WHEEL_ZOOM_FACTOR = 1.1;
 const VIEWPORT_ANIMATION_SMOOTHING = 0.2;
 const VIEWPORT_ZOOM_EPSILON = 0.001;
@@ -403,7 +402,7 @@ export function useViewportGestures({
         e.deltaY < 0
           ? currentTargetZoom * WHEEL_ZOOM_FACTOR
           : currentTargetZoom / WHEEL_ZOOM_FACTOR;
-      const clampedZoom = Math.max(MIN_VIEWPORT_ZOOM, Math.min(MAX_VIEWPORT_ZOOM, nextTargetZoom));
+      const clampedZoom = Math.max(ViewportZoom.MIN, Math.min(ViewportZoom.MAX, nextTargetZoom));
       const nextTargetPan = calculatePivotedPan(
         { x: e.clientX, y: e.clientY },
         currentTargetZoom,
@@ -468,7 +467,7 @@ export function useViewportGestures({
 
         const zoomRatio = dist / gesture.initialDist;
         const nextZoom = gesture.startZoom * zoomRatio;
-        const clampedZoom = Math.max(MIN_VIEWPORT_ZOOM, Math.min(MAX_VIEWPORT_ZOOM, nextZoom));
+        const clampedZoom = Math.max(ViewportZoom.MIN, Math.min(ViewportZoom.MAX, nextZoom));
         const panFromZoom = calculatePivotedPan(
           gesture.initialMidpoint,
           gesture.startZoom,

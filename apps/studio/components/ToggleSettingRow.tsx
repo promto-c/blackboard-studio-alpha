@@ -21,12 +21,7 @@ export function ToggleSettingRow({
 }: ToggleSettingRowProps) {
   return (
     <div className="space-y-1">
-      <SettingRow
-        label={label}
-        labelAccessory={labelAccessory}
-        layout="inline"
-        className={rowClassName}
-      >
+      <SettingRow label={label} labelAccessory={labelAccessory} className={rowClassName}>
         <ToggleSwitch {...toggleProps} ariaLabel={ariaLabel} size={size} />
       </SettingRow>
       {description ? <p className="text-[10px] text-gray-500">{description}</p> : null}

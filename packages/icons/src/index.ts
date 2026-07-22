@@ -24,6 +24,7 @@ export { ChevronRight } from './icons/ChevronRight';
 export { CodeBracket } from './icons/CodeBracket';
 export { Cog } from './icons/Cog';
 export { ComputerDesktop } from './icons/ComputerDesktop';
+export { ContourTrace } from './icons/ContourTrace';
 export { CompareCanvasReference } from './icons/CompareCanvasReference';
 export { CompareDividerHorizontal } from './icons/CompareDividerHorizontal';
 export { CompareDividerVertical } from './icons/CompareDividerVertical';

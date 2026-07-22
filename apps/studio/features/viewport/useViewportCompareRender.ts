@@ -67,6 +67,8 @@ interface UseViewportCompareRenderParams {
   alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
   hasRenderableNodes: boolean;
   isRenderReady: boolean;
+  bypassNodeIdsB?: ReadonlySet<string>;
+  freezeImageWhileEditing: boolean;
   mediaUpdateTrigger: number;
   slotADisplayOutputRef: RefObject<THREE.WebGLRenderTarget | null>;
   textureCacheRef: RefObject<Pick<TextureCache, 'get'>>;
@@ -211,6 +213,8 @@ export function useViewportCompareRender({
   alphaOverlayStyle,
   hasRenderableNodes,
   isRenderReady,
+  bypassNodeIdsB,
+  freezeImageWhileEditing,
   mediaUpdateTrigger,
   slotADisplayOutputRef,
   textureCacheRef,
@@ -256,6 +260,7 @@ export function useViewportCompareRender({
     outputDomain: RenderOutputDomain;
     renderQuality: RenderQuality;
     alphaOverlayStyle: { color: [number, number, number]; opacity: number; bgDarken: number };
+    bypassNodeIds: ReadonlySet<string> | undefined;
   } | null>(null);
 
   const disposeCompareResources = useCallback(() => {
@@ -321,7 +326,7 @@ export function useViewportCompareRender({
     const prev = prevRenderInputsRef.current;
     const inputsChanged =
       !prev ||
-      prev.nodes !== viewportNodesB ||
+      (prev.nodes !== viewportNodesB && !freezeImageWhileEditing) ||
       prev.sceneNode !== sceneNodeB ||
       prev.visualFrame !== visualFrame ||
       prev.mediaUpdateTrigger !== mediaUpdateTrigger ||
@@ -329,8 +334,9 @@ export function useViewportCompareRender({
       prev.displayView !== displayView ||
       prev.projectColorManagement !== projectColorManagement ||
       prev.outputDomain !== outputDomain ||
-      prev.renderQuality !== renderQuality ||
+      (prev.renderQuality !== renderQuality && !freezeImageWhileEditing) ||
       prev.alphaOverlayStyle !== alphaOverlayStyle ||
+      prev.bypassNodeIds !== bypassNodeIdsB ||
       !slotBResourcesRef.current ||
       !compareTargetsRef.current.textureB;
 
@@ -385,6 +391,7 @@ export function useViewportCompareRender({
             const mode = rotoNode.alphaMode;
             return mode === RotoAlphaMode.REPLACE ? 1 : mode === RotoAlphaMode.ADD ? 2 : 0;
           },
+          bypassNodeIds: bypassNodeIdsB,
         });
 
         // The shared pipeline now maintains this ownership too; retaining the
@@ -407,6 +414,7 @@ export function useViewportCompareRender({
           outputDomain,
           renderQuality,
           alphaOverlayStyle,
+          bypassNodeIds: bypassNodeIdsB,
         };
       } catch (error) {
         // Persistent resources remain owned and reusable after a failed frame;
@@ -665,6 +673,8 @@ export function useViewportCompareRender({
     alphaOverlayStyle,
     hasRenderableNodes,
     isRenderReady,
+    bypassNodeIdsB,
+    freezeImageWhileEditing,
     mediaUpdateTrigger,
     viewportSize,
     interactiveViewportRect,

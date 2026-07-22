@@ -540,7 +540,11 @@ export const deleteProjectService = async (_get: GetState, projectId: string) =>
   }
 
   galleryProtectedAssets.assetIds.forEach((assetId) => assetIds.delete(assetId));
-  if (assetIds.size > 0) await deleteAssets(Array.from(assetIds));
+  // A local clone delete removes only the working copy. Its upstream snapshot
+  // may still reference Browser or mounted assets, so retain those assets.
+  if (indexEntry?.storageMode !== 'local-clone' && assetIds.size > 0) {
+    await deleteAssets(Array.from(assetIds));
+  }
   await Promise.all(
     branches
       .filter((branch) => branch.id !== 'main')

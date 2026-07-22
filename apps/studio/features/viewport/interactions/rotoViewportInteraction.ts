@@ -34,6 +34,8 @@ export class RotoViewportInteraction extends BaseViewportInteraction {
     if (roto.dragPointState) return 'cursor-move';
     if (roto.isHoveringClosePoint || roto.hoveredSegment) return 'cursor-pointer';
     if (
+      this.ctx.activeViewportTool === 'segment-point' ||
+      this.ctx.activeViewportTool === 'segment-box' ||
       this.ctx.activeViewportTool === 'rectangle' ||
       this.ctx.activeViewportTool === 'bspline' ||
       this.ctx.activeViewportTool === 'freehand'
@@ -60,11 +62,20 @@ export class RotoViewportInteraction extends BaseViewportInteraction {
       roto.drawingState ||
       roto.freehandPoints ||
       roto.dragNewPointIndex !== null ||
-      roto.isAdjustingRadius,
+      roto.isAdjustingRadius ||
+      roto.segmentationSession.boxDraft,
     );
   }
 
   handleMouseDown(event: ViewportPointerEvent): boolean {
+    if (
+      this.roto.handleSegmentationMouseDown(
+        event.nativeEvent as unknown as React.MouseEvent<HTMLDivElement>,
+        event.scenePoint,
+      )
+    ) {
+      return true;
+    }
     return this.roto.handleMouseDown(
       event.nativeEvent as unknown as React.MouseEvent<HTMLDivElement>,
       event.clientPoint,
@@ -73,22 +84,30 @@ export class RotoViewportInteraction extends BaseViewportInteraction {
   }
 
   handleMouseMove(event: ViewportPointerEvent): boolean {
+    if (this.roto.handleSegmentationMouseMove(event.scenePoint, event.modifiers)) return true;
     return this.roto.handleMouseMove(event.nativeEvent, event.clientPoint, event.scenePoint);
   }
 
   handleMouseUp(event: ViewportPointerEvent): boolean {
+    if (this.roto.handleSegmentationMouseUp(event.scenePoint, event.button)) return true;
     return this.roto.handleMouseUp(event.nativeEvent);
   }
 
   handleMouseLeave(): void {
+    this.roto.cancelSegmentationPreview();
     this.roto.handleMouseLeave();
   }
 
   cleanupOnToolChange(_previousTool: string | null): void {
+    if (_previousTool?.startsWith('segment-')) this.roto.cancelSegmentationPreview();
     this.roto.cleanupOnToolChange?.(_previousTool);
   }
 
   handleContextMenu(event: ViewportPointerEvent): boolean {
+    if (this.ctx.activeViewportTool?.startsWith('segment-')) {
+      event.nativeEvent.preventDefault();
+      return true;
+    }
     this.roto.handleContextMenu(event.nativeEvent as unknown as React.MouseEvent<HTMLDivElement>);
     return true;
   }

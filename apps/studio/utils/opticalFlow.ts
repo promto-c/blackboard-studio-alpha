@@ -440,6 +440,8 @@ const findTemplateMatch = (
  * The normal path is pyramidal Lucas-Kanade. When a point fails the
  * forward-backward check or disagrees sharply with neighboring points, this
  * falls back to local normalized cross-correlation around the median motion.
+ * Optional target hints instead center that local search on an artist-provided
+ * destination pose, while preserving normal tracking as the fallback.
  * If the patch itself is textureless, the final fallback can borrow coherent
  * median motion from the rest of the shape.
  */
@@ -448,6 +450,7 @@ export function calculateHybridOpticalFlowFromPyramids(
   pyrB: OpticalFlowPyramid,
   points: Point[],
   options: HybridOpticalFlowOptions = {},
+  targetHints?: readonly Point[],
 ): TrackResult[] {
   const tracked = calculateOpticalFlowFromPyramids(pyrA, pyrB, points);
   if (points.length === 0 || pyrA.length === 0 || pyrB.length === 0) return tracked;
@@ -479,6 +482,21 @@ export function calculateHybridOpticalFlowFromPyramids(
   const currImage = pyrB[0];
 
   return tracked.map((point, index) => {
+    const targetHint = targetHints?.[index];
+    if (targetHint && Number.isFinite(targetHint.x) && Number.isFinite(targetHint.y)) {
+      const hintedMatch = findTemplateMatch(
+        prevImage,
+        currImage,
+        points[index],
+        {
+          dx: targetHint.x - points[index].x,
+          dy: targetHint.y - points[index].y,
+        },
+        { searchRadius, patchRadius, minimumNccScore },
+      );
+      if (hintedMatch) return hintedMatch;
+    }
+
     const flow = flows[index];
     const isBadFlow =
       !Number.isFinite(point.x) ||

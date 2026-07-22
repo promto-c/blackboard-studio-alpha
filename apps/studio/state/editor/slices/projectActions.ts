@@ -42,6 +42,7 @@ import {
   type RotoTrackingRunOptions,
   cancelTrackingService,
   clearRotoTrackingTargetService,
+  matchRotoSelectionToCurrentFrameService,
   trackRotoSelectionService,
   smartTrackRotoSelectionService,
 } from '@/state/editor/services/rotoTracking';
@@ -472,6 +473,29 @@ export function createProjectActions(
       options: RotoTrackingRunOptions = {},
     ) => {
       await smartTrackRotoSelectionService(
+        get,
+        trackingDeps,
+        rotoNodeId,
+        sourcePathIds,
+        target,
+        sourceId,
+        config,
+        options,
+        getProjectBranchContext,
+        applyRotoTrackingResult,
+        setIfCurrentProjectBranch,
+      );
+    },
+
+    matchRotoSelectionToCurrentFrame: async (
+      rotoNodeId: string,
+      sourcePathIds: string[],
+      target: RotoTrackingTarget,
+      sourceId: string,
+      config: TrackingConfig,
+      options: RotoTrackingRunOptions = {},
+    ) => {
+      await matchRotoSelectionToCurrentFrameService(
         get,
         trackingDeps,
         rotoNodeId,

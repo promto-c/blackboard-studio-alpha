@@ -10,11 +10,13 @@ import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 import {
   applyRotoTrackingMatrix4ToPoint,
   invertRotoTrackingMatrix4,
+  keyframeRotoPathScenePointsAtFrame,
   projectScenePointToRotoPathResolvedLocal,
   projectTrackingModelToMatrix4,
   resolveRotoLayerCompositeMatrix,
   resolveRotoPathLocalPointsAtFrame,
   resolveRotoPathPointsAtFrame,
+  getRotoMatchTemplateFrames,
   resolveRotoTrackingSelection,
   updateTrackingTransform,
   type ResolvedRotoTrackingTarget,
@@ -98,15 +100,155 @@ const calculateRotoOpticalFlow = (
   currentPyramid: ReturnType<typeof buildOpticalFlowPyramid>,
   points: { x: number; y: number }[],
   config: TrackingConfig,
+  targetHints?: readonly { x: number; y: number }[],
 ): TrackResult[] =>
-  config.tracker === 'standard_lk'
+  config.tracker === 'standard_lk' && !targetHints
     ? calculateOpticalFlowFromPyramids(previousPyramid, currentPyramid, points)
     : calculateHybridOpticalFlowFromPyramids(
         previousPyramid,
         currentPyramid,
         points,
         getHybridTrackingOptions(config),
+        targetHints,
       );
+
+type RotoBoundaryTrackStep = {
+  points: { x: number; y: number }[];
+  drift: number;
+};
+
+const trackRotoBoundaryStep = (
+  previousPyramid: ReturnType<typeof buildOpticalFlowPyramid>,
+  currentPyramid: ReturnType<typeof buildOpticalFlowPyramid>,
+  previousPoints: readonly { x: number; y: number }[],
+  previousWidth: number,
+  previousHeight: number,
+  config: TrackingConfig,
+  targetHints?: readonly { x: number; y: number }[],
+): RotoBoundaryTrackStep => {
+  const halfWidth = previousWidth / 2;
+  const halfHeight = previousHeight / 2;
+  const canvasPoints = previousPoints.map((point) => ({
+    x: point.x + halfWidth,
+    y: point.y + halfHeight,
+  }));
+  const canvasTargetHints = targetHints?.map((point) => ({
+    x: point.x + halfWidth,
+    y: point.y + halfHeight,
+  }));
+  const trackedCanvas = calculateRotoOpticalFlow(
+    previousPyramid,
+    currentPyramid,
+    canvasPoints,
+    config,
+    canvasTargetHints,
+  );
+  const drift = getRobustTrackingError(trackedCanvas);
+  const flows = trackedCanvas.map((point, index) => ({
+    dx: point.x - canvasPoints[index].x,
+    dy: point.y - canvasPoints[index].y,
+    error: point.error,
+  }));
+  const validFlows = flows.filter((flow) => flow.error < 15);
+  const moveSource = validFlows.length > 0 ? validFlows : flows;
+  const medianDx = getMedian(moveSource.map((flow) => flow.dx));
+  const medianDy = getMedian(moveSource.map((flow) => flow.dy));
+
+  return {
+    drift,
+    points: trackedCanvas.map((_point, index) => {
+      let dx = flows[index].dx;
+      let dy = flows[index].dy;
+      if (flows[index].error > 15 || Math.hypot(dx - medianDx, dy - medianDy) > 30) {
+        dx = medianDx;
+        dy = medianDy;
+      }
+      return {
+        x: canvasPoints[index].x + dx - halfWidth,
+        y: canvasPoints[index].y + dy - halfHeight,
+      };
+    }),
+  };
+};
+
+type RotoTemplateTrackResult = {
+  templateFrame: number;
+  points: { x: number; y: number }[];
+  drift: number;
+};
+
+const trackRotoTemplateToFrame = async ({
+  trackingPixelReader,
+  templateFrame,
+  destinationFrame,
+  templatePoints,
+  destinationHints,
+  config,
+  signal,
+  onStep,
+}: {
+  trackingPixelReader: ReturnType<typeof createSourcePixelDataReader>;
+  templateFrame: number;
+  destinationFrame: number;
+  templatePoints: { x: number; y: number }[];
+  destinationHints?: { x: number; y: number }[];
+  config: TrackingConfig;
+  signal: AbortSignal;
+  onStep: (frame: number, points: { x: number; y: number }[], drift: number) => void;
+}): Promise<RotoTemplateTrackResult | null> => {
+  const step = destinationFrame > templateFrame ? 1 : -1;
+  let previousPoints = templatePoints;
+  let previousPixelData = await trackingPixelReader.getFramePixelData(templateFrame);
+  let previousPyramid = previousPixelData
+    ? buildOpticalFlowPyramid(
+        previousPixelData.data,
+        previousPixelData.width,
+        previousPixelData.height,
+      )
+    : null;
+  let maximumDrift = 0;
+  const driftTolerance = config.driftTolerance ?? null;
+
+  for (
+    let frame = templateFrame + step;
+    step > 0 ? frame <= destinationFrame : frame >= destinationFrame;
+    frame += step
+  ) {
+    if (signal.aborted || !previousPixelData || !previousPyramid) return null;
+    const currentPixelData = await trackingPixelReader.getFramePixelData(frame);
+    if (!currentPixelData) return null;
+    const currentPyramid = buildOpticalFlowPyramid(
+      currentPixelData.data,
+      currentPixelData.width,
+      currentPixelData.height,
+    );
+    const trackedStep = trackRotoBoundaryStep(
+      previousPyramid,
+      currentPyramid,
+      previousPoints,
+      previousPixelData.width,
+      previousPixelData.height,
+      config,
+      frame === destinationFrame ? destinationHints : undefined,
+    );
+    maximumDrift = Math.max(maximumDrift, trackedStep.drift);
+    if (driftTolerance !== null && maximumDrift > driftTolerance) {
+      return null;
+    }
+
+    previousPoints = trackedStep.points;
+    previousPixelData = currentPixelData;
+    previousPyramid = currentPyramid;
+    onStep(frame, trackedStep.points, trackedStep.drift);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return {
+    templateFrame,
+    points: previousPoints,
+    drift: maximumDrift,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Tracking path helpers
@@ -173,6 +315,37 @@ export const getResolvedBoundaryPointsByPathAtFrame = (
       points: resolveRotoPathPointsAtFrame(rotoNode, path, frame),
     };
   });
+
+/** Builds an artist-authored pose source without reusing prior tracker output. */
+export const createRotoManualTemplateNode = (
+  rotoNode: RotoNode,
+  sourcePathIds: readonly string[],
+  target: ResolvedRotoTrackingTarget,
+): RotoNode => {
+  const sourcePathIdSet = new Set(sourcePathIds);
+
+  return {
+    ...rotoNode,
+    paths: rotoNode.paths.map((path) =>
+      sourcePathIdSet.has(path.id)
+        ? {
+            ...path,
+            trackPoints: undefined,
+            trackingTransform: undefined,
+            trackingData: undefined,
+          }
+        : path,
+    ),
+    layers:
+      target.kind === 'layer'
+        ? (rotoNode.layers ?? []).map((layer) =>
+            layer.id === target.layerId
+              ? { ...layer, trackingTransform: undefined, trackingData: undefined }
+              : layer,
+          )
+        : rotoNode.layers,
+  };
+};
 
 export const getTargetSourceBoundaryPointsAtFrame = (
   rotoNode: RotoNode,
@@ -368,6 +541,68 @@ export const updateTrackedPathsOnNode = (
       : path,
   ),
 });
+
+export const keyframeTrackedBoundaryPoints = ({
+  rotoNode,
+  projectionNode = rotoNode,
+  trackingPaths,
+  currentTrackPointsByPathId,
+  frame,
+  resolvedBoundaryPoints,
+}: {
+  rotoNode: RotoNode;
+  projectionNode?: RotoNode;
+  trackingPaths: readonly TrackingPathState[];
+  currentTrackPointsByPathId: Map<string, TrackingPathPoints>;
+  frame: number;
+  resolvedBoundaryPoints: readonly { x: number; y: number }[];
+}): Map<string, TrackingPathPoints> => {
+  const nextTrackPointsByPathId = new Map<string, TrackingPathPoints>();
+  let boundaryOffset = 0;
+
+  trackingPaths.forEach((trackingPath) => {
+    const path = getTrackingPathForState(rotoNode, trackingPath);
+    const projectionPath = getTrackingPathForState(projectionNode, trackingPath);
+    const currentTrackPoints = currentTrackPointsByPathId.get(path.id);
+    if (!currentTrackPoints) {
+      boundaryOffset += trackingPath.pointCount;
+      return;
+    }
+
+    nextTrackPointsByPathId.set(
+      path.id,
+      currentTrackPoints.map((trackPoint, pointIndex) => {
+        const targetPoint = resolvedBoundaryPoints[boundaryOffset + pointIndex];
+        const resolvedLocalPoint = targetPoint
+          ? projectScenePointToRotoPathResolvedLocal(
+              projectionNode,
+              projectionPath,
+              frame,
+              targetPoint,
+            )
+          : resolveRotoPathLocalPointsAtFrame(path, frame)[pointIndex];
+        const baseValueX = getLinearValueAtFrame(path.points[pointIndex].x, frame);
+        const baseValueY = getLinearValueAtFrame(path.points[pointIndex].y, frame);
+
+        return {
+          x: setKeyframeOnValue(
+            trackPoint.x,
+            frame,
+            (resolvedLocalPoint?.x ?? baseValueX) - baseValueX,
+          ),
+          y: setKeyframeOnValue(
+            trackPoint.y,
+            frame,
+            (resolvedLocalPoint?.y ?? baseValueY) - baseValueY,
+          ),
+        };
+      }),
+    );
+    boundaryOffset += trackingPath.pointCount;
+  });
+
+  return nextTrackPointsByPathId;
+};
 
 export const updateTrackingTargetOnNode = (
   rotoNode: RotoNode,
@@ -783,53 +1018,15 @@ export const trackRotoSelectionService = async (
           solvedMotionTransform);
       trackingDriftMap[frame] = Math.max(frameDrift, temporalFrame.anomalyScore);
 
-      let nextTrackPointsByPathId: Map<string, TrackingPathPoints> | undefined;
-      if (currentTrackPointsByPathId) {
-        nextTrackPointsByPathId = new Map<string, TrackingPathPoints>();
-        let boundaryOffset = 0;
-
-        trackingPaths.forEach((trackingPath: TrackingPathState) => {
-          const path = getTrackingPathForState(currentRotoNode, trackingPath);
-          const currentTrackPoints = currentTrackPointsByPathId?.get(path.id);
-          if (!currentTrackPoints) {
-            boundaryOffset += trackingPath.pointCount;
-            return;
-          }
-
-          const updatedTrackPoints = currentTrackPoints.map(
-            (trackPoint: { x: AnimatableNumber; y: AnimatableNumber }, pointIndex: number) => {
-              const targetPoint = resolvedBoundaryPoints[boundaryOffset + pointIndex];
-              const resolvedLocalPoint = targetPoint
-                ? projectScenePointToRotoPathResolvedLocal(
-                    currentRotoNode,
-                    path,
-                    frame,
-                    targetPoint,
-                  )
-                : resolveRotoPathLocalPointsAtFrame(path, frame)[pointIndex];
-              const baseValueX = getLinearValueAtFrame(path.points[pointIndex].x, frame);
-              const baseValueY = getLinearValueAtFrame(path.points[pointIndex].y, frame);
-
-              return {
-                x: setKeyframeOnValue(
-                  trackPoint.x,
-                  frame,
-                  (resolvedLocalPoint?.x ?? baseValueX) - baseValueX,
-                ),
-                y: setKeyframeOnValue(
-                  trackPoint.y,
-                  frame,
-                  (resolvedLocalPoint?.y ?? baseValueY) - baseValueY,
-                ),
-              };
-            },
-          );
-
-          nextTrackPointsByPathId.set(path.id, updatedTrackPoints);
-          boundaryOffset += trackingPath.pointCount;
-        });
-      }
-      currentTrackPointsByPathId = nextTrackPointsByPathId;
+      currentTrackPointsByPathId = currentTrackPointsByPathId
+        ? keyframeTrackedBoundaryPoints({
+            rotoNode: currentRotoNode,
+            trackingPaths,
+            currentTrackPointsByPathId,
+            frame,
+            resolvedBoundaryPoints,
+          })
+        : undefined;
 
       if (rotoIndex !== -1) {
         currentRotoNode = updateTrackedPathsOnNode(
@@ -932,6 +1129,228 @@ export const trackRotoSelectionService = async (
     });
     throw error;
   } finally {
+    trackingJob?.unregisterCancel?.();
+    trackingPixelReader.dispose();
+    setIfCurrentProjectBranch(projectContext, { activeTrackingPoints: null });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// matchRotoSelectionToCurrentFrame
+// ---------------------------------------------------------------------------
+
+export const matchRotoSelectionToCurrentFrameService = async (
+  get: GetState,
+  deps: TrackingActionDeps,
+  rotoNodeId: string,
+  sourcePathIds: string[],
+  target: RotoTrackingTarget,
+  sourceId: string,
+  config: TrackingConfig,
+  options: RotoTrackingRunOptions = {},
+  getProjectBranchContext: () => ProjectBranchContext,
+  applyRotoTrackingResult: (params: {
+    context: ProjectBranchContext;
+    rotoNodeId: string;
+    trackedNode: RotoNode;
+    trackingLabel: string;
+  }) => Promise<'current' | 'saved' | 'missing'>,
+  setIfCurrentProjectBranch: (
+    context: ProjectBranchContext,
+    patch: Record<string, unknown>,
+  ) => void,
+) => {
+  const projectContext = getProjectBranchContext();
+  const { nodes, currentFrame, fps, colorManagement } = get();
+  const rotoNode = nodes.find((node: AnyNode) => node.id === rotoNodeId) as RotoNode | undefined;
+  if (!rotoNode) return;
+
+  const templateFrames = getRotoMatchTemplateFrames(rotoNode, sourcePathIds, currentFrame);
+  if (templateFrames.previous === null && templateFrames.next === null) {
+    return;
+  }
+
+  const trackingSource = resolveSourcePixelSource(nodes, rotoNodeId, sourceId, colorManagement);
+  if (!trackingSource) return;
+
+  const materializedTarget = materializeRotoTrackingTarget(rotoNode, sourcePathIds, target);
+  const resolvedTarget = materializedTarget.target;
+  const manualTemplateNode = createRotoManualTemplateNode(
+    materializedTarget.node,
+    sourcePathIds,
+    resolvedTarget,
+  );
+  const trackingPaths = getTrackingPathStates(manualTemplateNode, sourcePathIds);
+  if (trackingPaths.length === 0) return;
+  const destinationHints = templateFrames.hasCurrentKeyframe
+    ? getResolvedBoundaryPointsAtFrame(manualTemplateNode, trackingPaths, currentFrame)
+    : undefined;
+
+  const trackingPixelReader = createSourcePixelDataReader(trackingSource, fps || 30);
+  const trackingLabel =
+    sourcePathIds.length > 1 ? 'Match Roto Shapes to Frame' : 'Match Roto Shape to Frame';
+  const runInBackground = options.runInBackground === true;
+  const candidateTemplateFrames = [templateFrames.previous, templateFrames.next].filter(
+    (frame): frame is number => frame !== null,
+  );
+  const totalSteps = Math.max(
+    1,
+    candidateTemplateFrames.reduce(
+      (sum, templateFrame) => sum + Math.abs(currentFrame - templateFrame),
+      0,
+    ),
+  );
+  let completedSteps = 0;
+  let trackingJob: RotoTrackingJob | null = null;
+  let trackingController: AbortController | null = null;
+
+  try {
+    trackingJob = createRotoTrackingJob(
+      deps.startBackgroundJob,
+      deps.updateBackgroundJob,
+      deps.finishBackgroundJob,
+      trackingLabel,
+      manualTemplateNode,
+      trackingSource,
+      get().projectId ?? null,
+    );
+
+    if (deps.trackingAbortController.current) deps.trackingAbortController.current.abort();
+    trackingController = new AbortController();
+    deps.trackingAbortController.current = trackingController;
+    bindRotoTrackingJobCancel(trackingJob, trackingController);
+
+    const matches: RotoTemplateTrackResult[] = [];
+    for (const templateFrame of candidateTemplateFrames) {
+      if (trackingController.signal.aborted) break;
+      const templatePoints = getResolvedBoundaryPointsAtFrame(
+        manualTemplateNode,
+        trackingPaths,
+        templateFrame,
+      );
+      const match = await trackRotoTemplateToFrame({
+        trackingPixelReader,
+        templateFrame,
+        destinationFrame: currentFrame,
+        templatePoints,
+        destinationHints,
+        config,
+        signal: trackingController.signal,
+        onStep: (frame, points, drift) => {
+          completedSteps += 1;
+          trackingJob?.update({
+            detail: `Matching ${templateFrame} → ${currentFrame} · frame ${frame} · drift ${drift.toFixed(1)}`,
+            progress: Math.min(99, (completedSteps / totalSteps) * 100),
+          });
+          if (!runInBackground) {
+            setIfCurrentProjectBranch(projectContext, { activeTrackingPoints: points });
+          }
+        },
+      });
+      if (match) matches.push(match);
+    }
+
+    if (trackingController.signal.aborted) {
+      trackingJob.finish({
+        status: 'cancelled',
+        progress: (completedSteps / totalSteps) * 100,
+        detail: `Cancelled while matching frame ${currentFrame}`,
+        cancellable: false,
+      });
+      return;
+    }
+
+    const previousMatch = matches.find((match) => match.templateFrame === templateFrames.previous);
+    const nextMatch = matches.find((match) => match.templateFrame === templateFrames.next);
+    if (!previousMatch && !nextMatch) {
+      trackingJob.finish({
+        status: 'error',
+        detail: `Could not match frame ${currentFrame} from the available template`,
+        error: 'Template tracking failed or exceeded the drift tolerance',
+        cancellable: false,
+      });
+      return;
+    }
+
+    let resolvedBoundaryPoints: { x: number; y: number }[];
+    if (
+      previousMatch &&
+      nextMatch &&
+      templateFrames.previous !== null &&
+      templateFrames.next !== null
+    ) {
+      const blend =
+        (currentFrame - templateFrames.previous) / (templateFrames.next - templateFrames.previous);
+      resolvedBoundaryPoints = previousMatch.points.map((previousPoint, index) => {
+        const nextPoint = nextMatch.points[index] ?? previousPoint;
+        return {
+          x: previousPoint.x * (1 - blend) + nextPoint.x * blend,
+          y: previousPoint.y * (1 - blend) + nextPoint.y * blend,
+        };
+      });
+    } else {
+      const onlyMatch = previousMatch ?? nextMatch;
+      if (!onlyMatch) return;
+      resolvedBoundaryPoints = onlyMatch.points;
+    }
+
+    const manualCurrentPoints = getResolvedBoundaryPointsAtFrame(
+      manualTemplateNode,
+      trackingPaths,
+      currentFrame,
+    );
+    const solvedTransform = config.deform
+      ? null
+      : fitTrackedTransform(manualCurrentPoints, resolvedBoundaryPoints, config);
+    const keyframedBoundaryPoints = config.deform
+      ? resolvedBoundaryPoints
+      : solvedTransform
+        ? applySolvedTransform(manualCurrentPoints, solvedTransform)
+        : solveTransform(manualCurrentPoints, resolvedBoundaryPoints, manualCurrentPoints, config);
+    const scenePointsByPathId = new Map<string, { x: number; y: number }[]>();
+    let boundaryOffset = 0;
+    trackingPaths.forEach((trackingPath) => {
+      scenePointsByPathId.set(
+        trackingPath.path.id,
+        keyframedBoundaryPoints.slice(boundaryOffset, boundaryOffset + trackingPath.pointCount),
+      );
+      boundaryOffset += trackingPath.pointCount;
+    });
+    const currentRotoNode = keyframeRotoPathScenePointsAtFrame(
+      rotoNode,
+      currentFrame,
+      scenePointsByPathId,
+    );
+
+    await applyRotoTrackingResult({
+      context: projectContext,
+      rotoNodeId,
+      trackedNode: currentRotoNode,
+      trackingLabel,
+    });
+
+    const usedTemplateFrames = [previousMatch?.templateFrame, nextMatch?.templateFrame].filter(
+      (frame): frame is number => frame !== undefined,
+    );
+    trackingJob.finish({
+      status: 'complete',
+      progress: 100,
+      detail: `Matched frame ${currentFrame} from ${usedTemplateFrames.join(' + ')}`,
+      cancellable: false,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Current-frame matching failed';
+    trackingJob?.finish({
+      status: 'error',
+      detail: message,
+      error: message,
+      cancellable: false,
+    });
+    throw error;
+  } finally {
+    if (trackingController && deps.trackingAbortController.current === trackingController) {
+      deps.trackingAbortController.current = null;
+    }
     trackingJob?.unregisterCancel?.();
     trackingPixelReader.dispose();
     setIfCurrentProjectBranch(projectContext, { activeTrackingPoints: null });
@@ -1135,20 +1554,15 @@ export const smartTrackRotoSelectionService = async (
         currentPixelData.height,
       );
 
-      const halfWidth = previousPixelData.width / 2;
-      const halfHeight = previousPixelData.height / 2;
-      const canvasPoints = previousPoints.map((point: { x: number; y: number }) => ({
-        x: point.x + halfWidth,
-        y: point.y + halfHeight,
-      }));
-
-      const trackedCanvas = calculateRotoOpticalFlow(
+      const trackedStep = trackRotoBoundaryStep(
         previousPyramid,
         currentPyramid,
-        canvasPoints,
+        previousPoints,
+        previousPixelData.width,
+        previousPixelData.height,
         config,
       );
-      const frameDrift = getRobustTrackingError(trackedCanvas);
+      const frameDrift = trackedStep.drift;
       if (driftTolerance !== null && frameDrift > driftTolerance) {
         stoppedByDrift = { frame, drift: frameDrift };
         trackingJob?.update({
@@ -1160,33 +1574,7 @@ export const smartTrackRotoSelectionService = async (
         break;
       }
       trackingDriftMap[frame] = frameDrift;
-
-      const flows = trackedCanvas.map(
-        (point: { x: number; y: number; error: number }, index: number) => ({
-          dx: point.x - canvasPoints[index].x,
-          dy: point.y - canvasPoints[index].y,
-          error: point.error,
-        }),
-      );
-      const validFlows = flows.filter((flow: { error: number }) => flow.error < 15.0);
-      const moveSource = validFlows.length > 0 ? validFlows : flows;
-      const medianDx = getMedian(moveSource.map((flow: { dx: number }) => flow.dx));
-      const medianDy = getMedian(moveSource.map((flow: { dy: number }) => flow.dy));
-
-      const trackedScene = trackedCanvas.map(
-        (_point: { x: number; y: number; error: number }, index: number) => {
-          let dx = flows[index].dx;
-          let dy = flows[index].dy;
-          if (flows[index].error > 15.0 || Math.hypot(dx - medianDx, dy - medianDy) > 30.0) {
-            dx = medianDx;
-            dy = medianDy;
-          }
-          return {
-            x: canvasPoints[index].x + dx - halfWidth,
-            y: canvasPoints[index].y + dy - halfHeight,
-          };
-        },
-      );
+      const trackedScene = trackedStep.points;
 
       forwardTracks[frame] = trackedScene;
       previousPoints = trackedScene;
@@ -1227,20 +1615,15 @@ export const smartTrackRotoSelectionService = async (
           currentPixelData.height,
         );
 
-        const halfWidth = nextPixelData.width / 2;
-        const halfHeight = nextPixelData.height / 2;
-        const canvasPoints = nextPoints.map((point: { x: number; y: number }) => ({
-          x: point.x + halfWidth,
-          y: point.y + halfHeight,
-        }));
-
-        const trackedCanvas = calculateRotoOpticalFlow(
+        const trackedStep = trackRotoBoundaryStep(
           nextPyramid,
           currentPyramid,
-          canvasPoints,
+          nextPoints,
+          nextPixelData.width,
+          nextPixelData.height,
           config,
         );
-        const frameDrift = getRobustTrackingError(trackedCanvas);
+        const frameDrift = trackedStep.drift;
         if (driftTolerance !== null && frameDrift > driftTolerance) {
           stoppedByDrift = { frame, drift: frameDrift };
           trackingJob?.update({
@@ -1252,33 +1635,7 @@ export const smartTrackRotoSelectionService = async (
           break;
         }
         trackingDriftMap[frame] = Math.max(trackingDriftMap[frame] ?? 0, frameDrift);
-
-        const flows = trackedCanvas.map(
-          (point: { x: number; y: number; error: number }, index: number) => ({
-            dx: point.x - canvasPoints[index].x,
-            dy: point.y - canvasPoints[index].y,
-            error: point.error,
-          }),
-        );
-        const validFlows = flows.filter((flow: { error: number }) => flow.error < 15.0);
-        const moveSource = validFlows.length > 0 ? validFlows : flows;
-        const medianDx = getMedian(moveSource.map((flow: { dx: number }) => flow.dx));
-        const medianDy = getMedian(moveSource.map((flow: { dy: number }) => flow.dy));
-
-        const trackedScene = trackedCanvas.map(
-          (_point: { x: number; y: number; error: number }, index: number) => {
-            let dx = flows[index].dx;
-            let dy = flows[index].dy;
-            if (flows[index].error > 15.0 || Math.hypot(dx - medianDx, dy - medianDy) > 30.0) {
-              dx = medianDx;
-              dy = medianDy;
-            }
-            return {
-              x: canvasPoints[index].x + dx - halfWidth,
-              y: canvasPoints[index].y + dy - halfHeight,
-            };
-          },
-        );
+        const trackedScene = trackedStep.points;
 
         backwardTracks[frame] = trackedScene;
         nextPoints = trackedScene;
@@ -1347,53 +1704,15 @@ export const smartTrackRotoSelectionService = async (
           currentTrackPointsByPathId,
         );
 
-        let nextTrackPointsByPathId: Map<string, TrackingPathPoints> | undefined;
-        if (currentTrackPointsByPathId) {
-          nextTrackPointsByPathId = new Map<string, TrackingPathPoints>();
-          let boundaryOffset = 0;
-
-          trackingPaths.forEach((trackingPath: TrackingPathState) => {
-            const path = getTrackingPathForState(currentRotoNode, trackingPath);
-            const currentTrackPoints = currentTrackPointsByPathId?.get(path.id);
-            if (!currentTrackPoints) {
-              boundaryOffset += trackingPath.pointCount;
-              return;
-            }
-
-            const updatedTrackPoints = currentTrackPoints.map(
-              (trackPoint: { x: AnimatableNumber; y: AnimatableNumber }, pointIndex: number) => {
-                const targetPoint = resolvedBoundaryPoints[boundaryOffset + pointIndex];
-                const resolvedLocalPoint = targetPoint
-                  ? projectScenePointToRotoPathResolvedLocal(
-                      currentRotoNode,
-                      path,
-                      frame,
-                      targetPoint,
-                    )
-                  : resolveRotoPathLocalPointsAtFrame(path, frame)[pointIndex];
-                const baseValueX = getLinearValueAtFrame(path.points[pointIndex].x, frame);
-                const baseValueY = getLinearValueAtFrame(path.points[pointIndex].y, frame);
-
-                return {
-                  x: setKeyframeOnValue(
-                    trackPoint.x,
-                    frame,
-                    (resolvedLocalPoint?.x ?? baseValueX) - baseValueX,
-                  ),
-                  y: setKeyframeOnValue(
-                    trackPoint.y,
-                    frame,
-                    (resolvedLocalPoint?.y ?? baseValueY) - baseValueY,
-                  ),
-                };
-              },
-            );
-
-            nextTrackPointsByPathId.set(path.id, updatedTrackPoints);
-            boundaryOffset += trackingPath.pointCount;
-          });
-        }
-        currentTrackPointsByPathId = nextTrackPointsByPathId;
+        currentTrackPointsByPathId = currentTrackPointsByPathId
+          ? keyframeTrackedBoundaryPoints({
+              rotoNode: currentRotoNode,
+              trackingPaths,
+              currentTrackPointsByPathId,
+              frame,
+              resolvedBoundaryPoints,
+            })
+          : undefined;
 
         if (rotoIndex !== -1) {
           currentRotoNode = updateTrackedPathsOnNode(

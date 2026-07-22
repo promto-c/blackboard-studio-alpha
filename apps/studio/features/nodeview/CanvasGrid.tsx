@@ -1,8 +1,10 @@
 interface CanvasGridProps {
   zoom: number;
+  panX?: number;
+  panY?: number;
 }
 
-function CanvasGrid({ zoom }: CanvasGridProps) {
+function CanvasGrid({ zoom, panX = 0, panY = 0 }: CanvasGridProps) {
   const baseSize = 24;
   const size = baseSize * zoom;
 
@@ -12,7 +14,7 @@ function CanvasGrid({ zoom }: CanvasGridProps) {
       style={{
         backgroundImage: `radial-gradient(circle, rgba(75, 85, 99, 0.4) ${Math.max(0.5, zoom * 0.8)}px, transparent ${Math.max(0.5, zoom * 0.8)}px)`,
         backgroundSize: `${size}px ${size}px`,
-        backgroundPosition: '0 0',
+        backgroundPosition: `${panX}px ${panY}px`,
       }}
     />
   );

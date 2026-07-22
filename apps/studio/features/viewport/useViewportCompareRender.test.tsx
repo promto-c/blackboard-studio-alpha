@@ -135,6 +135,7 @@ const createHookProps = (
     alphaOverlayStyle: { color: [0, 0, 0] as [number, number, number], opacity: 0, bgDarken: 0 },
     hasRenderableNodes: true,
     isRenderReady: true,
+    freezeImageWhileEditing: false,
     mediaUpdateTrigger: 0,
     slotADisplayOutputRef: { current: slotATarget },
     textureCacheRef: { current: { get: () => undefined } },
@@ -203,6 +204,34 @@ describe('useViewportCompareRender', () => {
     const compositeMaterial = compositeQuad.material as THREE.ShaderMaterial;
     expect(compositeMaterial.uniforms.u_tSlotA.value).toBe(slotATarget.texture);
     expect(slotATarget.dispose).not.toHaveBeenCalled();
+  });
+
+  it('keeps the completed slot-B image while an alpha-dead Roto edit is active', () => {
+    const gl = createRenderer();
+    const slotATarget = createTarget();
+    const initialProps = createHookProps(gl, slotATarget);
+    const { rerender } = renderHook(
+      (props: CompareRenderProps) => useViewportCompareRender(props),
+      { initialProps },
+    );
+
+    const editedNodes = [...initialProps.viewportNodesB];
+    const proxyQuality = { mode: 'preview' as const, resolutionScale: 0.5, sampleLimit: 16 };
+    rerender({
+      ...initialProps,
+      viewportNodesB: editedNodes,
+      renderQuality: proxyQuality,
+      freezeImageWhileEditing: true,
+    });
+    expect(renderViewportFrameMock).toHaveBeenCalledOnce();
+
+    rerender({
+      ...initialProps,
+      viewportNodesB: editedNodes,
+      renderQuality: proxyQuality,
+      freezeImageWhileEditing: false,
+    });
+    expect(renderViewportFrameMock).toHaveBeenCalledTimes(2);
   });
 
   it('swaps the visible texture sides without changing the canonical base target', () => {

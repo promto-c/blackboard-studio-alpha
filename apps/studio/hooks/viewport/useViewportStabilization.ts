@@ -22,6 +22,7 @@ import {
   invertRotoTrackingMatrix4,
   multiplyRotoTrackingMatrix4,
   reduceRotoTrackingMatrix4ToComponents,
+  resolveRotoTrackingTransformDataFromMatrix,
 } from '@/utils/rotoTracking';
 
 type UseViewportStabilizationOptions = {
@@ -34,7 +35,6 @@ type UseViewportStabilizationOptions = {
   selectedNodeId: string | null;
   sceneNode: SceneNode | null | undefined;
   visualFrame: number;
-  viewportInterpolation: string;
   pan: { x: number; y: number };
   zoom: number;
   viewportRef: RefObject<HTMLDivElement | null>;
@@ -80,14 +80,19 @@ export const useViewportStabilization = ({
   selectedNodeId,
   sceneNode,
   visualFrame,
-  viewportInterpolation,
   pan,
   zoom,
   viewportRef,
   recaptureStabilizationReference,
 }: UseViewportStabilizationOptions) => {
-  const selectedRotoLayerIds = hierarchySelections[selectedNodeId ?? '']?.layerIds ?? [];
-  const selectedRotoPathIds = hierarchySelections[selectedNodeId ?? '']?.itemIds ?? [];
+  const selectedRotoLayerIds = useMemo(
+    () => hierarchySelections[selectedNodeId ?? '']?.layerIds ?? [],
+    [hierarchySelections, selectedNodeId],
+  );
+  const selectedRotoPathIds = useMemo(
+    () => hierarchySelections[selectedNodeId ?? '']?.itemIds ?? [],
+    [hierarchySelections, selectedNodeId],
+  );
 
   const prevRotoSelectionRef = useRef({
     pathIds: selectedRotoPathIds,
@@ -186,20 +191,25 @@ export const useViewportStabilization = ({
     [stabilizationMatrix],
   );
 
-  const stabilizedSceneStyle = useMemo<CSSProperties>(
+  const stabilizationScale = useMemo(
+    () =>
+      stabilizationMatrix
+        ? resolveRotoTrackingTransformDataFromMatrix(stabilizationMatrix).scale
+        : 1,
+    [stabilizationMatrix],
+  );
+
+  const stabilizationTransformStyle = useMemo<CSSProperties>(
     () =>
       sceneNode
         ? {
-            position: 'absolute',
-            inset: 0,
             transformOrigin: `${sceneNode.width / 2}px ${sceneNode.height / 2}px`,
             transform: stabilizationMatrix
               ? formatRotoTrackingMatrix4AsCssMatrix3d(stabilizationMatrix)
               : undefined,
-            imageRendering: viewportInterpolation === 'nearest' ? 'pixelated' : 'auto',
           }
-        : { display: 'none' },
-    [sceneNode, stabilizationMatrix, viewportInterpolation],
+        : {},
+    [sceneNode, stabilizationMatrix],
   );
 
   const viewportTransformRef = useRef({
@@ -243,8 +253,9 @@ export const useViewportStabilization = ({
 
   return {
     stabilizationMatrix,
+    stabilizationScale,
     stabilizationInverseMatrix,
-    stabilizedSceneStyle,
+    stabilizationTransformStyle,
     viewportToSceneCentered,
   };
 };

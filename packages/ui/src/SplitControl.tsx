@@ -3,14 +3,17 @@ import React from 'react';
 const joinClasses = (...classes: Array<string | false | null | undefined>) =>
   classes.filter(Boolean).join(' ');
 
-export type SplitControlProps = React.HTMLAttributes<HTMLDivElement>;
+export type SplitControlProps = React.HTMLAttributes<HTMLDivElement> & {
+  density?: 'default' | 'toolbar';
+};
 export type SplitControlActionProps = React.ButtonHTMLAttributes<HTMLButtonElement>;
 
-export function SplitControl({ className, ...props }: SplitControlProps) {
+export function SplitControl({ className, density = 'default', ...props }: SplitControlProps) {
   return (
     <div
       className={joinClasses(
         'bb-dropdown-surface bb-split-control inline-flex min-w-0 items-stretch overflow-hidden rounded-lg',
+        density === 'toolbar' && 'bb-control-toolbar',
         className,
       )}
       {...props}

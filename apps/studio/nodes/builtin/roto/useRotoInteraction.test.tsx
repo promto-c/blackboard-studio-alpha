@@ -381,6 +381,59 @@ describe('useRotoInteraction bspline drawing', () => {
   });
 });
 
+describe('useRotoInteraction Smart Mask gestures', () => {
+  it('leaves middle mouse down available for viewport pan', () => {
+    const node = createRotoNode();
+    const { result } = renderHook(() =>
+      useRotoInteraction({
+        selectedNode: node,
+        selectedNodeId: node.id,
+        nodes: [node],
+        selectedRotoLayerIds: [],
+        selectedRotoPathIds: [],
+        selectedRotoPointRefs: [],
+        zoom: 1,
+        visualFrame: 0,
+        activeViewportTool: 'segment-point',
+        altPressed: false,
+        shiftPressed: false,
+        affineModifierPressed: false,
+        mouseScenePos: null,
+        isDrawing: false,
+        drawingRotoPath: null,
+        rotoRefinement: null,
+        nudgeRadius: 50,
+        rotoPointWeightMode: 'global',
+        viewportRef: { current: document.createElement('div') },
+        viewportToSceneCentered: (pos) => pos,
+        updateNode: vi.fn(),
+        commitMutation: vi.fn(),
+        setHierarchySelection: vi.fn(),
+        setSelectedRotoPointRefs: vi.fn(),
+        setActiveViewportTool: vi.fn(),
+        startDrawingShape: vi.fn(),
+        addPointToDrawingShape: vi.fn(),
+        updateDrawingPoint: vi.fn(),
+        commitDrawingShape: vi.fn(),
+        cancelDrawingShape: vi.fn(),
+        addRotoPointToPath: vi.fn(),
+        startRotoRefinement: vi.fn(),
+        commitRotoRefinement: vi.fn(),
+        setPreferences: vi.fn(),
+      }),
+    );
+    const event = { ...createMouseEvent(), button: 1 } as React.MouseEvent<HTMLDivElement>;
+
+    let consumed = true;
+    act(() => {
+      consumed = result.current.handleSegmentationMouseDown(event, { x: 10, y: 20 });
+    });
+
+    expect(consumed).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+});
+
 describe('useRotoInteraction rectangle drawing', () => {
   it('commits rectangles as closed b-spline paths with corner points', () => {
     const updateNode = vi.fn();

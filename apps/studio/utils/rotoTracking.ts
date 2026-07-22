@@ -52,6 +52,12 @@ interface RotoTrackingSelectionScope {
   reason?: string;
 }
 
+export interface RotoMatchTemplateFrames {
+  previous: number | null;
+  next: number | null;
+  hasCurrentKeyframe: boolean;
+}
+
 type TransformComponentConfig = {
   translation: boolean;
   rotation: boolean;
@@ -80,6 +86,52 @@ const createIdentityResolvedMatrix4 = (): number[][] =>
 
 const isTransformComponentEnabled = (config: TransformComponentConfig): boolean =>
   config.translation || config.rotation || config.scale || config.affine || config.perspective;
+
+/**
+ * Finds the closest manual Roto poses surrounding a destination frame.
+ * Tracker-generated point offsets are intentionally excluded so repeated
+ * matches continue to use artist-authored geometry as their templates.
+ */
+export const getRotoMatchTemplateFrames = (
+  node: RotoNode,
+  sourcePathIds: readonly string[],
+  currentFrame: number,
+): RotoMatchTemplateFrames => {
+  const sourcePathIdSet = new Set(sourcePathIds);
+  const manualFrames = new Set<number>();
+
+  node.paths.forEach((path) => {
+    if (!sourcePathIdSet.has(path.id)) return;
+
+    path.points.forEach((point) => {
+      [point.x, point.y].forEach((value) => {
+        if (!Array.isArray(value)) return;
+        value.forEach((keyframe) => manualFrames.add(keyframe.frame));
+      });
+    });
+  });
+
+  const sortedFrames = [...manualFrames].sort((left, right) => left - right);
+  let previous: number | null = null;
+  let next: number | null = null;
+
+  for (const frame of sortedFrames) {
+    if (frame < currentFrame) {
+      previous = frame;
+      continue;
+    }
+    if (frame > currentFrame) {
+      next = frame;
+      break;
+    }
+  }
+
+  return {
+    previous,
+    next,
+    hasCurrentKeyframe: manualFrames.has(currentFrame),
+  };
+};
 
 export const resolveRotoTrackingMatrix4 = (
   matrix: RotoTrackingMatrix4 | undefined,
@@ -407,6 +459,38 @@ export const projectScenePointToRotoPathBasePoint = (
     y: resolvedLocalPoint.y - trackOffset.y,
   };
 };
+
+/** Bakes scene-space path geometry into artist-editable point keyframes. */
+export const keyframeRotoPathScenePointsAtFrame = (
+  node: RotoNode,
+  frame: number,
+  scenePointsByPathId: ReadonlyMap<string, readonly Pick<Point, 'x' | 'y'>[]>,
+): RotoNode => ({
+  ...node,
+  paths: node.paths.map((path) => {
+    const scenePoints = scenePointsByPathId.get(path.id);
+    if (!scenePoints) return path;
+
+    return {
+      ...path,
+      points: path.points.map((point, pointIndex) => {
+        const scenePoint = scenePoints[pointIndex];
+        if (!scenePoint) return point;
+        const basePoint = projectScenePointToRotoPathBasePoint(
+          node,
+          path,
+          frame,
+          pointIndex,
+          scenePoint,
+        );
+        return {
+          x: setKeyframeOnValue(point.x, frame, basePoint.x),
+          y: setKeyframeOnValue(point.y, frame, basePoint.y),
+        };
+      }),
+    };
+  }),
+});
 
 export const resolveRotoTrackingTransformDataFromMatrix = (
   matrix: number[][],

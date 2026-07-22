@@ -19,7 +19,11 @@ import {
   defaultBackgroundJobExecutor,
   type BackgroundJobRunContext,
 } from './backgroundJobExecutor';
-import type { OnnxBackend, OnnxModelVariantMetadata } from '@blackboard/types';
+import type {
+  ModelCatalogReference,
+  OnnxBackend,
+  OnnxModelVariantMetadata,
+} from '@blackboard/types';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
@@ -33,6 +37,17 @@ const readOnnxVariantPayload = (payload: unknown): OnnxModelVariantMetadata | nu
     typeof variant.label === 'string'
     ? (variant as unknown as OnnxModelVariantMetadata)
     : null;
+};
+
+const readCatalogReferencePayload = (payload: unknown): ModelCatalogReference | undefined => {
+  if (!isRecord(payload) || !isRecord(payload.catalogRef)) return undefined;
+  const catalogRef = payload.catalogRef;
+  return typeof catalogRef.modelId === 'string' &&
+    typeof catalogRef.modelName === 'string' &&
+    typeof catalogRef.origin === 'string' &&
+    typeof catalogRef.runtime === 'string'
+    ? (catalogRef as unknown as ModelCatalogReference)
+    : undefined;
 };
 
 const reportOnnxDownloadProgress = (
@@ -111,15 +126,25 @@ export const useBackgroundJobExecutor = () => {
             isBackgroundJobActive(job) &&
             job.source?.restoredFromStorage,
         )
-        .map((job) => ({ job, variant: readOnnxVariantPayload(job.payload) }))
-        .filter((entry): entry is { job: BackgroundJob; variant: OnnxModelVariantMetadata } =>
-          Boolean(entry.variant),
+        .map((job) => ({
+          job,
+          variant: readOnnxVariantPayload(job.payload),
+          catalogRef: readCatalogReferencePayload(job.payload),
+        }))
+        .filter(
+          (
+            entry,
+          ): entry is {
+            job: BackgroundJob;
+            variant: OnnxModelVariantMetadata;
+            catalogRef: ModelCatalogReference | undefined;
+          } => Boolean(entry.variant),
         ),
     [backgroundJobs],
   );
 
   useEffect(() => {
-    restartableOnnxJobs.forEach(({ job, variant }) => {
+    restartableOnnxJobs.forEach(({ job, variant, catalogRef }) => {
       if (runningRestartJobIdsRef.current.has(job.id)) return;
       runningRestartJobIdsRef.current.add(job.id);
       const fileName = variant.filePath.split('/').pop() ?? variant.filePath;
@@ -137,6 +162,7 @@ export const useBackgroundJobExecutor = () => {
             } = { current: null };
             const model = await downloadAndCacheOnnxModel({
               variant,
+              catalogRef,
               signal: run.signal,
               onProgress: (progress) => reportOnnxDownloadProgress(run, progress, currentFileRef),
             });

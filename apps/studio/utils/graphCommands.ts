@@ -61,7 +61,12 @@ import {
   sanitizeViewerNodeId,
   sanitizeViewerSlots,
 } from '@/utils/viewerSlots';
-import { placeNewMergeSourceBranch } from '@/utils/autoLayoutGraph';
+import {
+  buildStackMap,
+  estimateNodeHeight,
+  placeNewMergeSourceBranch,
+  VERTICAL_GAP,
+} from '@/utils/autoLayoutGraph';
 import {
   NODE_CLIPBOARD_KIND,
   NODE_CLIPBOARD_VERSION,
@@ -1429,25 +1434,115 @@ const offsetPositions = (positions: NodePositions, offset: { x: number; y: numbe
     ]),
   ) as NodePositions;
 
+const getPositionedStackAnchorId = (
+  nodes: AnyNode[],
+  nodeId: string | null,
+  positions: NodePositions,
+): string | null => {
+  if (!nodeId) return null;
+  if (positions[nodeId]) return nodeId;
+  return (
+    buildNodeStacks(nodes).find((stack) => stack.some((node) => node.id === nodeId))?.[0].id ?? null
+  );
+};
+
+const getPositionBottom = (positions: NodePositions, nodes: AnyNode[]): number | null => {
+  const entries = Object.entries(positions);
+  if (entries.length === 0) return null;
+  const stackMap = buildStackMap(buildNodeStacks(nodes));
+  return Math.max(
+    ...entries.map(([nodeId, position]) => position.y + estimateNodeHeight(nodeId, stackMap)),
+  );
+};
+
+const shiftDownstreamPositionsForPaste = ({
+  activePositions,
+  insertedPositions,
+  insertedNodes,
+  activeNodes,
+  downstreamNodeIds,
+}: {
+  activePositions: NodePositions;
+  insertedPositions: NodePositions;
+  insertedNodes: AnyNode[];
+  activeNodes: AnyNode[];
+  downstreamNodeIds: readonly string[];
+}): NodePositions => {
+  const insertedBottom = getPositionBottom(insertedPositions, insertedNodes);
+  if (insertedBottom === null || downstreamNodeIds.length === 0) return activePositions;
+
+  const downstreamPositionIds = new Set(
+    downstreamNodeIds
+      .map((nodeId) => getPositionedStackAnchorId(activeNodes, nodeId, activePositions))
+      .filter((nodeId): nodeId is string => !!nodeId),
+  );
+  const downstreamTop = Math.min(
+    ...[...downstreamPositionIds]
+      .map((nodeId) => activePositions[nodeId]?.y)
+      .filter((y): y is number => typeof y === 'number'),
+  );
+  if (!Number.isFinite(downstreamTop)) return activePositions;
+
+  const shift = insertedBottom + VERTICAL_GAP - downstreamTop;
+  if (shift <= 0) return activePositions;
+
+  return Object.fromEntries(
+    Object.entries(activePositions).map(([nodeId, position]) => [
+      nodeId,
+      downstreamPositionIds.has(nodeId) ? { x: position.x, y: position.y + shift } : position,
+    ]),
+  );
+};
+
 const buildPastedTopLevelPositions = ({
   payload,
   clonedNodes,
   nodeIdMap,
   activePositions,
-  selectedNodeId,
+  activeNodes,
+  layoutAnchorNodeId,
   pastePosition,
 }: {
   payload: NodeClipboardPayload;
   clonedNodes: AnyNode[];
   nodeIdMap: Map<string, string>;
   activePositions: NodePositions;
-  selectedNodeId: string | null;
+  activeNodes: AnyNode[];
+  layoutAnchorNodeId: string | null;
   pastePosition?: { x: number; y: number } | null;
 }): NodePositions => {
   const sourcePositions = payload.sourceFlowId
     ? (payload.nodePositionsByFlow[payload.sourceFlowId] ?? {})
     : {};
   const sourceBounds = getPositionBounds(payload.nodes, sourcePositions);
+
+  const positionedAnchorNodeId = getPositionedStackAnchorId(
+    activeNodes,
+    layoutAnchorNodeId,
+    activePositions,
+  );
+  const anchorPosition = positionedAnchorNodeId
+    ? activePositions[positionedAnchorNodeId]
+    : undefined;
+  const activeStackMap = buildStackMap(buildNodeStacks(activeNodes));
+  const anchorHeight = positionedAnchorNodeId
+    ? estimateNodeHeight(positionedAnchorNodeId, activeStackMap)
+    : 0;
+
+  if (!sourceBounds && anchorPosition && clonedNodes.length > 0) {
+    const clonedStacks = buildNodeStacks(clonedNodes);
+    const clonedStackMap = buildStackMap(clonedStacks);
+    let y = anchorPosition.y + anchorHeight + VERTICAL_GAP;
+    const nextPositions: NodePositions = {};
+
+    for (const stack of clonedStacks) {
+      const baseNode = stack[0];
+      nextPositions[baseNode.id] = { x: anchorPosition.x, y };
+      y += estimateNodeHeight(baseNode.id, clonedStackMap) + VERTICAL_GAP;
+    }
+
+    return nextPositions;
+  }
 
   if (!sourceBounds && pastePosition && clonedNodes.length > 0) {
     return Object.fromEntries(
@@ -1464,17 +1559,15 @@ const buildPastedTopLevelPositions = ({
   if (!sourceBounds) return {};
 
   let offset = PASTE_OFFSET;
-  const selectedPosition = selectedNodeId ? activePositions[selectedNodeId] : null;
-
-  if (pastePosition) {
+  if (anchorPosition) {
+    offset = {
+      x: anchorPosition.x - sourceBounds.minX,
+      y: anchorPosition.y + anchorHeight + VERTICAL_GAP - sourceBounds.minY,
+    };
+  } else if (pastePosition) {
     offset = {
       x: pastePosition.x - sourceBounds.centerX,
       y: pastePosition.y - sourceBounds.centerY,
-    };
-  } else if (selectedPosition) {
-    offset = {
-      x: selectedPosition.x + PASTE_OFFSET.x - sourceBounds.minX,
-      y: selectedPosition.y + PASTE_OFFSET.y - sourceBounds.minY,
     };
   }
 
@@ -1490,7 +1583,7 @@ const buildPastedTopLevelPositions = ({
     };
   }
 
-  if (pastePosition) return nextPositions;
+  if (anchorPosition || pastePosition) return nextPositions;
 
   let attempts = 0;
   while (hasPositionCollision(nextPositions, activePositions) && attempts < 20) {
@@ -1515,6 +1608,170 @@ const remapFlowPositions = (
   }
 
   return nextPositions;
+};
+
+interface PastedSelectionConnection {
+  nodes: AnyNode[];
+  outputSourceNodeId: string | null;
+  mergeNode: AnyNode | null;
+  mergeAnchorNodeId: string | null;
+  layoutAnchorNodeId: string | null;
+  downstreamNodeIds: string[];
+}
+
+const collectDownstreamPipelineNodeIds = (flow: Flow | null, sourceNodeId: string): string[] => {
+  if (!flow) return [];
+  const downstreamNodeIds: string[] = [];
+  const visited = new Set([sourceNodeId]);
+  const pending = [sourceNodeId];
+
+  while (pending.length > 0) {
+    const currentNodeId = pending.shift()!;
+    for (const edge of flow.edges) {
+      if (edge.sourceNodeId !== currentNodeId || edge.targetPort !== PIPE_INPUT_PORT) continue;
+      if (visited.has(edge.targetNodeId)) continue;
+      visited.add(edge.targetNodeId);
+      downstreamNodeIds.push(edge.targetNodeId);
+      pending.push(edge.targetNodeId);
+    }
+  }
+
+  return downstreamNodeIds;
+};
+
+const getPastedBlockExit = (clonedNodes: AnyNode[], entryNode?: AnyNode): AnyNode => {
+  const clonedNodeIds = new Set(clonedNodes.map((node) => node.id));
+  const getNextPipelineNode = (sourceNodeId: string) =>
+    clonedNodes.find(
+      (candidate) =>
+        candidate.inputs?.[PIPE_INPUT_PORT] === sourceNodeId && clonedNodeIds.has(candidate.id),
+    );
+
+  if (entryNode) {
+    let exitNode = entryNode;
+    const visited = new Set([entryNode.id]);
+    let nextNode = getNextPipelineNode(exitNode.id);
+    while (nextNode && !visited.has(nextNode.id)) {
+      exitNode = nextNode;
+      visited.add(nextNode.id);
+      nextNode = getNextPipelineNode(exitNode.id);
+    }
+    return exitNode;
+  }
+
+  const pipelineSourceIds = new Set(
+    clonedNodes
+      .map((node) => node.inputs?.[PIPE_INPUT_PORT])
+      .filter((nodeId): nodeId is string => !!nodeId && clonedNodeIds.has(nodeId)),
+  );
+  return (
+    [...clonedNodes].reverse().find((node) => !pipelineSourceIds.has(node.id)) ??
+    clonedNodes[clonedNodes.length - 1]
+  );
+};
+
+const connectPastedSelection = ({
+  state,
+  nodes,
+  clonedNodes,
+}: {
+  state: GraphCommandState;
+  nodes: AnyNode[];
+  clonedNodes: AnyNode[];
+}): PastedSelectionConnection => {
+  const source = getAutoConnectionSource(state);
+  if (!source || clonedNodes.length === 0) {
+    return {
+      nodes,
+      outputSourceNodeId: null,
+      mergeNode: null,
+      mergeAnchorNodeId: null,
+      layoutAnchorNodeId: null,
+      downstreamNodeIds: [],
+    };
+  }
+  const flowId = state.activeFlowId ?? state.rootFlowId;
+  const activeFlow = getRootFlow(state.flows, flowId);
+  const downstreamNodeIds = collectDownstreamPipelineNodeIds(activeFlow, source.sourceNodeId);
+
+  const clonedNodeIds = new Set(clonedNodes.map((node) => node.id));
+  const entry = clonedNodes
+    .map((node) => ({ node, targetPort: getPrimaryAutoInputPortName(node) }))
+    .find(({ node, targetPort }) => {
+      if (!targetPort) return false;
+      const inputSourceNodeId = node.inputs?.[targetPort];
+      return !inputSourceNodeId || !clonedNodeIds.has(inputSourceNodeId);
+    });
+
+  if (entry?.targetPort) {
+    const exitNode = getPastedBlockExit(clonedNodes, entry.node);
+    const nextNodes = nodes.map((node) => {
+      if (node.id === entry.node.id) {
+        return assignNodeInput(node, entry.targetPort, source.sourceNodeId, source.sourcePortName);
+      }
+      if (
+        source.downstreamEdge &&
+        source.downstreamEdge.targetNodeId !== OUTPUT_NODE_ID &&
+        node.id === source.downstreamEdge.targetNodeId
+      ) {
+        return assignNodeInput(node, source.downstreamEdge.targetPort, exitNode.id);
+      }
+      return node;
+    });
+
+    return {
+      nodes: nextNodes,
+      outputSourceNodeId:
+        source.downstreamEdge?.targetNodeId === OUTPUT_NODE_ID ? exitNode.id : null,
+      mergeNode: null,
+      mergeAnchorNodeId: null,
+      layoutAnchorNodeId: source.sourceNodeId,
+      downstreamNodeIds,
+    };
+  }
+
+  const exitNode = getPastedBlockExit(clonedNodes);
+  const detachedMerge = createDetachedNodeCommand({ nodes }, NodeType.MERGE);
+  if (!detachedMerge) {
+    return {
+      nodes,
+      outputSourceNodeId: null,
+      mergeNode: null,
+      mergeAnchorNodeId: null,
+      layoutAnchorNodeId: source.sourceNodeId,
+      downstreamNodeIds,
+    };
+  }
+
+  const mergeNode = assignNodeInput(
+    assignNodeInput(detachedMerge.node, 'source', exitNode.id),
+    PIPE_INPUT_PORT,
+    source.sourceNodeId,
+    source.sourcePortName,
+  );
+  const lastPastedIndex = Math.max(...clonedNodes.map((node) => nodes.indexOf(node)));
+  const nodesWithMerge = [...nodes];
+  nodesWithMerge.splice(lastPastedIndex + 1, 0, mergeNode);
+  const nextNodes = nodesWithMerge.map((node) => {
+    if (
+      source.downstreamEdge &&
+      source.downstreamEdge.targetNodeId !== OUTPUT_NODE_ID &&
+      node.id === source.downstreamEdge.targetNodeId
+    ) {
+      return assignNodeInput(node, source.downstreamEdge.targetPort, mergeNode.id);
+    }
+    return node;
+  });
+
+  return {
+    nodes: nextNodes,
+    outputSourceNodeId:
+      source.downstreamEdge?.targetNodeId === OUTPUT_NODE_ID ? mergeNode.id : null,
+    mergeNode,
+    mergeAnchorNodeId: exitNode.id,
+    layoutAnchorNodeId: source.sourceNodeId,
+    downstreamNodeIds,
+  };
 };
 
 export function pasteNodesCommand(
@@ -1546,7 +1803,19 @@ export function pasteNodesCommand(
   const nextNodes = [...state.nodes];
   nextNodes.splice(insertIndex + 1, 0, ...clonedNodes);
 
-  let nextFlows = replaceFlowNodes(state.flows, flowId, nextNodes, activeFlow.name);
+  const connection = connectPastedSelection({ state, nodes: nextNodes, clonedNodes });
+
+  let nextFlows = replaceFlowNodes(state.flows, flowId, connection.nodes, activeFlow.name);
+  if (connection.outputSourceNodeId) {
+    nextFlows =
+      replaceFlowNodeInput(
+        nextFlows,
+        flowId,
+        activeFlow.outputNodeId,
+        PIPE_INPUT_PORT,
+        connection.outputSourceNodeId,
+      ) ?? nextFlows;
+  }
   const clonedFlows: Record<FlowId, Flow> = {};
   for (const flow of Object.values(payload.flows)) {
     const clonedFlow = cloneFlowForPaste(flow, nodeIdMap, flowIdMap);
@@ -1560,16 +1829,42 @@ export function pasteNodesCommand(
   };
 
   const activePositions = getNodePositionsForFlow(state.nodePositionsByFlow, flowId);
-  let nextNodePositionsByFlow = setNodePositionsForFlow(state.nodePositionsByFlow, flowId, {
-    ...activePositions,
-    ...buildPastedTopLevelPositions({
-      payload,
-      clonedNodes,
-      nodeIdMap,
+  const pastedPositions = buildPastedTopLevelPositions({
+    payload,
+    clonedNodes,
+    nodeIdMap,
+    activePositions,
+    activeNodes: state.nodes,
+    layoutAnchorNodeId: connection.layoutAnchorNodeId,
+    pastePosition: options.position,
+  });
+  if (connection.mergeNode && connection.mergeAnchorNodeId) {
+    const pastedBottom = getPositionBottom(pastedPositions, clonedNodes);
+    const positionedLayoutAnchorId = getPositionedStackAnchorId(
+      state.nodes,
+      connection.layoutAnchorNodeId,
       activePositions,
-      selectedNodeId: state.selectedNodeId,
-      pastePosition: options.position,
-    }),
+    );
+    const layoutAnchorPosition = positionedLayoutAnchorId
+      ? activePositions[positionedLayoutAnchorId]
+      : undefined;
+    if (pastedBottom !== null) {
+      pastedPositions[connection.mergeNode.id] = {
+        x: layoutAnchorPosition?.x ?? pastedPositions[connection.mergeAnchorNodeId]?.x ?? 0,
+        y: pastedBottom + VERTICAL_GAP,
+      };
+    }
+  }
+  const shiftedActivePositions = shiftDownstreamPositionsForPaste({
+    activePositions,
+    insertedPositions: pastedPositions,
+    insertedNodes: connection.mergeNode ? [...clonedNodes, connection.mergeNode] : clonedNodes,
+    activeNodes: state.nodes,
+    downstreamNodeIds: connection.downstreamNodeIds,
+  });
+  let nextNodePositionsByFlow = setNodePositionsForFlow(state.nodePositionsByFlow, flowId, {
+    ...shiftedActivePositions,
+    ...pastedPositions,
   });
 
   for (const [sourceFlowId, sourceFlow] of Object.entries(payload.flows)) {

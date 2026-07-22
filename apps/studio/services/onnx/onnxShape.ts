@@ -15,9 +15,13 @@ export function inferInputKind(dims: readonly number[]): 'image' | 'scalar' {
   return 'scalar';
 }
 
-export function inferOutputKind(dims: readonly number[]): 'image' | 'scalar' {
-  if (dims.length >= 3) return 'image';
-  return 'scalar';
+export function inferOutputKind(dims: readonly number[]): 'image' | 'scalar' | 'tensor' {
+  if (dims.length < 3) return 'scalar';
+  if (dims.length > 4) return 'tensor';
+
+  const channelDimension = dims.length === 4 ? dims[1] : dims[0];
+  if (channelDimension <= 0 || channelDimension <= 4) return 'image';
+  return 'tensor';
 }
 
 export function validateTensorShape(

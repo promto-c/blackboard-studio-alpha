@@ -25,10 +25,9 @@ const debounceAsync = (task: () => Promise<void>, waitMs: number): DebouncedAsyn
   }) as DebouncedAsyncFunction;
 
   debounced.flush = async () => {
-    if (timeout) {
-      clearTimeout(timeout);
-      timeout = null;
-    }
+    if (!timeout) return;
+    clearTimeout(timeout);
+    timeout = null;
     await task();
   };
 

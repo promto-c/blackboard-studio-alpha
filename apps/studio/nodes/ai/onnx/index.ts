@@ -34,6 +34,21 @@ export const onnxNode: NodeDefinition = {
   renderMode: 'media',
   processingDomain: 'scene_linear',
   description: 'Run an installed browser ONNX model and render its output as a node.',
+  modelRequirements: (node) => {
+    const onnxNode = node as OnnxModelNode;
+    if (!onnxNode.modelId) return [];
+    return [
+      {
+        modelId: onnxNode.catalogRef?.modelId ?? onnxNode.modelId,
+        modelName: onnxNode.catalogRef?.modelName ?? onnxNode.modelName ?? 'ONNX Model',
+        purpose: onnxNode.catalogRef?.targetLabel
+          ? `ONNX node · ${onnxNode.catalogRef.targetLabel}`
+          : 'ONNX node inference',
+        runtime: 'onnxruntime',
+        repoName: onnxNode.modelRepo,
+      },
+    ];
+  },
   IconComponent: Icons.CubeTransparent,
   ToolComponent: OnnxTool,
   AdjustmentComponent: OnnxAdjustments,
@@ -47,6 +62,7 @@ export const onnxNode: NodeDefinition = {
   },
   getInitialNodeProps: (): Omit<OnnxModelNode, 'id' | 'name' | 'enabled' | 'type'> => ({
     modelId: undefined,
+    catalogRef: undefined,
     modelName: GENERIC_ONNX_RECIPE.name,
     modelRepo: GENERIC_ONNX_RECIPE.defaultRepoName,
     variantId: undefined,

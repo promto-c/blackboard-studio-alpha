@@ -19,6 +19,9 @@ export const paintNode: NodeDefinition = {
   category: 'Effect',
   renderMode: 'paint',
   processingDomain: 'scene_linear',
+  // Paint edits straight image planes independently. Input alpha is copied or
+  // edited only into output alpha; it never participates in output RGB.
+  alphaInputBehavior: 'propagate',
   description: 'Brush, erase, and clone directly on the current composite.',
   IconComponent: PaintNodeIcon,
   ToolComponent: PaintTool,

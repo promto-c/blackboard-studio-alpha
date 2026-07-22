@@ -3,7 +3,7 @@ import { OUTPUT_NODE_ID } from '@/state/editor/flowModel';
 import { nodeFlags } from '@/nodes/helpers';
 
 export const NODE_WIDTH = 192;
-const VERTICAL_GAP = 30;
+export const VERTICAL_GAP = 30;
 const HORIZONTAL_GAP = 60;
 
 /** Approximate fixed-height cards (output, merge; scene uses the fallback only). */

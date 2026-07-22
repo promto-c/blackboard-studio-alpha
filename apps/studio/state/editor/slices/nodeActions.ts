@@ -51,13 +51,24 @@ import {
   buildEmptyGroupFlow,
   type PasteNodesOptions,
 } from '@/utils/graphCommands';
-import { readNodeClipboard, writeNodeClipboard } from '@/utils/nodeClipboard';
+import {
+  createNodeClipboardPayloadForImport,
+  readNodeClipboard,
+  writeNodeClipboard,
+} from '@/utils/nodeClipboard';
 import type { EditorMutation, CommitEditorMutation } from '@/state/editor/commitMutation';
 import {
   getOutputTechnicalChannelPort,
   isOutputTechnicalChannelPort,
 } from '@/color-management/outputTechnicalChannels';
 import { rewirePrimaryPipeline } from '@/utils/pipelineGraph';
+import { DEFAULT_COMFY_ENDPOINT } from '@/services/comfy/client';
+import {
+  createComfyWorkflowFromJson,
+  createDefaultComfyWorkflowControls,
+  getComfyWorkflowNameFromJson,
+} from '@/nodes/ai/comfy/comfyWorkflowImport';
+import { createComfyRootBindings } from '@/nodes/ai/comfy/comfyViewportBindings';
 
 const rebuildActivePipelineOrder = (
   state: Readonly<EditorState>,
@@ -87,6 +98,9 @@ export function createNodeActions(
   get: GetState,
   deps: {
     commitMutation: CommitEditorMutation<EditorState>;
+    getComfyEndpoint?: () => string;
+    importComfyWorkflow?: typeof createComfyWorkflowFromJson;
+    readNodeClipboard?: typeof readNodeClipboard;
   },
 ) {
   const copySelectedNodesToClipboard = async (): Promise<boolean> => {
@@ -96,7 +110,38 @@ export function createNodeActions(
   };
 
   const pasteNodesFromClipboard = async (options?: PasteNodesOptions): Promise<boolean> => {
-    const payload = await readNodeClipboard();
+    const clipboard = await (deps.readNodeClipboard ?? readNodeClipboard)();
+    if (!clipboard) return false;
+
+    let payload = clipboard.source === 'blackboard' ? clipboard.payload : null;
+    if (clipboard.source === 'comfy') {
+      try {
+        const now = Date.now();
+        const workflow = await (deps.importComfyWorkflow ?? createComfyWorkflowFromJson)({
+          endpoint: deps.getComfyEndpoint?.() ?? DEFAULT_COMFY_ENDPOINT,
+          id: `comfy_workflow_pasted_${now}_${Math.random().toString(36).slice(2, 8)}`,
+          name: getComfyWorkflowNameFromJson(clipboard.workflow),
+          value: clipboard.workflow,
+          createdAt: now,
+        });
+        const createResult = createNodeCommand(
+          { nodes: get().nodes, selectedNodeId: get().selectedNodeId },
+          NodeType.COMFY,
+          {
+            workflows: [workflow],
+            selectedWorkflowId: workflow.id,
+            workflowControls: createDefaultComfyWorkflowControls(workflow),
+            rootBindings: createComfyRootBindings(workflow),
+          },
+        );
+        if (!createResult) return false;
+        payload = createNodeClipboardPayloadForImport([createResult.finalNewNode]);
+      } catch (error) {
+        console.warn('Could not import nodes copied from ComfyUI.', error);
+        return false;
+      }
+    }
+
     if (!payload) return false;
 
     const result = pasteNodesCommand(buildGraphCommandState(get()), payload, options);

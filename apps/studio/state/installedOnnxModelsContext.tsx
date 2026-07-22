@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import type { InstalledOnnxModel } from '@blackboard/types';
 import { getInstalledOnnxModels } from '@/services/onnx/modelCache';
 import { primeMetadataFromModel } from '@/services/onnx/onnxMetadataCache';
+import { subscribeToStorageMounts } from '@blackboard/project-store';
 
 interface InstalledOnnxModelsContextType {
   models: InstalledOnnxModel[];
@@ -37,6 +38,8 @@ export function InstalledOnnxModelsProvider({ children }: { children: React.Reac
     mountedRef.current = true;
     void refresh();
   }, [refresh]);
+
+  useEffect(() => subscribeToStorageMounts(() => void refresh()), [refresh]);
 
   return (
     <InstalledOnnxModelsContext.Provider value={{ models, refresh }}>

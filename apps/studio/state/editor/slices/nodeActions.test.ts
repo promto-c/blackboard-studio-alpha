@@ -26,7 +26,13 @@ type TestState = {
   nodePositionsByFlow?: Record<string, Record<string, { x: number; y: number }>>;
 };
 
-const createHarness = (nodeOrNodes: AnyNode | AnyNode[], currentFrame = 24) => {
+type NodeActionTestDeps = Partial<Omit<Parameters<typeof createNodeActions>[2], 'commitMutation'>>;
+
+const createHarness = (
+  nodeOrNodes: AnyNode | AnyNode[],
+  currentFrame = 24,
+  actionDeps: NodeActionTestDeps = {},
+) => {
   const nodes = Array.isArray(nodeOrNodes) ? nodeOrNodes : [nodeOrNodes];
   const rootFlow = connectDefaultPipeline(
     buildFlowFromNodes(nodes, ROOT_FLOW_ID, 'Root Flow'),
@@ -67,7 +73,7 @@ const createHarness = (nodeOrNodes: AnyNode | AnyNode[], currentFrame = 24) => {
       debouncedSave();
     }
   };
-  const deps = { commitMutation };
+  const deps = { commitMutation, ...actionDeps };
   const actions = createNodeActions(set as never, get as never, deps);
 
   return {
@@ -1545,6 +1551,119 @@ describe('createNodeActions group nodes', () => {
 });
 
 describe('createNodeActions node clipboard', () => {
+  it('inserts a pasted effect between the selected node and its downstream node', async () => {
+    const nodes = [scene(), image('source'), blur('blur-1'), grade('grade-1')];
+    const { actions, getState } = createHarness(nodes);
+    getState().nodePositionsByFlow = {
+      [ROOT_FLOW_ID]: {
+        source: { x: 0, y: 0 },
+        'blur-1': { x: 0, y: 100 },
+        'grade-1': { x: 0, y: 200 },
+        output: { x: 0, y: 300 },
+      },
+    };
+    getState().selectedNodeId = 'grade-1';
+    getState().selectedNodeIds = ['grade-1'];
+
+    await actions.copySelectedNodesToClipboard();
+    getState().selectedNodeId = 'blur-1';
+    getState().selectedNodeIds = ['blur-1'];
+    await actions.pasteNodesFromClipboard({ position: { x: 900, y: 900 } });
+
+    const state = getState();
+    expect(state.flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'blur-1',
+          targetNodeId: 'grade-1_copy',
+          targetPort: 'pipe',
+        }),
+        expect.objectContaining({
+          sourceNodeId: 'grade-1_copy',
+          targetNodeId: 'grade-1',
+          targetPort: 'pipe',
+        }),
+      ]),
+    );
+    expect(state.flows[ROOT_FLOW_ID].edges).not.toContainEqual(
+      expect.objectContaining({
+        sourceNodeId: 'blur-1',
+        targetNodeId: 'grade-1',
+        targetPort: 'pipe',
+      }),
+    );
+    expect(state.nodePositionsByFlow?.[ROOT_FLOW_ID]).toEqual(
+      expect.objectContaining({
+        'grade-1_copy': { x: 0, y: 194 },
+        'grade-1': { x: 0, y: 288 },
+        output: { x: 0, y: 388 },
+      }),
+    );
+  });
+
+  it('combines a pasted source block with the selected node through a real merge', async () => {
+    const nodes = [
+      scene(),
+      image('copied-source'),
+      image('selected-source'),
+      blur('selected-effect'),
+    ];
+    const { actions, getState } = createHarness(nodes);
+    getState().nodePositionsByFlow = {
+      [ROOT_FLOW_ID]: {
+        'copied-source': { x: -300, y: 0 },
+        'selected-source': { x: 0, y: 0 },
+        'selected-effect': { x: 0, y: 100 },
+        output: { x: 0, y: 200 },
+      },
+    };
+    getState().selectedNodeId = 'copied-source';
+    getState().selectedNodeIds = ['copied-source'];
+
+    await actions.copySelectedNodesToClipboard();
+    getState().selectedNodeId = 'selected-effect';
+    getState().selectedNodeIds = ['selected-effect'];
+    await actions.pasteNodesFromClipboard();
+
+    const state = getState();
+    const mergeNode = state.nodes.find((node) => node.type === NodeType.MERGE)!;
+    expect(mergeNode).toEqual(
+      expect.objectContaining({
+        inputs: {
+          pipe: 'selected-effect',
+          source: 'copied-source_copy',
+        },
+      }),
+    );
+    expect(state.flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'selected-effect',
+          targetNodeId: mergeNode.id,
+          targetPort: 'pipe',
+        }),
+        expect.objectContaining({
+          sourceNodeId: 'copied-source_copy',
+          targetNodeId: mergeNode.id,
+          targetPort: 'source',
+        }),
+        expect.objectContaining({
+          sourceNodeId: mergeNode.id,
+          targetNodeId: 'output',
+          targetPort: 'pipe',
+        }),
+      ]),
+    );
+    expect(state.selectedNodeIds).toEqual(['copied-source_copy']);
+    expect(state.nodePositionsByFlow?.[ROOT_FLOW_ID]).toEqual(
+      expect.objectContaining({
+        'copied-source_copy': { x: 0, y: 194 },
+        [mergeNode.id]: { x: 0, y: 376 },
+        output: { x: 0, y: 470 },
+      }),
+    );
+  });
+
   it('copies and pastes multiple selected nodes with their internal wiring', async () => {
     const nodes = [
       scene(),
@@ -1588,8 +1707,8 @@ describe('createNodeActions node clipboard', () => {
       }),
     );
     expect(state.nodePositionsByFlow?.[ROOT_FLOW_ID]?.[pastedSource.id]).toEqual({
-      x: 368,
-      y: 248,
+      x: 320,
+      y: 294,
     });
     expect(pushHistory).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -1623,6 +1742,29 @@ describe('createNodeActions node clipboard', () => {
         targetNodeId: 'output',
       }),
     );
+  });
+
+  it('uses the requested canvas position when no node is selected', async () => {
+    const nodes = [scene(), image('source'), grade('grade-1')];
+    const { actions, getState } = createHarness(nodes);
+    getState().nodePositionsByFlow = {
+      [ROOT_FLOW_ID]: {
+        source: { x: 0, y: 0 },
+        'grade-1': { x: 100, y: 200 },
+      },
+    };
+    getState().selectedNodeId = 'grade-1';
+    getState().selectedNodeIds = ['grade-1'];
+
+    await actions.copySelectedNodesToClipboard();
+    getState().selectedNodeId = null;
+    getState().selectedNodeIds = [];
+    await actions.pasteNodesFromClipboard({ position: { x: 640, y: 360 } });
+
+    expect(getState().nodePositionsByFlow?.[ROOT_FLOW_ID]?.['grade-1_copy']).toEqual({
+      x: 640,
+      y: 360,
+    });
   });
 
   it('copies and pastes a group with a fresh nested child flow', async () => {
@@ -1703,6 +1845,85 @@ describe('createNodeActions node clipboard', () => {
       expect.objectContaining({
         label: 'Cut 2 Nodes',
       }),
+    );
+  });
+
+  it('imports a ComfyUI clipboard selection as a native Comfy node', async () => {
+    const comfyClipboardWorkflow = {
+      version: 0.4,
+      name: 'Pasted KSampler',
+      nodes: [{ id: 10, type: 'KSampler', inputs: [], outputs: [] }],
+      links: [],
+    };
+    const importedWorkflow = {
+      id: 'comfy-workflow-pasted',
+      name: 'Pasted KSampler',
+      prompt: {},
+      sourceGraph: comfyClipboardWorkflow,
+      inputCandidates: [
+        {
+          id: 'load-image',
+          nodeId: '10',
+          nodeType: 'LoadImage',
+          inputName: 'image',
+          inputType: 'IMAGE',
+          label: 'Load Image #10',
+        },
+      ],
+      selectedInputIds: ['load-image'],
+      createdAt: 1_700_000_000_000,
+    };
+    const importComfyWorkflow = vi.fn().mockResolvedValue(importedWorkflow);
+    const { actions, getState, pushHistory } = createHarness([scene(), image('source')], 24, {
+      getComfyEndpoint: () => 'http://127.0.0.1:9000',
+      importComfyWorkflow,
+      readNodeClipboard: async () => ({
+        source: 'comfy' as const,
+        workflow: comfyClipboardWorkflow,
+      }),
+    });
+    getState().selectedNodeId = 'source';
+    getState().selectedNodeIds = ['source'];
+
+    const didPaste = await actions.pasteNodesFromClipboard({ position: { x: 640, y: 360 } });
+
+    expect(didPaste).toBe(true);
+    expect(importComfyWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endpoint: 'http://127.0.0.1:9000',
+        name: 'Pasted KSampler',
+        value: comfyClipboardWorkflow,
+      }),
+    );
+    const comfyNode = getState().nodes.find((node) => node.type === NodeType.COMFY);
+    expect(comfyNode).toEqual(
+      expect.objectContaining({
+        name: 'Comfy',
+        workflows: [importedWorkflow],
+        selectedWorkflowId: importedWorkflow.id,
+      }),
+    );
+    expect(getState().selectedNodeIds).toEqual([comfyNode!.id]);
+    expect(getState().nodePositionsByFlow?.[ROOT_FLOW_ID]?.[comfyNode!.id]).toEqual({
+      x: 640,
+      y: 360,
+    });
+    expect(getState().flows[ROOT_FLOW_ID].edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'source',
+          targetNodeId: comfyNode!.id,
+          targetPort: 'comfy-input:comfy-workflow-pasted:load-image',
+        }),
+        expect.objectContaining({
+          sourceNodeId: comfyNode!.id,
+          targetNodeId: 'output',
+          targetPort: 'pipe',
+        }),
+      ]),
+    );
+    expect(pushHistory).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: 'Paste Comfy Node' }),
     );
   });
 });

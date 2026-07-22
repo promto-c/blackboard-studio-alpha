@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check } from '@blackboard/icons';
+import { Check, MagnifyingGlass } from '@blackboard/icons';
 import { Badge } from './Badge';
 import Popover from './Popover';
 import ScrollArea from './ScrollArea';
@@ -23,24 +23,41 @@ function ChevronDown({ isOpen }: { isOpen: boolean }) {
   );
 }
 
-interface DropdownOption {
+export interface DropdownOptionAction {
+  label: string;
+  icon: React.ReactNode;
+  onSelect: () => void;
+  tone?: 'default' | 'danger';
+}
+
+export interface DropdownOption {
   value: string | number;
   label: React.ReactNode;
   icon?: React.ReactNode;
   secondaryLabel?: React.ReactNode;
   badges?: Array<React.ReactNode>;
   searchText?: string;
+  trailingAction?: DropdownOptionAction;
 }
 
-interface StyledDropdownProps {
+export interface DropdownCreateOption {
+  isAvailable: (query: string) => boolean;
+  label: (query: string) => React.ReactNode;
+  onCreate: (query: string) => void;
+  icon?: React.ReactNode;
+}
+
+export interface StyledDropdownProps {
   value: string | number;
   options: DropdownOption[];
   onChange: (value: string | number) => void;
-  density?: 'default' | 'compact';
+  density?: 'default' | 'compact' | 'toolbar';
   placeholder?: React.ReactNode;
   widthClass?: string;
   popoverWidthClass?: string;
   searchable?: boolean;
+  searchPlaceholder?: string;
+  createOption?: DropdownCreateOption;
   showSelectedBadges?: boolean;
   disabled?: boolean;
 }
@@ -77,6 +94,8 @@ function StyledDropdown({
   widthClass = 'w-full',
   popoverWidthClass,
   searchable,
+  searchPlaceholder = 'Search...',
+  createOption,
   showSelectedBadges = true,
   disabled = false,
 }: StyledDropdownProps) {
@@ -87,9 +106,12 @@ function StyledDropdown({
   const optionsContainerRef = useRef<HTMLDivElement>(null);
 
   const selectedOption = options.find((option) => option.value === value);
-  const isCompactDensity = density === 'compact';
+  const isCompactDensity = density !== 'default';
+  const isToolbarDensity = density === 'toolbar';
   const shouldShowSearch = searchable ?? options.length > 8;
   const normalizedQuery = query.trim().toLowerCase();
+  const createQuery = query.trim();
+  const canCreateOption = Boolean(createQuery && createOption?.isAvailable(createQuery));
 
   const visibleOptions = useMemo(
     () =>
@@ -149,20 +171,25 @@ function StyledDropdown({
   };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (visibleOptions.length === 0) return;
-
     switch (event.key) {
       case 'ArrowDown':
+        if (visibleOptions.length === 0) return;
         event.preventDefault();
         navigateAdjacentOption(1);
         break;
       case 'ArrowUp':
+        if (visibleOptions.length === 0) return;
         event.preventDefault();
         navigateAdjacentOption(-1);
         break;
       case 'Enter':
         if (!isOpen) return;
         event.preventDefault();
+        if (canCreateOption && createOption) {
+          createOption.onCreate(createQuery);
+          setIsOpen(false);
+          return;
+        }
         if (visibleOptions[activeIndex]) {
           onChange(visibleOptions[activeIndex].value);
           setIsOpen(false);
@@ -177,10 +204,12 @@ function StyledDropdown({
     }
   };
 
-  const triggerButtonClasses = `bb-dropdown-trigger bb-dropdown-surface grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-center overflow-hidden rounded-lg border-0 text-left transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30 disabled:cursor-not-allowed disabled:opacity-50 ${
-    isCompactDensity
-      ? 'min-h-9 gap-2 px-2 py-1.5 font-sans text-[11px]'
-      : 'min-h-9 gap-3 px-2.5 py-2 font-mono text-xs'
+  const triggerButtonClasses = `bb-dropdown-trigger bb-dropdown-surface ${isToolbarDensity ? 'bb-control-toolbar' : ''} grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-center overflow-hidden rounded-lg border-0 text-left transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30 disabled:cursor-not-allowed disabled:opacity-50 ${
+    isToolbarDensity
+      ? 'min-h-7 gap-1.5 px-1.5 py-1 font-sans text-[11px]'
+      : isCompactDensity
+        ? 'min-h-9 gap-2 px-2 py-1.5 font-sans text-[11px]'
+        : 'min-h-9 gap-3 px-2.5 py-2 font-mono text-xs'
   } ${
     isOpen
       ? 'bg-white/[0.1] text-primary-50 shadow-[inset_0_0_0_1px_rgb(var(--color-primary-400)/0.6),0_0_0_3px_rgb(var(--color-primary-500)/0.1),0_0_14px_rgb(var(--color-primary-500)/0.16)]'
@@ -268,22 +297,45 @@ function StyledDropdown({
         {(close) => (
           <div className="min-w-0 max-w-full space-y-2 overflow-hidden">
             {shouldShowSearch ? (
-              <TextInput
-                ref={searchInputRef}
-                value={query}
-                onValueChange={(value) => {
-                  setQuery(value);
-                  setActiveIndex(0);
+              <div className="group/dropdown-search relative">
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-2.5 top-1/2 z-10 -translate-y-1/2 text-gray-500 transition-colors group-focus-within/dropdown-search:text-primary-300"
+                >
+                  <MagnifyingGlass className="h-3.5 w-3.5" />
+                </span>
+                <TextInput
+                  ref={searchInputRef}
+                  value={query}
+                  onValueChange={(value) => {
+                    setQuery(value);
+                    setActiveIndex(0);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  role="combobox"
+                  aria-expanded={isOpen}
+                  aria-haspopup="listbox"
+                  aria-autocomplete="list"
+                  aria-activedescendant={activeDescendantId}
+                  aria-controls="dropdown-listbox"
+                  placeholder={searchPlaceholder}
+                  className="pl-7"
+                />
+              </div>
+            ) : null}
+
+            {canCreateOption && createOption ? (
+              <button
+                type="button"
+                onClick={() => {
+                  createOption.onCreate(createQuery);
+                  close();
                 }}
-                onKeyDown={handleKeyDown}
-                role="combobox"
-                aria-expanded={isOpen}
-                aria-haspopup="listbox"
-                aria-autocomplete="list"
-                aria-activedescendant={activeDescendantId}
-                aria-controls="dropdown-listbox"
-                placeholder="Search..."
-              />
+                className="flex w-full min-w-0 items-center gap-2 rounded-lg border border-primary-400/20 bg-primary-500/10 px-2 py-1.5 text-left text-[11px] text-primary-100 transition hover:bg-primary-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/30"
+              >
+                {createOption.icon ? <span className="shrink-0">{createOption.icon}</span> : null}
+                <span className="min-w-0 flex-1 truncate">{createOption.label(createQuery)}</span>
+              </button>
             ) : null}
 
             <ScrollArea axis="y" viewportClassName="max-h-[min(22rem,calc(100vh-9rem))] pr-1">
@@ -296,50 +348,72 @@ function StyledDropdown({
               >
                 {visibleOptions.length > 0 ? (
                   visibleOptions.map((option, index) => (
-                    <button
+                    <div
                       key={String(option.value)}
-                      id={`dropdown-option-${String(option.value).replace(/\s+/g, '-')}`}
-                      type="button"
-                      role="option"
-                      aria-selected={value === option.value}
-                      onClick={() => {
-                        onChange(option.value);
-                        close();
-                      }}
                       onMouseEnter={() => setActiveIndex(index)}
-                      title={getOptionSearchText(option)}
-                      className={`grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_1rem] items-center overflow-hidden rounded-lg border-0 text-left transition-colors duration-150 focus:outline-none ${
-                        isCompactDensity
-                          ? 'gap-2 px-2 py-1.5 text-[11px]'
-                          : 'gap-3 px-3 py-2 text-sm'
-                      } ${
-                        value === option.value
-                          ? index === activeIndex
-                            ? 'bg-primary-500/25 text-primary-50'
-                            : 'bg-primary-500/20 text-primary-50 hover:bg-primary-500/25'
-                          : index === activeIndex
-                            ? 'bg-white/[0.09] text-gray-100'
-                            : 'text-gray-300 hover:bg-white/[0.07]'
-                      }`}
+                      className="group/dropdown-option flex min-w-0 max-w-full items-stretch overflow-hidden rounded-lg"
                     >
-                      {renderOptionContent(option, isCompactDensity)}
-                      <span
-                        aria-hidden="true"
-                        className={`grid h-4 w-4 place-items-center transition duration-150 ${
+                      <button
+                        id={`dropdown-option-${String(option.value).replace(/\s+/g, '-')}`}
+                        type="button"
+                        role="option"
+                        aria-selected={value === option.value}
+                        onClick={() => {
+                          onChange(option.value);
+                          close();
+                        }}
+                        title={getOptionSearchText(option)}
+                        className={`grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_1rem] items-center overflow-hidden border-0 text-left transition-colors duration-150 focus:outline-none ${
+                          isCompactDensity
+                            ? 'gap-2 px-2 py-1.5 text-[11px]'
+                            : 'gap-3 px-3 py-2 text-sm'
+                        } ${
                           value === option.value
-                            ? 'scale-100 text-primary-300 opacity-100'
-                            : 'scale-75 opacity-0'
+                            ? index === activeIndex
+                              ? 'bg-primary-500/20 text-primary-50'
+                              : 'bg-primary-500/15 text-primary-50 hover:bg-primary-500/20'
+                            : index === activeIndex
+                              ? 'bg-white/[0.09] text-gray-100'
+                              : 'text-gray-300 hover:bg-white/[0.07]'
                         }`}
                       >
-                        <Check className="h-3.5 w-3.5" />
-                      </span>
-                    </button>
+                        {renderOptionContent(option, isCompactDensity)}
+                        <span
+                          aria-hidden="true"
+                          className={`grid h-4 w-4 place-items-center transition duration-150 ${
+                            value === option.value
+                              ? 'scale-100 text-primary-300 opacity-100'
+                              : 'scale-75 opacity-0'
+                          }`}
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </span>
+                      </button>
+                      {option.trailingAction ? (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            option.trailingAction?.onSelect();
+                          }}
+                          title={option.trailingAction.label}
+                          aria-label={option.trailingAction.label}
+                          className={`flex w-7 shrink-0 items-center justify-center border-l border-white/[0.06] opacity-0 transition focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset group-hover/dropdown-option:opacity-100 ${
+                            option.trailingAction.tone === 'danger'
+                              ? 'text-gray-500 hover:bg-red-500/10 hover:text-red-200 focus-visible:ring-red-400/40'
+                              : 'text-gray-500 hover:bg-white/[0.07] hover:text-gray-100 focus-visible:ring-primary-400/40'
+                          }`}
+                        >
+                          {option.trailingAction.icon}
+                        </button>
+                      ) : null}
+                    </div>
                   ))
-                ) : (
+                ) : !canCreateOption ? (
                   <div className="rounded-lg border border-dashed border-white/10 px-3 py-6 text-center text-xs text-gray-500">
                     No matches
                   </div>
-                )}
+                ) : null}
               </div>
             </ScrollArea>
           </div>

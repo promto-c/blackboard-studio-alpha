@@ -6,6 +6,7 @@ export type PreferencesSectionId =
   | 'colorManagement'
   | 'editing'
   | 'recovery'
+  | 'storage'
   | 'integrations'
   | 'models'
   | 'rotoMotion'

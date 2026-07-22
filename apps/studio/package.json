@@ -1,7 +1,7 @@
 {
   "name": "@blackboard/studio",
   "private": true,
-  "version": "0.0.24",
+  "version": "0.0.25",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -29,6 +29,7 @@
     "@blackboard/renderer": "workspace:*",
     "@blackboard/types": "workspace:*",
     "@blackboard/ui": "workspace:*",
+    "@huggingface/transformers": "^4.2.0",
     "@sparkjsdev/spark": "^2.1.0",
     "@tauri-apps/api": "^2.0.0",
     "onnxruntime-web": "^1.16.3",

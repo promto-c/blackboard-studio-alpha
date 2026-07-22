@@ -33,6 +33,7 @@ export const ocioColorSpaceTransformNode: NodeDefinition = {
   name: 'Color Space Transform',
   category: 'Adjustment',
   renderMode: 'ocio',
+  alphaInputBehavior: 'propagate',
   processingDomain: (node) =>
     getColorSpaceDomain((node as OcioColorSpaceTransformNode).destinationColorSpace),
   primaryInputDomain: (node) =>
@@ -56,6 +57,7 @@ export const ocioNamedTransformNode: NodeDefinition = {
   name: 'OCIO Named Transform',
   category: 'Adjustment',
   renderMode: 'ocio',
+  alphaInputBehavior: 'propagate',
   processingDomain: 'scene_linear',
   description: 'Apply a config-defined named transform in an explicit process color space.',
   IconComponent: Icons.Link,
@@ -76,6 +78,7 @@ export const ocioFileTransformNode: NodeDefinition = {
   name: 'OCIO File Transform',
   category: 'Adjustment',
   renderMode: 'ocio',
+  alphaInputBehavior: 'propagate',
   processingDomain: 'scene_linear',
   description: 'Apply an OCIO-supported LUT or transform file with explicit input/output encoding.',
   IconComponent: Icons.DocumentPlus,
@@ -103,6 +106,7 @@ export const ocioLookTransformNode: NodeDefinition = {
   name: 'OCIO Look',
   category: 'Adjustment',
   renderMode: 'ocio',
+  alphaInputBehavior: 'propagate',
   processingDomain: 'scene_linear',
   description: 'Apply a look defined by the active OCIO config while preserving working-space I/O.',
   IconComponent: Icons.Sparkles,

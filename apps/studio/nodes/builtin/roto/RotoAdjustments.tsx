@@ -14,6 +14,7 @@ import {
   type RotoMotionBlurSettings,
 } from '@blackboard/types';
 import { Badge, CollapsibleSection, Slider } from '@blackboard/ui';
+import * as Icons from '@blackboard/icons';
 import { SegmentedControl, SettingRow, ToggleSettingRow } from '@/components';
 import { getValueAtFrame, hasKeyframeAt, setKeyframeOnValue } from '@blackboard/renderer';
 import { DEFAULT_ROTO_MOTION_BLUR, resolveRotoMotionBlurSettings } from '@/utils/rotoMotionBlur';
@@ -314,7 +315,7 @@ function RotoAdjustments({
     (s) => s.hierarchySelections[s.selectedNodeId ?? '']?.layerIds ?? [],
   );
   const currentFrame = useEditorSelector((s) => s.currentFrame);
-  const { updateNode, setKeyframe } = useEditorActions();
+  const { updateNode, setKeyframe, startRotoRefinement } = useEditorActions();
   const [inspectorTarget, setInspectorTarget] = useState<InspectorTarget>(inspectorLevel ?? 'node');
   const motionBlur = resolveRotoMotionBlurSettings(node.motionBlur);
 
@@ -565,6 +566,44 @@ function RotoAdjustments({
             className="w-full"
           />
         </SettingRow>
+        {selectedPath.sourceMask && (
+          <div className="rounded-md border border-sky-400/15 bg-sky-400/[0.06] p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-sky-100">
+                  Smart Mask Source
+                </div>
+                <div className="mt-0.5 text-[9px] text-gray-500">
+                  Frame {selectedPath.sourceMask.sourceFrame}
+                  {selectedPath.sourceMask.confidence != null
+                    ? ` · ${Math.round(selectedPath.sourceMask.confidence * 100)}% confidence`
+                    : ''}
+                </div>
+              </div>
+              <Icons.Sparkles className="h-4 w-4 text-sky-300" />
+            </div>
+            <p className="mt-2 text-[9px] leading-4 text-gray-400">
+              The original raster mask is retained with this path for non-destructive contour work.
+            </p>
+            <button
+              type="button"
+              disabled={!selectedPath.originalPoints?.length}
+              onClick={() =>
+                selectedPath.originalPoints?.length &&
+                startRotoRefinement({
+                  name: selectedPath.name,
+                  originalPoints: selectedPath.originalPoints,
+                  epsilon: selectedPath.epsilon ?? 2,
+                  closed: true,
+                  targetPathId: selectedPath.id,
+                })
+              }
+              className="mt-2 w-full rounded border border-sky-400/20 bg-sky-500/10 py-1.5 text-[10px] font-medium text-sky-100 hover:bg-sky-500/20 disabled:opacity-40"
+            >
+              Refine contour
+            </button>
+          </div>
+        )}
         {!selectedPath.closed &&
           selectedPath.shapeType === RotoShapeType.BSPLINE &&
           selectedPath.points.length > 2 && (

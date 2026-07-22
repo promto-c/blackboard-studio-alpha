@@ -362,227 +362,219 @@ export function ComfyWorkflowControlsSection({
         ) : undefined
       }
     >
-      <div className="space-y-3">
-        {selectedWorkflow ? (
-          activeWorkflowControls.length > 0 ? (
-            <div className="space-y-3" onKeyDown={onWorkflowPropsKeyDown}>
-              {activeMissingControlOptions.length > 0 ? (
-                <MissingModelWarning
-                  missingOptions={activeMissingControlOptions}
-                  modelSizeStatuses={missingModelSizeStatuses}
-                  detailsVisible={missingModelDetailsVisible}
-                  onToggleDetails={onToggleMissingModelDetails}
-                  onDownload={onDownloadMissingModel}
-                  onCopyPath={(option) => void onCopyMissingModelPath(option)}
+      {selectedWorkflow ? (
+        activeWorkflowControls.length > 0 ? (
+          <div className="space-y-3" onKeyDown={onWorkflowPropsKeyDown}>
+            {activeMissingControlOptions.length > 0 ? (
+              <MissingModelWarning
+                missingOptions={activeMissingControlOptions}
+                modelSizeStatuses={missingModelSizeStatuses}
+                detailsVisible={missingModelDetailsVisible}
+                onToggleDetails={onToggleMissingModelDetails}
+                onDownload={onDownloadMissingModel}
+                onCopyPath={(option) => void onCopyMissingModelPath(option)}
+              />
+            ) : null}
+            {activeWorkflowControls.map((control) => {
+              const isNumeric = typeof control.defaultValue === 'number';
+              const numericValue =
+                typeof control.value === 'number'
+                  ? control.value
+                  : (control.defaultValue as number);
+              const booleanValue =
+                typeof control.value === 'boolean' ? control.value : Boolean(control.defaultValue);
+              const description = control.description ?? getComfyControlDescription(control);
+              const supportsRunMode = supportsComfyWorkflowControlRunMode(control);
+              const enumValue =
+                typeof control.value === 'string' || typeof control.value === 'number'
+                  ? control.value
+                  : String(control.value);
+              const isSelectedEnumOptionMissing = isWorkflowControlSelectedOptionMissing(control);
+              const enumOptions =
+                control.options && control.options.length > 0
+                  ? isSelectedEnumOptionMissing
+                    ? [enumValue, ...control.options]
+                    : control.options
+                  : [];
+              const hasEnumOptions = enumOptions.length > 0;
+              const applyNoticeKey =
+                promptApplyNoticeFieldId === control.id ? promptApplyNoticeId : null;
+              const controlKey = getComfyControlKey(control.nodeId, control.inputName);
+              const sourceSummary = controlSourceSummaries[controlKey];
+              const recommendedSourceSummary = recommendedControlSourceSummaries[controlKey];
+              const recommendedBindBadge = recommendedSourceSummary ? (
+                <RecommendedBindBadge
+                  sourceSummary={recommendedSourceSummary}
+                  onBind={() => onBindControlSource(controlKey)}
                 />
-              ) : null}
-              {activeWorkflowControls.map((control) => {
-                const isNumeric = typeof control.defaultValue === 'number';
-                const numericValue =
-                  typeof control.value === 'number'
-                    ? control.value
-                    : (control.defaultValue as number);
-                const booleanValue =
-                  typeof control.value === 'boolean'
-                    ? control.value
-                    : Boolean(control.defaultValue);
-                const description = control.description ?? getComfyControlDescription(control);
-                const supportsRunMode = supportsComfyWorkflowControlRunMode(control);
-                const enumValue =
-                  typeof control.value === 'string' || typeof control.value === 'number'
-                    ? control.value
-                    : String(control.value);
-                const isSelectedEnumOptionMissing = isWorkflowControlSelectedOptionMissing(control);
-                const enumOptions =
-                  control.options && control.options.length > 0
-                    ? isSelectedEnumOptionMissing
-                      ? [enumValue, ...control.options]
-                      : control.options
-                    : [];
-                const hasEnumOptions = enumOptions.length > 0;
-                const applyNoticeKey =
-                  promptApplyNoticeFieldId === control.id ? promptApplyNoticeId : null;
-                const controlKey = getComfyControlKey(control.nodeId, control.inputName);
-                const sourceSummary = controlSourceSummaries[controlKey];
-                const recommendedSourceSummary = recommendedControlSourceSummaries[controlKey];
-                const recommendedBindBadge = recommendedSourceSummary ? (
-                  <RecommendedBindBadge
-                    sourceSummary={recommendedSourceSummary}
-                    onBind={() => onBindControlSource(controlKey)}
-                  />
-                ) : null;
+              ) : null;
 
-                return (
-                  <AttentionPulse
-                    key={control.id}
-                    activeKey={applyNoticeKey}
-                    data-ai-apply-control-id={control.id}
-                    className="rounded-lg"
-                  >
-                    {sourceSummary ? (
-                      <BoundWorkflowControl
-                        control={control}
-                        description={description}
-                        sourceSummary={sourceSummary}
-                        onUnbind={() => onUnbindControlSource(controlKey)}
-                      />
-                    ) : (
-                      <PropertyField
-                        label={hasEnumOptions ? control.label : undefined}
-                        description={hasEnumOptions ? description : undefined}
-                        actions={
-                          hasEnumOptions || (!isNumeric && recommendedBindBadge) ? (
-                            <>
-                              {!isNumeric ? recommendedBindBadge : null}
-                              {isSelectedEnumOptionMissing ? (
-                                <Badge
-                                  size="sm"
-                                  variant="danger"
-                                  className="!bg-black/20 !text-red-100/70 font-mono"
-                                  title="Selected option is missing"
-                                >
-                                  Missing
-                                </Badge>
-                              ) : null}
+              return (
+                <AttentionPulse
+                  key={control.id}
+                  activeKey={applyNoticeKey}
+                  data-ai-apply-control-id={control.id}
+                  className="rounded-lg"
+                >
+                  {sourceSummary ? (
+                    <BoundWorkflowControl
+                      control={control}
+                      description={description}
+                      sourceSummary={sourceSummary}
+                      onUnbind={() => onUnbindControlSource(controlKey)}
+                    />
+                  ) : (
+                    <PropertyField
+                      label={hasEnumOptions ? control.label : undefined}
+                      description={hasEnumOptions ? description : undefined}
+                      actions={
+                        hasEnumOptions || (!isNumeric && recommendedBindBadge) ? (
+                          <>
+                            {!isNumeric ? recommendedBindBadge : null}
+                            {isSelectedEnumOptionMissing ? (
+                              <Badge
+                                size="sm"
+                                variant="danger"
+                                className="!bg-black/20 !text-red-100/70 font-mono"
+                                title="Selected option is missing"
+                              >
+                                Missing
+                              </Badge>
+                            ) : null}
+                            <ResetIconButton
+                              onClick={() => onResetWorkflowControl(control.id)}
+                              tooltip={getControlResetTooltip(control)}
+                            />
+                          </>
+                        ) : undefined
+                      }
+                    >
+                      {hasEnumOptions ? (
+                        <StyledDropdown
+                          value={enumValue}
+                          options={enumOptions.map((option) => {
+                            const isMissingOption =
+                              isSelectedEnumOptionMissing &&
+                              normalizeComparableControlValue(option) ===
+                                normalizeComparableControlValue(enumValue);
+
+                            return {
+                              value: option,
+                              label: String(option),
+                              badges: isMissingOption ? ['Missing'] : undefined,
+                              searchText: isMissingOption ? `${String(option)} missing` : undefined,
+                            };
+                          })}
+                          onChange={(value) =>
+                            onUpdateWorkflowControl(control.id, {
+                              value:
+                                typeof value === 'string' || typeof value === 'number'
+                                  ? value
+                                  : String(value),
+                            })
+                          }
+                          popoverWidthClass="w-72"
+                          showSelectedBadges={false}
+                        />
+                      ) : isNumeric ? (
+                        <Slider
+                          label={control.label}
+                          description={description}
+                          value={numericValue}
+                          min={control.min}
+                          max={control.max}
+                          step={control.step}
+                          onChange={(value) => onUpdateWorkflowControl(control.id, { value }, true)}
+                          onReset={() => onResetWorkflowControl(control.id)}
+                          resetTooltip={getControlResetTooltip(control)}
+                          displayFormatter={formatControlValue}
+                          valuePrefix={
+                            supportsRunMode || recommendedBindBadge ? (
+                              <span className="inline-flex items-center gap-1">
+                                {recommendedBindBadge}
+                                {supportsRunMode ? (
+                                  <WorkflowRunModeBadge
+                                    control={control}
+                                    rollToken={runRollTokens[control.id] ?? 0}
+                                    onUpdate={(updates) =>
+                                      onUpdateWorkflowControl(control.id, updates, true)
+                                    }
+                                  />
+                                ) : null}
+                              </span>
+                            ) : undefined
+                          }
+                          headerActions={
+                            supportsRunMode ? (
+                              <WorkflowRunModeControl
+                                control={control}
+                                isOpen={advancedControlId === control.id}
+                                onOpenChange={(open) =>
+                                  onAdvancedControlIdChange(open ? control.id : null)
+                                }
+                                onKeyDown={onWorkflowPropsKeyDown}
+                                onUpdate={(updates) =>
+                                  onUpdateWorkflowControl(control.id, updates, true)
+                                }
+                              />
+                            ) : undefined
+                          }
+                        />
+                      ) : typeof control.defaultValue === 'boolean' ? (
+                        <ToggleSettingRow
+                          label={control.label}
+                          description={description}
+                          checked={booleanValue}
+                          onCheckedChange={(checked) =>
+                            onUpdateWorkflowControl(control.id, {
+                              value: checked,
+                            })
+                          }
+                          title={booleanValue ? 'Enabled' : 'Disabled'}
+                          labelAccessory={
+                            <span className="flex shrink-0 items-center gap-1">
+                              {recommendedBindBadge}
                               <ResetIconButton
                                 onClick={() => onResetWorkflowControl(control.id)}
                                 tooltip={getControlResetTooltip(control)}
                               />
-                            </>
-                          ) : undefined
-                        }
-                      >
-                        {hasEnumOptions ? (
-                          <StyledDropdown
-                            value={enumValue}
-                            options={enumOptions.map((option) => {
-                              const isMissingOption =
-                                isSelectedEnumOptionMissing &&
-                                normalizeComparableControlValue(option) ===
-                                  normalizeComparableControlValue(enumValue);
-
-                              return {
-                                value: option,
-                                label: String(option),
-                                badges: isMissingOption ? ['Missing'] : undefined,
-                                searchText: isMissingOption
-                                  ? `${String(option)} missing`
-                                  : undefined,
-                              };
-                            })}
-                            onChange={(value) =>
-                              onUpdateWorkflowControl(control.id, {
-                                value:
-                                  typeof value === 'string' || typeof value === 'number'
-                                    ? value
-                                    : String(value),
-                              })
-                            }
-                            popoverWidthClass="w-72"
-                            showSelectedBadges={false}
-                          />
-                        ) : isNumeric ? (
-                          <Slider
-                            label={control.label}
-                            description={description}
-                            value={numericValue}
-                            min={control.min}
-                            max={control.max}
-                            step={control.step}
-                            onChange={(value) =>
-                              onUpdateWorkflowControl(control.id, { value }, true)
-                            }
-                            onReset={() => onResetWorkflowControl(control.id)}
-                            resetTooltip={getControlResetTooltip(control)}
-                            displayFormatter={formatControlValue}
-                            valuePrefix={
-                              supportsRunMode || recommendedBindBadge ? (
-                                <span className="inline-flex items-center gap-1">
-                                  {recommendedBindBadge}
-                                  {supportsRunMode ? (
-                                    <WorkflowRunModeBadge
-                                      control={control}
-                                      rollToken={runRollTokens[control.id] ?? 0}
-                                      onUpdate={(updates) =>
-                                        onUpdateWorkflowControl(control.id, updates, true)
-                                      }
-                                    />
-                                  ) : null}
-                                </span>
-                              ) : undefined
-                            }
-                            headerActions={
-                              supportsRunMode ? (
-                                <WorkflowRunModeControl
-                                  control={control}
-                                  isOpen={advancedControlId === control.id}
-                                  onOpenChange={(open) =>
-                                    onAdvancedControlIdChange(open ? control.id : null)
-                                  }
-                                  onKeyDown={onWorkflowPropsKeyDown}
-                                  onUpdate={(updates) =>
-                                    onUpdateWorkflowControl(control.id, updates, true)
-                                  }
-                                />
-                              ) : undefined
-                            }
-                          />
-                        ) : typeof control.defaultValue === 'boolean' ? (
-                          <ToggleSettingRow
-                            label={control.label}
-                            description={description}
-                            checked={booleanValue}
-                            onCheckedChange={(checked) =>
-                              onUpdateWorkflowControl(control.id, {
-                                value: checked,
-                              })
-                            }
-                            title={booleanValue ? 'Enabled' : 'Disabled'}
-                            labelAccessory={
-                              <span className="flex shrink-0 items-center gap-1">
-                                {recommendedBindBadge}
-                                <ResetIconButton
-                                  onClick={() => onResetWorkflowControl(control.id)}
-                                  tooltip={getControlResetTooltip(control)}
-                                />
-                              </span>
-                            }
-                          />
-                        ) : (
-                          <ExpandableWorkflowTextControl
-                            control={control}
-                            description={description}
-                            promptRoute={imagePromptRoute}
-                            promptRouteError={imagePromptRouteError}
-                            onChange={(value) =>
-                              onUpdateWorkflowControl(control.id, {
-                                value: coerceControlValue(value, control.defaultValue),
-                              })
-                            }
-                            onEnhance={() =>
-                              onStartPromptEnhancementChat(control.id, imagePromptRoute)
-                            }
-                            onUpdate={(updates) => onUpdateWorkflowControl(control.id, updates)}
-                            onReset={() => onResetWorkflowControl(control.id)}
-                          />
-                        )}
-                      </PropertyField>
-                    )}
-                  </AttentionPulse>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/70 p-3 text-xs leading-5 text-gray-400">
-              No workflow props are shown yet. Use the Fields button to add workflow inputs here.
-            </div>
-          )
-        ) : (
-          <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/70 p-3 text-xs leading-5 text-gray-400">
-            Load a workflow before choosing Comfy props.
+                            </span>
+                          }
+                        />
+                      ) : (
+                        <ExpandableWorkflowTextControl
+                          control={control}
+                          description={description}
+                          promptRoute={imagePromptRoute}
+                          promptRouteError={imagePromptRouteError}
+                          onChange={(value) =>
+                            onUpdateWorkflowControl(control.id, {
+                              value: coerceControlValue(value, control.defaultValue),
+                            })
+                          }
+                          onEnhance={() =>
+                            onStartPromptEnhancementChat(control.id, imagePromptRoute)
+                          }
+                          onUpdate={(updates) => onUpdateWorkflowControl(control.id, updates)}
+                          onReset={() => onResetWorkflowControl(control.id)}
+                        />
+                      )}
+                    </PropertyField>
+                  )}
+                </AttentionPulse>
+              );
+            })}
           </div>
-        )}
-      </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/70 px-3 text-xs leading-5 text-gray-400">
+            No workflow props are shown yet. Use the Fields button to add workflow inputs here.
+          </div>
+        )
+      ) : (
+        <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/70 px-3 text-xs leading-5 text-gray-400">
+          Load a workflow before choosing Comfy props.
+        </div>
+      )}
     </CollapsibleSection>
   );
 }

@@ -5,9 +5,11 @@
 
 import React from 'react';
 import type {
+  AlphaInputBehavior,
   ColorProcessingDomain,
   DataChannelSemantic,
   GeneratedColorResolver,
+  ModelRequirement,
   RenderSceneSize,
   RenderSceneSizeBehavior,
   RgbaChannel,
@@ -15,7 +17,8 @@ import type {
 } from '@blackboard/types';
 
 // Re-export shared public types used by plugin node contracts.
-export type { RgbaChannel, TransformData } from '@blackboard/types';
+export type { AlphaInputBehavior, RgbaChannel, TransformData } from '@blackboard/types';
+export type { ModelCatalogReference, ModelRequirement } from '@blackboard/types';
 
 // ---------------------------------------------------------------------------
 // Core types re-exported for plugin authors
@@ -289,6 +292,8 @@ export interface NodeDefinition {
   type: string;
   name: string;
   description?: string;
+  /** Models required by this node type or by an optional feature on the node. */
+  modelRequirements?: ModelRequirement[] | ((node: unknown) => ModelRequirement[]);
   category: 'Image' | 'Spatial' | 'Adjustment' | 'Effect' | 'Utility';
   renderMode: RenderMode;
   processingDomain: ColorProcessingDomain | ((node: unknown) => ColorProcessingDomain);
@@ -296,6 +301,13 @@ export interface NodeDefinition {
   primaryInputDomain?: ColorProcessingDomain | ((node: unknown) => ColorProcessingDomain);
   /** `reinterpret` permits color-domain mismatches at an explicit conversion boundary. */
   primaryInputDomainPolicy?: 'strict' | 'reinterpret';
+  /**
+   * Declares whether input alpha only propagates through alpha, can affect
+   * visible RGB/data, or is discarded. Omission is conservatively consuming.
+   */
+  alphaInputBehavior?:
+    | AlphaInputBehavior
+    | ((node: unknown, inputPort: string) => AlphaInputBehavior);
 
   IconComponent: React.ComponentType<{ className?: string }>;
   ToolComponent?: React.ComponentType;
@@ -405,6 +417,8 @@ export interface PluginManifest {
   version: string;
   author?: string;
   description?: string;
+  /** Plugin-wide model dependencies not owned by one node extension. */
+  modelRequirements?: ModelRequirement[];
   /** Node extensions provided by this plugin. */
   nodeExtensions: NodeDefinition[];
   /**

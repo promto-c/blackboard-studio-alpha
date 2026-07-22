@@ -25,6 +25,10 @@ import { getLinearValueAtFrame, getValueAtFrame, setKeyframeOnValue } from '@bla
 import { ROTO_SHADER } from './rotoShader';
 import { renderFloatRotoMask } from './rotoMaskGpu';
 import { DEFAULT_ROTO_MOTION_BLUR } from '@/utils/rotoMotionBlur';
+import {
+  DEFAULT_SAM3_MODEL_VARIANT,
+  SAM3_MODEL_REQUIREMENT,
+} from '@/services/models/builtinModelRegistry';
 import { getRotoLayerPathIds, getRotoPathParentLayerId } from '@/utils/rotoHierarchy';
 import {
   deriveUserTranslationFromPoints,
@@ -345,7 +349,14 @@ export const rotoNode: NodeDefinition = {
   category: 'Effect',
   renderMode: 'mask',
   processingDomain: 'scene_linear',
+  alphaInputBehavior: (node, inputPort) =>
+    inputPort !== 'pipe'
+      ? 'consume'
+      : (node as RotoNode).alphaMode === RotoAlphaMode.REPLACE
+        ? 'discard'
+        : 'propagate',
   description: 'Create masks using vector shapes.',
+  modelRequirements: [SAM3_MODEL_REQUIREMENT],
   IconComponent: RotoIcon,
   ToolComponent: RotoTool,
   AdjustmentComponent: RotoAdjustments,
@@ -362,7 +373,12 @@ export const rotoNode: NodeDefinition = {
     invert: false,
     alphaMode: RotoAlphaMode.REPLACE,
     motionBlur: { ...DEFAULT_ROTO_MOTION_BLUR },
+    segmentationModelVariant: DEFAULT_SAM3_MODEL_VARIANT,
   }),
+  getAssetIds: (node) =>
+    (node as RotoNode).paths
+      .map((path) => path.sourceMask?.maskAssetId)
+      .filter((assetId): assetId is string => Boolean(assetId)),
   getStabilizeTransform: (node, frame, context) => {
     const rotoNode = node as RotoNode;
     const stabilizationScope = getStabilizationScope(context);

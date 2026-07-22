@@ -945,6 +945,28 @@ a:focus {
   border-radius: 0 0.625rem 0.625rem 0;
 }
 
+/* Toolbar dropdowns share the compact geometry of sliding segmented controls. */
+[data-component-style] .bb-dropdown-surface.bb-control-toolbar {
+  min-height: 1.75rem;
+  border-radius: 0.375rem;
+}
+
+[data-component-style='glass'] .bb-dropdown-surface.bb-control-toolbar::after {
+  border-radius: calc(0.375rem - 1px);
+}
+
+[data-component-style] .bb-split-control.bb-control-toolbar .bb-dropdown-trigger {
+  min-height: 1.75rem;
+  border-radius: 0.375rem 0 0 0.375rem;
+}
+
+[data-component-style] .bb-split-control.bb-control-toolbar .bb-split-control-action {
+  width: 1.75rem;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  border-radius: 0 0.375rem 0.375rem 0;
+}
+
 [data-component-style='glass'] .bb-split-control-separator {
   background: linear-gradient(
     to bottom,

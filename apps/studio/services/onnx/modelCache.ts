@@ -1,16 +1,40 @@
 import type {
   InstalledOnnxModel,
+  ModelCatalogReference,
   OnnxModelExternalData,
   OnnxModelVariantMetadata,
 } from '@blackboard/types';
 import { GENERIC_ONNX_RECIPE, getVariantRequiredFiles, getVariantTotalSize } from './modelRegistry';
+import { getTransformersCachedModelFile } from '@/services/models/transformersModelCache';
+import {
+  BROWSER_STORAGE_MOUNT_ID,
+  StorageMountPaths,
+  createMountedAssetId,
+  deleteStorageFile,
+  getDefaultStorageMountId,
+  joinStorageMountPath,
+  listStorageMounts,
+  parseMountedAssetId,
+  readStorageFile,
+  writeStorageFile,
+} from '@blackboard/project-store';
 
 const DB_NAME = 'BlackboardOnnxModels';
 const DB_VERSION = 1;
 const MODEL_STORE = 'models';
 const BLOB_STORE = 'blobs';
+const MODEL_CATALOG_PATH = joinStorageMountPath(StorageMountPaths.models, 'models.json');
+const MODEL_CATALOG_FORMAT = 'blackboard-studio-onnx-models';
+const MODEL_CATALOG_VERSION = 1;
+
+interface MountedModelCatalog {
+  format: typeof MODEL_CATALOG_FORMAT;
+  version: typeof MODEL_CATALOG_VERSION;
+  models: InstalledOnnxModel[];
+}
 
 let db: IDBDatabase | null = null;
+const catalogWriteQueues = new Map<string, Promise<void>>();
 
 const openDB = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
@@ -58,6 +82,130 @@ const performTransaction = async <T>(
   });
 };
 
+const getBrowserInstalledOnnxModels = async (): Promise<InstalledOnnxModel[]> => {
+  if (typeof indexedDB === 'undefined') return [];
+  return performTransaction<InstalledOnnxModel[]>(MODEL_STORE, 'readonly', (store) =>
+    store.getAll(),
+  );
+};
+
+const loadMountedModelCatalog = async (mountId: string): Promise<MountedModelCatalog> => {
+  const blob = await readStorageFile(mountId, MODEL_CATALOG_PATH);
+  if (!blob) {
+    return { format: MODEL_CATALOG_FORMAT, version: MODEL_CATALOG_VERSION, models: [] };
+  }
+  try {
+    const catalog = JSON.parse(await blob.text()) as MountedModelCatalog;
+    if (
+      catalog.format !== MODEL_CATALOG_FORMAT ||
+      catalog.version !== MODEL_CATALOG_VERSION ||
+      !Array.isArray(catalog.models)
+    ) {
+      throw new Error('Unsupported ONNX model catalog.');
+    }
+    return catalog;
+  } catch (error) {
+    console.warn(`Could not read ONNX model catalog from ${mountId}.`, error);
+    return { format: MODEL_CATALOG_FORMAT, version: MODEL_CATALOG_VERSION, models: [] };
+  }
+};
+
+const updateMountedModelCatalog = async (
+  mountId: string,
+  update: (models: InstalledOnnxModel[]) => InstalledOnnxModel[],
+): Promise<void> => {
+  const previous = catalogWriteQueues.get(mountId) ?? Promise.resolve();
+  const operation = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const catalog = await loadMountedModelCatalog(mountId);
+      const models = update(catalog.models).map((model) => ({ ...model, storageMountId: mountId }));
+      await writeStorageFile(
+        mountId,
+        MODEL_CATALOG_PATH,
+        new Blob(
+          [
+            JSON.stringify(
+              {
+                format: MODEL_CATALOG_FORMAT,
+                version: MODEL_CATALOG_VERSION,
+                models,
+              } satisfies MountedModelCatalog,
+              null,
+              2,
+            ),
+          ],
+          { type: 'application/json' },
+        ),
+      );
+    });
+  catalogWriteQueues.set(mountId, operation);
+  try {
+    await operation;
+  } finally {
+    if (catalogWriteQueues.get(mountId) === operation) catalogWriteQueues.delete(mountId);
+  }
+};
+
+const getConnectedModelMountIds = async (): Promise<string[]> =>
+  (await listStorageMounts())
+    .filter(
+      (mount) =>
+        mount.id !== BROWSER_STORAGE_MOUNT_ID &&
+        mount.connected &&
+        mount.resources.includes('models'),
+    )
+    .map((mount) => mount.id);
+
+const getMountedModelId = (mountId: string, logicalCacheKey: string, extension: string): string => {
+  const fileName = `${encodeURIComponent(logicalCacheKey)}${extension}`;
+  return createMountedAssetId(
+    mountId,
+    joinStorageMountPath(StorageMountPaths.models, 'blobs', fileName),
+  );
+};
+
+const putCachedOnnxModelBlob = async (cacheKey: string, blob: Blob): Promise<void> => {
+  const mounted = parseMountedAssetId(cacheKey);
+  if (mounted) {
+    await writeStorageFile(mounted.mountId, mounted.path, blob);
+    return;
+  }
+  await performTransaction(BLOB_STORE, 'readwrite', (store) => store.put(blob, cacheKey));
+};
+
+const deleteCachedOnnxModelBlob = async (cacheKey: string): Promise<void> => {
+  const mounted = parseMountedAssetId(cacheKey);
+  if (mounted) {
+    await deleteStorageFile(mounted.mountId, mounted.path);
+    return;
+  }
+  if (typeof indexedDB === 'undefined') return;
+  await performTransaction(BLOB_STORE, 'readwrite', (store) => store.delete(cacheKey));
+};
+
+const putInstalledOnnxModel = async (model: InstalledOnnxModel): Promise<void> => {
+  if (model.storageMountId && model.storageMountId !== BROWSER_STORAGE_MOUNT_ID) {
+    await updateMountedModelCatalog(model.storageMountId, (models) => [
+      model,
+      ...models.filter((candidate) => candidate.id !== model.id),
+    ]);
+    return;
+  }
+  await performTransaction(MODEL_STORE, 'readwrite', (store) => store.put(model));
+};
+
+const deleteInstalledOnnxModelRecord = async (model: InstalledOnnxModel): Promise<void> => {
+  if (model.storageMountId && model.storageMountId !== BROWSER_STORAGE_MOUNT_ID) {
+    await updateMountedModelCatalog(model.storageMountId, (models) =>
+      models.filter((candidate) => candidate.id !== model.id),
+    );
+    return;
+  }
+  if (typeof indexedDB === 'undefined') return;
+  await performTransaction(MODEL_STORE, 'readwrite', (store) => store.delete(model.id));
+};
+
 export const getOnnxDownloadUrl = (variant: OnnxModelVariantMetadata): string =>
   `https://huggingface.co/${variant.repoName}/resolve/main/${variant.filePath}`;
 
@@ -96,23 +244,55 @@ const streamDownloadAsBlob = async (
   return new Blob(chunks, { type: 'application/octet-stream' });
 };
 
-export const getInstalledOnnxModels = async (): Promise<InstalledOnnxModel[]> => {
-  const models = await performTransaction<InstalledOnnxModel[]>(MODEL_STORE, 'readonly', (store) =>
-    store.getAll(),
+const downloadOrReuseTransformersFile = async (
+  repoName: string,
+  filePath: string,
+  url: string,
+  onDelta: (bytes: number) => void,
+  signal?: AbortSignal,
+): Promise<Blob> => {
+  const cached = await getTransformersCachedModelFile(repoName, filePath);
+  if (cached) {
+    onDelta(cached.size);
+    return cached;
+  }
+  return streamDownloadAsBlob(url, onDelta, signal);
+};
+
+const getAllInstalledOnnxModelRecords = async (): Promise<InstalledOnnxModel[]> => {
+  const browserModels = await getBrowserInstalledOnnxModels();
+  const mountIds = await getConnectedModelMountIds();
+  const mountedModels = await Promise.all(
+    mountIds.map(async (mountId) => {
+      try {
+        const catalog = await loadMountedModelCatalog(mountId);
+        return catalog.models.map((model) => ({ ...model, storageMountId: mountId }));
+      } catch (error) {
+        console.warn(`Could not load ONNX models from ${mountId}.`, error);
+        return [];
+      }
+    }),
   );
-  return models.sort((a, b) => b.installedAt - a.installedAt);
+  return [...browserModels, ...mountedModels.flat()];
+};
+
+export const getInstalledOnnxModels = async (): Promise<InstalledOnnxModel[]> => {
+  const modelsById = new Map<string, InstalledOnnxModel>();
+  (await getAllInstalledOnnxModelRecords()).forEach((model) => {
+    const current = modelsById.get(model.id);
+    if (!current || current.installedAt < model.installedAt) modelsById.set(model.id, model);
+  });
+  return Array.from(modelsById.values()).sort((a, b) => b.installedAt - a.installedAt);
 };
 
 export const getInstalledOnnxModel = async (id: string): Promise<InstalledOnnxModel | null> => {
-  const model = await performTransaction<InstalledOnnxModel | undefined>(
-    MODEL_STORE,
-    'readonly',
-    (store) => store.get(id),
-  );
-  return model ?? null;
+  return (await getInstalledOnnxModels()).find((model) => model.id === id) ?? null;
 };
 
 export const getCachedOnnxModelBlob = async (cacheKey: string): Promise<Blob | null> => {
+  const mounted = parseMountedAssetId(cacheKey);
+  if (mounted) return readStorageFile(mounted.mountId, mounted.path);
+  if (typeof indexedDB === 'undefined') return null;
   const blob = await performTransaction<Blob | undefined>(BLOB_STORE, 'readonly', (store) =>
     store.get(cacheKey),
   );
@@ -135,23 +315,18 @@ export const getCachedOnnxExternalDataBlobs = async (
 };
 
 export const deleteInstalledOnnxModel = async (modelId: string): Promise<void> => {
-  const model = await getInstalledOnnxModel(modelId);
-  if (!model) return;
-  const dbInstance = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = dbInstance.transaction([MODEL_STORE, BLOB_STORE], 'readwrite');
-    const blobStore = transaction.objectStore(BLOB_STORE);
-    blobStore.delete(model.cacheKey);
-    if (model.externalData) {
-      for (const ext of model.externalData) {
-        blobStore.delete(ext.cacheKey);
-      }
-    }
-    transaction.objectStore(MODEL_STORE).delete(model.id);
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error);
-  });
+  const models = (await getAllInstalledOnnxModelRecords()).filter((model) => model.id === modelId);
+  await Promise.all(
+    models.map(async (model) => {
+      await Promise.all([
+        deleteCachedOnnxModelBlob(model.cacheKey),
+        ...(model.externalData ?? []).map((external) =>
+          deleteCachedOnnxModelBlob(external.cacheKey),
+        ),
+      ]);
+      await deleteInstalledOnnxModelRecord(model);
+    }),
+  );
 };
 
 export interface DownloadProgress {
@@ -167,10 +342,12 @@ export interface DownloadProgress {
 
 export const downloadAndCacheOnnxModel = async ({
   variant,
+  catalogRef,
   onProgress,
   signal,
 }: {
   variant: OnnxModelVariantMetadata;
+  catalogRef?: ModelCatalogReference;
   onProgress?: (progress: DownloadProgress) => void;
   signal?: AbortSignal;
 }): Promise<InstalledOnnxModel> => {
@@ -220,9 +397,20 @@ export const downloadAndCacheOnnxModel = async ({
     fileIndex: 0,
   });
 
-  const blob = await streamDownloadAsBlob(modelUrl, onDelta, signal);
+  const blob = await downloadOrReuseTransformersFile(
+    variant.repoName,
+    variant.filePath,
+    modelUrl,
+    onDelta,
+    signal,
+  );
   const modelId = `generic:${variant.repoName}:${variant.filePath}`;
-  const cacheKey = `${modelId}:${Date.now()}`;
+  const logicalCacheKey = `${modelId}:${Date.now()}`;
+  const storageMountId = getDefaultStorageMountId('models');
+  const cacheKey =
+    storageMountId === BROWSER_STORAGE_MOUNT_ID
+      ? logicalCacheKey
+      : getMountedModelId(storageMountId, logicalCacheKey, '.onnx');
 
   const externalData: OnnxModelExternalData[] = [];
   if (variant.externalDataFiles?.length) {
@@ -239,29 +427,35 @@ export const downloadAndCacheOnnxModel = async ({
         currentFileSize,
         fileIndex: currentFileIndex,
       });
-      const extBlob = await streamDownloadAsBlob(extUrl, onDelta, signal);
-      const extKey = externalDataCacheKey(cacheKey, extFile.path);
+      const extBlob = await downloadOrReuseTransformersFile(
+        variant.repoName,
+        extFile.path,
+        extUrl,
+        onDelta,
+        signal,
+      );
+      const logicalExtKey = externalDataCacheKey(logicalCacheKey, extFile.path);
+      const extKey =
+        storageMountId === BROWSER_STORAGE_MOUNT_ID
+          ? logicalExtKey
+          : getMountedModelId(storageMountId, logicalExtKey, '.data');
       externalData.push({
         path: extFile.path,
         cacheKey: extKey,
         sizeBytes: extBlob.size,
       });
-      const dbInstance = await openDB();
-      await new Promise<void>((resolve, reject) => {
-        const tx = dbInstance.transaction([BLOB_STORE], 'readwrite');
-        tx.objectStore(BLOB_STORE).put(extBlob, extKey);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
+      await putCachedOnnxModelBlob(extKey, extBlob);
     }
   }
 
   const name =
+    catalogRef?.modelName ??
     variant.repoName
       .split('/')
       .pop()
       ?.replace(/[-_](ONNX|onnx)$/, '')
-      .replace(/[-_]/g, ' ') ?? GENERIC_ONNX_RECIPE.name;
+      .replace(/[-_]/g, ' ') ??
+    GENERIC_ONNX_RECIPE.name;
 
   const installedModel: InstalledOnnxModel = {
     id: modelId,
@@ -281,27 +475,26 @@ export const downloadAndCacheOnnxModel = async ({
     installedAt: Date.now(),
     sizeBytes: blob.size,
     externalData: externalData.length > 0 ? externalData : undefined,
+    catalogRef,
+    storageMountId: storageMountId === BROWSER_STORAGE_MOUNT_ID ? undefined : storageMountId,
   };
 
-  const existingModel = await getInstalledOnnxModel(modelId);
-  const dbInstance = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = dbInstance.transaction([MODEL_STORE, BLOB_STORE], 'readwrite');
-    const blobStore = transaction.objectStore(BLOB_STORE);
-    if (existingModel) {
-      blobStore.delete(existingModel.cacheKey);
-      if (existingModel.externalData) {
-        for (const ext of existingModel.externalData) {
-          blobStore.delete(ext.cacheKey);
-        }
-      }
-    }
-    blobStore.put(blob, cacheKey);
-    transaction.objectStore(MODEL_STORE).put(installedModel);
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error);
-  });
+  const existingModels = (await getAllInstalledOnnxModelRecords()).filter(
+    (model) => model.id === modelId,
+  );
+  await putCachedOnnxModelBlob(cacheKey, blob);
+  await Promise.all(
+    existingModels.map(async (existingModel) => {
+      await Promise.all([
+        deleteCachedOnnxModelBlob(existingModel.cacheKey),
+        ...(existingModel.externalData ?? []).map((external) =>
+          deleteCachedOnnxModelBlob(external.cacheKey),
+        ),
+      ]);
+      await deleteInstalledOnnxModelRecord(existingModel);
+    }),
+  );
+  await putInstalledOnnxModel(installedModel);
 
   cumulativeLoaded = grandTotal || blob.size;
   reportProgress({
@@ -313,12 +506,5 @@ export const downloadAndCacheOnnxModel = async ({
 };
 
 export const updateInstalledOnnxModel = async (model: InstalledOnnxModel): Promise<void> => {
-  const dbInstance = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const tx = dbInstance.transaction(MODEL_STORE, 'readwrite');
-    tx.objectStore(MODEL_STORE).put(model);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
+  await putInstalledOnnxModel(model);
 };

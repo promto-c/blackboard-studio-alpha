@@ -4,7 +4,15 @@ import type {
   Scene3DAssetReference,
   VideoColorMetadata,
 } from '@blackboard/types';
-import { performTransaction, openDB } from './assetStorage';
+import { performTransaction } from './assetStorage';
+import {
+  BROWSER_STORAGE_MOUNT_ID,
+  StorageMountPaths,
+  getDefaultStorageMountId,
+  listStorageMounts,
+  readStorageFile,
+  writeStorageFile,
+} from './storageMounts';
 
 const GALLERY_STORE_NAME = 'gallery';
 const GALLERY_KEY = 'app-gallery';
@@ -34,6 +42,8 @@ export interface GalleryEntry {
   workflowId?: string;
   workflowName?: string;
   promptId?: string;
+  /** The store containing this Gallery record. Added when reading mounted galleries. */
+  storageMountId?: string;
 }
 
 export const AssetTag = {
@@ -62,7 +72,7 @@ type GalleryStoreDocument = {
   entries: GalleryEntry[];
 };
 
-const loadGalleryDocument = async (): Promise<GalleryStoreDocument> => {
+const loadBrowserGalleryDocument = async (): Promise<GalleryStoreDocument> => {
   const result = await performTransaction<GalleryStoreDocument | undefined>(
     GALLERY_STORE_NAME,
     'readonly',
@@ -71,61 +81,159 @@ const loadGalleryDocument = async (): Promise<GalleryStoreDocument> => {
   return result ?? { entries: [] };
 };
 
-const saveGalleryDocument = async (doc: GalleryStoreDocument): Promise<void> => {
+const saveBrowserGalleryDocument = async (doc: GalleryStoreDocument): Promise<void> => {
   await performTransaction(GALLERY_STORE_NAME, 'readwrite', (store) => store.put(doc, GALLERY_KEY));
 };
 
-export const loadGalleryEntries = async (): Promise<GalleryEntry[]> => {
-  const doc = await loadGalleryDocument();
-  return doc.entries;
+const parseGalleryDocument = (value: unknown): GalleryStoreDocument => {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    !Array.isArray((value as GalleryStoreDocument).entries)
+  ) {
+    return { entries: [] };
+  }
+  return { entries: (value as GalleryStoreDocument).entries };
 };
 
-export const addGalleryEntries = async (entries: GalleryEntry[]): Promise<void> => {
-  const doc = await loadGalleryDocument();
+const loadGalleryDocument = async (mountId: string): Promise<GalleryStoreDocument> => {
+  if (mountId === BROWSER_STORAGE_MOUNT_ID) return loadBrowserGalleryDocument();
+  const blob = await readStorageFile(mountId, StorageMountPaths.gallery);
+  if (!blob) return { entries: [] };
+  try {
+    return parseGalleryDocument(JSON.parse(await blob.text()) as unknown);
+  } catch (error) {
+    console.warn(`Could not parse Gallery data from storage mount ${mountId}.`, error);
+    return { entries: [] };
+  }
+};
+
+const saveGalleryDocument = async (mountId: string, doc: GalleryStoreDocument): Promise<void> => {
+  if (mountId === BROWSER_STORAGE_MOUNT_ID) {
+    await saveBrowserGalleryDocument(doc);
+    return;
+  }
+  await writeStorageFile(
+    mountId,
+    StorageMountPaths.gallery,
+    new Blob([JSON.stringify(doc)], { type: 'application/json' }),
+  );
+};
+
+const listGalleryMountIds = async (writableOnly = false): Promise<string[]> => {
+  const mounts = await listStorageMounts();
+  return mounts
+    .filter(
+      (mount) =>
+        mount.connected &&
+        (!writableOnly || !mount.readOnly) &&
+        mount.resources.includes('gallery'),
+    )
+    .map((mount) => mount.id);
+};
+
+export const loadGalleryEntries = async (options?: {
+  mountIds?: string[];
+}): Promise<GalleryEntry[]> => {
+  const mountIds = options?.mountIds ?? (await listGalleryMountIds());
+  const documents = await Promise.all(
+    mountIds.map(async (mountId) => {
+      try {
+        return { mountId, document: await loadGalleryDocument(mountId) };
+      } catch (error) {
+        console.warn(`Could not read Gallery storage mount ${mountId}.`, error);
+        return { mountId, document: { entries: [] } as GalleryStoreDocument };
+      }
+    }),
+  );
+
+  const entriesById = new Map<string, GalleryEntry>();
+  documents.forEach(({ mountId, document }) => {
+    document.entries.forEach((entry) => {
+      if (!entriesById.has(entry.id)) {
+        entriesById.set(entry.id, { ...entry, storageMountId: mountId });
+      }
+    });
+  });
+  return Array.from(entriesById.values()).sort((a, b) => b.createdAt - a.createdAt);
+};
+
+export const addGalleryEntries = async (
+  entries: GalleryEntry[],
+  options?: { mountId?: string },
+): Promise<void> => {
+  const mountId = options?.mountId ?? getDefaultStorageMountId('gallery');
+  const doc = await loadGalleryDocument(mountId);
   const existingIds = new Set(doc.entries.map((e) => e.id));
-  const newEntries = entries.filter((e) => !existingIds.has(e.id));
+  const newEntries = entries
+    .filter((e) => !existingIds.has(e.id))
+    .map((entry) => ({ ...entry, storageMountId: mountId }));
   if (newEntries.length === 0) return;
   doc.entries.push(...newEntries);
   doc.entries.sort((a, b) => b.createdAt - a.createdAt);
-  await saveGalleryDocument(doc);
+  await saveGalleryDocument(mountId, doc);
+};
+
+const mutateGalleryDocuments = async (
+  mutate: (doc: GalleryStoreDocument, mountId: string) => boolean,
+): Promise<void> => {
+  const mountIds = await listGalleryMountIds(true);
+  await Promise.all(
+    mountIds.map(async (mountId) => {
+      const document = await loadGalleryDocument(mountId);
+      if (mutate(document, mountId)) await saveGalleryDocument(mountId, document);
+    }),
+  );
 };
 
 export const updateGalleryEntry = async (
   id: string,
   updates: Partial<GalleryEntry>,
 ): Promise<void> => {
-  const doc = await loadGalleryDocument();
-  const index = doc.entries.findIndex((e) => e.id === id);
-  if (index === -1) return;
-  doc.entries[index] = { ...doc.entries[index], ...updates };
-  await saveGalleryDocument(doc);
+  await mutateGalleryDocuments((doc, mountId) => {
+    const index = doc.entries.findIndex((entry) => entry.id === id);
+    if (index === -1) return false;
+    doc.entries[index] = { ...doc.entries[index], ...updates, storageMountId: mountId };
+    return true;
+  });
 };
 
 export const softDeleteGalleryEntries = async (ids: string[]): Promise<void> => {
-  const doc = await loadGalleryDocument();
   const now = Date.now();
-  for (const entry of doc.entries) {
-    if (ids.includes(entry.id)) {
+  const idSet = new Set(ids);
+  await mutateGalleryDocuments((doc) => {
+    let changed = false;
+    doc.entries.forEach((entry) => {
+      if (!idSet.has(entry.id)) return;
       entry.deletedAt = now;
-    }
-  }
-  await saveGalleryDocument(doc);
+      changed = true;
+    });
+    return changed;
+  });
 };
 
 export const restoreGalleryEntries = async (ids: string[]): Promise<void> => {
-  const doc = await loadGalleryDocument();
-  for (const entry of doc.entries) {
-    if (ids.includes(entry.id)) {
-      delete entry.deletedAt;
+  const idSet = new Set(ids);
+  await mutateGalleryDocuments((doc) => {
+    let changed = false;
+    for (const entry of doc.entries) {
+      if (idSet.has(entry.id) && entry.deletedAt) {
+        delete entry.deletedAt;
+        changed = true;
+      }
     }
-  }
-  await saveGalleryDocument(doc);
+    return changed;
+  });
 };
 
 export const permanentDeleteGalleryEntries = async (ids: string[]): Promise<void> => {
-  const doc = await loadGalleryDocument();
-  doc.entries = doc.entries.filter((e) => !ids.includes(e.id));
-  await saveGalleryDocument(doc);
+  const idSet = new Set(ids);
+  await mutateGalleryDocuments((doc) => {
+    const entries = doc.entries.filter((entry) => !idSet.has(entry.id));
+    if (entries.length === doc.entries.length) return false;
+    doc.entries = entries;
+    return true;
+  });
 };
 
 export const createEntryId = (): string =>

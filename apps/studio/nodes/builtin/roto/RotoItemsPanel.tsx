@@ -787,12 +787,13 @@ function RotoItemsPanel({
         parentLayerId: item.path.parentLayerId ?? null,
         path: item.path,
       };
-      const shapeIcon =
-        item.path.shapeType === RotoShapeType.BSPLINE ? (
-          <Icons.Curve className="h-3.5 w-3.5 flex-shrink-0" />
-        ) : (
-          <Icons.Square className="h-3.5 w-3.5 flex-shrink-0" />
-        );
+      const shapeIcon = item.path.sourceMask ? (
+        <Icons.Sparkles className="h-3.5 w-3.5 flex-shrink-0 text-sky-300" />
+      ) : item.path.shapeType === RotoShapeType.BSPLINE ? (
+        <Icons.Curve className="h-3.5 w-3.5 flex-shrink-0" />
+      ) : (
+        <Icons.Square className="h-3.5 w-3.5 flex-shrink-0" />
+      );
       const isSelectedTarget = selectedItemCount > 1 && selectedPathIdSet.has(item.path.id);
       const visibilityLabel = isSelectedTarget
         ? selectionVisibilityToggleLabel

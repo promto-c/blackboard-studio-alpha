@@ -1,5 +1,6 @@
 export {
   saveAsset,
+  saveAssetToMount,
   getAsset,
   getAssetSize,
   getAssetReferenceExportRecord,
@@ -9,5 +10,7 @@ export {
   saveProjectStateToDB,
   loadProjectStateFromDB,
   deleteProjectStateFromDB,
+  listProjectStateIdsFromDB,
   type AssetReferenceExportRecord,
+  type SaveAssetOptions,
 } from '@blackboard/project-store';

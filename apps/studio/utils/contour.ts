@@ -1,109 +1,184 @@
-type Point = { x: number; y: number };
+export type ContourPoint = { x: number; y: number };
+
+type Segment = [ContourPoint, ContourPoint];
+
+const pointKey = (point: ContourPoint): string =>
+  `${Math.round(point.x * 2)},${Math.round(point.y * 2)}`;
+
+const buildSegments = (
+  values: ArrayLike<number>,
+  width: number,
+  height: number,
+  threshold: number,
+): Segment[] => {
+  const segments: Segment[] = [];
+
+  for (let y = 0; y < height - 1; y += 1) {
+    for (let x = 0; x < width - 1; x += 1) {
+      const index = y * width + x;
+      const topLeft = values[index] >= threshold ? 1 : 0;
+      const topRight = values[index + 1] >= threshold ? 1 : 0;
+      const bottomRight = values[index + width + 1] >= threshold ? 1 : 0;
+      const bottomLeft = values[index + width] >= threshold ? 1 : 0;
+      const configuration = (topLeft << 3) | (topRight << 2) | (bottomRight << 1) | bottomLeft;
+      if (configuration === 0 || configuration === 15) continue;
+
+      const top = { x: x + 0.5, y };
+      const right = { x: x + 1, y: y + 0.5 };
+      const bottom = { x: x + 0.5, y: y + 1 };
+      const left = { x, y: y + 0.5 };
+
+      switch (configuration) {
+        case 1:
+        case 14:
+          segments.push([bottom, left]);
+          break;
+        case 2:
+        case 13:
+          segments.push([right, bottom]);
+          break;
+        case 3:
+        case 12:
+          segments.push([right, left]);
+          break;
+        case 4:
+        case 11:
+          segments.push([top, right]);
+          break;
+        case 5:
+          segments.push([top, left], [right, bottom]);
+          break;
+        case 6:
+        case 9:
+          segments.push([top, bottom]);
+          break;
+        case 7:
+        case 8:
+          segments.push([top, left]);
+          break;
+        case 10:
+          segments.push([top, right], [bottom, left]);
+          break;
+      }
+    }
+  }
+
+  return segments;
+};
+
+/** Assemble marching-squares segments in O(n) instead of scanning every segment per point. */
+const assembleSegments = (segments: Segment[]): ContourPoint[][] => {
+  const incident = new Map<string, number[]>();
+  segments.forEach((segment, segmentIndex) => {
+    segment.forEach((point) => {
+      const key = pointKey(point);
+      const matches = incident.get(key);
+      if (matches) matches.push(segmentIndex);
+      else incident.set(key, [segmentIndex]);
+    });
+  });
+
+  const used = new Uint8Array(segments.length);
+  const contours: ContourPoint[][] = [];
+
+  const extend = (path: ContourPoint[], atStart: boolean): void => {
+    while (true) {
+      const endpoint = atStart ? path[0] : path[path.length - 1];
+      const candidateIndex = incident.get(pointKey(endpoint))?.find((index) => !used[index]);
+      if (candidateIndex == null) return;
+
+      used[candidateIndex] = 1;
+      const [a, b] = segments[candidateIndex];
+      const next = pointKey(a) === pointKey(endpoint) ? b : a;
+      if (atStart) path.unshift(next);
+      else path.push(next);
+
+      if (path.length > 3 && pointKey(path[0]) === pointKey(path[path.length - 1])) return;
+    }
+  };
+
+  segments.forEach((segment, segmentIndex) => {
+    if (used[segmentIndex]) return;
+    used[segmentIndex] = 1;
+    const path = [segment[0], segment[1]];
+    extend(path, false);
+    extend(path, true);
+    if (path.length > 5) contours.push(path);
+  });
+
+  return contours;
+};
+
+export const findScalarContours = (
+  values: ArrayLike<number>,
+  width: number,
+  height: number,
+  threshold: number,
+): ContourPoint[][] => {
+  if (width < 2 || height < 2 || values.length < width * height) return [];
+  return assembleSegments(buildSegments(values, width, height, threshold));
+};
+
+/** Find contours in a one-byte mask where 0 is background and 255 is foreground. */
+export const findMaskContours = (
+  data: Uint8Array,
+  width: number,
+  height: number,
+  threshold = 0.5,
+): ContourPoint[][] => {
+  if (width < 1 || height < 1 || data.length < width * height) return [];
+  const paddedWidth = width + 2;
+  const paddedHeight = height + 2;
+  const padded = new Uint8Array(paddedWidth * paddedHeight);
+  for (let y = 0; y < height; y += 1) {
+    padded.set(data.subarray(y * width, (y + 1) * width), (y + 1) * paddedWidth + 1);
+  }
+  return findScalarContours(padded, paddedWidth, paddedHeight, threshold * 255).map((contour) =>
+    contour.map((point) => ({
+      x: Math.max(0, Math.min(width, point.x - 1)),
+      y: Math.max(0, Math.min(height, point.y - 1)),
+    })),
+  );
+};
 
 /**
- * Marching Squares implementation to find contours in a bitmask.
- * Returns an array of paths (arrays of points).
+ * Marching Squares implementation for an RGBA image channel.
+ * Returns an array of paths in pixel coordinates.
  */
 export function findContours(
   data: Uint8Array,
   width: number,
   height: number,
   threshold: number,
-  channelOffset: number, // 0:R, 1:G, 2:B, 3:A
-): Point[][] {
-  const values = new Float32Array(width * height);
-  for (let i = 0; i < width * height; i++) {
-    values[i] = data[i * 4 + channelOffset] / 255.0;
+  channelOffset: number,
+): ContourPoint[][] {
+  const values = new Uint8Array(width * height);
+  for (let index = 0; index < values.length; index += 1) {
+    values[index] = data[index * 4 + channelOffset];
   }
-
-  const segments: [Point, Point][] = [];
-
-  // Step 1: Generate segments using Marching Squares
-  for (let y = 0; y < height - 1; y++) {
-    for (let x = 0; x < width - 1; x++) {
-      const idx = y * width + x;
-      const v0 = values[idx] >= threshold ? 1 : 0;
-      const v1 = values[idx + 1] >= threshold ? 1 : 0;
-      const v2 = values[idx + width + 1] >= threshold ? 1 : 0;
-      const v3 = values[idx + width] >= threshold ? 1 : 0;
-
-      const config = (v0 << 3) | (v1 << 2) | (v2 << 1) | v3;
-      if (config === 0 || config === 15) continue;
-
-      const p0 = { x: x + 0.5, y: y };
-      const p1 = { x: x + 1, y: y + 0.5 };
-      const p2 = { x: x + 0.5, y: y + 1 };
-      const p3 = { x: x, y: y + 0.5 };
-
-      switch (config) {
-        case 1:
-        case 14:
-          segments.push([p2, p3]);
-          break;
-        case 2:
-        case 13:
-          segments.push([p1, p2]);
-          break;
-        case 3:
-        case 12:
-          segments.push([p1, p3]);
-          break;
-        case 4:
-        case 11:
-          segments.push([p0, p1]);
-          break;
-        case 5:
-          segments.push([p0, p3], [p1, p2]);
-          break;
-        case 6:
-        case 9:
-          segments.push([p0, p2]);
-          break;
-        case 7:
-        case 8:
-          segments.push([p0, p3]);
-          break;
-        case 10:
-          segments.push([p0, p1], [p2, p3]);
-          break;
-      }
-    }
-  }
-
-  // Step 2: Assemble segments into connected paths
-  const paths: Point[][] = [];
-  const used = new Set<number>();
-
-  for (let i = 0; i < segments.length; i++) {
-    if (used.has(i)) continue;
-
-    const path: Point[] = [segments[i][0], segments[i][1]];
-    used.add(i);
-
-    let found = true;
-    while (found) {
-      found = false;
-      const last = path[path.length - 1];
-      for (let j = 0; j < segments.length; j++) {
-        if (used.has(j)) continue;
-        const [s0, s1] = segments[j];
-        if (Math.abs(s0.x - last.x) < 0.1 && Math.abs(s0.y - last.y) < 0.1) {
-          path.push(s1);
-          used.add(j);
-          found = true;
-          break;
-        } else if (Math.abs(s1.x - last.x) < 0.1 && Math.abs(s1.y - last.y) < 0.1) {
-          path.push(s0);
-          used.add(j);
-          found = true;
-          break;
-        }
-      }
-    }
-    if (path.length > 5) {
-      paths.push(path);
-    }
-  }
-
-  return paths;
+  return findScalarContours(values, width, height, threshold * 255);
 }
+
+export const getContourArea = (contour: readonly ContourPoint[]): number => {
+  if (contour.length < 3) return 0;
+  let area = 0;
+  for (let index = 0; index < contour.length; index += 1) {
+    const current = contour[index];
+    const next = contour[(index + 1) % contour.length];
+    area += current.x * next.y - next.x * current.y;
+  }
+  return Math.abs(area) / 2;
+};
+
+export const getLargestContour = (contours: readonly ContourPoint[][]): ContourPoint[] | null => {
+  let largest: ContourPoint[] | null = null;
+  let largestArea = 0;
+  contours.forEach((contour) => {
+    const area = getContourArea(contour);
+    if (area > largestArea) {
+      largestArea = area;
+      largest = contour;
+    }
+  });
+  return largest;
+};

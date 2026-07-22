@@ -39,6 +39,7 @@ import { createCommitMutation } from '@/state/editor/commitMutation';
 import { normalizeEditorState } from '@/state/editor/normalizeEditorState';
 import type { EditorState, SetState } from '@/state/editor/slices/types';
 import type { HistoryEntry, NodeType } from '@blackboard/types';
+import { getComfyEndpoint } from '@/utils/aiRouting';
 
 // ---------------------------------------------------------------------------
 // Store – holds state outside React so consumers can subscribe selectively.
@@ -130,6 +131,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     reopenHistoryLimit,
     autoCheckpointEnabled,
     newProjectColorManagement,
+    integrationConnections,
   } = usePreferences();
   const undoHistoryLimitRef = useRef(undoHistoryLimit);
   undoHistoryLimitRef.current = undoHistoryLimit;
@@ -139,6 +141,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   autoCheckpointEnabledRef.current = autoCheckpointEnabled;
   const newProjectColorManagementRef = useRef(newProjectColorManagement);
   newProjectColorManagementRef.current = newProjectColorManagement;
+  const integrationConnectionsRef = useRef(integrationConnections);
+  integrationConnectionsRef.current = integrationConnections;
 
   // Create the store once — it lives for the lifetime of the provider.
   const storeRef = useRef<EditorStore | null>(null);
@@ -252,6 +256,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       ...historyActions,
       ...createNodeActions(set, get, {
         commitMutation,
+        getComfyEndpoint: () =>
+          getComfyEndpoint({ integrationConnections: integrationConnectionsRef.current }),
       }),
       ...createRotoDrawingActions(set, get, {
         commitMutation,
@@ -275,6 +281,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         commitMutation,
       }),
       ...backgroundJobActions,
+      flushProjectSave: () => debouncedSave.flush(),
       commitMutation,
       setPreviewNodeType: (nodeType: NodeType | null) => {
         set(() => ({ previewNodeType: nodeType }));

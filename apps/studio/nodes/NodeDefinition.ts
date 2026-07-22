@@ -9,6 +9,7 @@ import type {
 } from '@blackboard/renderer';
 import {
   AnimatableNumber,
+  AlphaInputBehavior,
   AnyNode,
   ColorProcessingDomain,
   DataChannelSemantic,
@@ -22,6 +23,7 @@ import {
   SceneNode,
   SourceAlphaMode,
   TransformData,
+  ModelRequirement,
 } from '@blackboard/types';
 import type { HotkeyBinding } from '@/hotkeys';
 import type { NodeAnimationBehavior } from './animationHelpers';
@@ -538,6 +540,8 @@ export interface NodeDefinition {
   type: string;
   name: string;
   description?: string;
+  /** Models required by this node type or by an optional feature on the node. */
+  modelRequirements?: ModelRequirement[] | ((node: AnyNode) => ModelRequirement[]);
   category: ToolCategory;
   renderMode: RenderMode;
   /**
@@ -551,6 +555,15 @@ export interface NodeDefinition {
   primaryInputDomain?: ColorProcessingDomain | ((node: AnyNode) => ColorProcessingDomain);
   /** `reinterpret` permits color-domain mismatches at an explicit conversion boundary. */
   primaryInputDomainPolicy?: 'strict' | 'reinterpret';
+  /**
+   * Declares alpha liveness per input. `propagate` means input alpha can only
+   * affect output alpha, `consume` means it may affect visible RGB/data, and
+   * `discard` means it cannot affect the output. Omission is conservatively
+   * treated as `consume`, including for plugins.
+   */
+  alphaInputBehavior?:
+    | AlphaInputBehavior
+    | ((node: AnyNode, inputPort: string) => AlphaInputBehavior);
 
   // UI components
   IconComponent: React.ComponentType<{ className?: string }>;

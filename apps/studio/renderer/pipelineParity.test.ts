@@ -37,11 +37,13 @@ class MockRenderer {
   }> = [];
   compileCalls = 0;
   setSizeCalls = 0;
+  lastSetSize: { width: number; height: number } | null = null;
   scissorTest = false;
   scissor = new THREE.Vector4();
 
-  setSize() {
+  setSize(width: number, height: number) {
     this.setSizeCalls += 1;
+    this.lastSetSize = { width, height };
   }
 
   setRenderTarget(target: THREE.WebGLRenderTarget | null) {
@@ -1108,6 +1110,50 @@ describe('viewport/export render pipeline parity guards', () => {
     expect(result.displayOutputTarget).not.toBe(result.finalCompositeTarget);
   });
 
+  it.each([
+    ['nearest', 0],
+    ['linear', 1],
+  ] as const)(
+    'presents stabilized output with explicit %s GPU sampling',
+    (interpolation, interpolationUniform) => {
+      const { renderer, resources } = createResources();
+      const inverseTransform = new THREE.Matrix3().set(1.25, 0, -12, 0, 1.25, 8, 0, 0, 1);
+      const result = renderViewportFrameWithSharedPipeline({
+        resources,
+        nodes: [createMediaNode()],
+        sceneNode: createSceneNode(),
+        frame: 0,
+        viewerSettings: createViewerSettings(),
+        presentation: {
+          inverseTransform,
+          destinationSize: { width: 960, height: 540 },
+          interpolation,
+          pixelGrid: { opacity: 0.1, thresholdZoom: 8, fadeZoomSpan: 1 },
+        },
+        getMediaTexture: () => new THREE.Texture(),
+        getTextTexture: () => undefined,
+        nodeRegistry: createRegistry(),
+      });
+
+      const material = resources.materials.get('__viewer:presentation');
+      expect(material?.uniforms.u_inverse_transform.value).toBe(inverseTransform);
+      expect(material?.uniforms.u_source_resolution.value).toEqual(new THREE.Vector2(1920, 1080));
+      expect(material?.uniforms.u_destination_resolution.value).toEqual(
+        new THREE.Vector2(960, 540),
+      );
+      expect(material?.uniforms.u_interpolation.value).toBe(interpolationUniform);
+      expect(material?.uniforms.u_pixel_grid.value).toEqual(new THREE.Vector3(0.1, 8, 1));
+      expect(material?.fragmentShader).toContain('texelFetch(u_tDiffuse, pixel, 0)');
+      expect(material?.fragmentShader).toContain('sample_linear(source_pixel, texture_size)');
+      expect(material?.fragmentShader).toContain('dFdx(source_pixel.x)');
+      expect(material?.fragmentShader).toContain('apply_pixel_grid(sampled_color, source_pixel)');
+      expect(result.displayOutputTarget).toBeNull();
+      expect(resources.utilityTargets?.has('__viewer:display-output')).toBe(true);
+      expect(renderer.lastSetSize).toEqual({ width: 960, height: 540 });
+      expect(renderer.renderCalls.at(-1)).toMatchObject({ target: null, material });
+    },
+  );
+
   it('captures an offscreen viewer pass without resizing or presenting the canvas', () => {
     const { renderer, resources } = createResources();
     const result = renderViewportFrameWithSharedPipeline({
@@ -1371,6 +1417,43 @@ describe('viewport/export render pipeline parity guards', () => {
     expect(maskMaterial?.uniforms.u_tMask.value).toBe(maskTexture);
     expect(maskMaterial?.uniforms.u_alphaMode.value).toBe(1);
     expect(maskCall?.target).toBe(result.finalCompositeTarget);
+  });
+
+  it('bypasses an alpha-dead Roto with the same pass count as its upstream source', () => {
+    const sourceOnly = createResources();
+    renderViewportFrameWithSharedPipeline({
+      resources: sourceOnly.resources,
+      nodes: [createMediaNode()],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => createTexture(),
+      getTextTexture: () => undefined,
+      nodeRegistry: createRegistry(),
+    });
+
+    const withBypassedRoto = createResources();
+    const getRotoMaskLayers = vi.fn();
+    const roto = createMaskNode(true);
+    renderViewportFrameWithSharedPipeline({
+      resources: withBypassedRoto.resources,
+      nodes: [createMediaNode(), roto],
+      sceneNode: createSceneNode(),
+      frame: 0,
+      viewerSettings: createViewerSettings(),
+      getMediaTexture: () => createTexture(),
+      getTextTexture: () => undefined,
+      getRotoMaskLayers,
+      getRotoAlphaMode: () => 1,
+      bypassNodeIds: new Set([roto.id]),
+      nodeRegistry: createRegistry(),
+    });
+
+    expect(getRotoMaskLayers).not.toHaveBeenCalled();
+    expect(withBypassedRoto.resources.materials.has(roto.id)).toBe(false);
+    expect(withBypassedRoto.renderer.renderCalls).toHaveLength(
+      sourceOnly.renderer.renderCalls.length,
+    );
   });
 
   it('renders compacted paint through its canonical pipe input', () => {

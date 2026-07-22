@@ -239,21 +239,4 @@ describe('projectTransfer', () => {
 
     await expect(importProjectBundle(file)).rejects.toThrow('Project color management is missing');
   });
-
-  it('rejects legacy color-space aliases in persisted project nodes', async () => {
-    const state = createProjectState('ref_old');
-    const mediaNode = state.flows.root.nodes.find((node) => node.id === 'img_1') as
-      | { colorSpace?: string }
-      | undefined;
-    if (mediaNode) {
-      mediaNode.colorSpace = 'sRGB';
-    }
-
-    await expect(
-      exportProjectBundle({
-        projectName: 'Legacy Alias Project',
-        state,
-      }),
-    ).rejects.toThrow('legacy source color space alias "sRGB"');
-  });
 });

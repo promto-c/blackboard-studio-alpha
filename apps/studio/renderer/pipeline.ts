@@ -30,7 +30,9 @@ export type {
   RenderPipelineResult,
   ViewportPipelineResources,
   ViewportPipelineResult,
+  ViewportPresentationOptions,
 } from '@blackboard/renderer';
+export { presentViewportTextureToCanvas } from '@blackboard/renderer';
 
 // Studio injects app-owned registry, asset, and color-management services.
 export type RenderPipelineOptions = Omit<

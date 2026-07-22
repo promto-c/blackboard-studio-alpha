@@ -11,9 +11,17 @@ import {
   type SceneNode,
   type ViewerSettings,
 } from '@blackboard/types';
-import type { RendererMaskLayer, RenderQuality, RenderRegion } from '@blackboard/renderer';
+import type {
+  RendererMaskLayer,
+  RenderQuality,
+  RenderRegion,
+  ViewportPresentationOptions,
+} from '@blackboard/renderer';
 import { getMediaDescriptor, getNodeAssetIds, nodeFlags } from '@/nodes/helpers';
-import { renderViewportFrameWithSharedPipeline } from '@/renderer/pipeline';
+import {
+  presentViewportTextureToCanvas,
+  renderViewportFrameWithSharedPipeline,
+} from '@/renderer/pipeline';
 import type { TextTextureEntry } from './useViewportTextTextures';
 import type { TextureCache } from '@/utils/textureCache';
 import { renderNodesToDataURL } from '@/utils/thumbnailRenderer';
@@ -54,6 +62,7 @@ interface UseViewportRenderLoopParams {
   isRenderReady: boolean;
   /** Capture the display-referred output for a later presentation pass. */
   captureDisplayOutput?: boolean;
+  presentation?: ViewportPresentationOptions;
   mediaUpdateTrigger: number;
   threeStuff: ThreeStuff;
   textureCacheRef: RefObject<Pick<TextureCache, 'get'>>;
@@ -66,6 +75,7 @@ interface UseViewportRenderLoopParams {
       }
     >
   >;
+  bypassNodeIds?: ReadonlySet<string>;
   freezeImageWhileEditing: boolean;
   deferProjectThumbnailCapture: boolean;
   signalFrameRendered: () => void;
@@ -104,11 +114,13 @@ export function useViewportRenderLoop({
   hasRenderableNodes,
   isRenderReady,
   captureDisplayOutput = false,
+  presentation,
   mediaUpdateTrigger,
   threeStuff,
   textureCacheRef,
   textTexturesRef,
   rotoMaskTexturesRef,
+  bypassNodeIds,
   freezeImageWhileEditing,
   deferProjectThumbnailCapture,
   signalFrameRendered,
@@ -134,9 +146,11 @@ export function useViewportRenderLoop({
     mediaUpdateTrigger: number;
     hasRenderableNodes: boolean;
     captureDisplayOutput: boolean;
+    presentation: ViewportPresentationOptions | undefined;
     rendererSurfaceWidth: number;
     rendererSurfaceHeight: number;
     workingArea: RenderRegion | null | undefined;
+    bypassNodeIds: ReadonlySet<string> | undefined;
   } | null>(null);
 
   // --- Main GPU render ---
@@ -174,27 +188,59 @@ export function useViewportRenderLoop({
       return;
     }
 
-    // Skip the expensive GPU render if nothing visible changed, including
-    // roto edits that only affect hidden alpha output in the current viewer mode.
     const prev = prevRenderInputsRef.current;
-    if (
+    const graphInputsMatch =
       prev &&
       prev.visualFrame === visualFrame &&
       prev.viewerSettings === viewerSettings &&
       prev.displayView === displayView &&
       prev.projectColorManagement === projectColorManagement &&
       prev.outputDomain === outputDomain &&
-      prev.renderQuality === renderQuality &&
+      (prev.renderQuality === renderQuality || freezeImageWhileEditing) &&
       prev.alphaOverlayStyle === alphaOverlayStyle &&
       prev.sceneNode === sceneNode &&
       prev.mediaUpdateTrigger === mediaUpdateTrigger &&
       prev.hasRenderableNodes === hasRenderableNodes &&
       prev.captureDisplayOutput === captureDisplayOutput &&
-      prev.rendererSurfaceWidth === rendererSurfaceSize.width &&
-      prev.rendererSurfaceHeight === rendererSurfaceSize.height &&
       prev.workingArea === workingArea &&
-      (prev.nodes === nodes || freezeImageWhileEditing)
+      prev.bypassNodeIds === bypassNodeIds &&
+      (prev.nodes === nodes || freezeImageWhileEditing);
+
+    // Skip the expensive GPU render if nothing visible changed, including
+    // roto edits that only affect hidden alpha output in the current viewer mode.
+    if (
+      graphInputsMatch &&
+      prev.presentation === presentation &&
+      prev.rendererSurfaceWidth === rendererSurfaceSize.width &&
+      prev.rendererSurfaceHeight === rendererSurfaceSize.height
     ) {
+      signalFrameRendered();
+      return;
+    }
+
+    const cachedViewerOutput = threeStuff.utilityTargets.get('__viewer:display-output');
+    if (graphInputsMatch && prev.presentation && presentation && cachedViewerOutput) {
+      presentViewportTextureToCanvas({
+        resources: {
+          renderer: gl,
+          scene: threeStuff.scene,
+          camera: threeStuff.camera,
+          quad: threeStuff.quad,
+          materials: threeStuff.materials,
+          renderTargets: threeStuff.renderTargets,
+          utilityTargets: threeStuff.utilityTargets,
+          ocioTextures: threeStuff.ocioTextures,
+        },
+        texture: cachedViewerOutput.texture,
+        sourceSize: { width: cachedViewerOutput.width, height: cachedViewerOutput.height },
+        presentation,
+      });
+      prevRenderInputsRef.current = {
+        ...prev,
+        presentation,
+        rendererSurfaceWidth: rendererSurfaceSize.width,
+        rendererSurfaceHeight: rendererSurfaceSize.height,
+      };
       signalFrameRendered();
       return;
     }
@@ -222,6 +268,7 @@ export function useViewportRenderLoop({
       workingArea,
       alphaOverlayStyle,
       captureDisplayOutput,
+      presentation,
       presentToCanvas: !captureDisplayOutput,
       getMediaTexture: (node, frame) => {
         const desc = getMediaDescriptor(node.type);
@@ -258,6 +305,7 @@ export function useViewportRenderLoop({
         const mode = rotoNode.alphaMode;
         return mode === RotoAlphaMode.REPLACE ? 1 : mode === RotoAlphaMode.ADD ? 2 : 0;
       },
+      bypassNodeIds,
     });
 
     threeStuff.renderTargets = result.renderTargets;
@@ -276,9 +324,11 @@ export function useViewportRenderLoop({
       mediaUpdateTrigger,
       hasRenderableNodes,
       captureDisplayOutput,
+      presentation,
       rendererSurfaceWidth: rendererSurfaceSize.width,
       rendererSurfaceHeight: rendererSurfaceSize.height,
       workingArea,
+      bypassNodeIds,
     };
     reportRenderDuration?.(performance.now() - renderStartedAt);
     signalFrameRendered();
@@ -300,12 +350,14 @@ export function useViewportRenderLoop({
     hasRenderableNodes,
     isRenderReady,
     captureDisplayOutput,
+    presentation,
     visualFrame,
     freezeImageWhileEditing,
     signalFrameRendered,
     reportRenderDuration,
     canvasRef,
     rotoMaskTexturesRef,
+    bypassNodeIds,
     textTexturesRef,
     textureCacheRef,
   ]);

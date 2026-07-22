@@ -20,7 +20,7 @@ import {
   RotoDrawMode,
 } from '@blackboard/types';
 import { getValueAtFrame } from '@blackboard/renderer';
-import { generateBSplinePath } from '@/utils/bspline';
+import { generateBSplinePath, simplifyPath } from '@/utils/bspline';
 import {
   ROTO_POINT_WEIGHT_HANDLE_RADIUS_PX,
   getRotoPointWeight,
@@ -30,8 +30,12 @@ import {
   type RotoPointWeightMode,
 } from '@/utils/rotoPointWeights';
 import { getRotoPointTypeForSelection } from '@/utils/rotoPointTypes';
-import { getVisibleRotoPaths } from '@/utils/rotoHierarchy';
+import { getRotoPathParentLayerId, getVisibleRotoPaths } from '@/utils/rotoHierarchy';
 import {
+  applyRotoTrackingMatrix4ToPoint,
+  invertRotoTrackingMatrix4,
+  resolveRotoLayerCompositeMatrix,
+  resolveRotoPathCompositeMatrix,
   resolveRotoPathPointsAtFrame,
   stabilizePoint,
   stabilizePoints,
@@ -53,6 +57,10 @@ import type {
 } from '@/features/viewport/viewportOverlayTypes';
 import { ecc } from '@/features/viewport/overlays';
 import type { ViewportOverlayProps } from '@/nodes/NodeDefinition';
+import {
+  ROTO_PART_PREVIEW_COLORS,
+  type RotoPartSeparationPreviewState,
+} from '@/services/segmentation/rotoPartSeparationPreview';
 
 function getPathDataFromResolvedPoints(
   points: { x: number; y: number }[],
@@ -107,6 +115,18 @@ type VisiblePathRenderData = {
   resolvedPoints: { x: number; y: number }[];
   strokeWidthAtFrame: number;
 };
+
+const EMPTY_SEGMENTATION_OVERLAY_STATE = {
+  sourceFrame: null,
+  cleanup: { contourDetail: 2 },
+  contour: null,
+  previewUrl: null,
+  transientPreviewUrl: null,
+  points: [],
+  hoverPoint: null,
+  box: null,
+  boxDraft: null,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Props
@@ -288,6 +308,13 @@ function RotoOverlay(props: RotoOverlayProps) {
   const refinementSimplifiedPoints = roto.refinementSimplifiedPoints as { x: number; y: number }[];
   const isDrawing = roto.isDrawing;
   const drawingRotoPath = roto.drawingPath as RotoPath | null;
+  const segmentationSession = interaction.segmentationSession ?? EMPTY_SEGMENTATION_OVERLAY_STATE;
+  const partSeparationPreview =
+    (interaction.partSeparationPreview as RotoPartSeparationPreviewState | null | undefined) ??
+    null;
+  const isSegmentationTool = activeViewportTool.startsWith('segment-');
+  const isActiveSegmentationSession =
+    isSegmentationTool && segmentationSession.sourceFrame === frame;
   const bsplineDrawingState = interaction.bsplineDrawingState as BsplineDrawingState | null;
   const drawingState = interaction.drawingState as ShapeDrawingState | null;
   const freehandPoints = interaction.freehandPoints as { x: number; y: number }[] | null;
@@ -494,6 +521,88 @@ function RotoOverlay(props: RotoOverlayProps) {
     () => (rotoRefinement ? stabilizePoints(refinementSimplifiedPoints, stabilizationMatrix) : []),
     [refinementSimplifiedPoints, rotoRefinement, stabilizationMatrix],
   );
+  const segmentationContourPoints = useMemo(
+    () =>
+      isActiveSegmentationSession && segmentationSession.contour
+        ? stabilizePoints(
+            simplifyPath(segmentationSession.contour, segmentationSession.cleanup.contourDetail),
+            stabilizationMatrix,
+          )
+        : [],
+    [
+      isActiveSegmentationSession,
+      segmentationSession.cleanup.contourDetail,
+      segmentationSession.contour,
+      stabilizationMatrix,
+    ],
+  );
+  const segmentationPreviewUrl =
+    (segmentationSession.hoverPoint || segmentationSession.boxDraft) &&
+    segmentationSession.transientPreviewUrl
+      ? segmentationSession.transientPreviewUrl
+      : segmentationSession.previewUrl;
+  const partSeparationPreviewRenderData = useMemo(() => {
+    if (!partSeparationPreview || partSeparationPreview.parts.length === 0) return null;
+    const sourcePath = pathById.get(partSeparationPreview.sourcePathId);
+    const usePathTransform = Boolean(sourcePath?.trackingTransform || sourcePath?.userTransform);
+    const parentLayerId = sourcePath ? getRotoPathParentLayerId(node, sourcePath) : null;
+    const sourceMatrix = sourcePath
+      ? usePathTransform
+        ? resolveRotoPathCompositeMatrix(node, sourcePath, partSeparationPreview.sourceFrame, {
+            includeUserTransform: true,
+          })
+        : resolveRotoLayerCompositeMatrix(node, parentLayerId, partSeparationPreview.sourceFrame, {
+            includeUserTransform: true,
+          })
+      : null;
+    const currentMatrix = sourcePath
+      ? usePathTransform
+        ? resolveRotoPathCompositeMatrix(node, sourcePath, frame, {
+            includeUserTransform: true,
+          })
+        : resolveRotoLayerCompositeMatrix(node, parentLayerId, frame, {
+            includeUserTransform: true,
+          })
+      : null;
+    const inverseSourceMatrix = sourceMatrix ? invertRotoTrackingMatrix4(sourceMatrix) : null;
+    const toViewportPoint = (point: { x: number; y: number }) => {
+      const scenePoint = {
+        x:
+          partSeparationPreview.sceneBounds.x +
+          (point.x / Math.max(1, partSeparationPreview.width)) *
+            partSeparationPreview.sceneBounds.width,
+        y:
+          partSeparationPreview.sceneBounds.y +
+          (point.y / Math.max(1, partSeparationPreview.height)) *
+            partSeparationPreview.sceneBounds.height,
+      };
+      const localPoint = inverseSourceMatrix
+        ? applyRotoTrackingMatrix4ToPoint(inverseSourceMatrix, scenePoint)
+        : scenePoint;
+      const resolvedPoint = currentMatrix
+        ? applyRotoTrackingMatrix4ToPoint(currentMatrix, localPoint)
+        : localPoint;
+      return stabilizePoint(resolvedPoint, stabilizationMatrix);
+    };
+
+    return {
+      ...partSeparationPreview,
+      parts: partSeparationPreview.parts.map((part) => {
+        const contour = part.contour.map(toViewportPoint);
+        return {
+          ...part,
+          seed: toViewportPoint(part.seed),
+          pathData: generateBSplinePath(
+            contour,
+            true,
+            undefined,
+            rotoPointWeightMode,
+            part.pointTypes,
+          ),
+        };
+      }),
+    };
+  }, [frame, node, partSeparationPreview, pathById, rotoPointWeightMode, stabilizationMatrix]);
   const stabilizedFreehandPoints = useMemo(
     () => (freehandPoints ? stabilizePoints(freehandPoints, stabilizationMatrix) : null),
     [freehandPoints, stabilizationMatrix],
@@ -668,6 +777,138 @@ function RotoOverlay(props: RotoOverlayProps) {
             </defs>
           );
         })()}
+
+      {/* ── Interactive segmentation preview ───────────────────── */}
+      {isActiveSegmentationSession && (
+        <g className="pointer-events-none">
+          {segmentationPreviewUrl && !stabilizationMatrix && (
+            <image
+              href={segmentationPreviewUrl}
+              x={-props.scene.width / 2}
+              y={-props.scene.height / 2}
+              width={props.scene.width}
+              height={props.scene.height}
+              preserveAspectRatio="none"
+              opacity={0.86}
+            />
+          )}
+          {segmentationContourPoints.length > 2 && (
+            <path
+              d={generateBSplinePath(segmentationContourPoints, true)}
+              fill="none"
+              stroke="rgba(186, 230, 253, 0.95)"
+              strokeWidth={1.25 / zoom}
+              strokeDasharray={`${5 / zoom} ${3 / zoom}`}
+            />
+          )}
+          {segmentationSession.points.map((point) => {
+            const stabilized = sp(point);
+            const include = point.label === 'include';
+            return (
+              <g key={point.id}>
+                <circle
+                  cx={stabilized.x}
+                  cy={stabilized.y}
+                  r={6 / zoom}
+                  fill={include ? 'rgba(16, 185, 129, 0.95)' : 'rgba(244, 63, 94, 0.95)'}
+                  stroke="white"
+                  strokeWidth={1.5 / zoom}
+                />
+                <path
+                  d={
+                    include
+                      ? `M ${stabilized.x - 2.5 / zoom} ${stabilized.y} H ${stabilized.x + 2.5 / zoom} M ${stabilized.x} ${stabilized.y - 2.5 / zoom} V ${stabilized.y + 2.5 / zoom}`
+                      : `M ${stabilized.x - 2.5 / zoom} ${stabilized.y} H ${stabilized.x + 2.5 / zoom}`
+                  }
+                  stroke="white"
+                  strokeWidth={1.2 / zoom}
+                  strokeLinecap="round"
+                />
+              </g>
+            );
+          })}
+          {segmentationSession.hoverPoint &&
+            (() => {
+              const point = segmentationSession.hoverPoint;
+              const stabilized = sp(point);
+              const include = point.label === 'include';
+              return (
+                <circle
+                  cx={stabilized.x}
+                  cy={stabilized.y}
+                  r={7 / zoom}
+                  fill={include ? 'rgba(16, 185, 129, 0.22)' : 'rgba(244, 63, 94, 0.22)'}
+                  stroke={include ? 'rgba(110, 231, 183, 0.95)' : 'rgba(251, 113, 133, 0.95)'}
+                  strokeWidth={1.5 / zoom}
+                  strokeDasharray={`${2.5 / zoom} ${2 / zoom}`}
+                />
+              );
+            })()}
+          {(() => {
+            const box = segmentationSession.boxDraft ?? segmentationSession.box;
+            if (!box) return null;
+            const start = sp({ x: box.x1, y: box.y1 });
+            const end = sp({ x: box.x2, y: box.y2 });
+            return (
+              <rect
+                x={Math.min(start.x, end.x)}
+                y={Math.min(start.y, end.y)}
+                width={Math.abs(end.x - start.x)}
+                height={Math.abs(end.y - start.y)}
+                fill="rgba(56, 189, 248, 0.08)"
+                stroke="rgba(125, 211, 252, 0.95)"
+                strokeWidth={1.5 / zoom}
+                strokeDasharray={`${6 / zoom} ${3 / zoom}`}
+              />
+            );
+          })()}
+        </g>
+      )}
+
+      {/* ── Assisted part-separation preview ──────────────────── */}
+      {partSeparationPreviewRenderData && (
+        <g className="pointer-events-none" data-roto-part-separation-preview="true">
+          {partSeparationPreviewRenderData.parts.map((part) => {
+            const color = ROTO_PART_PREVIEW_COLORS[part.index % ROTO_PART_PREVIEW_COLORS.length];
+            const rgb = `${color[0]}, ${color[1]}, ${color[2]}`;
+            return (
+              <g key={`part-preview-${part.index}`}>
+                <path d={part.pathData} fill={`rgba(${rgb}, 0.2)`} stroke="none" />
+                <path
+                  d={part.pathData}
+                  fill="none"
+                  stroke={`rgba(${rgb}, 0.98)`}
+                  strokeWidth={1.35 / zoom}
+                  strokeDasharray={`${5 / zoom} ${2.5 / zoom}`}
+                  strokeLinejoin="round"
+                />
+                <circle
+                  cx={part.seed.x}
+                  cy={part.seed.y}
+                  r={8 / zoom}
+                  fill={`rgba(${rgb}, 0.96)`}
+                  stroke="rgba(255, 255, 255, 0.98)"
+                  strokeWidth={1.3 / zoom}
+                />
+                <text
+                  x={part.seed.x}
+                  y={part.seed.y + 2.8 / zoom}
+                  fill="white"
+                  stroke={`rgba(${rgb}, 0.8)`}
+                  strokeWidth={1.5 / zoom}
+                  paintOrder="stroke"
+                  textAnchor="middle"
+                  fontSize={8 / zoom}
+                  fontWeight={700}
+                  fontFamily="ui-sans-serif, system-ui, sans-serif"
+                >
+                  {part.index + 1}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      )}
 
       {/* ── Nudge tool overlay ─────────────────────────────────── */}
       {(nudge.activeViewportTool === 'nudge' || nudge.isAdjustingRadius) &&

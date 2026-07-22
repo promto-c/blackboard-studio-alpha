@@ -62,7 +62,7 @@ function CollapsibleSection({
           <div className="shrink-0">{isOpen ? action : (collapsedAction ?? action)}</div>
         )}
       </div>
-      {isOpen && <div className="p-4">{children}</div>}
+      {isOpen && <div className="px-4 py-2">{children}</div>}
     </div>
   );
 }

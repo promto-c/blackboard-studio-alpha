@@ -6,6 +6,7 @@ import {
   RotoDrawMode,
   RotoPathBlend,
   RotoRefinement,
+  type RotoSegmentationSource,
   Keyframe,
 } from '@blackboard/types';
 import {
@@ -24,9 +25,17 @@ import {
   removeRotoPointWeights,
 } from '@/utils/rotoPointWeights';
 import { collectAnimatablePointFrames } from '@/utils/animatablePointFrames';
-import { getRotoCreationParentLayerId, prependRotoPath } from '@/utils/rotoHierarchy';
+import {
+  createRotoLayer,
+  getNextRotoStackOrder,
+  getRotoCreationParentLayerId,
+  getRotoLayers,
+  getRotoPathParentLayerId,
+  prependRotoPath,
+} from '@/utils/rotoHierarchy';
 import {
   projectScenePointToRotoLayerLocal,
+  projectScenePointToRotoPathResolvedLocal,
   projectScenePointToRotoPathBasePoint,
   resolveRotoPathPointsAtFrame,
 } from '@/utils/rotoTracking';
@@ -38,6 +47,21 @@ import {
 import { getHierarchySelection } from '@/state/editor/slices/selectionActions';
 import type { EditorState, GetState, SetState } from '@/state/editor/slices/types';
 import type { CommitEditorMutation } from '@/state/editor/commitMutation';
+import { deleteAssets, saveAsset } from '@/state/assetStorage';
+import { createSegmentationMaskBlob } from '@/services/segmentation/maskProcessing';
+import {
+  separateRotoMaskIntoParts,
+  simplifyRotoPartContour,
+  type RotoPartSeparationOptions,
+} from '@/utils/rotoPartSeparation';
+import {
+  getRotoControlOwnershipSamples,
+  rasterizeRotoShapeForAnalysis,
+  rasterPointToScenePoint,
+  sceneDistanceToRasterDistance,
+  scenePointToRasterPoint,
+} from '@/utils/rotoShapeRaster';
+import { findSceneNode } from '@/utils/graphCommands';
 
 // Helpers
 // -------
@@ -45,6 +69,14 @@ import type { CommitEditorMutation } from '@/state/editor/commitMutation';
 function createRotoPathId(): string {
   return `path_${crypto.randomUUID()}`;
 }
+
+const getUniqueRotoLayerName = (node: RotoNode, baseName: string): string => {
+  const existingNames = new Set(getRotoLayers(node).map((layer) => layer.name.toLowerCase()));
+  if (!existingNames.has(baseName.toLowerCase())) return baseName;
+  let suffix = 2;
+  while (existingNames.has(`${baseName} ${suffix}`.toLowerCase())) suffix += 1;
+  return `${baseName} ${suffix}`;
+};
 
 // Interface
 // ---------
@@ -246,6 +278,269 @@ export function createRotoDrawingActions(
         closed: true,
         targetPathId,
       });
+    },
+
+    commitRotoSegmentationMask: async ({
+      rotoNodeId,
+      name,
+      sourceId,
+      sourceFrame,
+      modelId,
+      modelVariant,
+      width,
+      height,
+      score,
+      points,
+      box,
+      cleanup,
+      mask,
+      contour,
+      epsilon,
+    }: {
+      rotoNodeId: string;
+      name: string;
+      sourceId: string;
+      sourceFrame: number;
+      modelId: string;
+      modelVariant?: RotoSegmentationSource['modelVariant'];
+      width: number;
+      height: number;
+      score?: number;
+      points: RotoSegmentationSource['prompts']['points'];
+      box?: RotoSegmentationSource['prompts']['box'];
+      cleanup: RotoSegmentationSource['cleanup'];
+      mask: Uint8Array;
+      contour: { x: number; y: number }[];
+      epsilon: number;
+    }): Promise<string | null> => {
+      if (contour.length < 3 || mask.length !== width * height) return null;
+
+      const maskBlob = await createSegmentationMaskBlob(mask, width, height);
+      const maskAssetId = await saveAsset(maskBlob, {
+        fileName: `${name.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase() || 'smart-mask'}.png`,
+      });
+
+      const { nodes, hierarchySelections } = get();
+      const rotoIndex = nodes.findIndex(
+        (node) => node.id === rotoNodeId && node.type === NodeType.ROTO,
+      );
+      if (rotoIndex === -1) {
+        await deleteAssets([maskAssetId]);
+        return null;
+      }
+
+      const rotoNode = nodes[rotoIndex] as RotoNode;
+      const selection = getHierarchySelection(hierarchySelections, rotoNodeId);
+      const parentLayerId = getRotoCreationParentLayerId(
+        rotoNode,
+        selection.layerIds,
+        selection.itemIds,
+      );
+      const simplified = simplifyPath(contour, epsilon);
+      if (simplified.length < 3) {
+        await deleteAssets([maskAssetId]);
+        return null;
+      }
+
+      const localPoints = simplified.map((point) =>
+        projectScenePointToRotoLayerLocal(rotoNode, parentLayerId, sourceFrame, point),
+      );
+      const sourceMask: RotoSegmentationSource = {
+        kind: 'segmentation',
+        modelId,
+        modelVariant,
+        sourceId,
+        sourceFrame,
+        maskAssetId,
+        width,
+        height,
+        confidence: score,
+        createdAt: Date.now(),
+        prompts: { points, box },
+        cleanup,
+      };
+      const path: RotoPath = {
+        id: createRotoPathId(),
+        name,
+        parentLayerId,
+        shapeType: RotoShapeType.BSPLINE,
+        points: toFrameAnchoredPoints(localPoints, sourceFrame),
+        closed: true,
+        feather: 0,
+        opacity: 100,
+        blend: RotoPathBlend.ADD,
+        style: { mode: RotoDrawMode.FILL, strokeWidth: 2 },
+        originalPoints: contour,
+        epsilon,
+        sourceMask,
+      };
+
+      const updatedRoto = { ...rotoNode, ...prependRotoPath(rotoNode, path) } as RotoNode;
+      const nextNodes = [...nodes];
+      nextNodes[rotoIndex] = updatedRoto;
+      const nextHierarchySelections = {
+        ...hierarchySelections,
+        [rotoNodeId]: { layerIds: [], itemIds: [path.id] },
+      };
+
+      try {
+        deps.commitMutation({
+          patch: {
+            nodes: nextNodes,
+            hierarchySelections: nextHierarchySelections,
+            activeViewportTool: 'select',
+          },
+          history: {
+            label: `Create Smart Mask: ${name}`,
+            state: { nodes: nextNodes, selectedNodeId: rotoNodeId },
+          },
+          persist: 'debounced',
+        });
+      } catch (error) {
+        await deleteAssets([maskAssetId]);
+        throw error;
+      }
+      return path.id;
+    },
+
+    separateRotoShapeParts: (
+      rotoNodeId: string,
+      sourcePathId: string,
+      options: RotoPartSeparationOptions,
+    ): string[] | null => {
+      const { nodes, hierarchySelections, currentFrame } = get();
+      const rotoIndex = nodes.findIndex(
+        (node) => node.id === rotoNodeId && node.type === NodeType.ROTO,
+      );
+      if (rotoIndex === -1) return null;
+      const rotoNode = nodes[rotoIndex] as RotoNode;
+      const sourcePath = rotoNode.paths.find((path) => path.id === sourcePathId);
+      const sceneNode = findSceneNode(nodes);
+      if (!sourcePath?.closed || !sceneNode) return null;
+
+      const normalizedOptions: RotoPartSeparationOptions = {
+        partCount:
+          options.partCount === 'auto'
+            ? 'auto'
+            : Math.max(
+                2,
+                Math.min(
+                  16,
+                  Math.round(Number.isFinite(options.partCount) ? options.partCount : 2),
+                ),
+              ),
+        overlap: Math.max(
+          0,
+          Math.min(128, Math.round(Number.isFinite(options.overlap) ? options.overlap : 0)),
+        ),
+        branchReach: Math.max(
+          1,
+          Math.min(5, Number.isFinite(options.branchReach) ? options.branchReach : 2.5),
+        ),
+      };
+      const raster = rasterizeRotoShapeForAnalysis(rotoNode, sourcePath, currentFrame, sceneNode);
+      if (!raster) return null;
+      const resolvedSourcePoints = resolveRotoPathPointsAtFrame(rotoNode, sourcePath, currentFrame);
+      const sourceGeometry = {
+        points: resolvedSourcePoints.map((point) => scenePointToRasterPoint(raster, point)),
+        pointTypes: sourcePath.pointTypes,
+        ownershipSamples: getRotoControlOwnershipSamples(sourcePath, resolvedSourcePoints).map(
+          (samples) => samples.map((point) => scenePointToRasterPoint(raster, point)),
+        ),
+      };
+      const separation = separateRotoMaskIntoParts(
+        raster.mask,
+        raster.width,
+        raster.height,
+        normalizedOptions,
+        sourceGeometry,
+      );
+      if (separation.parts.length < 2) {
+        throw new Error('The shape could not be separated into multiple connected parts.');
+      }
+
+      const parentLayerId = getRotoPathParentLayerId(rotoNode, sourcePath);
+      const group = {
+        ...createRotoLayer(
+          getUniqueRotoLayerName(rotoNode, `${sourcePath.name} Parts`),
+          parentLayerId,
+        ),
+        blend: sourcePath.blend,
+        trackingTransform: sourcePath.trackingTransform,
+        userTransform: sourcePath.userTransform,
+        trackingData: sourcePath.trackingData,
+      };
+      const groupId = group.id;
+      const epsilon = Math.max(0.25, sourcePath.epsilon ?? 2);
+      const rasterTolerance = sceneDistanceToRasterDistance(raster, epsilon);
+      const partPaths = separation.parts.map((part, resultIndex): RotoPath => {
+        const originalSceneContour = part.contour.map((point) =>
+          rasterPointToScenePoint(raster, point),
+        );
+        const simplified = simplifyRotoPartContour(
+          part.editableContour,
+          part.editablePointTypes,
+          rasterTolerance,
+          part.editablePointOrigins,
+        );
+        const sceneContour = simplified.points.map((point) =>
+          rasterPointToScenePoint(raster, point),
+        );
+        const localPoints = sceneContour.map((point) =>
+          sourcePath.trackingTransform || sourcePath.userTransform
+            ? projectScenePointToRotoPathResolvedLocal(rotoNode, sourcePath, currentFrame, point)
+            : projectScenePointToRotoLayerLocal(rotoNode, parentLayerId, currentFrame, point),
+        );
+        return {
+          id: createRotoPathId(),
+          name: `${sourcePath.name} · Part ${resultIndex + 1}`,
+          parentLayerId: groupId,
+          stackOrder: getNextRotoStackOrder(),
+          visible: true,
+          shapeType: RotoShapeType.BSPLINE,
+          points: toFrameAnchoredPoints(localPoints, currentFrame),
+          pointTypes: simplified.pointTypes,
+          closed: true,
+          feather: sourcePath.feather,
+          opacity: 100,
+          blend: RotoPathBlend.ADD,
+          style: { ...sourcePath.style, mode: RotoDrawMode.FILL },
+          originalPoints: originalSceneContour,
+          epsilon,
+        };
+      });
+
+      const nextRoto: RotoNode = {
+        ...rotoNode,
+        layers: [group, ...getRotoLayers(rotoNode)],
+        paths: [
+          ...partPaths,
+          ...rotoNode.paths.map((path) =>
+            path.id === sourcePathId ? { ...path, visible: false } : path,
+          ),
+        ],
+      };
+      const nextNodes = [...nodes];
+      nextNodes[rotoIndex] = nextRoto;
+      const nextHierarchySelections = {
+        ...hierarchySelections,
+        [rotoNodeId]: { layerIds: [groupId], itemIds: [] },
+      };
+
+      deps.commitMutation({
+        patch: {
+          nodes: nextNodes,
+          hierarchySelections: nextHierarchySelections,
+          selectedRotoPointRefs: [],
+          activeViewportTool: 'select',
+        },
+        history: {
+          label: `Separate Shape into ${partPaths.length} Parts: ${sourcePath.name}`,
+          state: { nodes: nextNodes, selectedNodeId: rotoNodeId },
+        },
+        persist: 'debounced',
+      });
+      return partPaths.map((path) => path.id);
     },
 
     startRotoRefinement: (refinement: RotoRefinement) =>

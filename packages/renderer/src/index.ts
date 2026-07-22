@@ -93,6 +93,7 @@ export { readRenderTargetPixelRgbaFloat, readRenderTargetRgbaFloat } from './rea
 export {
   renderWithSharedPipeline,
   renderViewportFrameWithSharedPipeline,
+  presentViewportTextureToCanvas,
   renderPipeline,
   type RenderPipelineOptions,
   type RenderPipelineResult,
@@ -101,6 +102,8 @@ export {
   type ViewportPipelineResources,
   type ViewportPipelineOptions,
   type ViewportPipelineResult,
+  type ViewportPresentationOptions,
+  type ViewportTexturePresentationOptions,
   isPromiseLike,
   getSceneRenderTargetOptions,
   getRenderTargetOptionsForOutput,

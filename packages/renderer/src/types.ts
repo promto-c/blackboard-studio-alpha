@@ -3,6 +3,7 @@
 
 import * as THREE from 'three';
 import type {
+  AlphaInputBehavior,
   AnimatableNumber,
   AnyNode,
   ColorProcessingDomain,
@@ -447,6 +448,9 @@ export interface RendererNodeEntry {
   primaryInputDomain?: ColorProcessingDomain | ((node: AnyNode) => ColorProcessingDomain);
   /** `reinterpret` permits color-domain mismatches at an explicit conversion boundary. */
   primaryInputDomainPolicy?: 'strict' | 'reinterpret';
+  alphaInputBehavior?:
+    | AlphaInputBehavior
+    | ((node: AnyNode, inputPort: string) => AlphaInputBehavior);
   getShader?: (node: AnyNode) => string | { horizontal: string; vertical: string };
   getUniforms?: (node: AnyNode, context: RenderContext) => ShaderUniformMap;
   getOcioTransforms?: (

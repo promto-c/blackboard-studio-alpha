@@ -20,6 +20,11 @@ import {
 } from '@blackboard/types';
 import ViewportSettingsBar from './ViewportSettingsBar';
 import ViewportBackground from '@/components/ViewportBackground';
+import ViewportPixelGrid, {
+  getEffectiveViewportPixelZoom,
+  VIEWPORT_PIXEL_GRID_FADE_ZOOM_SPAN,
+  VIEWPORT_PIXEL_GRID_MAX_OPACITY,
+} from '@/components/ViewportPixelGrid';
 import * as THREE from 'three';
 import { simplifyPath, resamplePath } from '@/utils/bspline';
 import FreehandSmoothnessControl from '@/nodes/builtin/roto/FreehandSmoothnessControl';
@@ -90,8 +95,13 @@ import { VIEWPORT_WORKING_AREA_TOOL, resolveWorkingAreaPixelRect } from './worki
 import { ViewportSceneOverlayFrame } from './ViewportSceneOverlayFrame';
 import { useCompareViewportPresentation } from './useCompareViewportPresentation';
 import { ViewportWindowLabels } from './ViewportWindowLabels';
+import { getViewportImageRendering } from '@/utils/viewportInterpolation';
+import { createViewportPresentation } from '@/utils/viewportPresentation';
+import { getAlphaDeadRotoNodeIds, isViewerAlphaRequired } from '@/utils/alphaLiveness';
 
 type ViewportMouseEvent = MouseEvent | React.MouseEvent<HTMLDivElement>;
+
+const EMPTY_NODE_ID_SET: ReadonlySet<string> = new Set<string>();
 
 const areScenePositionsEqual = (
   left: { x: number; y: number } | null,
@@ -216,6 +226,8 @@ function Viewport() {
     viewportBackgroundMode,
     viewportBackgroundColor,
     viewportInterpolation,
+    viewportPixelGridEnabled,
+    viewportPixelGridZoomThresholdPercent,
     setPreferences,
   } = usePreferences();
 
@@ -560,23 +572,57 @@ function Viewport() {
     return () => element.removeEventListener('pointerdown', handlePointerDown, { capture: true });
   }, [isScene3DMode, isScene3DProjectionViewActive, gestureSceneNode]);
 
-  const { stabilizationMatrix, stabilizedSceneStyle, viewportToSceneCentered } =
-    useViewportStabilization({
-      isStabilized,
-      stabilizationReference,
-      stabilizationReferenceFrame,
-      stabilizationConfig,
-      selectedNode: selectedOverlayViewNode,
-      hierarchySelections,
-      selectedNodeId,
-      sceneNode: overlayViewSceneNode,
-      visualFrame,
+  const {
+    stabilizationMatrix,
+    stabilizationScale,
+    stabilizationInverseMatrix,
+    stabilizationTransformStyle,
+    viewportToSceneCentered,
+  } = useViewportStabilization({
+    isStabilized,
+    stabilizationReference,
+    stabilizationReferenceFrame,
+    stabilizationConfig,
+    selectedNode: selectedOverlayViewNode,
+    hierarchySelections,
+    selectedNodeId,
+    sceneNode: overlayViewSceneNode,
+    visualFrame,
+    pan: overlayPan,
+    zoom: overlayZoom,
+    viewportRef,
+    recaptureStabilizationReference,
+  });
+
+  const viewportPresentation = useMemo(
+    () =>
+      isCompareActive
+        ? undefined
+        : createViewportPresentation(stabilizationInverseMatrix, viewportInterpolation, {
+            size: viewportSize,
+            zoom,
+            pan,
+            pixelGrid: {
+              opacity:
+                viewportPixelGridEnabled && hasRenderableOutput
+                  ? VIEWPORT_PIXEL_GRID_MAX_OPACITY
+                  : 0,
+              thresholdZoom: viewportPixelGridZoomThresholdPercent / 100,
+              fadeZoomSpan: VIEWPORT_PIXEL_GRID_FADE_ZOOM_SPAN,
+            },
+          }),
+    [
+      hasRenderableOutput,
+      isCompareActive,
+      pan,
+      stabilizationInverseMatrix,
       viewportInterpolation,
-      pan: overlayPan,
-      zoom: overlayZoom,
-      viewportRef,
-      recaptureStabilizationReference,
-    });
+      viewportPixelGridEnabled,
+      viewportPixelGridZoomThresholdPercent,
+      viewportSize,
+      zoom,
+    ],
+  );
 
   const workingAreaInteraction = useWorkingAreaInteraction({
     active: activeViewportTool === VIEWPORT_WORKING_AREA_TOOL && !isCompareActive && !isScene3DMode,
@@ -650,13 +696,78 @@ function Viewport() {
   const isInteractivePreviewActive = interaction.isPreviewActive?.() ?? false;
   const isInteractiveRotoPreviewActive =
     isInteractivePreviewActive && selectedNode?.type === NodeType.ROTO;
-  const freezeRotoMaskWhileEditing =
-    isInteractiveRotoPreviewActive &&
-    viewerSettings.channels !== 'A' &&
-    !viewerSettings.alphaOverlay;
+  const viewerRequiresAlpha = isViewerAlphaRequired(viewerSettings, renderOutputDomain);
+  const alphaDeadRotoCacheRef = useRef<{
+    viewerRequiresAlpha: boolean;
+    compareActive: boolean;
+    resourceNodeIds: ReadonlySet<string>;
+    primaryNodeIds: ReadonlySet<string>;
+    compareBNodeIds: ReadonlySet<string>;
+  } | null>(null);
+  const alphaDeadRotoNodeIds = useMemo(() => {
+    const cached = alphaDeadRotoCacheRef.current;
+    // Roto geometry replaces the node object on every pointer update, but it
+    // cannot change graph alpha routing. Latch the result for the interaction
+    // instead of rebuilding downstream adjacency on every mouse event.
+    if (
+      isInteractiveRotoPreviewActive &&
+      cached?.viewerRequiresAlpha === viewerRequiresAlpha &&
+      cached.compareActive === isCompareActive
+    ) {
+      return cached;
+    }
+
+    const resourceNodeIds = getAlphaDeadRotoNodeIds({
+      nodes: viewportResourceNodes,
+      viewerRequiresAlpha,
+      nodeRegistry,
+    });
+    const primaryNodes = isCompareActive ? viewportNodesA : renderNodes;
+    const primaryNodeIds =
+      primaryNodes === viewportResourceNodes
+        ? resourceNodeIds
+        : getAlphaDeadRotoNodeIds({
+            nodes: primaryNodes,
+            viewerRequiresAlpha,
+            nodeRegistry,
+          });
+    const compareBNodeIds = isCompareActive
+      ? getAlphaDeadRotoNodeIds({
+          nodes: viewportNodesB,
+          viewerRequiresAlpha,
+          nodeRegistry,
+        })
+      : EMPTY_NODE_ID_SET;
+    const result = {
+      viewerRequiresAlpha,
+      compareActive: isCompareActive,
+      resourceNodeIds,
+      primaryNodeIds,
+      compareBNodeIds,
+    };
+    alphaDeadRotoCacheRef.current = result;
+    return result;
+  }, [
+    isCompareActive,
+    isInteractiveRotoPreviewActive,
+    renderNodes,
+    viewerRequiresAlpha,
+    viewportNodesA,
+    viewportNodesB,
+    viewportResourceNodes,
+  ]);
+  const editedRotoAlphaIsLive =
+    selectedNode?.type !== NodeType.ROTO ||
+    !alphaDeadRotoNodeIds.resourceNodeIds.has(selectedNode.id);
+  const freezeRotoMaskWhileEditing = isInteractiveRotoPreviewActive && !editedRotoAlphaIsLive;
+  const renderRelevantResourceNodes = useMemo(
+    () =>
+      viewportResourceNodes.filter((node) => !alphaDeadRotoNodeIds.resourceNodeIds.has(node.id)),
+    [alphaDeadRotoNodeIds.resourceNodeIds, viewportResourceNodes],
+  );
   const hasAdaptivePreviewWork = useMemo(
-    () => hasAdaptivePreviewNodes(viewportResourceNodes, nodeRegistry),
-    [viewportResourceNodes],
+    () => hasAdaptivePreviewNodes(renderRelevantResourceNodes, nodeRegistry),
+    [renderRelevantResourceNodes],
   );
 
   const {
@@ -665,11 +776,14 @@ function Viewport() {
     reportPrepareDuration,
     reportRenderDuration,
   } = usePreviewPerformance({
-    renderRevision: viewportResourceNodes,
+    renderRevision: renderRelevantResourceNodes,
     currentFrame,
     fps,
     isPlaying,
     isFrameScrubbing,
+    // Keep the adaptive-preview lifecycle active even while the completed
+    // image is frozen. On release this produces a cheap proxy result first,
+    // followed by the normal delayed full-resolution refinement.
     editingPreviewActive: isInteractivePreviewActive,
     hasAdaptivePreviewWork,
     optimizeWhileEditing: previewOptimizeWhileEditing,
@@ -694,6 +808,7 @@ function Viewport() {
     sampleLimit: previewSampleLimit,
     reportPrepareDuration,
     rotoPointWeightMode,
+    bypassNodeIds: alphaDeadRotoNodeIds.resourceNodeIds,
     suspendMaskUpdatesWhileEditing: freezeRotoMaskWhileEditing,
     bumpMediaUpdate: bumpMediaUpdateTrigger,
   });
@@ -776,11 +891,13 @@ function Viewport() {
     hasRenderableNodes: hasRenderableOutput,
     isRenderReady,
     captureDisplayOutput: isCompareActive,
+    presentation: viewportPresentation,
     mediaUpdateTrigger,
     threeStuff,
     textureCacheRef,
     textTexturesRef,
     rotoMaskTexturesRef,
+    bypassNodeIds: alphaDeadRotoNodeIds.primaryNodeIds,
     freezeImageWhileEditing: freezeRotoMaskWhileEditing,
     deferProjectThumbnailCapture:
       isScene3DMode ||
@@ -815,6 +932,8 @@ function Viewport() {
     alphaOverlayStyle,
     hasRenderableNodes: hasRenderableOutput,
     isRenderReady,
+    bypassNodeIdsB: alphaDeadRotoNodeIds.compareBNodeIds,
+    freezeImageWhileEditing: freezeRotoMaskWhileEditing,
     mediaUpdateTrigger,
     slotADisplayOutputRef: displayOutputBufferRef,
     textureCacheRef,
@@ -1375,7 +1494,7 @@ function Viewport() {
     interaction.handleMouseLeave();
   };
 
-  const canvasContainerStyle = useMemo<React.CSSProperties>(() => {
+  const sceneContainerStyle = useMemo<React.CSSProperties>(() => {
     if (!overlayViewSceneNode) return { display: 'none' };
 
     if (isCompareActive) {
@@ -1398,14 +1517,40 @@ function Viewport() {
     };
   }, [isCompareActive, overlayViewSceneNode, zoom, pan]);
 
+  const viewportImageRendering = getViewportImageRendering(viewportInterpolation);
+  const pixelGridZoom = getEffectiveViewportPixelZoom(zoom, stabilizationScale);
+
+  const canvasStyle = useMemo<React.CSSProperties>(() => {
+    if (!overlayViewSceneNode) return { display: 'none' };
+
+    return {
+      ...(viewportPresentation
+        ? {
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            transform: 'none',
+          }
+        : sceneContainerStyle),
+      imageRendering: viewportImageRendering,
+      display: hasRenderableOutput ? 'block' : 'none',
+    };
+  }, [
+    hasRenderableOutput,
+    overlayViewSceneNode,
+    sceneContainerStyle,
+    viewportImageRendering,
+    viewportPresentation,
+  ]);
+
   const sceneContentStyle = useMemo<React.CSSProperties>(() => {
-    if (!isCompareActive) return stabilizedSceneStyle;
+    if (!overlayViewSceneNode) return { display: 'none' };
     return {
       position: 'absolute',
       inset: 0,
-      imageRendering: viewportInterpolation === 'nearest' ? 'pixelated' : 'auto',
     };
-  }, [isCompareActive, stabilizedSceneStyle, viewportInterpolation]);
+  }, [overlayViewSceneNode]);
 
   const displayWindowRect = useMemo(() => {
     const displayWindow = dataWindowProjection?.displayWindow ?? overlayViewSceneNode;
@@ -1664,27 +1809,34 @@ function Viewport() {
           color={viewportBackgroundColor}
           className="absolute inset-0"
         />
+        <canvas ref={canvasRef} style={canvasStyle} />
         {overlayViewSceneNode ? (
-          <div style={canvasContainerStyle}>
+          <div style={sceneContainerStyle}>
             <div style={sceneContentStyle}>
-              <canvas
-                ref={canvasRef}
-                className="absolute top-0 left-0 w-full h-full"
-                style={{
-                  imageRendering: viewportInterpolation === 'nearest' ? 'pixelated' : 'auto',
-                  display: hasRenderableOutput ? 'block' : 'none',
-                }}
+              <ViewportPixelGrid
+                enabled={
+                  viewportPixelGridEnabled &&
+                  !isCompareActive &&
+                  !viewportPresentation &&
+                  hasRenderableOutput
+                }
+                zoom={pixelGridZoom}
+                thresholdZoom={viewportPixelGridZoomThresholdPercent / 100}
+                style={stabilizationTransformStyle}
               />
-              {!isCompareActive && sceneWindowLabels}
-              {!isCompareActive &&
-                (viewportWorkingArea.enabled || workingAreaInteraction.draftRect) && (
-                  <WorkingAreaOverlay
-                    rect={workingAreaInteraction.draftRect ?? viewportWorkingArea.rect}
-                    scene={sceneNode}
-                    zoom={zoom}
-                    editable={activeViewportTool === VIEWPORT_WORKING_AREA_TOOL}
-                  />
-                )}
+              {!isCompareActive && (
+                <div className="absolute inset-0" style={stabilizationTransformStyle}>
+                  {sceneWindowLabels}
+                  {(viewportWorkingArea.enabled || workingAreaInteraction.draftRect) && (
+                    <WorkingAreaOverlay
+                      rect={workingAreaInteraction.draftRect ?? viewportWorkingArea.rect}
+                      scene={sceneNode}
+                      zoom={zoom}
+                      editable={activeViewportTool === VIEWPORT_WORKING_AREA_TOOL}
+                    />
+                  )}
+                </div>
+              )}
               {!hasRenderableOutput && (
                 <div className="absolute inset-0 flex items-center justify-center p-4">
                   <div

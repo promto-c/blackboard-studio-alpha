@@ -158,4 +158,71 @@ describe('useViewportRotoMasks', () => {
     expect(result.current.current.get(rotoA.id)).toMatchObject({ width: 1280, height: 720 });
     expect(result.current.current.get(rotoB.id)).toMatchObject({ width: 1280, height: 720 });
   });
+
+  it('does not prepare or update an invisible alpha mask during an edit', () => {
+    const roto = createRotoNode('roto');
+    const baseProps = {
+      nodes: [roto],
+      sceneNode,
+      viewportSize: { width: 1920, height: 1080 },
+      currentFrame: 12,
+      optimizedPreviewActive: false,
+      editingPreviewActive: true,
+      editingNodeId: roto.id,
+      maxDimension: 1280,
+      sampleLimit: 8,
+      rotoPointWeightMode: 'global' as const,
+      suspendMaskUpdatesWhileEditing: true,
+      bumpMediaUpdate: vi.fn(),
+    };
+    const { result, rerender } = renderHook((props) => useViewportRotoMasks(props), {
+      initialProps: baseProps,
+    });
+
+    expect(createRotoMaskLayersMock).not.toHaveBeenCalled();
+    expect(result.current.current.has(roto.id)).toBe(false);
+
+    const editedRoto = { ...roto, paths: [...roto.paths] };
+    rerender({ ...baseProps, nodes: [editedRoto] });
+    expect(createRotoMaskLayersMock).not.toHaveBeenCalled();
+
+    rerender({
+      ...baseProps,
+      nodes: [editedRoto],
+      editingPreviewActive: false,
+      editingNodeId: null,
+      suspendMaskUpdatesWhileEditing: false,
+    });
+    expect(createRotoMaskLayersMock).toHaveBeenCalledOnce();
+    expect(result.current.current.has(roto.id)).toBe(true);
+  });
+
+  it('does not prepare an alpha-dead Roto mask when the frame changes', () => {
+    const roto = createRotoNode('roto');
+    const bypassNodeIds = new Set([roto.id]);
+    const baseProps = {
+      nodes: [roto],
+      sceneNode,
+      viewportSize: { width: 1920, height: 1080 },
+      currentFrame: 12,
+      optimizedPreviewActive: false,
+      editingPreviewActive: false,
+      editingNodeId: null,
+      maxDimension: 1280,
+      sampleLimit: 8,
+      rotoPointWeightMode: 'global' as const,
+      bypassNodeIds,
+      suspendMaskUpdatesWhileEditing: false,
+      bumpMediaUpdate: vi.fn(),
+    };
+    const { result, rerender } = renderHook((props) => useViewportRotoMasks(props), {
+      initialProps: baseProps,
+    });
+
+    expect(createRotoMaskLayersMock).not.toHaveBeenCalled();
+    expect(result.current.current.has(roto.id)).toBe(false);
+
+    rerender({ ...baseProps, currentFrame: 13 });
+    expect(createRotoMaskLayersMock).not.toHaveBeenCalled();
+  });
 });

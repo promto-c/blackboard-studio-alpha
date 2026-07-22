@@ -22,6 +22,7 @@ const createAlphaMathNodeDefinition = ({
     ...definition,
     category: 'Utility',
     shader,
+    overrides: { alphaInputBehavior: 'consume' },
   });
 
 export const premultiplyNode = createAlphaMathNodeDefinition({

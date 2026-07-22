@@ -48,6 +48,7 @@ import {
   cloneProjectColorManagement,
   createDefaultProjectColorManagement,
 } from '@/color-management/project';
+import { ViewportZoom } from '@/utils/viewportZoom';
 
 // ─── Storage key ────────────────────────────────────────────────
 
@@ -89,6 +90,12 @@ export type ReopenHistoryLimitPreference = 0 | 20 | 50 | 100;
 export const DEFAULT_UNDO_HISTORY_LIMIT: UndoHistoryLimitPreference = 200;
 export const DEFAULT_REOPEN_HISTORY_LIMIT: ReopenHistoryLimitPreference = 50;
 export const DEFAULT_AUTO_CHECKPOINT_ENABLED = true;
+export const ViewportPixelGridThresholdPercent = {
+  MIN: 400,
+  MAX: ViewportZoom.MAX * 100,
+  STEP: 100,
+  DEFAULT: 800,
+} as const;
 
 export const DEFAULT_PAINT_BRUSH_SETTINGS: PaintBrushSettings = {
   size: 24,
@@ -180,6 +187,8 @@ export interface Preferences {
   viewportBackgroundMode: ViewportBackgroundMode;
   viewportBackgroundColor: [number, number, number];
   viewportInterpolation: 'nearest' | 'linear';
+  viewportPixelGridEnabled: boolean;
+  viewportPixelGridZoomThresholdPercent: number;
   timelineCacheMode: TimelineCacheMode;
   onnxRuntimeWebGpuEnabled: boolean;
   onnxRuntimeWasmEnabled: boolean;
@@ -582,6 +591,17 @@ const preferenceSchema: { [K in keyof Preferences]: PreferenceField<Preferences[
   viewportInterpolation: enumField(
     'nearest' as 'nearest' | 'linear',
     ['nearest', 'linear'] as const,
+  ),
+  viewportPixelGridEnabled: boolField(true),
+  viewportPixelGridZoomThresholdPercent: customField(
+    ViewportPixelGridThresholdPercent.DEFAULT,
+    (v) =>
+      clampPositiveInteger(
+        v,
+        ViewportPixelGridThresholdPercent.DEFAULT,
+        ViewportPixelGridThresholdPercent.MIN,
+        ViewportPixelGridThresholdPercent.MAX,
+      ),
   ),
   autoDetectViewportView: boolField(true),
   timelineCacheMode: enumField(

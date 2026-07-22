@@ -23,6 +23,11 @@ import {
 import { getInitialState } from '@/state/editor/initialState';
 import { compileHotkeyBinding, resolveHotkeyBinding } from './resolver';
 import type { HotkeyContext, HotkeyExecutionContext } from './types';
+import {
+  addSegmentationPoint,
+  getSegmentationSession,
+  resetSegmentationSession,
+} from '@/services/segmentation/segmentationSession';
 
 const createEvent = (overrides: Partial<KeyboardEvent> = {}): KeyboardEvent =>
   ({
@@ -82,6 +87,33 @@ const createContext = (overrides: Partial<HotkeyContext> = {}): HotkeyContext =>
 });
 
 describe('studio hotkey effect bindings', () => {
+  it('routes undo and redo to Smart Mask prompts while a segmentation tool is active', () => {
+    const nodeId = 'roto-smart-mask-hotkey-test';
+    const undo = vi.fn();
+    const redo = vi.fn();
+    addSegmentationPoint(nodeId, { x: 10, y: 20, label: 'include' });
+
+    const context = {
+      ...createContext({
+        activeViewportTool: 'segment-point',
+        selectedNodeId: nodeId,
+        selectedNodeType: NodeType.ROTO,
+      }),
+      actions: { undo, redo },
+    } as HotkeyExecutionContext;
+    const commands = createBaseCommands();
+
+    commands.find((command) => command.id === 'history.undo')!.run(context, undefined);
+    expect(getSegmentationSession(nodeId).promptHistoryIndex).toBe(0);
+    expect(undo).not.toHaveBeenCalled();
+
+    commands.find((command) => command.id === 'history.redo')!.run(context, undefined);
+    expect(getSegmentationSession(nodeId).promptHistoryIndex).toBe(1);
+    expect(redo).not.toHaveBeenCalled();
+
+    resetSegmentationSession(nodeId);
+  });
+
   it('returns no effect bindings without a selected node', () => {
     expect(getEffectBindingsForSelection(null)).toEqual([]);
   });

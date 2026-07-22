@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorSelector, useEditorActions } from '@/state/editorContext';
 import { ComfyNode, ComfyWorkflow, EditorTab, GroupNode, NodeType } from '@blackboard/types';
-import { Badge, ScrollArea, SplitterHandle, TextInput } from '@blackboard/ui';
+import { SplitControl, SplitControlAction, SplitterHandle, StyledDropdown } from '@blackboard/ui';
 import { FlowViewModeControls } from '@/components/FlowViewModeControls';
 import { NodeItemsPanel, getNodeItemsComponent } from '@/components/NodeItemsPanel';
 import { SlidingSegmentedControl } from '@/components/SlidingSegmentedControl';
@@ -11,7 +11,11 @@ import {
   SegmentedControlButton,
 } from '@/components/SegmentedControl';
 import { useSelectedEditorNode } from '@/hooks/useEditorNodes';
+import { useProjectSyncStatus } from '@/hooks/useProjectSyncStatus';
 import { usePreferences } from '@/state/preferencesContext';
+import { usePreferencesNavigation } from '@/features/projects/preferencesNavigation';
+import { pullProjectFromRemote, pushProjectToRemote } from '@blackboard/project-store';
+import { getErrorMessage } from '@/utils/guards';
 import {
   EditorSubPanelWidth,
   EditorSubPanelHeight,
@@ -72,50 +76,86 @@ function ProjectBranchSwitcher({ compact = false }: { compact?: boolean }) {
   const projectId = useEditorSelector((state) => state.projectId);
   const projectBranches = useEditorSelector((state) => state.projectBranches);
   const activeProjectBranchId = useEditorSelector((state) => state.activeProjectBranchId);
-  const { createProjectBranch, deleteProjectBranch, switchProjectBranch } = useEditorActions();
+  const {
+    createProjectBranch,
+    deleteProjectBranch,
+    switchProjectBranch,
+    flushProjectSave,
+    loadProject,
+  } = useEditorActions();
+  const { openPreferences } = usePreferencesNavigation();
+  const { status: projectSyncStatus, refresh: refreshProjectSyncStatus } =
+    useProjectSyncStatus(projectId);
   const activeBranch = projectBranches.find((branch) => branch.id === activeProjectBranchId);
-  const [isOpen, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
   const [isBusy, setBusy] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [syncDirection, setSyncDirection] = useState<'pull' | 'push' | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const isRemoteTracking = projectSyncStatus?.binding?.mode === 'local-clone';
+  const isSyncBusy = syncDirection !== null;
+  const needsSyncResolution =
+    projectSyncStatus?.state === 'diverged' ||
+    projectSyncStatus?.state === 'offline' ||
+    Boolean(syncError);
+  const canPull = projectSyncStatus?.state === 'remote-ahead';
+  const canPush = projectSyncStatus?.state === 'local-ahead';
+  const availableSyncDirection: 'pull' | 'push' | null = canPull ? 'pull' : canPush ? 'push' : null;
 
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const filteredBranches = useMemo(() => {
-    if (!normalizedQuery) return projectBranches;
-    return projectBranches.filter((branch) =>
-      branch.name.toLocaleLowerCase().includes(normalizedQuery),
-    );
-  }, [normalizedQuery, projectBranches]);
-  const exactBranch = useMemo(
-    () =>
-      normalizedQuery
-        ? projectBranches.find((branch) => branch.name.toLocaleLowerCase() === normalizedQuery)
-        : null,
-    [normalizedQuery, projectBranches],
-  );
-  const canCreateBranch = !!projectId && !!query.trim() && !exactBranch;
+  const openProjectStorage = () => openPreferences({ section: 'storage', colorScope: 'project' });
 
-  const openMenu = () => {
-    setQuery('');
-    setOpen(true);
+  const handleRemoteSync = async (direction: 'pull' | 'push') => {
+    if (!projectId || isSyncBusy) return;
+    if (needsSyncResolution) {
+      openProjectStorage();
+      return;
+    }
+    if ((direction === 'pull' && !canPull) || (direction === 'push' && !canPush)) return;
+
+    setSyncDirection(direction);
+    setSyncError(null);
+    try {
+      await flushProjectSave?.();
+      if (direction === 'pull') {
+        await pullProjectFromRemote(projectId);
+        await loadProject(projectId);
+      } else {
+        await pushProjectToRemote(projectId);
+      }
+      await refreshProjectSyncStatus();
+    } catch (error) {
+      console.error(`Could not ${direction} project remote:`, error);
+      setSyncError(getErrorMessage(error, `Could not ${direction} project remote.`));
+    } finally {
+      setSyncDirection(null);
+    }
   };
 
-  const closeMenu = () => {
-    setOpen(false);
-    setQuery('');
+  const getSyncActionTitle = (): string => {
+    if (syncError) return `${syncError} Open project storage settings.`;
+    if (projectSyncStatus?.state === 'diverged') {
+      return 'Local and remote changed. Open project storage settings to resolve.';
+    }
+    if (projectSyncStatus?.state === 'offline') {
+      return 'Project remote is offline. Open project storage settings to reconnect.';
+    }
+    if (canPull) return 'Pull remote project changes into this Browser working copy';
+    if (canPush) return 'Push the saved project snapshot, including all branches';
+    return 'Local and remote project are up to date';
+  };
+
+  const handleSyncAction = () => {
+    if (needsSyncResolution) {
+      openProjectStorage();
+      return;
+    }
+    if (availableSyncDirection) void handleRemoteSync(availableSyncDirection);
   };
 
   const handleSwitchBranch = async (branchId: string) => {
-    if (!projectId || branchId === activeProjectBranchId || isBusy) {
-      closeMenu();
-      return;
-    }
+    if (!projectId || branchId === activeProjectBranchId || isBusy) return;
 
     setBusy(true);
     try {
       await switchProjectBranch(branchId);
-      closeMenu();
     } catch (error) {
       console.error('Could not switch project branch:', error);
       window.alert('Could not switch branch.');
@@ -124,14 +164,16 @@ function ProjectBranchSwitcher({ compact = false }: { compact?: boolean }) {
     }
   };
 
-  const handleCreateBranch = async () => {
-    const branchName = query.trim();
-    if (!projectId || !branchName || exactBranch || isBusy) return;
+  const handleCreateBranch = async (requestedName: string) => {
+    const branchName = requestedName.trim();
+    const branchExists = projectBranches.some(
+      (branch) => branch.name.toLocaleLowerCase() === branchName.toLocaleLowerCase(),
+    );
+    if (!projectId || !branchName || branchExists || isBusy) return;
 
     setBusy(true);
     try {
       await createProjectBranch(branchName);
-      closeMenu();
     } catch (error) {
       console.error('Could not create project branch:', error);
       window.alert('Could not create branch.');
@@ -149,9 +191,6 @@ function ProjectBranchSwitcher({ compact = false }: { compact?: boolean }) {
     setBusy(true);
     try {
       await deleteProjectBranch(branchId);
-      if (branchId === activeProjectBranchId) {
-        closeMenu();
-      }
     } catch (error) {
       console.error('Could not delete project branch:', error);
       window.alert('Could not delete branch.');
@@ -160,163 +199,94 @@ function ProjectBranchSwitcher({ compact = false }: { compact?: boolean }) {
     }
   };
 
-  const handleInputKeyDown = async (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Escape') {
-      closeMenu();
-      return;
-    }
-
-    if (event.key !== 'Enter') return;
-    event.preventDefault();
-
-    if (exactBranch) {
-      await handleSwitchBranch(exactBranch.id);
-      return;
-    }
-
-    if (canCreateBranch) {
-      await handleCreateBranch();
-    }
-  };
+  useEffect(() => {
+    setSyncError(null);
+  }, [projectId]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    const timeoutId = window.setTimeout(() => inputRef.current?.focus(), 0);
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        closeMenu();
-      }
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeMenu();
-      }
-    };
-
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.clearTimeout(timeoutId);
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen]);
+    if (projectSyncStatus?.state === 'up-to-date') setSyncError(null);
+  }, [projectSyncStatus?.state]);
 
   if (!projectId) return null;
 
+  const syncActionTitle = getSyncActionTitle();
+  const SyncActionIcon = needsSyncResolution
+    ? Icons.ExclamationCircle
+    : availableSyncDirection === 'pull'
+      ? Icons.ArrowDown
+      : availableSyncDirection === 'push'
+        ? Icons.ArrowUp
+        : Icons.RotateLoop;
+  const branchOptions = projectBranches.map((branch) => ({
+    value: branch.id,
+    label: branch.name,
+    icon: <Icons.Branch className="h-3.5 w-3.5 text-primary-300" />,
+    badges: branch.kind === 'agent' ? ['agent'] : undefined,
+    trailingAction:
+      branch.id === 'main'
+        ? undefined
+        : {
+            label: `Delete branch ${branch.name}`,
+            icon: <Icons.Trash className="h-3.5 w-3.5" />,
+            tone: 'danger' as const,
+            onSelect: () => void handleDeleteBranch(branch.id, branch.name),
+          },
+  }));
+  const createOption = {
+    isAvailable: (branchName: string) =>
+      !projectBranches.some(
+        (branch) => branch.name.toLocaleLowerCase() === branchName.toLocaleLowerCase(),
+      ),
+    label: (branchName: string) => `Create branch "${branchName}"`,
+    icon: <Icons.Branch className="h-3.5 w-3.5" />,
+    onCreate: (branchName: string) => void handleCreateBranch(branchName),
+  };
+  const branchDropdown = (
+    <StyledDropdown
+      value={activeBranch?.id ?? 'main'}
+      options={branchOptions}
+      onChange={(branchId) => void handleSwitchBranch(String(branchId))}
+      density="toolbar"
+      widthClass="w-max"
+      popoverWidthClass="w-64"
+      searchable
+      searchPlaceholder="Find or create branch"
+      createOption={createOption}
+      showSelectedBadges={false}
+      disabled={isBusy || isSyncBusy}
+    />
+  );
+  const switcherWidthClass = compact ? 'max-w-48' : 'max-w-72';
+
+  if (!isRemoteTracking) {
+    return <div className={`${switcherWidthClass} min-w-0 shrink`}>{branchDropdown}</div>;
+  }
+
   return (
-    <div ref={rootRef} className="relative min-w-0 flex-shrink-0">
-      <button
-        type="button"
-        onClick={() => (isOpen ? closeMenu() : openMenu())}
-        disabled={isBusy}
-        className={`inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md border border-white/10 bg-black/20 px-2 text-xs text-gray-300 transition hover:border-white/15 hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/60 disabled:cursor-wait disabled:text-gray-600 ${
-          compact ? 'max-w-28' : 'max-w-40'
+    <SplitControl density="toolbar" className={`${switcherWidthClass} min-w-0 shrink`}>
+      <div className="min-w-0 max-w-full shrink overflow-hidden">{branchDropdown}</div>
+      <SplitControlAction
+        onClick={handleSyncAction}
+        disabled={isBusy || isSyncBusy || (!availableSyncDirection && !needsSyncResolution)}
+        title={syncActionTitle}
+        aria-label={syncActionTitle}
+        className={`disabled:cursor-default disabled:text-gray-700 ${
+          needsSyncResolution
+            ? syncError
+              ? '!text-red-300 hover:bg-red-500/10'
+              : '!text-amber-300 hover:bg-amber-500/10'
+            : availableSyncDirection
+              ? '!text-primary-200 hover:bg-primary-500/10'
+              : '!text-gray-700'
         }`}
-        title={`Branch: ${activeBranch?.name ?? 'main'}`}
-        aria-label="Project branch"
-        aria-expanded={isOpen}
-        aria-haspopup="listbox"
       >
-        <Icons.Branch className="h-3.5 w-3.5 flex-shrink-0 text-primary-300" />
-        <span className="min-w-0 truncate">{activeBranch?.name ?? 'main'}</span>
-        <Icons.ChevronDown className="h-3 w-3 flex-shrink-0 text-gray-500" />
-      </button>
-
-      {isOpen ? (
-        <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-white/10 bg-gray-950/95 p-1.5 shadow-2xl backdrop-blur-xl ring-1 ring-inset ring-white/5">
-          <div className="flex h-8 items-center gap-1.5 rounded-md border border-white/10 bg-black/30 px-2">
-            <Icons.MagnifyingGlass className="h-3.5 w-3.5 flex-shrink-0 text-gray-500" />
-            <TextInput
-              ref={inputRef}
-              value={query}
-              onValueChange={setQuery}
-              onKeyDown={handleInputKeyDown}
-              disabled={isBusy}
-              placeholder="Find or create branch"
-              aria-label="Find or create branch"
-              className="min-w-0 flex-1 border-0 bg-transparent p-0 text-gray-100 placeholder:text-gray-600 disabled:cursor-wait hover:border-0 focus-visible:border-0 focus-visible:ring-0 !min-h-0"
-            />
-          </div>
-
-          {canCreateBranch ? (
-            <button
-              type="button"
-              onClick={() => void handleCreateBranch()}
-              disabled={isBusy}
-              className="mt-1 flex h-8 w-full min-w-0 items-center gap-2 rounded-md border border-primary-400/20 bg-primary-500/10 px-2 text-left text-xs text-primary-100 transition hover:bg-primary-500/15 disabled:cursor-wait disabled:text-gray-600"
-            >
-              <Icons.Branch className="h-3.5 w-3.5 flex-shrink-0" />
-              <span className="min-w-0 flex-1 truncate">Create branch "{query.trim()}"</span>
-            </button>
-          ) : null}
-
-          <ScrollArea
-            axis="y"
-            rootClassName="mt-1 max-h-56"
-            viewportClassName="max-h-56"
-            contentClassName="py-0.5"
-            role="listbox"
-          >
-            {filteredBranches.map((branch) => {
-              const isActive = branch.id === activeProjectBranchId;
-              const canDeleteBranch = branch.id !== 'main';
-              return (
-                <div
-                  key={branch.id}
-                  className={`group/branch flex h-8 w-full min-w-0 items-center rounded-md text-xs transition ${
-                    isActive
-                      ? 'bg-primary-500/15 text-primary-100'
-                      : 'text-gray-300 hover:bg-white/5 hover:text-white'
-                  } ${isBusy ? 'cursor-wait text-gray-600' : ''}`}
-                  role="option"
-                  aria-selected={isActive}
-                >
-                  <button
-                    type="button"
-                    onClick={() => void handleSwitchBranch(branch.id)}
-                    disabled={isBusy}
-                    className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-l-md px-2 text-left disabled:cursor-wait"
-                    title={branch.name}
-                  >
-                    <Icons.Check
-                      className={`h-3.5 w-3.5 flex-shrink-0 ${isActive ? 'opacity-100' : 'opacity-0'}`}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{branch.name}</span>
-                    {branch.kind === 'agent' ? (
-                      <Badge size="sm" variant="accent" uppercase className="!bg-primary-500/10">
-                        agent
-                      </Badge>
-                    ) : null}
-                  </button>
-                  {canDeleteBranch ? (
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleDeleteBranch(branch.id, branch.name);
-                      }}
-                      disabled={isBusy}
-                      className="mr-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-gray-500 opacity-0 transition hover:bg-red-500/10 hover:text-red-200 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40 group-hover/branch:opacity-100 disabled:cursor-wait disabled:text-gray-700"
-                      title={`Delete branch ${branch.name}`}
-                      aria-label={`Delete branch ${branch.name}`}
-                    >
-                      <Icons.Trash className="h-3.5 w-3.5" />
-                    </button>
-                  ) : null}
-                </div>
-              );
-            })}
-
-            {filteredBranches.length === 0 && !canCreateBranch ? (
-              <div className="px-2 py-2 text-xs text-gray-500">No branches found</div>
-            ) : null}
-          </ScrollArea>
-        </div>
-      ) : null}
-    </div>
+        {syncDirection ? (
+          <Icons.RotateLoop className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <SyncActionIcon className="h-3.5 w-3.5" />
+        )}
+      </SplitControlAction>
+    </SplitControl>
   );
 }
 

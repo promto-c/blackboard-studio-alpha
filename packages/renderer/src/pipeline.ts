@@ -1082,6 +1082,129 @@ const getDisplayWindowCopyMaterial = (
     u_storage_res: { value: new THREE.Vector2(storageSize.width, storageSize.height) },
   });
 
+const VIEWPORT_PRESENTATION_SHADER = `
+precision highp float;
+precision highp int;
+
+in vec2 v_uv;
+uniform sampler2D u_tDiffuse;
+uniform vec2 u_source_resolution;
+uniform vec2 u_destination_resolution;
+uniform mat3 u_inverse_transform;
+uniform int u_interpolation;
+uniform vec3 u_pixel_grid;
+out vec4 fragColor;
+
+vec4 fetch_or_transparent(ivec2 pixel, ivec2 size) {
+  if (pixel.x < 0 || pixel.y < 0 || pixel.x >= size.x || pixel.y >= size.y) {
+    return vec4(0.0);
+  }
+  return texelFetch(u_tDiffuse, pixel, 0);
+}
+
+vec2 to_texture_pixel(vec2 source_pixel) {
+  return vec2(source_pixel.x - 0.5, u_source_resolution.y - source_pixel.y - 0.5);
+}
+
+vec4 sample_nearest(vec2 source_pixel, ivec2 size) {
+  ivec2 pixel = ivec2(floor(to_texture_pixel(source_pixel) + vec2(0.5)));
+  return fetch_or_transparent(pixel, size);
+}
+
+vec4 sample_linear(vec2 source_pixel, ivec2 size) {
+  vec2 texture_pixel = to_texture_pixel(source_pixel);
+  ivec2 base = ivec2(floor(texture_pixel));
+  vec2 amount = fract(texture_pixel);
+  vec4 lower = mix(
+    fetch_or_transparent(base, size),
+    fetch_or_transparent(base + ivec2(1, 0), size),
+    amount.x
+  );
+  vec4 upper = mix(
+    fetch_or_transparent(base + ivec2(0, 1), size),
+    fetch_or_transparent(base + ivec2(1, 1), size),
+    amount.x
+  );
+  return mix(lower, upper, amount.y);
+}
+
+vec4 apply_pixel_grid(vec4 color, vec2 source_pixel) {
+  float opacity = clamp(u_pixel_grid.x, 0.0, 1.0);
+  if (opacity <= 0.0) return color;
+
+  vec2 source_gradient = max(
+    vec2(
+      length(vec2(dFdx(source_pixel.x), dFdy(source_pixel.x))),
+      length(vec2(dFdx(source_pixel.y), dFdy(source_pixel.y)))
+    ),
+    vec2(1e-6)
+  );
+  vec2 native_pixel_zoom = vec2(1.0) / source_gradient;
+  float local_zoom = min(native_pixel_zoom.x, native_pixel_zoom.y);
+  float fade_span = max(u_pixel_grid.z, 1e-4);
+  float fade_start = max(0.0, u_pixel_grid.y - fade_span);
+  float visibility = smoothstep(fade_start, max(u_pixel_grid.y, fade_start + 1e-4), local_zoom);
+  if (visibility <= 0.0) return color;
+
+  vec2 boundary_distance = abs(fract(source_pixel - vec2(0.5)) - vec2(0.5));
+  vec2 line_coverage = vec2(1.0) - clamp(boundary_distance / source_gradient, 0.0, 1.0);
+  float grid_coverage = max(line_coverage.x, line_coverage.y);
+  float amount = opacity * visibility * grid_coverage;
+  color.rgb = mix(color.rgb, vec3(1.0) - color.rgb, amount);
+  return color;
+}
+
+void main() {
+  vec2 destination_pixel = vec2(v_uv.x, 1.0 - v_uv.y) * u_destination_resolution;
+  vec2 destination_centered = destination_pixel - u_destination_resolution * 0.5;
+  vec3 source_h = u_inverse_transform * vec3(destination_centered, 1.0);
+  if (abs(source_h.z) < 1e-8) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  vec2 source_pixel = source_h.xy / source_h.z + u_source_resolution * 0.5;
+  if (
+    source_pixel.x < 0.0 || source_pixel.y < 0.0 ||
+    source_pixel.x >= u_source_resolution.x || source_pixel.y >= u_source_resolution.y
+  ) {
+    fragColor = vec4(0.0);
+    return;
+  }
+  ivec2 texture_size = ivec2(u_source_resolution);
+  vec4 sampled_color = u_interpolation == 0
+    ? sample_nearest(source_pixel, texture_size)
+    : sample_linear(source_pixel, texture_size);
+  fragColor = apply_pixel_grid(sampled_color, source_pixel);
+}
+`;
+
+const getViewportPresentationMaterial = (
+  texture: THREE.Texture,
+  size: RenderFormatSize,
+  presentation: ViewportPresentationOptions,
+  getMaterial: (id: string, shader: string, uniforms: ShaderUniformMap) => THREE.ShaderMaterial,
+): THREE.ShaderMaterial =>
+  getMaterial('__viewer:presentation', VIEWPORT_PRESENTATION_SHADER, {
+    u_tDiffuse: { value: texture },
+    u_source_resolution: { value: new THREE.Vector2(size.width, size.height) },
+    u_destination_resolution: {
+      value: new THREE.Vector2(
+        presentation.destinationSize.width,
+        presentation.destinationSize.height,
+      ),
+    },
+    u_inverse_transform: { value: presentation.inverseTransform },
+    u_interpolation: { value: presentation.interpolation === 'nearest' ? 0 : 1 },
+    u_pixel_grid: {
+      value: new THREE.Vector3(
+        presentation.pixelGrid?.opacity ?? 0,
+        presentation.pixelGrid?.thresholdZoom ?? 1,
+        presentation.pixelGrid?.fadeZoomSpan ?? 1,
+      ),
+    },
+  });
+
 const buildTextTexture = (
   node: TextNode,
   frame: number,
@@ -2131,6 +2254,7 @@ interface NodeOutputResolveContext {
   getCachedMediaTexture: (node: AnyNode, frame: number) => THREE.Texture | undefined;
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
+  bypassNodeIds?: ReadonlySet<string>;
   onAsyncInSync?: () => never;
 }
 
@@ -2143,6 +2267,19 @@ function resolveNodeOutputTexture(
   const cacheKey = `${nodeId}:${sourcePortName}`;
   const node = ctx.nodes.find((candidate) => candidate.id === nodeId);
   if (!node?.enabled) return undefined;
+  if (ctx.bypassNodeIds?.has(node.id)) {
+    const pipeSourceNodeId = node.inputs?.pipe;
+    if (!pipeSourceNodeId) return ctx.compositeBuffer.texture;
+    if (ctx.utilityRenderStack.has(cacheKey)) return getTransparentInputTexture();
+
+    ctx.utilityRenderStack.add(cacheKey);
+    const inputResult = resolveOutput(pipeSourceNodeId, getInputSourcePort(node, 'pipe'));
+    if (isPromiseLike(inputResult)) {
+      return inputResult.finally(() => ctx.utilityRenderStack.delete(cacheKey));
+    }
+    ctx.utilityRenderStack.delete(cacheKey);
+    return inputResult;
+  }
   const nodeWindow = ctx.dataWindowPlan?.nodeWindows.get(node.id);
   const inputRenderSize = nodeWindow
     ? getStorageSize(nodeWindow.inputStorageWindow)
@@ -3509,6 +3646,70 @@ export interface ViewportPipelineResources {
   ocioTextures?: Map<string, THREE.Texture>;
 }
 
+export interface ViewportPresentationOptions {
+  /** Maps centered destination pixels back into centered source pixels. */
+  inverseTransform: THREE.Matrix3;
+  /** Physical drawing-buffer size for direct viewport-space presentation. */
+  destinationSize: { width: number; height: number };
+  interpolation: 'nearest' | 'linear';
+  /** Optional native-pixel grid composited in the same viewport presentation pass. */
+  pixelGrid?: {
+    opacity: number;
+    thresholdZoom: number;
+    fadeZoomSpan: number;
+  };
+}
+
+export interface ViewportTexturePresentationOptions {
+  resources: ViewportPipelineResources;
+  texture: THREE.Texture;
+  sourceSize: { width: number; height: number };
+  presentation: ViewportPresentationOptions;
+}
+
+/**
+ * Re-presents an already-rendered native viewer texture without recomputing
+ * the node graph. This keeps pan, zoom, stabilization, and interpolation
+ * updates lightweight while preserving the source texel lattice.
+ */
+export const presentViewportTextureToCanvas = ({
+  resources,
+  texture,
+  sourceSize,
+  presentation,
+}: ViewportTexturePresentationOptions): void => {
+  const { renderer } = resources;
+  const rendererSize =
+    typeof renderer.getSize === 'function' ? renderer.getSize(new THREE.Vector2()) : null;
+  if (
+    !rendererSize ||
+    rendererSize.x !== presentation.destinationSize.width ||
+    rendererSize.y !== presentation.destinationSize.height
+  ) {
+    renderer.setSize(presentation.destinationSize.width, presentation.destinationSize.height);
+  }
+
+  const presentationMaterial = getViewportPresentationMaterial(
+    texture,
+    sourceSize,
+    presentation,
+    new StudioShaderMaterialCache({
+      materials: resources.materials,
+      renderer,
+      scene: resources.scene,
+      camera: resources.camera,
+      mesh: resources.quad,
+    }).get,
+  );
+  applyNoBlending(presentationMaterial);
+  resources.quad.material = presentationMaterial;
+  renderer.autoClear = false;
+  renderer.setRenderTarget(null);
+  if (typeof renderer.setScissorTest === 'function') renderer.setScissorTest(false);
+  clearRenderTargetTransparent(renderer, null);
+  renderer.render(resources.scene, resources.camera);
+};
+
 export interface ViewportPipelineOptions {
   resources: ViewportPipelineResources;
   nodes: AnyNode[];
@@ -3534,12 +3735,16 @@ export interface ViewportPipelineOptions {
   ) => { texture: THREE.Texture; width: number; height: number } | undefined;
   getRotoMaskLayers?: (nodeId: string) => readonly RendererMaskLayer[] | undefined;
   getRotoAlphaMode?: (nodeId: string) => number;
+  /** Viewer-only nodes whose output should resolve directly from their pipe input. */
+  bypassNodeIds?: ReadonlySet<string>;
   captureDisplayOutput?: boolean;
   /**
    * Whether to resize and present the viewer output to the renderer canvas.
    * Disable this for offscreen passes whose captured output is composited later.
    */
   presentToCanvas?: boolean;
+  /** Optional view-only transform applied after display/view color processing. */
+  presentation?: ViewportPresentationOptions;
   nodeRegistry: NodeRegistryLike;
   /** Explicit per-node display/data-window projection supplied by the host graph. */
   dataWindowPlan?: RendererDataWindowPlan;
@@ -3569,6 +3774,7 @@ export const renderViewportFrameWithSharedPipeline = (
     getTextTexture,
     getRotoMaskLayers,
     getRotoAlphaMode,
+    bypassNodeIds,
     nodeRegistry,
   } = options;
   assertRendererProcessingDomainsSupported(nodes, (nodeType) => nodeRegistry.get(nodeType));
@@ -3612,14 +3818,15 @@ export const renderViewportFrameWithSharedPipeline = (
   assertFloatRenderTargetSupport(renderer);
   const presentToCanvas = options.presentToCanvas !== false;
   if (presentToCanvas) {
+    const canvasSize = options.presentation?.destinationSize ?? finalSceneSize;
     const rendererSize =
       typeof renderer.getSize === 'function' ? renderer.getSize(new THREE.Vector2()) : null;
     if (
       !rendererSize ||
-      rendererSize.x !== sceneNode.width ||
-      rendererSize.y !== sceneNode.height
+      rendererSize.x !== canvasSize.width ||
+      rendererSize.y !== canvasSize.height
     ) {
-      renderer.setSize(sceneNode.width, sceneNode.height);
+      renderer.setSize(canvasSize.width, canvasSize.height);
     }
   }
   renderer.autoClear = false;
@@ -3953,6 +4160,7 @@ export const renderViewportFrameWithSharedPipeline = (
       getCachedMediaTexture: (n, f) => getMediaTexture(n as MediaNode, f),
       getRotoMaskLayers,
       getRotoAlphaMode,
+      bypassNodeIds,
       onAsyncInSync: () => {
         throw new Error('Viewport renderNodeOutputTexture must remain synchronous.');
       },
@@ -4011,7 +4219,9 @@ export const renderViewportFrameWithSharedPipeline = (
   ensureTargetForSceneSize(writeBuffer);
   clearRenderTargetTransparent(renderer, readBuffer);
 
-  const visibleNodes = getVisiblePipelineNodes(nodes, nodeRegistry);
+  const visibleNodes = getVisiblePipelineNodes(nodes, nodeRegistry).filter(
+    (node) => !bypassNodeIds?.has(node.id),
+  );
   for (let index = 0; index < visibleNodes.length; index += 1) {
     const baseNode = visibleNodes[index];
     const nodeWindow = options.dataWindowPlan?.nodeWindows.get(baseNode.id);
@@ -4284,19 +4494,31 @@ export const renderViewportFrameWithSharedPipeline = (
         });
   resources.quad.material = viewerMaterial;
   let displayOutputTarget: THREE.WebGLRenderTarget | null = null;
-  if (options.captureDisplayOutput) {
-    displayOutputTarget = getUtilityOutputTarget('__viewer:display-output', {
+  let viewerOutputTarget: THREE.WebGLRenderTarget | null = null;
+  if (options.captureDisplayOutput || (presentToCanvas && options.presentation)) {
+    viewerOutputTarget = getUtilityOutputTarget('__viewer:display-output', {
       width: outputDisplaySize.width,
       height: outputDisplaySize.height,
     });
-    clearRenderTargetTransparent(renderer, displayOutputTarget);
+    clearRenderTargetTransparent(renderer, viewerOutputTarget);
     renderer.render(resources.scene, resources.camera);
+    if (options.captureDisplayOutput) displayOutputTarget = viewerOutputTarget;
   }
   if (presentToCanvas) {
-    renderer.setRenderTarget(null);
-    configureCanvasWorkingArea();
-    clearRenderTargetTransparent(renderer, null);
-    renderer.render(resources.scene, resources.camera);
+    if (options.presentation && viewerOutputTarget) {
+      presentViewportTextureToCanvas({
+        resources,
+        texture: viewerOutputTarget.texture,
+        sourceSize: outputDisplaySize,
+        presentation: options.presentation,
+      });
+    } else {
+      renderer.setRenderTarget(null);
+      configureCanvasWorkingArea();
+      clearRenderTargetTransparent(renderer, null);
+      resources.quad.material = viewerMaterial;
+      renderer.render(resources.scene, resources.camera);
+    }
   } else {
     // Do not leave a captured offscreen target bound for the caller's next
     // presentation pass.

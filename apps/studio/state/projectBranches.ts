@@ -18,7 +18,7 @@ export interface ProjectBranchRecord {
   updatedAt: number;
 }
 
-type ProjectBranchIndexRecord = {
+export type ProjectBranchIndexRecord = {
   activeBranchId: string;
   branches: ProjectBranchRecord[];
 };
@@ -156,6 +156,11 @@ export const ensureProjectBranches = (projectId: string): ProjectBranchIndexReco
 
   return normalized;
 };
+
+export const restoreProjectBranches = (
+  projectId: string,
+  record: ProjectBranchIndexRecord,
+): ProjectBranchIndexRecord => saveProjectBranchRecord(projectId, record);
 
 export const getProjectBranches = (projectId: string): ProjectBranchRecord[] =>
   ensureProjectBranches(projectId).branches;

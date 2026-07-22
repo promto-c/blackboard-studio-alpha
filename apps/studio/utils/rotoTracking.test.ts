@@ -9,6 +9,8 @@ import {
 import {
   createIdentityRotoTrackingMatrix4,
   deriveUserTranslationFromPoints,
+  getRotoMatchTemplateFrames,
+  keyframeRotoPathScenePointsAtFrame,
   materializeRotoTrackingTarget,
   reduceRotoTrackingMatrix4ToComponents,
   keyframeRotoTrackingMatrix4,
@@ -17,6 +19,7 @@ import {
   resolveRotoLayerCompositeMatrix,
   resolveRotoPathCompositeMatrix,
   resolveRotoPathPointsAtFrame,
+  resolveRotoTrackingTransformDataFromMatrix,
   resolveRotoTrackingSelection,
 } from './rotoTracking';
 
@@ -71,6 +74,95 @@ const createNode = (): RotoNode => ({
 });
 
 describe('rotoTracking', () => {
+  it('finds surrounding manual keyframes for current-frame matching', () => {
+    const node = createNode();
+    node.paths[0].points = [
+      {
+        x: [
+          { frame: 2, value: 1 },
+          { frame: 12, value: 4 },
+        ],
+        y: [
+          { frame: 2, value: 3 },
+          { frame: 20, value: 8 },
+        ],
+      },
+    ];
+    node.paths[0].trackPoints = [
+      {
+        x: [{ frame: 9, value: 5 }],
+        y: [{ frame: 10, value: 6 }],
+      },
+    ];
+
+    expect(getRotoMatchTemplateFrames(node, ['shape-1'], 10)).toEqual({
+      previous: 2,
+      next: 12,
+      hasCurrentKeyframe: false,
+    });
+    expect(getRotoMatchTemplateFrames(node, ['shape-1'], 12)).toEqual({
+      previous: 2,
+      next: 20,
+      hasCurrentKeyframe: true,
+    });
+  });
+
+  it('uses the available side when a match frame has only one nearby manual keyframe', () => {
+    const node = createNode();
+    node.paths[0].points = [
+      {
+        x: [{ frame: 8, value: 1 }],
+        y: [{ frame: 8, value: 3 }],
+      },
+    ];
+
+    expect(getRotoMatchTemplateFrames(node, ['shape-1'], 3)).toEqual({
+      previous: null,
+      next: 8,
+      hasCurrentKeyframe: false,
+    });
+    expect(getRotoMatchTemplateFrames(node, ['shape-1'], 13)).toEqual({
+      previous: 8,
+      next: null,
+      hasCurrentKeyframe: false,
+    });
+  });
+
+  it('bakes matched scene geometry into shape point keyframes', () => {
+    const node = createNode();
+    node.paths[0].points = [{ x: 1, y: 2 }];
+    node.paths[0].trackingData = { 3: 0.5 };
+
+    const keyedNode = keyframeRotoPathScenePointsAtFrame(
+      node,
+      6,
+      new Map([['shape-1', [{ x: 9, y: 12 }]]]),
+    );
+    const keyedPoint = keyedNode.paths[0].points[0];
+
+    expect(Array.isArray(keyedPoint.x)).toBe(true);
+    expect(Array.isArray(keyedPoint.y)).toBe(true);
+    expect(Array.isArray(keyedPoint.x) ? keyedPoint.x.at(-1) : null).toMatchObject({
+      frame: 6,
+      value: 9,
+    });
+    expect(Array.isArray(keyedPoint.y) ? keyedPoint.y.at(-1) : null).toMatchObject({
+      frame: 6,
+      value: 12,
+    });
+    expect(keyedNode.paths[0].trackingData).toEqual({ 3: 0.5 });
+  });
+
+  it('resolves the screen scale of a stabilization matrix', () => {
+    const matrix = projectTrackingModelToMatrix4([2, 0, 12, -8], 'similarity');
+
+    expect(resolveRotoTrackingTransformDataFromMatrix(matrix)).toMatchObject({
+      x: 12,
+      y: -8,
+      scale: 2,
+    });
+  });
+
   it('defaults a single selected shape to the shape target', () => {
     const scope = resolveRotoTrackingSelection(createNode(), [], ['shape-1']);
 

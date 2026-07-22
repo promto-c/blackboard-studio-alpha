@@ -1,3 +1,15 @@
+import {
+  BROWSER_STORAGE_MOUNT_ID,
+  createMountedAssetId,
+  createStorageMountAssetPath,
+  deleteStorageFile,
+  getDefaultStorageMountId,
+  parseMountedAssetId,
+  readStorageFile,
+  requestStorageMountPermission,
+  writeStorageFile,
+} from './storageMounts';
+
 const DB_NAME = 'BlackboardAssets';
 const DB_VERSION = 4;
 const ASSET_STORE_NAME = 'images';
@@ -37,6 +49,7 @@ let db: IDBDatabase | null = null;
 const directoryHandleCache = new Map<string, FileSystemDirectoryHandle>();
 const referenceRecordCache = new Map<string, AssetReferenceRecord>();
 const directoryPermissionCache = new Map<string, PermissionState>();
+const memoryProjectStates = new Map<string, unknown>();
 
 const createId = (prefix: string): string =>
   `${prefix}${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -284,7 +297,31 @@ const getReferencedAsset = async (id: string): Promise<Blob | null> => {
 
 export { performTransaction, openDB };
 
-export const saveAsset = async (blob: Blob): Promise<string> => {
+export interface SaveAssetOptions {
+  /** Defaults to the configured asset mount, which is browser storage initially. */
+  mountId?: string;
+  /** Optional mount-relative path. Generated under .blackboard-studio/assets when omitted. */
+  path?: string;
+  fileName?: string;
+}
+
+export const saveAssetToMount = async (
+  blob: Blob,
+  options: SaveAssetOptions & { mountId: string },
+): Promise<string> => {
+  if (options.mountId === BROWSER_STORAGE_MOUNT_ID) {
+    return saveAsset(blob, { ...options, mountId: BROWSER_STORAGE_MOUNT_ID });
+  }
+  const path = options.path ?? createStorageMountAssetPath(options.fileName);
+  await writeStorageFile(options.mountId, path, blob);
+  return createMountedAssetId(options.mountId, path);
+};
+
+export const saveAsset = async (blob: Blob, options: SaveAssetOptions = {}): Promise<string> => {
+  const mountId = options.mountId ?? getDefaultStorageMountId('assets');
+  if (mountId !== BROWSER_STORAGE_MOUNT_ID) {
+    return saveAssetToMount(blob, { ...options, mountId });
+  }
   const id = createId(ASSET_ID_PREFIX);
   await performTransaction(ASSET_STORE_NAME, 'readwrite', (store) => store.put(blob, id));
   return id;
@@ -345,6 +382,18 @@ export const saveDirectoryAssetReferences = async (
 };
 
 export const requestReferencePermissions = async (assetIds: string[]): Promise<void> => {
+  const mountedIds = Array.from(
+    new Set(
+      assetIds
+        .map(parseMountedAssetId)
+        .filter(Boolean)
+        .map((asset) => asset!.mountId),
+    ),
+  );
+  for (const mountId of mountedIds) {
+    await requestStorageMountPermission(mountId);
+  }
+
   const referenceIds = Array.from(new Set(assetIds.filter(isReferenceAssetId)));
   if (referenceIds.length === 0) return;
 
@@ -388,6 +437,10 @@ export const getAssetReferenceExportRecord = async (
 };
 
 export const getAsset = async (id: string): Promise<Blob | null> => {
+  const mounted = parseMountedAssetId(id);
+  if (mounted) {
+    return readStorageFile(mounted.mountId, mounted.path);
+  }
   if (isReferenceAssetId(id)) {
     return getReferencedAsset(id);
   }
@@ -402,6 +455,14 @@ export const getAssetSize = async (
   id: string,
   options?: { resolveReference?: boolean },
 ): Promise<number | null> => {
+  const mounted = parseMountedAssetId(id);
+  if (mounted) {
+    try {
+      return (await readStorageFile(mounted.mountId, mounted.path))?.size ?? null;
+    } catch {
+      return null;
+    }
+  }
   if (isReferenceAssetId(id)) {
     if (!options?.resolveReference) {
       return null;
@@ -436,8 +497,26 @@ export const deleteAssets = async (ids: string[]): Promise<void> => {
   if (ids.length === 0) return;
 
   const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
-  const storedAssetIds = uniqueIds.filter((id) => !isReferenceAssetId(id));
+  const mountedAssets = uniqueIds.map((id) => ({ id, location: parseMountedAssetId(id) }));
+  const mountedAssetIds = new Set(
+    mountedAssets.filter(({ location }) => location).map(({ id }) => id),
+  );
+  const storedAssetIds = uniqueIds.filter(
+    (id) => !isReferenceAssetId(id) && !mountedAssetIds.has(id),
+  );
   const referenceAssetIds = uniqueIds.filter(isReferenceAssetId);
+
+  await Promise.all(
+    mountedAssets.flatMap(({ id, location }) =>
+      location
+        ? [
+            deleteStorageFile(location.mountId, location.path).catch((error) => {
+              console.error(`Failed to delete mounted asset ${id}`, error);
+            }),
+          ]
+        : [],
+    ),
+  );
 
   if (storedAssetIds.length > 0) {
     const dbInstance = await openDB();
@@ -495,10 +574,15 @@ export const deleteAssets = async (ids: string[]): Promise<void> => {
 // --- Project State Persistence (IndexedDB) ---
 
 export const saveProjectStateToDB = async (id: string, state: any): Promise<void> => {
+  if (typeof indexedDB === 'undefined') {
+    memoryProjectStates.set(id, state);
+    return;
+  }
   await performTransaction(PROJECT_STORE_NAME, 'readwrite', (store) => store.put(state, id));
 };
 
 export const loadProjectStateFromDB = async (id: string): Promise<any | null> => {
+  if (typeof indexedDB === 'undefined') return memoryProjectStates.get(id) ?? null;
   const result = await performTransaction<any | undefined>(
     PROJECT_STORE_NAME,
     'readonly',
@@ -508,5 +592,17 @@ export const loadProjectStateFromDB = async (id: string): Promise<any | null> =>
 };
 
 export const deleteProjectStateFromDB = async (id: string): Promise<void> => {
+  if (typeof indexedDB === 'undefined') {
+    memoryProjectStates.delete(id);
+    return;
+  }
   await performTransaction(PROJECT_STORE_NAME, 'readwrite', (store) => store.delete(id));
+};
+
+export const listProjectStateIdsFromDB = async (): Promise<string[]> => {
+  if (typeof indexedDB === 'undefined') return Array.from(memoryProjectStates.keys());
+  const keys = await performTransaction<IDBValidKey[]>(PROJECT_STORE_NAME, 'readonly', (store) =>
+    store.getAllKeys(),
+  );
+  return keys.filter((key): key is string => typeof key === 'string');
 };

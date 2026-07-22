@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge } from '@blackboard/ui';
 import { ComfyWorkflow } from '@blackboard/types';
-import { useCanvasViewport } from '@/hooks/useCanvasViewport';
+import { CanvasViewportControls } from '@/components/CanvasViewportControls';
+import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, useCanvasViewport } from '@/hooks/useCanvasViewport';
 import { isJsonObject, getNonEmptyString } from '@/utils/guards';
 import CanvasGrid from './CanvasGrid';
 
@@ -371,8 +372,16 @@ function ComfyWorkflowGraphView({
   const [localSubgraphPath, setLocalSubgraphPath] = useState<ComfyGraphPathItem[]>([]);
   const currentSubgraphPath = subgraphPath ?? localSubgraphPath;
   const setCurrentSubgraphPath = onSubgraphPathChange ?? setLocalSubgraphPath;
-  const { viewport, containerRef, getTransformStyle, fitAll, handleMouseDown, getCursorStyle } =
-    useCanvasViewport();
+  const {
+    viewport,
+    containerRef,
+    getTransformStyle,
+    fitAll,
+    handleMouseDown,
+    zoomIn,
+    zoomOut,
+    getCursorStyle,
+  } = useCanvasViewport();
 
   useEffect(() => {
     if (subgraphPath === undefined) {
@@ -431,14 +440,15 @@ function ComfyWorkflowGraphView({
     [boundaryPorts, nodeBounds],
   );
   const svgPadding = 300;
+  const fitWorkflow = useCallback(
+    (animate: boolean) => fitAll(bounds, { top: 52, left: 20, right: 20, bottom: 64, animate }),
+    [bounds, fitAll],
+  );
 
   useEffect(() => {
-    const timer = window.setTimeout(
-      () => fitAll(bounds, { top: 16, left: 16, right: 16, bottom: 16 }),
-      0,
-    );
+    const timer = window.setTimeout(() => fitWorkflow(false), 0);
     return () => window.clearTimeout(timer);
-  }, [bounds, fitAll, currentLevel?.id]);
+  }, [currentLevel?.id, fitWorkflow]);
 
   if (!sourceGraph || !currentLevel) {
     return (
@@ -451,11 +461,41 @@ function ComfyWorkflowGraphView({
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full overflow-hidden"
-      style={{ cursor: getCursorStyle() }}
-      onMouseDown={handleMouseDown}
+      className="relative h-full w-full overflow-hidden outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary-300/50"
+      style={{ cursor: getCursorStyle() === 'default' ? 'grab' : getCursorStyle() }}
+      tabIndex={0}
+      role="region"
+      aria-label={`${currentLevel.name} Comfy workflow graph`}
+      onMouseDown={(event) => {
+        event.stopPropagation();
+        event.currentTarget.focus({ preventScroll: true });
+        handleMouseDown(event, { allowPrimaryButton: event.target === event.currentTarget });
+      }}
+      onDoubleClick={(event) => {
+        if (event.target !== event.currentTarget) return;
+        event.preventDefault();
+        fitWorkflow(true);
+      }}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === '+' || event.key === '=') {
+          event.preventDefault();
+          zoomIn();
+        } else if (event.key === '-') {
+          event.preventDefault();
+          zoomOut();
+        } else if (event.key.toLowerCase() === 'f' || event.key === '0') {
+          event.preventDefault();
+          fitWorkflow(true);
+        }
+      }}
     >
-      <CanvasGrid zoom={viewport.zoom} />
+      <CanvasGrid zoom={viewport.zoom} panX={viewport.panX} panY={viewport.panY} />
+
+      <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full border border-white/10 bg-gray-950/65 px-2.5 py-1 text-[10px] text-gray-400 shadow-lg backdrop-blur-md">
+        Drag to pan · Scroll to zoom · Double-click to fit
+      </div>
 
       <div style={getTransformStyle()}>
         <svg
@@ -579,7 +619,8 @@ function ComfyWorkflowGraphView({
             <button
               key={String(node.id)}
               type="button"
-              disabled={!subgraph}
+              aria-disabled={!subgraph}
+              tabIndex={subgraph ? 0 : -1}
               onClick={(event) => {
                 event.stopPropagation();
                 if (!subgraph) return;
@@ -622,6 +663,16 @@ function ComfyWorkflowGraphView({
           );
         })}
       </div>
+
+      <CanvasViewportControls
+        zoom={viewport.zoom}
+        minZoom={CANVAS_MIN_ZOOM}
+        maxZoom={CANVAS_MAX_ZOOM}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onFit={() => fitWorkflow(true)}
+        fitTooltip="Fit workflow to view"
+      />
     </div>
   );
 }
