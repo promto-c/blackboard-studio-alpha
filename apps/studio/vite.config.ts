@@ -12,9 +12,9 @@ import {
   getManagedAssetManualChunk,
   getManagedAssetMetadata as getRegisteredManagedAssetMetadata,
 } from './pwa/managedAssets';
+import { validateStudioBuildAssets, validateStudioPublicAssets } from './pwa/validateStaticAssets';
 
 const onnxWasmSrc = path.resolve(__dirname, 'node_modules/onnxruntime-web/dist');
-const publicWasmDir = path.resolve(__dirname, 'public/wasm');
 const distDir = path.resolve(__dirname, 'dist');
 const distWasmDir = path.resolve(__dirname, 'dist/wasm');
 const studioPackagePath = path.resolve(__dirname, 'package.json');
@@ -27,9 +27,12 @@ const hostedBase = '/blackboard-studio-alpha/';
 const isTruthyEnv = (value: string | undefined) =>
   value === '1' || value?.toLowerCase() === 'true' || value?.toLowerCase() === 'yes';
 
-function copyOnnxWasmFiles(destDir: string, filter: (f: string) => boolean) {
-  const files = fs.readdirSync(onnxWasmSrc).filter(filter);
-  if (files.length === 0) return;
+const isOnnxRuntimeAsset = (fileName: string) =>
+  fileName.startsWith('ort-wasm') && (fileName.endsWith('.wasm') || fileName.endsWith('.mjs'));
+
+function copyOnnxRuntimeAssets(destDir: string) {
+  const files = fs.readdirSync(onnxWasmSrc).filter(isOnnxRuntimeAsset);
+  if (files.length === 0) throw new Error('No ONNX Runtime Web assets were found.');
   fs.mkdirSync(destDir, { recursive: true });
   for (const file of files) {
     const src = path.join(onnxWasmSrc, file);
@@ -39,9 +42,6 @@ function copyOnnxWasmFiles(destDir: string, filter: (f: string) => boolean) {
     }
   }
 }
-
-const isWasm = (f: string) => f.startsWith('ort-wasm') && f.endsWith('.wasm');
-const isMjs = (f: string) => f.startsWith('ort-wasm') && f.endsWith('.mjs');
 const toPosixPath = (value: string) => value.split(path.sep).join('/');
 
 function collectDistFiles(dir: string): string[] {
@@ -116,7 +116,7 @@ function createStudioPwaBuildPlugin({ base, version }: { base: string; version: 
         .slice(0, 12);
       const cacheVersion = `${version}-${cacheDigest}`;
       const serviceWorker = createStudioServiceWorkerSource({
-        appName: 'Blackboard Studio',
+        appName: 'Blackboard Studio Alpha',
         appVersion: version,
         cacheVersion,
         baseUrl: normalizedBase,
@@ -130,7 +130,7 @@ function createStudioPwaBuildPlugin({ base, version }: { base: string; version: 
   };
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, '.', '');
   const desktopEnv = env.BLACKBOARD_STUDIO_DESKTOP ?? env.VITE_BLACKBOARD_STUDIO_DESKTOP;
   const isTauriDesktop = Boolean(
@@ -144,8 +144,6 @@ export default defineConfig(({ mode }) => {
   const studioBuildId =
     env.BLACKBOARD_STUDIO_BUILD_ID ?? env.VITE_BLACKBOARD_STUDIO_BUILD_ID ?? studioVersion;
 
-  copyOnnxWasmFiles(publicWasmDir, isWasm);
-
   const plugins: (Plugin | Plugin[])[] = [
     react(),
     {
@@ -153,20 +151,26 @@ export default defineConfig(({ mode }) => {
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           const url = req.url ?? '';
-          const match = url.match(/\/wasm\/(ort-wasm.+\.mjs)/);
-          if (match) {
-            const filePath = path.join(onnxWasmSrc, match[1]);
-            if (fs.existsSync(filePath)) {
-              res.setHeader('Content-Type', 'application/javascript');
-              fs.createReadStream(filePath).pipe(res);
-              return;
-            }
+          const match = url.match(/\/wasm\/(ort-wasm[^/?#]+\.(?:mjs|wasm))(?:[?#]|$)/);
+          const fileName = match?.[1];
+          if (!fileName || !isOnnxRuntimeAsset(fileName)) {
+            next();
+            return;
           }
-          next();
+          const filePath = path.join(onnxWasmSrc, fileName);
+          if (!fs.existsSync(filePath)) {
+            next();
+            return;
+          }
+          res.setHeader(
+            'Content-Type',
+            fileName.endsWith('.wasm') ? 'application/wasm' : 'application/javascript',
+          );
+          fs.createReadStream(filePath).pipe(res);
         });
       },
       closeBundle() {
-        copyOnnxWasmFiles(distWasmDir, (f) => isWasm(f) || isMjs(f));
+        copyOnnxRuntimeAssets(distWasmDir);
       },
     },
   ];
@@ -178,6 +182,16 @@ export default defineConfig(({ mode }) => {
         version: studioVersion,
       }),
     );
+    if (command === 'build') {
+      validateStudioPublicAssets(path.resolve(__dirname, 'public'));
+      plugins.push({
+        name: 'studio-static-publication-boundary',
+        enforce: 'post',
+        closeBundle() {
+          validateStudioBuildAssets(distDir);
+        },
+      });
+    }
   }
 
   return {
@@ -204,8 +218,6 @@ export default defineConfig(({ mode }) => {
     plugins,
 
     define: {
-      'process.env.API_KEY': JSON.stringify(env.BUILD_API_KEY || env.VITE_BUILD_API_KEY || ''),
-
       __BLACKBOARD_STUDIO_VERSION__: JSON.stringify(studioVersion),
       __BLACKBOARD_STUDIO_BUILD_ID__: JSON.stringify(studioBuildId),
       __BLACKBOARD_STUDIO_DESKTOP__: JSON.stringify(isTauriDesktop),

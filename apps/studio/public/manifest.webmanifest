@@ -1,6 +1,6 @@
 {
-  "name": "Blackboard Studio",
-  "short_name": "Studio",
+  "name": "Blackboard Studio Alpha",
+  "short_name": "Studio Alpha",
   "description": "GPU-accelerated photo and video compositing workspace.",
   "id": ".",
   "start_url": ".",

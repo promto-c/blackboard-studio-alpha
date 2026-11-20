@@ -11,8 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
 target
 apps/studio/src-tauri/gen/
+apps/studio/public/wasm/
 
 # Turborepo
 .turbo
